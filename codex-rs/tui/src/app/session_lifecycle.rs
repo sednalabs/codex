@@ -13,6 +13,7 @@ use super::app_server_event_targets::server_request_thread_id;
 use super::*;
 use crate::app_server_session::source_agent_path;
 use crate::app_server_session::thread_blocks_direct_input;
+use crate::chatwidget::ThreadInputStateRestoreMode;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -366,6 +367,10 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
+        let was_external_writer = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ExternalWriter);
         if self
             .thread_event_channels
             .get(&thread_id)
@@ -459,7 +464,11 @@ impl App {
             };
         let channel = self.ensure_thread_channel(thread_id);
         if !live_attached {
-            channel.mark_replay_only();
+            if was_external_writer {
+                channel.mark_external_writer();
+            } else {
+                channel.mark_replay_only();
+            }
         }
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
@@ -627,7 +636,12 @@ impl App {
         self.schedule_recap_check(thread_id, now);
 
         self.render_thread_snapshot(tui, app_server, thread_id, snapshot, !is_replay_only)?;
-        if is_replay_only {
+        if is_replay_only
+            && self
+                .thread_event_channels
+                .get(&thread_id)
+                .is_none_or(|channel| channel.attachment() != ThreadEventAttachment::ExternalWriter)
+        {
             self.chat_widget.pause_unavailable_thread();
             let message = if attached_replay_only {
                 format!(
@@ -661,11 +675,21 @@ impl App {
             .set_task_mentions_enabled(app_server.task_tools_available(thread_id));
         self.chat_widget
             .note_rendered_width(tui.terminal.last_known_screen_size.width);
+        let external_writer = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ExternalWriter);
+        if external_writer {
+            self.chat_widget.show_external_writer_thread();
+        }
         if self.agent_navigation.is_parent_owned(thread_id) {
             self.chat_widget.set_parent_owned_thread();
         }
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        if external_writer {
+            self.chat_widget.show_external_writer_thread();
+        }
         Ok(())
     }
 
@@ -1133,68 +1157,105 @@ impl App {
         if let Some(history_mode) = target_session.history_mode {
             app_server.remember_thread_history_mode(target_session.thread_id, history_mode);
         }
-        match app_server
+        let resumed = app_server
             .resume_thread(
                 &local_settings,
                 resume_config.clone(),
                 target_session.thread_id,
                 self.resume_model_settings(),
             )
-            .await
-        {
-            Ok(resumed) => {
-                let resumed_thread_id = resumed.session.thread_id;
-                self.shutdown_current_thread(app_server).await;
-                self.local_settings = local_settings;
-                self.config = resume_config;
-                tui.set_notification_settings(
-                    self.local_settings.tui.notification_settings.method,
-                    self.local_settings.tui.notification_settings.condition,
-                );
-                self.file_search
-                    .update_search_dir(self.config.cwd.to_path_buf());
-                match self
-                    .replace_chat_widget_with_app_server_thread(
-                        tui,
-                        resumed,
-                        ThreadAttachPresentation::SessionLineage,
-                        /*initial_user_message*/ None,
-                    )
-                    .await
-                {
-                    Ok(()) => {
-                        self.backfill_loaded_subagent_threads(app_server).await;
-                        self.replay_agents_overview_requests(app_server, resumed_thread_id)
-                            .await;
-                        if let Some(summary) = summary {
-                            let mut lines: Vec<Line<'static>> = Vec::new();
-                            if let Some(usage_line) = summary.usage_line {
-                                lines.push(usage_line.into());
-                            }
-                            if let Some(command) = summary.resume_hint {
-                                let spans =
-                                    vec!["To continue this session, run ".into(), command.cyan()];
-                                lines.push(spans.into());
-                            }
-                            self.chat_widget.add_plain_history_lines(lines);
-                        }
-                        self.maybe_prompt_resume_paused_goal_after_resume(
-                            app_server,
-                            resumed_thread_id,
-                        )
-                        .await;
-                    }
-                    Err(err) => {
-                        self.add_session_picker_error(format!(
-                            "Failed to attach to resumed app-server thread: {err}"
-                        ));
-                    }
+            .await;
+        let (resumed, read_only) = match resumed {
+            Ok(resumed) => (resumed, false),
+            Err(err) if crate::app_server_session::is_active_writer_error(&err) => match app_server
+                .read_thread_for_viewing(&resume_config, &local_settings, target_session.thread_id)
+                .await
+            {
+                Ok(thread) => (thread, true),
+                Err(read_err) => {
+                    self.add_session_picker_error(format!(
+                        "Failed to view thread open elsewhere: {read_err}"
+                    ));
+                    return Ok(AppRunControl::Continue);
                 }
-            }
+            },
             Err(err) => {
                 let path_display = target_session.display_label();
                 self.add_session_picker_error(format!(
                     "Failed to resume session from {path_display}: {err}"
+                ));
+                return Ok(AppRunControl::Continue);
+            }
+        };
+        let resumed_thread_id = resumed.session.thread_id;
+        let retained_input = (self.chat_widget.is_external_writer_view()
+            && self.chat_widget.thread_id() == Some(resumed_thread_id))
+        .then(|| self.chat_widget.capture_thread_input_state())
+        .flatten();
+        if self.chat_widget.thread_id() == Some(resumed_thread_id) {
+            // The successful resume has already subscribed this connection to the same thread.
+            self.shutdown_side_threads(app_server).await;
+        } else {
+            self.shutdown_current_thread(app_server).await;
+        }
+        self.local_settings = local_settings;
+        self.config = resume_config;
+        tui.set_notification_settings(
+            self.local_settings.tui.notification_settings.method,
+            self.local_settings.tui.notification_settings.condition,
+        );
+        self.file_search
+            .update_search_dir(self.config.cwd.to_path_buf());
+        match self
+            .replace_chat_widget_with_app_server_thread(
+                tui,
+                resumed,
+                ThreadAttachPresentation::SessionLineage,
+                /*initial_user_message*/ None,
+            )
+            .await
+        {
+            Ok(()) => {
+                if let Some(input) = retained_input {
+                    self.chat_widget.restore_thread_input_state(
+                        Some(input),
+                        ThreadInputStateRestoreMode {
+                            preserve_in_flight_turn: false,
+                        },
+                    );
+                }
+                if read_only {
+                    self.ensure_thread_channel(resumed_thread_id)
+                        .mark_external_writer();
+                    self.chat_widget.show_external_writer_thread();
+                }
+                self.backfill_loaded_subagent_threads(app_server).await;
+                if !read_only {
+                    self.replay_agents_overview_requests(app_server, resumed_thread_id)
+                        .await;
+                }
+                if let Some(summary) = summary {
+                    let mut lines: Vec<Line<'static>> = Vec::new();
+                    if let Some(usage_line) = summary.usage_line {
+                        lines.push(usage_line.into());
+                    }
+                    if let Some(command) = summary.resume_hint {
+                        let spans = vec!["To continue this session, run ".into(), command.cyan()];
+                        lines.push(spans.into());
+                    }
+                    self.chat_widget.add_plain_history_lines(lines);
+                }
+                if !read_only {
+                    self.maybe_prompt_resume_paused_goal_after_resume(
+                        app_server,
+                        resumed_thread_id,
+                    )
+                    .await;
+                }
+            }
+            Err(err) => {
+                self.add_session_picker_error(format!(
+                    "Failed to attach to resumed app-server thread: {err}"
                 ));
             }
         }

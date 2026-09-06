@@ -36,6 +36,7 @@ pub(super) struct FeedbackThreadEvent {
 pub(super) enum ThreadEventAttachment {
     Live,
     ReplayOnly,
+    ExternalWriter,
 }
 
 #[derive(Debug)]
@@ -384,6 +385,10 @@ impl ThreadEventChannel {
 
     pub(super) fn mark_replay_only(&mut self) {
         self.attachment = ThreadEventAttachment::ReplayOnly;
+    }
+
+    pub(super) fn mark_external_writer(&mut self) {
+        self.attachment = ThreadEventAttachment::ExternalWriter;
     }
 
     pub(super) fn attachment(&self) -> ThreadEventAttachment {

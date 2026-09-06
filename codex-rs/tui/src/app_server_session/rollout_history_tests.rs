@@ -20,6 +20,49 @@ async fn build_config(temp_dir: &TempDir) -> Config {
 }
 
 #[tokio::test]
+async fn viewing_thread_reads_history_without_resuming_it() -> Result<()> {
+    let codex_home = tempfile::tempdir()?;
+    let config = build_config(&codex_home).await;
+    let thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2025-01-05T12-00-00",
+            "2025-01-05T12:00:00Z",
+            "Saved user message",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create source rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+    let next_request_id = app_server.next_request_id;
+    let viewed = app_server
+        .read_thread_for_viewing(
+            &config,
+            &crate::local_settings::LocalSettings::from(&config),
+            thread_id,
+        )
+        .await?;
+
+    assert_eq!(viewed.session.thread_id, thread_id);
+    assert!(!viewed.turns.is_empty());
+    assert!(!viewed.blocks_direct_input);
+    assert!(app_server.next_request_id > next_request_id);
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[test]
+fn only_active_writer_failures_offer_read_only_view() {
+    let conflict = color_eyre::eyre::eyre!("thread already has an active writer (code -32600)");
+    let unrelated = color_eyre::eyre::eyre!("thread not found (code -32600)");
+    assert!(crate::app_server_session::is_active_writer_error(&conflict));
+    assert!(!crate::app_server_session::is_active_writer_error(
+        &unrelated
+    ));
+}
+
+#[tokio::test]
 async fn legacy_resume_preserves_history_mode_after_picker_server_replacement() -> Result<()> {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let config = build_config(&codex_home).await;

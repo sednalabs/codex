@@ -21,6 +21,8 @@ use crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd a
 use crate::pager_overlay::Overlay;
 use crate::session_resume::resolve_session_thread_id;
 use crate::status::format_directory_display;
+use crate::style::footer_hint_key_style;
+use crate::style::footer_hint_label_style;
 use crate::terminal_palette::best_color;
 use crate::terminal_palette::default_bg;
 use crate::text_formatting::truncate_text;
@@ -2628,22 +2630,6 @@ fn fit_footer_hint_refs(
         }
     }
     Some(spans.into())
-}
-
-fn footer_hint_key_style() -> Style {
-    if default_bg().is_some_and(is_light) {
-        Style::default().fg(Color::Black)
-    } else {
-        Style::default()
-    }
-}
-
-fn footer_hint_label_style() -> Style {
-    if default_bg().is_some_and(is_light) {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().dim()
-    }
 }
 
 fn footer_hints_width(

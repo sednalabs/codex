@@ -475,6 +475,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn transcript_shortcut_hint(&self) -> Option<crate::key_hint::ShortcutHint> {
+        self.keymap
+            .primary_hint(KeymapContext::Global, "open_transcript")
+    }
+
     /// Clear pending attachments and mention bindings e.g. when a slash command doesn't submit text.
     pub(crate) fn drain_pending_submission_state(&mut self) {
         let _ = self.take_recent_submission_images_with_placeholders();

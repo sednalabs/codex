@@ -41,6 +41,63 @@ use tokio_tungstenite::tungstenite::Message;
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
 
+#[tokio::test]
+async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()> {
+    let (mut app, codex_home) = make_history_test_app().await?;
+    let thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "Saved user message",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create rollout"),
+    )?;
+    let path = Some(rollout_path(
+        codex_home.path(),
+        "2026-01-01T00-00-00",
+        &thread_id.to_string(),
+    ));
+    let (mut app_server, requests, proxy) = start_recording_app_server(
+        &app.config,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+    )
+    .await?;
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    app.ensure_thread_channel(thread_id).mark_external_writer();
+    app.chat_widget.insert_str("Retained draft");
+    app.chat_widget.show_external_writer_thread();
+    app.harness_overrides.cwd = Some(app.config.cwd.to_path_buf());
+    requests.lock().expect("request recorder lock").clear();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.resume_target_session(
+        &mut tui,
+        &mut app_server,
+        crate::resume_picker::SessionTarget {
+            path,
+            thread_id,
+            history_mode: None,
+        },
+    )
+    .await?;
+    assert_eq!(recorded_params(&requests, "thread/resume").len(), 1);
+    assert!(recorded_params(&requests, "thread/unsubscribe").is_empty());
+    assert!(!app.chat_widget.is_external_writer_view());
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "Retained draft"
+    );
+    proxy.abort();
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HistoryCapabilities {
     Current,

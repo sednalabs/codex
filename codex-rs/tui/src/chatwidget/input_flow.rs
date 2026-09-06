@@ -265,7 +265,12 @@ impl ChatWidget {
         mut collaboration_mode: CollaborationModeMask,
     ) {
         if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(if self.external_writer_view {
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string()
+            } else {
+                PARENT_OWNED_INPUT_MESSAGE.to_string()
+            });
             return;
         }
         if collaboration_mode.mode == Some(ModeKind::Plan)

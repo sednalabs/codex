@@ -690,6 +690,7 @@ pub(crate) struct ChatWidget {
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
     blocks_direct_input: bool,
+    external_writer_view: bool,
     misalignment_policy_violation: Option<misalignment_policy::MisalignmentViolation>,
     normal_placeholder_text: String,
     side_placeholder_text: String,
@@ -1746,6 +1747,25 @@ impl ChatWidget {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
 
+    pub(crate) fn show_external_writer_thread(&mut self) {
+        self.blocks_direct_input = true;
+        self.external_writer_view = true;
+        self.pause_unavailable_thread();
+        if let Some(cell) = self.transcript.active_cell.as_mut() {
+            if let Some(exec) = cell.as_any_mut().downcast_mut::<ExecCell>() {
+                exec.freeze_snapshot();
+            } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
+                tool.freeze_snapshot();
+            }
+        }
+        self.bottom_pane
+            .set_composer_input_enabled(/*enabled*/ false, /*placeholder*/ None);
+    }
+
+    pub(crate) fn is_external_writer_view(&self) -> bool {
+        self.external_writer_view
+    }
+
     fn refresh_skills_for_current_cwd(&mut self, force_reload: bool) {
         self.submit_op(AppCommand::list_skills(
             vec![self.config.cwd.to_path_buf()],
@@ -1768,7 +1788,12 @@ impl ChatWidget {
                 AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
             )
         {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(if self.external_writer_view {
+                "This thread is open elsewhere. Close it there and retry resume to continue."
+                    .to_string()
+            } else {
+                PARENT_OWNED_INPUT_MESSAGE.to_string()
+            });
             return false;
         }
         self.prepare_local_op_submission(&op);

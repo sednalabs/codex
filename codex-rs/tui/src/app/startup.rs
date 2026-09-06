@@ -363,6 +363,7 @@ impl App {
         );
         let start_in_agents_overview =
             matches!(&session_selection, SessionSelection::AgentsOverview);
+        let mut read_only_thread = false;
         let (mut chat_widget, initial_started_thread) = match session_selection {
             SessionSelection::StartFresh
             | SessionSelection::Exit
@@ -450,24 +451,50 @@ impl App {
                     )
                     .await
                 {
+                    Ok(Ok(resumed)) => Ok(resumed),
+                    Ok(Err(err)) if crate::app_server_session::is_active_writer_error(&err) => {
+                        read_only_thread = true;
+                        match startup_draft
+                            .run_until(
+                                tui,
+                                app_server.read_thread_for_viewing(
+                                    &config,
+                                    &local_settings,
+                                    target_session.thread_id,
+                                ),
+                            )
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                        }
+                    }
                     Ok(resumed) => resumed,
                     Err(err) => return shutdown_on_startup_error(app_server, err).await,
                 };
-                let action = SessionStartAction::Resume(model_settings);
-                let Some(resumed) = complete_session_start(
-                    &mut app_server,
-                    &config,
-                    &target_session,
-                    action,
-                    resumed,
-                    async || {
-                        startup_draft.flush_pending_events(tui).await?;
-                        run_unarchive_prompt(tui, target_session.thread_id, action).await
-                    },
-                )
-                .await?
-                else {
-                    return Ok(cancel_session_start(app_server).await);
+                let resumed = if read_only_thread {
+                    match resumed {
+                        Ok(resumed) => resumed,
+                        Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                    }
+                } else {
+                    let action = SessionStartAction::Resume(model_settings);
+                    let Some(resumed) = complete_session_start(
+                        &mut app_server,
+                        &config,
+                        &target_session,
+                        action,
+                        resumed,
+                        async || {
+                            startup_draft.flush_pending_events(tui).await?;
+                            run_unarchive_prompt(tui, target_session.thread_id, action).await
+                        },
+                    )
+                    .await?
+                    else {
+                        return Ok(cancel_session_start(app_server).await);
+                    };
+                    resumed
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
                     local_settings: local_settings.clone(),
@@ -691,6 +718,9 @@ See the Codex keymap documentation for supported actions and examples."
             if started.blocks_direct_input {
                 app.mark_primary_thread_parent_owned(thread_id);
             }
+            if read_only_thread {
+                app.chat_widget.show_external_writer_thread();
+            }
             match startup_draft
                 .run_until(
                     tui,
@@ -701,7 +731,12 @@ See the Codex keymap documentation for supported actions and examples."
                 Ok(result) => result?,
                 Err(err) => return shutdown_on_startup_error(app_server, err).await,
             }
-            if should_prompt_for_paused_goal_after_startup_resume
+            if read_only_thread {
+                app.ensure_thread_channel(thread_id).mark_external_writer();
+                app.chat_widget.show_external_writer_thread();
+            }
+            if !read_only_thread
+                && should_prompt_for_paused_goal_after_startup_resume
                 && let Err(err) = startup_draft
                     .run_until(
                         tui,

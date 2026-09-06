@@ -67,6 +67,9 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_disconnected_key(&mut self, key: KeyEvent) {
+        if self.external_writer_view {
+            return;
+        }
         if self.handle_question_key(key) {
             return;
         }

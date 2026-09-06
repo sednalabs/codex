@@ -16,15 +16,19 @@ use codex_app_server_protocol::WarningNotification;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
-        let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
-        for side_thread_id in side_thread_ids {
-            self.discard_side_thread(app_server, side_thread_id).await;
-        }
+        self.shutdown_side_threads(app_server).await;
         if let Some(thread_id) = self.chat_widget.thread_id() {
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
             }
             self.abort_thread_event_listener(thread_id);
+        }
+    }
+
+    pub(super) async fn shutdown_side_threads(&mut self, app_server: &mut AppServerSession) {
+        let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
+        for side_thread_id in side_thread_ids {
+            self.discard_side_thread(app_server, side_thread_id).await;
         }
     }
 
@@ -175,7 +179,12 @@ impl App {
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
     ) -> bool {
-        if self.active_thread_id != Some(target_session.thread_id) {
+        if self.active_thread_id != Some(target_session.thread_id)
+            || self
+                .thread_event_channels
+                .get(&target_session.thread_id)
+                .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)
+        {
             return false;
         };
 
@@ -445,7 +454,7 @@ impl App {
     ) -> Result<()> {
         if self.thread_unavailable(thread_id) {
             self.chat_widget.add_error_message(
-                "This conversation is unavailable; no operation was sent.".into(),
+                "This conversation is read-only or unavailable; no operation was sent.".into(),
             );
             return Ok(());
         }

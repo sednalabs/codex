@@ -158,7 +158,7 @@ impl App {
             && self
                 .thread_event_channels
                 .get(&id)
-                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+                .is_some_and(|channel| channel.attachment() != ThreadEventAttachment::Live)
     }
 
     pub(super) fn recover_transport_error(&mut self, error: &color_eyre::Report) -> bool {
@@ -284,7 +284,11 @@ impl App {
         // so their late requests cannot leak into recovery. Background threads attach on selection.
         for channel in self.thread_event_channels.values_mut() {
             let mut replacement = ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY);
-            replacement.mark_replay_only();
+            if channel.attachment() == ThreadEventAttachment::ExternalWriter {
+                replacement.mark_external_writer();
+            } else {
+                replacement.mark_replay_only();
+            }
             let mut store = std::mem::replace(
                 &mut *channel.store.lock().await,
                 ThreadEventStore::new(THREAD_EVENT_CHANNEL_CAPACITY),
@@ -349,7 +353,7 @@ impl App {
             )?;
             self.config = self.chat_widget.config_ref().clone();
             self.refresh_pending_thread_approvals().await;
-            if self.thread_unavailable(id) {
+            if self.thread_unavailable(id) && !self.chat_widget.is_external_writer_view() {
                 self.agent_navigation.mark_stopped(id);
                 self.chat_widget.pause_unavailable_thread();
                 self.chat_widget.add_info_message("This conversation is unavailable. Its cached transcript and draft remain here; input is paused. Open the agent picker or return to the parent to continue.".into(), /*hint*/ None);

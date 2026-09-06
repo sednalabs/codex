@@ -568,11 +568,7 @@ async fn resolved_buffered_approval_does_not_become_actionable_after_drain() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_submit() -> Result<()> {
-    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let thread_id = ThreadId::new();
-    let initial_prompt = "follow-up after replay".to_string();
+fn set_test_initial_prompt(app: &mut App, initial_prompt: String) {
     let config = app.config.clone();
     let model = get_model_offline_for_tests(config.model.as_deref());
     app.chat_widget = ChatWidget::new_with_app_event(ChatWidgetInit {
@@ -583,7 +579,7 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         app_event_tx: app.app_event_tx.clone(),
         workspace_command_runner: None,
         initial_user_message: create_initial_user_message(
-            Some(initial_prompt.clone()),
+            Some(initial_prompt),
             Vec::new(),
             Vec::new(),
         ),
@@ -602,6 +598,14 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         terminal_title_invalid_items_warned: app.terminal_title_invalid_items_warned.clone(),
         session_telemetry: app.session_telemetry.clone(),
     });
+}
+
+#[tokio::test]
+async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_submit() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let initial_prompt = "follow-up after replay".to_string();
+    set_test_initial_prompt(&mut app, initial_prompt.clone());
 
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/project")),
