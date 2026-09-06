@@ -7522,7 +7522,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         checkout_step = next(
             step
             for step in scope_steps
-            if step.get("name") == "Checkout PR head for path classification"
+            if step.get("name") == "Checkout candidate for path classification"
         )
         self.assertEqual(
             checkout_step.get("if"),
@@ -7530,11 +7530,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             checkout_step.get("with") or {},
-            {
-                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
-                "fetch-depth": "1",
-                "persist-credentials": "false",
-            },
+            {"fetch-depth": "1", "persist-credentials": "false"},
         )
         classify_step = next(
             step for step in scope_steps if step.get("name") == "Classify blocking CI scope"
@@ -7544,6 +7540,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
                 "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
+                "HEAD_REPO_URL": "${{ github.event.pull_request.head.repo.clone_url || '' }}",
             },
         )
         classify_run = classify_step.get("run") or ""
@@ -7553,7 +7550,44 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn("classify_ci_paths.py --base-sha", classify_run)
         self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
+        self.assertIn(
+            "if [[ '${{ github.event_name }}' == 'pull_request' ]]; then",
+            classify_run,
+        )
+        self.assertIn(
+            'if [[ -z "${HEAD_REPO_URL}" ]] || ! git fetch --no-tags --depth=1 "${HEAD_REPO_URL}" "${HEAD_SHA}"; then',
+            classify_run,
+        )
+        self.assertIn("Unable to fetch PR head; running full blocking CI.", classify_run)
+        self.assertIn(
+            "if ! python3 .github/scripts/test_classify_ci_paths.py; then",
+            classify_run,
+        )
         self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
+        non_pr_guard = classify_run.index(
+            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then"
+        )
+        base_fetch = classify_run.index(
+            'git fetch --no-tags --depth=1 origin "${BASE_SHA}"'
+        )
+        pr_guard = classify_run.index(
+            "if [[ '${{ github.event_name }}' == 'pull_request' ]]; then"
+        )
+        head_fetch = classify_run.index(
+            'git fetch --no-tags --depth=1 "${HEAD_REPO_URL}" "${HEAD_SHA}"'
+        )
+        self_test = classify_run.index(
+            "if ! python3 .github/scripts/test_classify_ci_paths.py; then"
+        )
+        classify = classify_run.index(
+            "if ! plan=\"$(python3 .github/scripts/classify_ci_paths.py"
+        )
+        self.assertLess(non_pr_guard, base_fetch)
+        self.assertLess(base_fetch, pr_guard)
+        self.assertLess(pr_guard, head_fetch)
+        self.assertLess(head_fetch, self_test)
+        self.assertLess(self_test, classify)
+        self.assertNotIn("github.event_name == 'merge_group'", classify_run[pr_guard:head_fetch])
 
     def test_blocking_ci_clippy_required_lane_is_path_aware_and_fail_closed(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
