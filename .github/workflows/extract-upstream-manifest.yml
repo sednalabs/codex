@@ -30,7 +30,7 @@ env:
 
 jobs:
   extract:
-    if: github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000'
+    if: github.event_name == 'push' && github.event.before == 'ff0fb66ebdb8d3723fc184b31b83c7d63262f671'
     runs-on: ubuntu-latest
     steps:
       - name: Check out exact extraction candidate
@@ -53,12 +53,12 @@ jobs:
           test "${GITHUB_REPOSITORY}" = "${PRODUCER_REPOSITORY}"
           test "${GITHUB_REF_NAME}" = "worker/w13825-manifest-extract"
           test "${GITHUB_SHA}" = "$(git rev-parse HEAD)"
-          test "${EXPECTED_BEFORE}" = "0000000000000000000000000000000000000000"
+          test "${EXPECTED_BEFORE}" = "ff0fb66ebdb8d3723fc184b31b83c7d63262f671"
           test "${EXPECTED_AFTER}" = "${GITHUB_SHA}"
-          test "${EVENT_CREATED}" = "true"
+          test "${EVENT_CREATED}" = "false"
           test "${EVENT_DELETED}" = "false"
           test "${EVENT_FORCED}" = "false"
-          test "$(git rev-parse HEAD^)" = "${BASE_SHA}"
+          test "$(git rev-parse HEAD^)" = "ff0fb66ebdb8d3723fc184b31b83c7d63262f671"
           test -z "$(git status --porcelain)"
 
       - name: Verify fixed producer artifact metadata
@@ -147,6 +147,7 @@ jobs:
                   "receipt.json",
                   "conflict-manifest.json",
                   "manifest-summary.env",
+                  "unmerged.txt",
                   "materialized.bundle",
               )
           }
@@ -208,6 +209,17 @@ jobs:
           if manifest.get("schema") != "hosted-conflict-manifest":
               raise SystemExit("conflict manifest schema mismatch")
 
+          paths = sorted({line.strip() for line in required["unmerged.txt"].read_text().splitlines() if line.strip()})
+          path_bytes = ("\n".join(paths) + ("\n" if paths else "")).encode()
+          if len(paths) != 427:
+              raise SystemExit("canonical unmerged path count mismatch")
+          if hashlib.sha256(path_bytes).hexdigest() != "7568a0be65dc7c05f591197a49b0b4e18f2c4435b951097d206cb37626233b62":
+              raise SystemExit("canonical unmerged path digest mismatch")
+          if manifest.get("total_unmerged_path_count") != len(paths):
+              raise SystemExit("manifest/canonical unmerged count mismatch")
+          if manifest.get("path_set_sha256") != hashlib.sha256(path_bytes).hexdigest():
+              raise SystemExit("manifest/canonical unmerged digest mismatch")
+
           summary = {}
           for line in required["manifest-summary.env"].read_text().splitlines():
               if line and "=" in line:
@@ -218,7 +230,7 @@ jobs:
           if summary.get("MANIFEST_TOTAL") != str(manifest.get("total_unmerged_path_count")):
               raise SystemExit("manifest summary/count mismatch")
 
-          for name in ("conflict-manifest.json", "manifest-summary.env", "receipt.json"):
+          for name in ("conflict-manifest.json", "manifest-summary.env", "receipt.json", "unmerged.txt"):
               shutil.copyfile(required[name], output / name)
           PY
 
