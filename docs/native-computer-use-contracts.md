@@ -1,43 +1,16 @@
 # Native Computer-Use Provider Contracts
 
-This document records neutral interoperability requirements for native
-computer-use providers. The contracts are intentionally limited to neutral
-interoperability requirements and do not reproduce implementation details,
-private endpoints, account data, browser profile data, or signing material.
+This document defines provider-facing interoperability contracts for native
+computer-use runtimes. It covers desktop, browser-shell, Chrome-extension,
+and Android MCP providers, including their capabilities, request/response
+schemas, permissions, lifecycle transitions, and model-visible image output.
 
-The purpose is to let independent implementation work target stable Codex
-provider seams:
+Providers implement these contracts behind the configured command, MCP, or
+provider-registry seams while Codex owns the canonical transcript and
+model-facing tool contract.
 
-- desktop providers for macOS Screen Recording and Accessibility runtimes
-- browser providers for in-app-browser shells, including Windows-hosted shells
-- Chrome-extension-backed browser providers
-- Android MCP-backed providers
-
-## Contract Basis and Implementation Boundary
-
-These requirements support independent provider implementations using public
-Codex interfaces, documented operating-system and browser APIs, and ordinary
-observable behavior of compatible environments. They are not a provenance
-claim about any particular product or implementation.
-
-Implementation work should use only neutral requirements:
-
-- provider names, high-level capabilities, and transport shape
-- request and response fields
-- permission states and failure modes
-- state transitions, leases, and cleanup obligations
-- model-visible screenshot and accessibility/browser digest requirements
-
-Implementation lanes must not receive:
-
-- copied implementation text or private class/function bodies
-- private endpoints, tokens, cookies, local browser profile contents, or
-  account data
-- signing material, native-host manifests copied from an installed product, or
-  vendor bundle resources
-
-Provider-specific implementation and discovery remain outside this repository;
-only the resulting neutral contract belongs here.
+The requirements use public Codex interfaces, documented operating-system and
+browser APIs, and ordinary observable behavior of compatible environments.
 
 ## Codex-Owned Contract
 
