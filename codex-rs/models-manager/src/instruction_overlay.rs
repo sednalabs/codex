@@ -104,7 +104,11 @@ mod tests {
             ))
         );
 
-        assert!(model.base_instructions.contains(COMMENTARY_CADENCE_REPLACEMENT));
+        assert!(
+            model
+                .base_instructions
+                .contains(COMMENTARY_CADENCE_REPLACEMENT)
+        );
         assert!(
             model
                 .base_instructions
