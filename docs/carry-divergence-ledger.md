@@ -2541,7 +2541,7 @@ bundles during upstream sync merely because they once shared this carry entry.
   reuse `android-emulator-mcp` or a successor when it exposes the current
   Android MCP contract, and adapt harness-specific behavior provider-side
   rather than in hot Codex core paths.
-- The desktop adapter is the cleanroom provider seam for macOS Screen
+- The desktop adapter is the independent provider seam for macOS Screen
   Recording/Accessibility-style runtimes and future native desktop providers.
   TUI dispatch stays behind operator-configured command providers, selected by
   the platform-filtered desktop provider registry.

@@ -1,16 +1,43 @@
 # Native Computer-Use Provider Contracts
 
-This document defines provider-facing interoperability contracts for native
-computer-use runtimes. It covers desktop, browser-shell, Chrome-extension,
-and Android MCP providers, including their capabilities, request/response
-schemas, permissions, lifecycle transitions, and model-visible image output.
+This document records neutral interoperability requirements for native
+computer-use providers. The contracts are intentionally limited to neutral
+interoperability requirements and do not reproduce implementation details,
+private endpoints, account data, browser profile data, or signing material.
 
-Providers implement these contracts behind the configured command, MCP, or
-provider-registry seams while Codex owns the canonical transcript and
-model-facing tool contract.
+The purpose is to let independent implementation work target stable Codex
+provider seams:
 
-The requirements use public Codex interfaces, documented operating-system and
-browser APIs, and ordinary observable behavior of compatible environments.
+- desktop providers for macOS Screen Recording and Accessibility runtimes
+- browser providers for in-app-browser shells, including Windows-hosted shells
+- Chrome-extension-backed browser providers
+- Android MCP-backed providers
+
+## Contract Basis and Implementation Boundary
+
+These requirements support independent provider implementations using public
+Codex interfaces, documented operating-system and browser APIs, and ordinary
+observable behavior of compatible environments. They are not a provenance
+claim about any particular product or implementation.
+
+Implementation work should use only neutral requirements:
+
+- provider names, high-level capabilities, and transport shape
+- request and response fields
+- permission states and failure modes
+- state transitions, leases, and cleanup obligations
+- model-visible screenshot and accessibility/browser digest requirements
+
+Implementation lanes must not receive:
+
+- copied implementation text or private class/function bodies
+- private endpoints, tokens, cookies, local browser profile contents, or
+  account data
+- signing material, native-host manifests copied from an installed product, or
+  vendor bundle resources
+
+Provider-specific implementation and discovery remain outside this repository;
+only the resulting neutral contract belongs here.
 
 ## Codex-Owned Contract
 
@@ -143,8 +170,8 @@ Recommended Windows implementation shape:
   providers
 - keep OS-window lifecycle, display visibility, downloads, file upload, and
   shell-specific policies provider-side
-- the provider owns any native pipe or other internal transport behind the
-  command-provider seam
+- avoid depending on a private native pipe implementation; if a pipe is used,
+  treat it as provider-private transport behind the command-provider seam
 
 ## Chrome Extension Provider Contract
 
@@ -167,16 +194,17 @@ Compatibility requirements:
 - the provider should ask before interacting with new websites unless policy
   already allows that host
 
-Provider integration interfaces:
+Provider implementation notes:
 
-- the provider owns native-host and extension packaging, installation, and
-  repair integration
+- do not copy native-host names, manifests, extension code, or bundled assets
+  into this repository
+- install/repair remains an operator or provider responsibility
 - Codex core should see only `browser_observe` and `browser_step` native
   computer-use calls plus provider diagnostics
 - history access is a separate sensitive capability and should not have an
   unconditional always-allow path
 
-## Provider Integration Interfaces
+## Provider Surface Reduced to Public Seams
 
 Browser, Chrome, and computer-use integrations can be represented through these
 public Codex seams:
