@@ -41,6 +41,23 @@ use tokio_tungstenite::tungstenite::Message;
 pub(super) type RecordedRequests = Arc<Mutex<Vec<JSONRPCRequest>>>;
 pub(super) type RecordingAppServer = (AppServerSession, RecordedRequests, JoinHandle<Result<()>>);
 
+async fn complete_managed_worktree_creation(
+    app: &mut App,
+    tui: &mut crate::tui::Tui,
+    server: &mut AppServerSession,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Result<()> {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
+            .await?
+            .ok_or_else(|| color_eyre::eyre::eyre!("worktree creation event channel closed"))?;
+        if matches!(event, AppEvent::ManagedWorktreeCreated(_)) {
+            app.handle_event(tui, server, event).await?;
+            return Ok(());
+        }
+    }
+}
+
 #[tokio::test]
 async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()> {
     let (mut app, codex_home) = make_history_test_app().await?;
@@ -2947,6 +2964,7 @@ model_reasoning_effort = "low"
         },
     )
     .await?;
+    complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events).await?;
     assert_eq!(app.chat_widget.thread_id(), Some(original));
     assert!(recorded_params(&requests, "thread/fork").is_empty());
     let unused = manager
@@ -2976,6 +2994,26 @@ model_reasoning_effort = "low"
         .split_once("; remove it with")
         .expect("cleanup marker");
     insta::assert_snapshot!(error.replace(path, "<CHECKOUT>"), @"■ Cannot fork into this worktree because developer instructions differ. Start a new conversation instead. An unused checkout was created at <CHECKOUT>; remove it with `git worktree remove <checkout-path>` from the source repository.");
+    let retained = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 500)))
+            }
+            _ => None,
+        })
+        .find(|message| message.contains("A checkout was retained at"))
+        .expect("post-allocation recovery message");
+    let (_, with_path) = retained
+        .split_once("A checkout was retained at ")
+        .expect("retained checkout marker");
+    let (path, _) = with_path
+        .split_once("; remove it with")
+        .expect("retained checkout cleanup marker");
+    assert_eq!(
+        dunce::canonicalize(path)?,
+        dunce::canonicalize(&unused.root)?
+    );
+    assert!(retained.contains("git worktree remove <checkout-path>"));
     fs::write(
         source.join(".codex/config.toml"),
         r#"developer_instructions = "committed policy"
@@ -2994,8 +3032,63 @@ terminal_visualization_instructions = true
         },
     )
     .await?;
+    complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events).await?;
     assert_eq!(app.chat_widget.thread_id(), Some(original));
     assert!(recorded_params(&requests, "thread/fork").is_empty());
+    while events.try_recv().is_ok() {}
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::StartManagedWorktree {
+            mode: ManagedWorktreeMode::New,
+            name: None,
+        },
+    )
+    .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(original));
+    assert!(app.pending_managed_worktree_creation);
+    let created = loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
+            .await?
+            .ok_or_else(|| color_eyre::eyre::eyre!("worktree completion channel closed"))?;
+        if let AppEvent::ManagedWorktreeCreated(created) = event {
+            break created;
+        }
+    };
+    let stale_checkout = created
+        .result
+        .as_ref()
+        .expect("created checkout")
+        .1
+        .root
+        .clone();
+    app.primary_thread_id = Some(ThreadId::new());
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::ManagedWorktreeCreated(created),
+    )
+    .await?;
+    app.primary_thread_id = Some(original);
+    assert_eq!(app.chat_widget.thread_id(), Some(original));
+    assert!(!app.pending_managed_worktree_creation);
+    let stale_error = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 500)))
+            }
+            _ => None,
+        })
+        .find(|message| message.contains("A checkout was retained at"))
+        .expect("stale creation recovery message");
+    assert!(stale_error.contains(&stale_checkout.display().to_string()));
+    assert!(stale_error.contains("git worktree remove <checkout-path>"));
+    assert_eq!(
+        manager
+            .owner(&stale_checkout)
+            .map_err(|error| color_eyre::eyre::eyre!(error.to_string()))?,
+        None
+    );
     for mode in [ManagedWorktreeMode::New, ManagedWorktreeMode::Fork] {
         requests.lock().expect("request recorder lock").clear();
         let previous = app.chat_widget.thread_id();
@@ -3009,6 +3102,7 @@ terminal_visualization_instructions = true
             },
         )
         .await?;
+        complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events).await?;
         let replacement = app.chat_widget.thread_id().expect("replacement thread");
         assert_ne!(Some(replacement), previous);
         assert_eq!(
@@ -3105,6 +3199,10 @@ terminal_visualization_instructions = true
         )
         .await?;
         let is_new = mode == ManagedWorktreeMode::New;
+        if is_new {
+            complete_managed_worktree_creation(&mut app, &mut tui, &mut server, &mut events)
+                .await?;
+        }
         assert_eq!(app.chat_widget.thread_id() != Some(unsaved), is_new);
         assert_eq!(recorded_params(&requests, "thread/fork").len(), 0);
     }

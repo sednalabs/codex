@@ -1,4 +1,4 @@
-//! Local directory transitions and managed worktrees with fresh or preserved conversation history.
+//! Local directory transitions with fresh or preserved conversation history.
 
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
@@ -9,80 +9,7 @@ use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse as ListResponse;
 
 impl App {
-    pub(super) async fn start_managed_worktree(
-        &mut self,
-        tui: &mut tui::Tui,
-        app_server: &mut AppServerSession,
-        mode: crate::app_event::ManagedWorktreeMode,
-        name: Option<String>,
-    ) {
-        if !self.config.features.enabled(Feature::Worktrees) {
-            self.chat_widget.add_error_message(
-                "Enable worktrees in /experimental to create a worktree.".to_string(),
-            );
-        } else if self.config.active_project.is_untrusted() {
-            self.chat_widget.add_error_message(
-                "Cannot create a worktree from an explicitly untrusted source.".to_string(),
-            );
-        } else if crate::uses_remote_workspace_or_environment(
-            &self.app_server_target,
-            self.environment_manager.as_ref(),
-        ) {
-            self.chat_widget.add_error_message(
-                "Managed worktrees are only supported for local sessions.".to_string(),
-            );
-        } else if self
-            .primary_thread_id
-            .is_none_or(|thread_id| !self.chat_widget.can_change_working_directory(thread_id))
-        {
-            self.chat_widget.add_error_message(
-                "Creating a worktree requires an idle primary session without queued input."
-                    .to_string(),
-            );
-        } else {
-            let setup = async {
-                let source = self
-                    .rebuild_config_for_cwd(self.config.cwd.to_path_buf())
-                    .await
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                anyhow::ensure!(
-                    !source.active_project.is_untrusted(),
-                    "Cannot create a worktree from an explicitly untrusted source."
-                );
-                let host = crate::legacy_core::config::load_config_toml_with_layer_stack(
-                    &self.config.codex_home,
-                    /*cwd*/ None,
-                    Vec::new(),
-                    codex_config::ConfigLoadOptions::default(),
-                )
-                .await?;
-                let settings = codex_worktree::WorktreeSettings::for_cli(
-                    &self.config.codex_home,
-                    host.config_toml.desktop.as_ref(),
-                )?;
-                let manager = codex_worktree::WorktreeManager::new(settings);
-                let checkout = manager.create(&codex_worktree::CreateWorktree {
-                    source_cwd: self.config.cwd.to_path_buf(),
-                    base: None,
-                })?;
-                anyhow::Ok((manager, checkout))
-            }
-            .await;
-            match setup {
-                Ok((manager, checkout)) => {
-                    if let Err(error) = self
-                        .switch_to_managed_worktree(tui, app_server, manager, checkout, mode, name)
-                        .await
-                    {
-                        self.chat_widget.add_error_message(error.to_string());
-                    }
-                }
-                Err(error) => self.chat_widget.add_error_message(error.to_string()),
-            }
-        }
-    }
-
-    fn working_directory_error(&mut self, message: impl Into<String>) {
+    pub(super) fn working_directory_error(&mut self, message: impl Into<String>) {
         self.chat_widget.add_error_message(message.into());
     }
 

@@ -281,6 +281,11 @@ impl App {
             rows,
             selected_thread_id,
             self.primary_thread_id.is_none(),
+            self.config.features.enabled(Feature::Worktrees)
+                && !crate::uses_remote_workspace_or_environment(
+                    &self.app_server_target,
+                    self.environment_manager.as_ref(),
+                ),
             self.app_event_tx.clone(),
             self.keymap.clone(),
             Arc::clone(&self.agents_overview.view_state),

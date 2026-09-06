@@ -690,6 +690,7 @@ See the Codex keymap documentation for supported actions and examples."
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start,
+            pending_managed_worktree_creation: false,
             startup_protected_input_boundary: true,
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,

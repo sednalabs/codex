@@ -73,6 +73,22 @@ pub(crate) enum ManagedWorktreeMode {
     Fork,
 }
 
+/// Checkout creation result returned from the blocking Git task to the TUI event loop.
+#[derive(Debug)]
+pub(crate) struct ManagedWorktreeCreated {
+    pub(crate) source_thread_id: ThreadId,
+    pub(crate) source_cwd: AbsolutePathBuf,
+    pub(crate) mode: ManagedWorktreeMode,
+    pub(crate) name: Option<String>,
+    pub(crate) result: Result<
+        (
+            codex_worktree::WorktreeManager,
+            codex_worktree::ManagedWorktree,
+        ),
+        String,
+    >,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
@@ -400,6 +416,8 @@ pub(crate) enum AppEvent {
         mode: ManagedWorktreeMode,
         name: Option<String>,
     },
+    /// Continue a checkout transition after synchronous Git work finishes off-loop.
+    ManagedWorktreeCreated(Box<ManagedWorktreeCreated>),
 
     /// Change the working directory of the originating idle primary thread.
     ChangeWorkingDirectory {

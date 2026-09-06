@@ -226,6 +226,7 @@ mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
+mod managed_worktree_creation;
 mod misalignment_policy;
 mod model_defaults;
 mod new_session;
@@ -634,6 +635,7 @@ pub(crate) struct App {
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
     dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
     pending_startup_thread_start: bool,
+    pending_managed_worktree_creation: bool,
     /// Keeps protected screens quarantined until initialized chat receives genuine user input.
     startup_protected_input_boundary: bool,
     /// Keeps that boundary armed while a startup approval waits for the typing-idle timer.

@@ -7,6 +7,7 @@ mod fs;
 mod history;
 mod models;
 mod rollout_history;
+mod thread_list;
 
 #[cfg(test)]
 #[path = "app_server_session/collaboration_catalog_tests.rs"]
@@ -1040,17 +1041,6 @@ impl AppServerSession {
                 None
             }
         }
-    }
-
-    pub(crate) async fn thread_list(
-        &mut self,
-        params: ThreadListParams,
-    ) -> Result<ThreadListResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::ThreadList { request_id, params })
-            .await
-            .wrap_err("thread/list failed during TUI session lookup")
     }
 
     /// Lists thread ids that the app server currently holds in memory.

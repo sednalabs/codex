@@ -34,6 +34,7 @@ impl App {
             && !matches!(
                 &event,
                 AppEvent::InsertHistoryCell(_)
+                    | AppEvent::ManagedWorktreeCreated(_)
                     | AppEvent::AppendMessageHistoryEntry { .. }
                     | AppEvent::BeginInitialHistoryReplayBuffer
                     | AppEvent::BeginThreadSwitchHistoryReplayBuffer
@@ -91,7 +92,10 @@ impl App {
                 }
             }
             AppEvent::StartManagedWorktree { mode, name } => {
-                self.start_managed_worktree(tui, app_server, mode, name).await;
+                self.start_managed_worktree(app_server, mode, name).await;
+            }
+            AppEvent::ManagedWorktreeCreated(created) => {
+                self.finish_managed_worktree(tui, app_server, *created).await;
             }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
