@@ -1490,7 +1490,7 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
         .expect("spawn send event");
     assert!(send.contains(&format!("sender_thread_id={root_thread_id}")));
     assert!(send.contains(&format!("receiver_thread_id={child_thread_id}")));
-    assert!(send.contains(&format!("content=\"{encrypted_message}\"")));
+    assert!(send.contains("content=\"[encrypted]\""));
 
     let communication_id = log_field(send, "communication_id").expect("communication ID");
     logs.lines()
