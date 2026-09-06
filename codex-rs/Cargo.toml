@@ -4,9 +4,11 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "agent-roles",
     "android-computer-use",
     "backend-client",
     "browser-computer-use",
+    "build-info",
     "bwrap",
     "ansi-escape",
     "async-utils",
@@ -15,7 +17,9 @@ members = [
     "app-server-daemon",
     "app-server-client",
     "app-server-protocol",
+    "app-server-protocol-noop-macros",
     "app-server-test-client",
+    "attachment-store",
     "apply-patch",
     "arg0",
     "feedback",
@@ -24,6 +28,9 @@ members = [
     "codex-backend-openapi-models",
     "code-mode",
     "code-mode-host",
+    "code-mode-protocol",
+    "code-mode-runtime",
+    "codex-home",
     "cloud-config",
     "cloud-tasks",
     "cloud-tasks-client",
@@ -32,6 +39,7 @@ members = [
     "collaboration-mode-templates",
     "connectors",
     "config",
+    "config-schema",
     "context-fragments",
     "shell-command",
     "shell-escalation",
@@ -40,6 +48,7 @@ members = [
     "core-api",
     "core-plugins",
     "core-skills",
+    "diagnostics",
     "hooks",
     "http-client",
     "secrets",
@@ -55,13 +64,18 @@ members = [
     "ext/goal",
     "ext/git-attribution",
     "ext/guardian",
+    "ext/guardian-v2",
+    "ext/history-notes",
     "ext/image-generation",
     "ext/items",
     "ext/memories",
     "ext/mcp",
+    "ext/queue",
     "ext/skills",
     "ext/web-search",
     "external-agent-migration",
+    "guardian-context",
+    "history",
     "keyring-store",
     "file-search",
     "file-watcher",
@@ -74,6 +88,7 @@ members = [
     "memories/write",
     "model-provider-info",
     "models-manager",
+    "mxc-sandbox",
     "network-proxy",
     "ollama",
     "process-hardening",
@@ -88,20 +103,28 @@ members = [
     "sandboxing",
     "stdio-to-uds",
     "otel",
+    "otel-trace-websocket",
     "tui",
     "tools",
     "v8-poc",
+    "voice-host",
     "websocket-client",
+    "windows-sandbox-service",
+    "workload-identity",
+    "worktree",
     "utils/absolute-path",
     "utils/path-uri",
     "utils/cargo-bin",
     "git-utils",
     "utils/cache",
+    "utils/audio",
+    "utils/git-discovery",
     "utils/image",
     "utils/json-to-toml",
     "utils/home-dir",
     "utils/pty",
     "utils/readiness",
+    "utils/redacted-string",
     "utils/rustls-provider",
     "utils/string",
     "utils/cli",
@@ -146,6 +169,7 @@ app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
+codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-android-computer-use = { path = "android-computer-use" }
 codex-api = { path = "codex-api" }
@@ -155,12 +179,15 @@ codex-app-server-transport = { path = "app-server-transport" }
 codex-app-server-daemon = { path = "app-server-daemon" }
 codex-app-server-client = { path = "app-server-client" }
 codex-app-server-protocol = { path = "app-server-protocol" }
+codex-app-server-protocol-noop-macros = { path = "app-server-protocol-noop-macros" }
 codex-app-server-test-client = { path = "app-server-test-client" }
 codex-apply-patch = { path = "apply-patch" }
+codex-attachment-store = { path = "attachment-store" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-browser-computer-use = { path = "browser-computer-use" }
+codex-build-info = { path = "build-info" }
 codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
@@ -170,6 +197,7 @@ codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
+codex-code-mode-runtime = { path = "code-mode-runtime" }
 codex-http-client = { path = "http-client" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
@@ -181,6 +209,7 @@ codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
 codex-core-plugins = { path = "core-plugins" }
 codex-core-skills = { path = "core-skills" }
+codex-diagnostics = { path = "diagnostics" }
 codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
@@ -192,6 +221,8 @@ codex-extension-items = { path = "ext/items" }
 codex-goal-extension = { path = "ext/goal" }
 codex-git-attribution = { path = "ext/git-attribution" }
 codex-guardian = { path = "ext/guardian" }
+codex-guardian-context = { path = "guardian-context" }
+codex-history = { path = "history" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
@@ -217,9 +248,11 @@ codex-mcp-extension = { path = "ext/mcp" }
 codex-mcp-server = { path = "mcp-server" }
 codex-model-provider-info = { path = "model-provider-info" }
 codex-models-manager = { path = "models-manager" }
+codex-mxc-sandbox = { path = "mxc-sandbox" }
 codex-network-proxy = { path = "network-proxy" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
+codex-otel-trace-websocket = { path = "otel-trace-websocket" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
@@ -247,11 +280,13 @@ codex-tui = { path = "tui" }
 codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
+codex-utils-audio = { path = "utils/audio" }
 codex-utils-cache = { path = "utils/cache" }
 codex-utils-cargo-bin = { path = "utils/cargo-bin" }
 codex-utils-cli = { path = "utils/cli" }
 codex-utils-elapsed = { path = "utils/elapsed" }
 codex-utils-fuzzy-match = { path = "utils/fuzzy-match" }
+codex-utils-git-discovery = { path = "utils/git-discovery" }
 codex-utils-home-dir = { path = "utils/home-dir" }
 codex-utils-image = { path = "utils/image" }
 codex-utils-json-to-toml = { path = "utils/json-to-toml" }
@@ -261,6 +296,7 @@ codex-utils-path = { path = "utils/path-utils" }
 codex-utils-path-uri = { path = "utils/path-uri" }
 codex-utils-plugins = { path = "utils/plugins" }
 codex-utils-pty = { path = "utils/pty" }
+codex-utils-redacted-string = { path = "utils/redacted-string" }
 codex-utils-rustls-provider = { path = "utils/rustls-provider" }
 codex-utils-sandbox-summary = { path = "utils/sandbox-summary" }
 codex-utils-sleep-inhibitor = { path = "utils/sleep-inhibitor" }
@@ -274,6 +310,7 @@ core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
 
 # External
+appcontainer_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
 age = "0.11.1"
 ansi-to-tui = "8.0.1"
 anyhow = "1"
@@ -290,6 +327,7 @@ aws-sigv4 = "1"
 aws-types = "1"
 axum = { version = "0.8", default-features = false }
 base64 = "0.22.1"
+bitflags = "2.13.1"
 bm25 = "2.3.2"
 bytes = "1.10.1"
 chardetng = "1.0.0"
@@ -325,6 +363,7 @@ flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
 gix = { version = "0.83.0", default-features = false, features = ["sha1"] }
+gix-url = "0.35.2"
 glob = "0.3"
 globset = "0.4"
 h2 = "0.4.17"
@@ -347,6 +386,7 @@ jsonwebtoken = { version = "10.4.0", features = ["aws_lc_rs"] }
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.7"
 lazy_static = "1"
+learning_mode_windows = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
 libc = "0.2.182"
 # Keep SQLx's bundled SQLite on a version containing the WAL-reset corruption fix:
 # https://www.sqlite.org/wal.html#the_wal_reset_bug
@@ -386,6 +426,7 @@ regex-lite = "0.1.8"
 reqwest = { version = "0.13", features = ["cookies", "query"] }
 rmcp = { version = "1.8.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
+rustix = { version = "1.1.4", features = ["net"] }
 rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
     "ring",
@@ -440,6 +481,7 @@ tempfile = "3.23.0"
 test-log = "0.2.19"
 textwrap = "0.16.2"
 thiserror = "2.0.17"
+tikv-jemallocator = "=0.7.0"
 time = "0.3.47"
 tiny_http = "0.12"
 tokio = "1"
@@ -462,6 +504,7 @@ tonic = { version = "0.14.3", default-features = false, features = ["channel", "
 tonic-prost = "0.14.3"
 tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25"
+tree-sitter-powershell = "=0.26.4"
 ts-rs = "12"
 tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
 uds_windows = "1.2.1"
@@ -478,6 +521,7 @@ which = "8"
 whoami = "1.6.1"
 wildmatch = "2.6.1"
 winapi-util = "0.1.11"
+wxc_common = { git = "https://github.com/microsoft/mxc", rev = "6cd3d58f05d3447e67109cfb75e042803b843ca4" }
 zip = "2.4.2"
 zstd = "0.13"
 
