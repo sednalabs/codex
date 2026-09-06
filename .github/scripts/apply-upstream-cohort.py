@@ -5,7 +5,7 @@ Trusted code comes from the reviewed workflow checkout.  The accepted SDK
 artifact and reviewed build-source commit are immutable data inputs.  The
 consumer verifies every input tuple, retains the three already-materialized
 patch dependencies, applies only eight reviewed source entries, regenerates
-exactly five coupled outputs with repository-pinned tools, and emits a
+up to five coupled outputs with repository-pinned tools, and emits a
 fresh-bare-verified Git bundle without publishing a ref.
 """
 
@@ -28,7 +28,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "0" * 40
+PUSH_PREDECESSOR_SHA = "cb72bf9be8308cb5e228835f3700a55a350d8ad4"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -142,6 +142,19 @@ PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+COMPOSITE_RUNTIME_INPUTS: dict[str, tuple[str, str, str]] = {
+    "sdk/python/pyproject.toml": (
+        "100644",
+        "blob",
+        "88bf8bac4854c35afa7115483cf3e26d713a64de",
+    ),
+    "sdk/python/uv.lock": (
+        "100644",
+        "blob",
+        "6f6f867ede321b6be3a94612ba3eebb853a1ac04",
+    ),
+}
+
 GENERATED_PATHS = [
     "MODULE.bazel.lock",
     "pnpm-lock.yaml",
@@ -152,8 +165,8 @@ GENERATED_PATHS = [
 SDK_GENERATED_PATHS = GENERATED_PATHS[2:]
 ALLOWED_MUTABLE_PATHS = sorted([*BUILD_PATHS, *GENERATED_PATHS])
 
-SDK_RUNTIME_DEPENDENCY = "openai-codex-cli-bin==0.144.4"
-SDK_RUNTIME_VERSION = "0.144.4"
+SDK_RUNTIME_DEPENDENCY = "openai-codex-cli-bin==0.147.0"
+SDK_RUNTIME_VERSION = "0.147.0"
 UV_VERSION = "0.11.3"
 PNPM_VERSION = "10.33.0"
 PACKAGE_MANAGER = (
@@ -389,7 +402,7 @@ def verify_runtime(expected_workflow_sha: str, expected_workflow_tree: str) -> d
         require(event.get("after") == expected_workflow_sha, "push target mismatch")
         require(event.get("forced") is False, "push event must not be forced")
         require(event.get("deleted") is False, "push event must not delete ref")
-        require(event.get("created") is True, "push event must create the new consumer ref")
+        require(event.get("created") is False, "push event must fast-forward the existing consumer ref")
         head_commit = event.get("head_commit")
         require(
             isinstance(head_commit, dict) and head_commit.get("id") == expected_workflow_sha,
@@ -567,7 +580,11 @@ def import_sdk_bundle(repo: pathlib.Path, bundle: pathlib.Path, temp: pathlib.Pa
     require(run("git", "show", "-s", "--format=%P", SDK_SOURCE_SHA, cwd=repo).split() == [BASE_SHA], "SDK source parent mismatch")
 
 
-def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> None:
+def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> list[dict[str, Any]]:
+    require(
+        not set(COMPOSITE_RUNTIME_INPUTS).intersection(ALLOWED_MUTABLE_PATHS),
+        "composite runtime input entered the mutable cohort",
+    )
     sdk_changed = run(
         "git",
         "diff-tree",
@@ -590,6 +607,29 @@ def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> Non
     for path, expected in PATCH_DEPENDENCIES.items():
         require(tree_entry(repo, MATERIALIZED_SHA, path) == expected, f"materialized patch dependency mismatch: {path}")
         require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == expected, f"SDK candidate patch dependency mismatch: {path}")
+    verified_runtime_inputs: list[dict[str, Any]] = []
+    for path, expected in COMPOSITE_RUNTIME_INPUTS.items():
+        materialized_entry = tree_entry(repo, MATERIALIZED_SHA, path)
+        candidate_entry = tree_entry(repo, SDK_CANDIDATE_SHA, path)
+        expected_tuple = "/".join(expected)
+        materialized_tuple = "/".join(materialized_entry) if materialized_entry is not None else "missing"
+        candidate_tuple = "/".join(candidate_entry) if candidate_entry is not None else "missing"
+        require(
+            materialized_entry == expected,
+            f"materialized runtime input mismatch: {path} expected={expected_tuple} observed={materialized_tuple}",
+        )
+        require(
+            candidate_entry == expected,
+            f"SDK candidate runtime input mismatch: {path} expected={expected_tuple} observed={candidate_tuple}",
+        )
+        verified_runtime_inputs.append(
+            {
+                "path": path,
+                "materialized": tuple_json(materialized_entry),
+                "sdk_candidate": tuple_json(candidate_entry),
+            }
+        )
+    return verified_runtime_inputs
 
 
 def require_source_pins(worktree: pathlib.Path) -> dict[str, str]:
@@ -599,7 +639,12 @@ def require_source_pins(worktree: pathlib.Path) -> dict[str, str]:
     runtime_dependencies = [
         value for value in dependencies if isinstance(value, str) and value.startswith("openai-codex-cli-bin")
     ]
-    require(runtime_dependencies == [SDK_RUNTIME_DEPENDENCY], "SDK runtime dependency pin mismatch")
+    observed_runtime_dependencies = [value[:96] for value in runtime_dependencies[:3]]
+    require(
+        runtime_dependencies == [SDK_RUNTIME_DEPENDENCY],
+        f"SDK runtime dependency pin mismatch: expected={SDK_RUNTIME_DEPENDENCY} "
+        f"observed={observed_runtime_dependencies}",
+    )
     root_package = load(worktree / "package.json")
     sdk_package = load(worktree / "sdk/typescript/package.json")
     require(root_package.get("packageManager") == PACKAGE_MANAGER, "root pnpm package-manager pin mismatch")
@@ -714,7 +759,10 @@ def generate_and_test(worktree: pathlib.Path, temp: pathlib.Path) -> dict[str, A
         cwd=worktree,
         env=generation_env,
     ).strip()
-    require(installed_runtime == SDK_RUNTIME_VERSION, "installed SDK runtime version mismatch")
+    require(
+        installed_runtime == SDK_RUNTIME_VERSION,
+        f"installed SDK runtime version mismatch: expected={SDK_RUNTIME_VERSION} observed={installed_runtime[:96]}",
+    )
     generator_identity["installed_sdk_runtime"] = installed_runtime
 
     run_tool(
@@ -883,7 +931,7 @@ def main() -> None:
         temp = pathlib.Path(temp_name).resolve(strict=True)
         import_sdk_bundle(repo, files["bundle"], temp)
         sdk_receipt = load(files["receipt"])
-        verify_sdk_input_entries(repo, sdk_receipt)
+        verified_runtime_inputs = verify_sdk_input_entries(repo, sdk_receipt)
 
         for path in BUILD_PATHS:
             require(
@@ -1015,6 +1063,7 @@ def main() -> None:
             "candidate_parent": SDK_CANDIDATE_SHA,
             "paths": path_dispositions,
             "verified_retained_patch_dependencies": retained_patches,
+            "verified_composite_runtime_inputs": verified_runtime_inputs,
             "preserved_sdk_source_paths": retained_sdk_source,
             "generator_identity": generator_identity,
         }
@@ -1052,6 +1101,7 @@ def main() -> None:
             "candidate_bundle_heads": emitted_heads,
             "candidate_bundle_sha256": digest(candidate_bundle),
             "disposition_receipt_sha256": digest(receipt_path),
+            "verified_composite_runtime_inputs": verified_runtime_inputs,
             "generator_identity": generator_identity,
         }
         provenance_path = output / "provenance.json"
