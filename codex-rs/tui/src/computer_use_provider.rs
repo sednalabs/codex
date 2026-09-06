@@ -227,7 +227,8 @@ JSON"#,
             response.content_items,
             vec![
                 codex_app_server_protocol::ComputerUseCallOutputContentItem::InputText {
-                    text: "child home".to_string(),
+                    text: "child home\n\nbrowser_metadata: provider=command backend=auto profile=external"
+                        .to_string(),
                 },
                 codex_app_server_protocol::ComputerUseCallOutputContentItem::InputImage {
                     image_url: "data:image/png;base64,AAAA".to_string(),
