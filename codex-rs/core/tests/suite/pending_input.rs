@@ -464,7 +464,7 @@ async fn steer_interrupts_wait_agent_and_is_sent_in_follow_up_request() {
     server.shutdown().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn native_wait_rearms_without_intermediate_provider_request() {
     const WAIT_CALL_ID: &str = "native-wait-call";
     const INITIAL_PROMPT: &str = "wait natively for an agent";
