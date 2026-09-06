@@ -15,6 +15,16 @@ This fork publishes downstream behavior on `main` and keeps an exact upstream mi
 - completed feature, bugfix, docs, or cleanup branch work must be committed, pushed, and opened as a PR targeting `origin/main` before handoff; do not leave finished work local-only
 - upstream-only compatibility/test probes: create from `upstream-main`, then cherry-pick to `main` if retained downstream
 
+## Capability-focused downstream work
+
+Consolidate work around the capability you want to deliver, integrating complementary
+contributions into one coherent direction rather than rebuilding every ancestor
+prerequisite. Use an explicit landing cutoff only for a planned upstream sync.
+Before replacing an implementation, preserve its source, contracts, tests, recovery
+and migration paths, and provenance. Prefer upstream seams or adapters for downstream
+carry when behavior, security, and state compatibility remain intact; make a justified
+core change when no seam can preserve the contract.
+
 ## Local clone migration
 
 If your clone still tracks the old carry-branch model, repoint it like this after the cutover:
