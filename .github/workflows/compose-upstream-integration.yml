@@ -1,0 +1,172 @@
+name: Compose upstream integration candidate
+
+on:
+  push:
+    branches:
+      - integration/upstream-main-sync-20260906
+  workflow_dispatch:
+    inputs:
+      expected_head:
+        description: Exact integration branch head to compose from
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compose-upstream-integration-integration-upstream-main-sync-20260906-008bbd5884122dc95aaece19ecfe0fc6a59dcf36
+  cancel-in-progress: false
+
+env:
+  INTEGRATION_BRANCH: integration/upstream-main-sync-20260906
+  UPSTREAM_URL: https://github.com/openai/codex.git
+  UPSTREAM_SHA: 008bbd5884122dc95aaece19ecfe0fc6a59dcf36
+  UPSTREAM_TREE: 721cd395f53962482b3f6d140d0b9942fef3baac
+
+jobs:
+  compose:
+    if: github.event_name == 'workflow_dispatch' || github.event.before == '4abfe49c95bfdf10c07827c963f851970a58d655'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify repository, branch, and expected head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "sednalabs/codex"
+          test "${GITHUB_REF_NAME}" = "${INTEGRATION_BRANCH}"
+          test "${EXPECTED_HEAD}" = "${GITHUB_SHA}" || {
+            echo "dispatch expected_head must equal the selected run SHA" >&2
+            exit 1
+          }
+          remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          test -n "${remote_head}"
+          test "${remote_head}" = "${EXPECTED_HEAD}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_HEAD}"
+
+      - name: Fetch and verify pinned upstream cut
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "${UPSTREAM_URL}" "${UPSTREAM_SHA}"
+          test "$(git rev-parse "${UPSTREAM_SHA}^{commit}")" = "${UPSTREAM_SHA}"
+          test "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" = "${UPSTREAM_TREE}"
+
+      - name: Compose hosted merge candidate
+        id: compose
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p composition-receipt
+          base_tree="$(git rev-parse HEAD^{tree})"
+          upstream_tree="$(git rev-parse "${UPSTREAM_SHA}^{tree}")"
+          remote_readback="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          if git merge-base --is-ancestor "${UPSTREAM_SHA}" HEAD; then
+            echo "upstream cut is already composed into HEAD" >&2
+            exit 1
+          fi
+          candidate_tree="${base_tree}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge --no-ff --no-edit "${UPSTREAM_SHA}"; then
+            merge_sha="$(git rev-parse HEAD)"
+            merge_tree="$(git rev-parse HEAD^{tree})"
+            candidate_tree="${merge_tree}"
+            status="clean"
+            conflict=false
+          else
+            status="conflict"
+            conflict=true
+            git status --short > composition-receipt/status.txt || true
+            git diff --no-ext-diff > composition-receipt/diff.patch || true
+            git diff --no-ext-diff --name-only --diff-filter=U > composition-receipt/unmerged.txt || true
+            merge_sha=""
+            merge_tree=""
+          fi
+          export base_tree upstream_tree remote_readback merge_sha merge_tree candidate_tree status conflict
+          python3 - <<'PY'
+          import json, os
+          receipt = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "branch": os.environ["INTEGRATION_BRANCH"],
+              "expected_head": os.environ["EXPECTED_HEAD"],
+              "base_tree": os.environ["base_tree"],
+              "candidate_tree": os.environ["candidate_tree"],
+              "upstream_url": os.environ["UPSTREAM_URL"],
+              "upstream_sha": os.environ["UPSTREAM_SHA"],
+              "upstream_tree": os.environ["upstream_tree"],
+              "merge_candidate_sha": os.environ.get("merge_sha", ""),
+              "merge_candidate_tree": os.environ.get("merge_tree", ""),
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "pre_merge_remote_readback": os.environ["remote_readback"],
+              "status": os.environ["status"],
+              "conflict": os.environ["conflict"] == "true",
+          }
+          with open("composition-receipt/receipt.json", "w") as f:
+              json.dump(receipt, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+          {
+            echo "### Hosted upstream composition"
+            echo "- repository: ${GITHUB_REPOSITORY}"
+            echo "- branch: ${INTEGRATION_BRANCH}"
+            echo "- expected head: ${EXPECTED_HEAD}"
+            echo "- base tree: ${base_tree}"
+            echo "- candidate tree: ${candidate_tree}"
+            echo "- upstream URL: ${UPSTREAM_URL}"
+            echo "- upstream SHA/tree: ${UPSTREAM_SHA} (${upstream_tree})"
+            echo "- merge candidate SHA/tree: ${merge_sha:-} (${merge_tree:-})"
+            echo "- run ID/attempt: ${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}"
+            echo "- event: ${GITHUB_EVENT_NAME}"
+            echo "- remote readback: ${remote_readback}"
+            echo "- result: ${status}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "${conflict}" = false
+
+      - name: Re-read remote and push candidate
+        if: steps.compose.outcome == 'success'
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head || github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          test "${remote_head}" = "${EXPECTED_HEAD}"
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+            push origin "HEAD:refs/heads/${INTEGRATION_BRANCH}"
+          post_push_remote_readback="$(git ls-remote origin "refs/heads/${INTEGRATION_BRANCH}" | awk '{print $1}')"
+          merge_candidate_sha="$(git rev-parse HEAD)"
+          test "${post_push_remote_readback}" = "${merge_candidate_sha}"
+          python3 - "${post_push_remote_readback}" <<'PY'
+          import json, sys
+          path = "composition-receipt/receipt.json"
+          with open(path) as f:
+              receipt = json.load(f)
+          receipt["post_push_remote_readback"] = sys.argv[1]
+          with open(path, "w") as f:
+              json.dump(receipt, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+      - name: Upload composition evidence
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-composition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: composition-receipt
+          if-no-files-found: warn
