@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO, POLICY, OUTPUT = map(Path, sys.argv[1:])
-MAX_ROWS = 100000
+MAX_ROWS = 1000000
 MAX_MATCHES = 2000000
 policy = json.loads(POLICY.read_text(encoding="utf-8"))
 base_patterns = [(p["id"], re.compile(p["pattern"], re.MULTILINE), p["classification"], p["rationale"], p.get("priority", 0), {"commit_subject", "commit_body", "path", "blob"}) for p in policy.get("patterns", [])]
