@@ -1023,7 +1023,9 @@ fn guardian_elicitation_review_request(
                 "guardian MCP elicitation review does not support this elicitation mode",
             );
         }
-        Elicitation::OpenAiForm { .. } | Elicitation::OpenAiElicitationForm { .. } => {
+        Elicitation::OpenAiForm { .. }
+        | Elicitation::OpenAiElicitationForm { .. }
+        | Elicitation::UserVerification { .. } => {
             return GuardianElicitationReview::NotRequested;
         }
     };

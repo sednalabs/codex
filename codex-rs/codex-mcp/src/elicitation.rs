@@ -211,6 +211,14 @@ impl ElicitationRequestManager {
             let server_name = server_name.clone();
             let authority = authority.clone();
             async move {
+                // Activate only once the typed app-server and UI path is available.
+                if matches!(&elicitation, Elicitation::UserVerification { .. }) {
+                    return Ok(ElicitationResponse {
+                        action: ElicitationAction::Cancel,
+                        content: None,
+                        meta: None,
+                    });
+                }
                 if router.auto_deny() {
                     return Ok(ElicitationResponse {
                         action: ElicitationAction::Decline,
@@ -336,7 +344,9 @@ impl ElicitationRequestManager {
                             .get("properties")
                             .and_then(Value::as_object)
                             .is_some_and(|properties| !properties.is_empty()),
-                        Elicitation::Mcp(_) | Elicitation::OpenAiForm { .. } => false,
+                        Elicitation::Mcp(_)
+                        | Elicitation::OpenAiForm { .. }
+                        | Elicitation::UserVerification { .. } => false,
                     };
 
                 if !should_surface_form_in_full_access {
@@ -374,6 +384,13 @@ impl ElicitationRequestManager {
                 );
                 let routed_request_id = RequestId::String(public_request_id.clone().into());
                 let request = match elicitation {
+                    Elicitation::UserVerification { .. } => {
+                        return Ok(ElicitationResponse {
+                            action: ElicitationAction::Cancel,
+                            content: None,
+                            meta: None,
+                        });
+                    }
                     Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
                         meta,
                         message,
@@ -491,7 +508,8 @@ fn can_auto_accept_elicitation(elicitation: &Elicitation) -> bool {
         }
         Elicitation::Mcp(_)
         | Elicitation::OpenAiForm { .. }
-        | Elicitation::OpenAiElicitationForm { .. } => false,
+        | Elicitation::OpenAiElicitationForm { .. }
+        | Elicitation::UserVerification { .. } => false,
     }
 }
 
