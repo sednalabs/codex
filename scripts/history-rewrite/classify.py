@@ -132,52 +132,69 @@ class OutputWriter:
 def publish_outputs(writer, metadata_temp, metadata_path):
     finals = [writer.output, Path(str(writer.output) + ".gz"), metadata_path]
     staged = [Path(writer.plain_temp.name), Path(writer.gzip_temp.name), metadata_temp]
-    backups = []
-    published = []
+    records = []
     try:
-        for final in finals:
-            if os.path.lexists(final):
-                fd, backup_name = tempfile.mkstemp(dir=final.parent, prefix=f".{final.name}.", suffix=".backup")
-                os.close(fd)
-                backup = Path(backup_name)
-                os.unlink(backup)
-                os.replace(final, backup)
-                backups.append((final, backup))
         for final, temporary in zip(finals, staged):
-            os.replace(temporary, final)
-            published.append(final)
+            fd, backup_name = tempfile.mkstemp(dir=final.parent, prefix=f".{final.name}.", suffix=".backup")
+            os.close(fd)
+            backup = Path(backup_name)
+            os.unlink(backup)
+            records.append({
+                "final": final,
+                "staged": temporary,
+                "backup": backup,
+                "preexisting": os.path.lexists(final),
+                "backup_moved": False,
+                "published": False,
+            })
+        for record in records:
+            if record["preexisting"]:
+                os.replace(record["final"], record["backup"])
+                record["backup_moved"] = True
+        for record in records:
+            os.replace(record["staged"], record["final"])
+            record["published"] = True
     except BaseException as original:
         rollback_errors = []
-        for final in published:
-            try:
-                final.unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                rollback_errors.append(("remove", final, exc))
-        for final, backup in reversed(backups):
-            if os.path.lexists(backup):
+        for record in records:
+            final = record["final"]
+            staged_path = record["staged"]
+            backup = record["backup"]
+            if record["preexisting"]:
+                if os.path.lexists(backup):
+                    try:
+                        if os.path.lexists(final):
+                            os.unlink(final)
+                        os.replace(backup, final)
+                    except OSError as exc:
+                        rollback_errors.append(("restore", backup, final, exc))
+                else:
+                    rollback_errors.append(("restore-missing-backup", backup, final, FileNotFoundError(backup)))
+            elif os.path.lexists(final):
                 try:
-                    if os.path.lexists(final):
-                        os.unlink(final)
-                    os.replace(backup, final)
+                    os.unlink(final)
                 except OSError as exc:
-                    rollback_errors.append(("restore", backup, exc))
+                    rollback_errors.append(("remove", final, final, exc))
+            if os.path.lexists(staged_path):
+                try:
+                    os.unlink(staged_path)
+                except OSError as exc:
+                    rollback_errors.append(("remove-staged", staged_path, final, exc))
         if rollback_errors:
-            evidence = "; ".join(f"{action} {path}: {error}" for action, path, error in rollback_errors)
+            evidence = "; ".join(f"{action} source={source} destination={destination}: {error}" for action, source, destination, error in rollback_errors)
             raise RuntimeError(f"publication failed and rollback was incomplete: {evidence}") from original
         raise
     else:
         cleanup_errors = []
-        for _final, backup in backups:
-            try:
-                backup.unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                cleanup_errors.append((backup, exc))
+        for record in records:
+            backup = record["backup"]
+            if os.path.lexists(backup):
+                try:
+                    os.unlink(backup)
+                except OSError as exc:
+                    cleanup_errors.append(("remove-backup", backup, record["final"], exc))
         if cleanup_errors:
-            evidence = "; ".join(f"remove backup {path}: {error}" for path, error in cleanup_errors)
+            evidence = "; ".join(f"{action} source={source} destination={destination}: {error}" for action, source, destination, error in cleanup_errors)
             raise RuntimeError(f"publication completed but backup cleanup failed: {evidence}")
         writer.committed = True
 
