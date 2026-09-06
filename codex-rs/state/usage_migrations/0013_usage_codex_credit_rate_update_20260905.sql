@@ -9,6 +9,11 @@ SET effective_to = '2026-09-05T05:26:07.605187Z'
 WHERE rate_id = 'openai-gpt-5.6-sol-standard-20260402'
   AND effective_to IS NULL;
 
+UPDATE usage_codex_credit_rates
+SET effective_to = '2026-09-05T05:26:07.605187Z'
+WHERE rate_id = 'openai-gpt-5.6-sol-fast-20260727'
+  AND effective_to IS NULL;
+
 INSERT INTO usage_codex_credit_rates (
     rate_id, provider, model, service_tier, speed_mode, rate_card_kind,
     credits_per_1m_uncached_input, credits_per_1m_cached_input,
@@ -24,6 +29,11 @@ INSERT INTO usage_codex_credit_rates (
      'default', 'standard', 'codex_token_based', 100.0, 10.0, 500.0,
      '2026-09-05T05:26:07.605187Z', NULL,
      'https://help.openai.com/en/articles/20001106-codex-rate-card',
+     '2026-09-05T05:26:07.605187Z'),
+    ('openai-gpt-5.6-sol-fast-20260905', 'openai', 'gpt-5.6-sol',
+     'priority', 'fast', 'codex_token_based', 250.0, 25.0, 1250.0,
+     '2026-09-05T05:26:07.605187Z', NULL,
+     'https://learn.chatgpt.com/docs/agent-configuration/speed',
      '2026-09-05T05:26:07.605187Z'),
     ('openai-gpt-5.6-alias-standard-20260905', 'openai', 'gpt-5.6',
      'default', 'standard', 'codex_token_based', 100.0, 10.0, 500.0,
