@@ -138,6 +138,8 @@ impl PidBackend {
             }
 
             let pid = record.pid;
+            let started_at = tokio::time::Instant::now();
+            let deadline = started_at + STOP_TIMEOUT;
             #[cfg(unix)]
             self.terminate_process(pid)?;
             #[cfg(windows)]
@@ -148,13 +150,29 @@ impl PidBackend {
                 if process.start_time()? != record.process_start_time {
                     continue;
                 }
-                fs::write(self.pid_file.with_extension("shutdown"), pid.to_string())
-                    .await
-                    .context("failed to request daemon shutdown")?;
+                match self.command_kind {
+                    PidCommandKind::AppServer { .. } => {
+                        let codex_home = self
+                            .pid_file
+                            .parent()
+                            .and_then(Path::parent)
+                            .context("daemon pid path has no Codex home")?;
+                        let socket_path =
+                            codex_app_server_transport::app_server_control_socket_path(codex_home)?;
+                        if let Err(err) =
+                            crate::client::request_shutdown(socket_path.as_path(), pid).await
+                        {
+                            tracing::warn!(%pid, %err, "managed app-server shutdown request failed; waiting for force deadline");
+                        }
+                    }
+                    PidCommandKind::UpdateLoop => {
+                        fs::write(self.pid_file.with_extension("shutdown"), pid.to_string())
+                            .await
+                            .context("failed to request updater shutdown")?;
+                    }
+                }
                 process
             };
-            let started_at = tokio::time::Instant::now();
-            let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
             let mut forced = false;
             loop {
                 #[cfg(unix)]

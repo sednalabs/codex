@@ -174,16 +174,25 @@ impl PidBackend {
                     Err(err) => return Err(err).context("failed to clear updater readiness"),
                 }
             }
-            let shutdown_file = self.pid_file.with_extension("shutdown");
-            match fs::remove_file(&shutdown_file).await {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err).context("failed to clear daemon shutdown request"),
+            match self.command_kind {
+                PidCommandKind::AppServer { .. } => {
+                    command.env(codex_app_server_transport::DAEMON_SHUTDOWN_SOCKET_ENV, "1");
+                }
+                PidCommandKind::UpdateLoop => {
+                    let shutdown_file = self.pid_file.with_extension("shutdown");
+                    match fs::remove_file(&shutdown_file).await {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(err) => {
+                            return Err(err).context("failed to clear updater shutdown request");
+                        }
+                    }
+                    command.env(
+                        codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
+                        shutdown_file,
+                    );
+                }
             }
-            command.env(
-                codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
-                shutdown_file,
-            );
         }
 
         let child = match command.spawn() {

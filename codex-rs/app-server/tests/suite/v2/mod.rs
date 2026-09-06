@@ -19,7 +19,7 @@ mod config_requirements_browser_use;
 mod config_requirements_in_app_browser;
 mod config_rpc;
 mod connection_handling_websocket;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 mod connection_handling_websocket_unix;
 #[cfg(unix)]
 mod curated_mcp_sync;
