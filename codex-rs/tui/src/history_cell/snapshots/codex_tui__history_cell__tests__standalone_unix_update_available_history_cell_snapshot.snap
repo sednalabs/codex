@@ -6,9 +6,9 @@ expression: rendered
 │ ✨ Update available! 0.0.0 -> 9.9.9                                                                        │
 │ Run bash -c 'curl -fsSL                                                                                    │
 │ https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset |               │
-│ CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --allow-prerelease'   │
-│ to update.                                                                                                 │
+│ CODEX_NON_INTERACTIVE=1 bash -s -- --repository sednalabs/codex --release-tag latest --require-newer-than  │
+│ 0.0.0' to update.                                                                                          │
 │                                                                                                            │
 │ See full release notes:                                                                                    │
-│ https://github.com/openai/codex/releases/latest                                                            │
+│ https://github.com/sednalabs/codex/releases/latest                                                         │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

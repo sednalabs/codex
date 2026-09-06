@@ -89,6 +89,7 @@ on:
           - codex.downstream-docs-check
           - codex.downstream-divergence-audit
           - sedna.release-linux-smoke
+          - sedna.update-installer-contract
           - downstream-ledger-seam
         default: all
       rust_batching:

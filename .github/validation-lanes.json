@@ -1861,6 +1861,31 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "sedna.update-installer-contract",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "release"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "summary_family": "sedna-installer-contract",
+      "cost_class": "low",
+      "timeout_minutes": 10,
+      "setup_class": "workflow",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/sedna-update-installer-contract.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false,
+      "needs_bazel": false
+    },
+    {
       "lane_id": "downstream-ledger-seam",
       "groups": [
         "core",
