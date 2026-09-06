@@ -103,10 +103,18 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: sync-models-json-update
-          path: sync-models-json-update
+          path: sync-models-json-payload
 
       - name: Update file
-        run: mv sync-models-json-update/upstream-models.json "${MODELS_JSON_PATH}"
+        run: mv sync-models-json-payload/upstream-models.json "${MODELS_JSON_PATH}"
+
+      - name: Guard provider sync scope
+        run: |
+          test -f codex-rs/models-manager/src/instruction_overlay.rs
+          git diff --cached --quiet
+          test "$(git diff --name-only)" = "${MODELS_JSON_PATH}"
+          test -z "$(git diff --name-only -- codex-rs/models-manager/src/instruction_overlay.rs)"
+          test "$(git ls-files --others --exclude-standard)" = "sync-models-json-payload/summary.md"
 
       - name: Create PR
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
@@ -115,4 +123,4 @@ jobs:
           delete-branch: true
           commit-message: "Sync models.json from upstream"
           title: "Sync models.json from openai/codex"
-          body-path: sync-models-json-update/summary.md
+          body-path: sync-models-json-payload/summary.md
