@@ -33,13 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Prepare exact inputs and fetch selected refs
         env:
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          WORKFLOW_CODE_SHA: ${{ github.sha }}
           SELECTED_REFS: ${{ inputs.refs }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -47,7 +48,8 @@ jobs:
           set -euo pipefail; umask 077
           [[ "$SOURCE_REPOSITORY" == "sednalabs/codex" && "$GITHUB_REPOSITORY" == "$SOURCE_REPOSITORY" ]]
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          [[ "$WORKFLOW_CODE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_CODE_SHA"
           printf '%s\n' "$SELECTED_REFS" | sed '/^[[:space:]]*$/d' > refs.txt
           test -s refs.txt
           while IFS= read -r ref; do
@@ -81,6 +83,7 @@ jobs:
         env:
           AGE_RECIPIENT: ${{ inputs.age_recipient }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          WORKFLOW_CODE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail; umask 077
           trap 'rm -f snapshot.tar.gz refs.txt remote-refs.txt remote-map.txt fetched-map.txt package-info.json tool-versions.json; rm -rf source.git metadata' EXIT
@@ -104,6 +107,7 @@ jobs:
             echo "restore_test_identity=$(sha256sum snapshot.tar.gz | cut -d' ' -f1)"
             echo "recipient_sha256=$(printf '%s' "$AGE_RECIPIENT" | sha256sum | cut -d' ' -f1)"
             echo "source_sha=$CANDIDATE_SHA"
+            echo "workflow_code_sha=$WORKFLOW_CODE_SHA"
             echo "tool_versions=$(jq -c . tool-versions.json)"
             echo "ciphertext_sha256=$(sha256sum recovery-snapshot.age | cut -d' ' -f1)"
             echo "ciphertext_size=$(stat -c '%s' recovery-snapshot.age)"
@@ -127,6 +131,7 @@ jobs:
           RESTORE_ID: ${{ steps.encrypt.outputs.restore_test_identity }}
           RECIPIENT_SHA256: ${{ steps.encrypt.outputs.recipient_sha256 }}
           SOURCE_SHA: ${{ steps.encrypt.outputs.source_sha }}
+          WORKFLOW_CODE_SHA: ${{ steps.encrypt.outputs.workflow_code_sha }}
           TOOL_VERSIONS: ${{ steps.encrypt.outputs.tool_versions }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           UPLOAD_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
@@ -142,9 +147,10 @@ jobs:
           jq -n --arg inner_sha256 "$INNER_SHA" --argjson inner_size "$INNER_SIZE" \
             --arg ref_manifest_sha256 "$REF_MANIFEST_SHA" --arg metadata_manifest_sha256 "$METADATA_MANIFEST_SHA" \
             --arg restore_test_identity "$RESTORE_ID" --arg recipient_sha256 "$RECIPIENT_SHA256" \
-            --arg source_sha "$SOURCE_SHA" --arg ciphertext_sha256 "$CIPHERTEXT_SHA" --arg artifact_id "$ARTIFACT_ID" \
+            --arg source_sha "$SOURCE_SHA" --arg workflow_code_sha "$WORKFLOW_CODE_SHA" \
+            --arg ciphertext_sha256 "$CIPHERTEXT_SHA" --arg artifact_id "$ARTIFACT_ID" \
             --arg upload_artifact_digest "$UPLOAD_ARTIFACT_DIGEST" --arg api_artifact_digest "$API_ARTIFACT_DIGEST" \
-            --argjson ciphertext_size "$CIPHERTEXT_SIZE" --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,ciphertext_sha256,ciphertext_size,artifact_id,artifact_size,upload_artifact_digest,api_artifact_digest,source_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
+            --argjson ciphertext_size "$CIPHERTEXT_SIZE" --argjson tool_versions "$TOOL_VERSIONS" --argjson artifact_size "$ARTIFACT_SIZE" '{inner_sha256,inner_size,ciphertext_sha256,ciphertext_size,artifact_id,artifact_size,upload_artifact_digest,api_artifact_digest,source_sha,workflow_code_sha,ref_manifest_sha256,metadata_manifest_sha256,restore_test_identity,recipient_sha256,tool_versions}' \
             >> "$GITHUB_STEP_SUMMARY"
       - name: Remove plaintext staging data
         if: ${{ always() }}
