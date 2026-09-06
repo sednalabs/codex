@@ -518,6 +518,34 @@ client_request_definitions! {
         response: v2::ServerDiagnosticsResponse,
     },
 
+    #[experimental("userVerification/status")]
+    UserVerificationStatus => "userVerification/status" {
+        params: v2::UserVerificationStatusParams,
+        serialization: None,
+        response: v2::UserVerificationStatusResponse,
+    },
+
+    #[experimental("userVerification/enroll")]
+    UserVerificationEnroll => "userVerification/enroll" {
+        params: v2::UserVerificationEnrollParams,
+        serialization: None,
+        response: v2::UserVerificationEnrollResponse,
+    },
+
+    #[experimental("userVerification/delete")]
+    UserVerificationDelete => "userVerification/delete" {
+        params: v2::UserVerificationDeleteParams,
+        serialization: None,
+        response: v2::UserVerificationDeleteResponse,
+    },
+
+    #[experimental("userVerification/verify")]
+    UserVerificationVerify => "userVerification/verify" {
+        params: v2::UserVerificationVerifyParams,
+        serialization: None,
+        response: v2::UserVerificationVerifyResponse,
+    },
+
     /// NEW APIs
     // Thread lifecycle
     // Uses `inspect_params` because only some fields are experimental.

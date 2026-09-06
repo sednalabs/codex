@@ -55,6 +55,13 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
     "TurnSettingsUpdateStatus",
+    "UserVerificationProof",
+    "UserVerificationCancellationReason",
+    "UserVerificationErrorDetails",
+    "UserVerificationFailureReason",
+    "UserVerificationInvalidRequestReason",
+    "UserVerificationRpcError",
+    "UserVerificationUnavailableReason",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -123,6 +130,7 @@ pub fn generate_ts_with_options(
     ClientRequest::export_all_to(out_dir)?;
     export_client_responses(out_dir)?;
     ClientNotification::export_all_to(out_dir)?;
+    crate::UserVerificationRpcError::export_all_to(out_dir)?;
 
     ServerRequest::export_all_to(out_dir)?;
     export_server_responses(out_dir)?;
@@ -220,6 +228,10 @@ pub fn generate_json_with_experimental(out_dir: &Path, experimental_api: bool) -
         schemas.push(emit(out_dir)?);
     }
 
+    schemas.push(write_json_schema::<crate::UserVerificationRpcError>(
+        out_dir,
+        "v2::UserVerificationRpcError",
+    )?);
     schemas.extend(export_client_param_schemas(out_dir)?);
     schemas.extend(export_client_response_schemas(out_dir)?);
     schemas.extend(export_server_param_schemas(out_dir)?);

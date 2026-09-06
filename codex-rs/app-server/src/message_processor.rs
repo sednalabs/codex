@@ -980,6 +980,12 @@ impl MessageProcessor {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
             }
+            ClientRequest::UserVerificationStatus { .. }
+            | ClientRequest::UserVerificationEnroll { .. }
+            | ClientRequest::UserVerificationDelete { .. }
+            | ClientRequest::UserVerificationVerify { .. } => {
+                Err(crate::user_verification::unavailable())
+            }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor

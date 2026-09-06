@@ -3007,3 +3007,33 @@ For server-initiated request payloads, annotate the field the same way so schema
    ```bash
    just test -p codex-app-server-protocol
    ```
+
+## User verification (experimental)
+
+Trusted UI clients use four experimental methods. They require the existing
+`experimentalApi` opt-in. This contract-only stage returns
+`unavailable/providerUnavailable` until native operations are connected.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `userVerification/status` | `{}` | `{credentialId, unavailableReason, unavailableMessage}` |
+| `userVerification/enroll` | `{}` | `{credentialId}` |
+| `userVerification/delete` | `{}` | `{}` |
+| `userVerification/verify` | `{challenge, title, description}` | `{proof: {credentialId, signature}}` |
+
+Status reads local readiness without prompting or contacting a backend. A null
+`unavailableReason` means local checks passed, not that registration is valid.
+Enrollment and deletion coordinate credential lifecycle; callers do not issue
+separate generate or rotate commands. Identity comes from the authenticated
+account; this API exposes no caller-selected scope.
+
+Verify signs 1–4096 decoded challenge bytes using P-256 ECDSA with SHA-256. The
+challenge and DER signature use unpadded base64url. Title is 1–256 UTF-8 bytes;
+description is at most 4096 bytes. The UI obtains approval for that display
+context before calling. Verify does not require a pending elicitation; a UI with
+its own authenticator can return proof directly in elicitation response content.
+The calling flow owns pending-request checks and discards late proofs.
+
+Failures use the normal JSON-RPC error envelope with closed `{type, reason}` data:
+`invalidRequest`, `unavailable`, `cancelled`, or `failed`. UI clients branch on
+these values rather than message text. Native diagnostic payloads stay private.

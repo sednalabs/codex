@@ -132,6 +132,7 @@ mod thread_state;
 mod thread_status;
 mod transport;
 mod turn_cost_worker;
+mod user_verification;
 
 pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
