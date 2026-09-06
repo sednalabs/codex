@@ -1,0 +1,103 @@
+name: sdk-python-generate-v2-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact candidate commit to generate from
+        required: true
+        type: string
+      candidate_ref:
+        description: Candidate ref recorded for provenance
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate-v2-all:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      CANDIDATE_REF: ${{ inputs.candidate_ref }}
+      RUNTIME_PIN: openai-codex-cli-bin==0.144.4
+      OUTPUT_PATH: sdk/python/src/openai_codex/generated/v2_all.py
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Assert exact checkout and clean preimage
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${CANDIDATE_SHA}" = "$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain=v1)"
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD | wc -l)" -ge 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.3"
+
+      - name: Generate Python v2_all artifact
+        working-directory: sdk/python
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fqx '  "openai-codex-cli-bin==0.144.4",' pyproject.toml
+          uv sync --group dev --frozen
+          uv run --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types
+
+      - name: Enforce restricted generated diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${OUTPUT_PATH}"
+          changed="$(git status --porcelain=v1 | sed -E 's/^.. //')"
+          test "${changed}" = "${expected}"
+          test -f "${OUTPUT_PATH}"
+          ! grep -nE '^(<<<<<<<|=======|>>>>>>>)' "${OUTPUT_PATH}"
+          git diff --check
+
+      - name: Write bounded provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_blob="$(git hash-object "${OUTPUT_PATH}")"
+          python3 - "${output_blob}" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          payload = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "candidate_ref": os.environ["CANDIDATE_REF"],
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "generator_command": "uv run --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
+              "runtime_pin": os.environ["RUNTIME_PIN"],
+              "output_path": os.environ["OUTPUT_PATH"],
+              "output_blob_sha": sys.argv[1],
+              "artifact_identity": "sdk-python-v2-all-generated",
+          }
+          Path("sdk-python-v2-all-provenance.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Upload generated artifact and provenance
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sdk-python-v2-all-generated
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            sdk/python/src/openai_codex/generated/v2_all.py
+            sdk-python-v2-all-provenance.json
