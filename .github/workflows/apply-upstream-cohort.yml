@@ -1,4 +1,4 @@
-name: Read accepted composite metadata
+name: Build accepted SDK and build-source consumer
 
 on:
   push:
@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       expected_workflow_sha:
-        description: Exact reviewed metadata workflow commit
+        description: Exact reviewed consumer workflow commit
         required: true
         type: string
       expected_workflow_tree:
-        description: Exact reviewed metadata workflow tree
+        description: Exact reviewed consumer workflow tree
         required: true
         type: string
 
@@ -20,9 +20,9 @@ permissions:
   actions: read
 
 jobs:
-  read-accepted-composite-metadata:
+  build-sdk-build-consumer:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 120
     env:
       REQUESTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha || '' }}
       REQUESTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree || '' }}
@@ -98,7 +98,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "8bdc3fca8c8796c12dd8c2aff4946ba2a5e73c60",
+              "before": "8217beff9976314d4bab96dd1ebe0d97e6e7f1d3",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
@@ -180,9 +180,9 @@ jobs:
               0000000000000000000000000000000000000000
           expect_failure "repo-root must be absolute" \
             python3 "${helper}" \
-              --metadata-readback-only \
               --repo-root source-candidate \
               --artifact-dir "${RUNNER_TEMP}/not-present" \
+              --output-dir "${RUNNER_TEMP}/not-created" \
               --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
               --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
           test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
@@ -239,13 +239,46 @@ jobs:
           path: ${{ runner.temp }}/w13825-sdk-input
           merge-multiple: true
 
-      - name: Read six accepted metadata entries (evidence only)
+      - name: Set up exact uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.11.3
+          enable-cache: false
+
+      - name: Set up exact pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Set up repository-pinned Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.28.1
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          cache-save: false
+
+      - name: Build, generate, test, and bundle exact consumer candidate
         shell: bash
         run: |
           set -euo pipefail
           python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
-            --metadata-readback-only \
             --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
             --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
+            --output-dir "${RUNNER_TEMP}/w13825-sdk-build-candidate" \
             --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
             --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+
+      - name: Upload successful consumer candidate evidence (no push)
+        if: success()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-sdk-build-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w13825-sdk-build-candidate
+          if-no-files-found: error
