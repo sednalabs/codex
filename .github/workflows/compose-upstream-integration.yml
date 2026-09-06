@@ -99,7 +99,7 @@ jobs:
             git status --short > composition-receipt/status.txt || true
             git diff --no-ext-diff > composition-receipt/diff.patch || true
             git diff --no-ext-diff --name-only --diff-filter=U > composition-receipt/unmerged.txt || true
-            git diff --cached --no-ext-diff --binary > composition-receipt/staged-auto-merge.patch || true
+            git diff --cached --no-ext-diff --binary --diff-filter=ACDMRTXB > composition-receipt/staged-auto-merge.patch || true
             git diff --cached --no-ext-diff --name-only --diff-filter=ACDMRTXB |
               LC_ALL=C sort -u > composition-receipt/staged-auto-merge.txt || true
             python3 - <<'PY'
