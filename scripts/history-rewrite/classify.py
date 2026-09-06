@@ -141,13 +141,27 @@ total_matches = 0
 scanned_fields = 0
 scanned_utf8_bytes = 0
 admitted_fields = 0
+candidate_fields = 0
+candidate_rows = 0
+candidate_matches = 0
+context_fields = 0
+context_rows = 0
+context_matches = 0
 per_pattern = {}
 per_kind = {}
+def match_count(rx, value, label):
+    count = 0
+    for match in rx.finditer(value):
+        if match.start() == match.end():
+            raise SystemExit(f"zero-width match is not allowed: {label}")
+        count += 1
+    return count
+
 def match_metadata(kind, value):
     metadata = []
     for pid, rx, classification, rationale, _priority, scopes in rewrite_patterns:
         if kind in scopes and rx.search(value):
-            count = len(rx.findall(value))
+            count = match_count(rx, value, pid)
             metadata.append((pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), count))
     matches = [(pid, rx, classification, rationale, priority) for pid, rx, classification, rationale, priority, scopes in base_patterns if kind in scopes and rx.search(value)]
     if matches:
@@ -156,18 +170,29 @@ def match_metadata(kind, value):
         if len({x[2] for x in winners}) > 1:
             raise SystemExit("overlapping classification patterns require explicit priority")
         for pid, rx, classification, rationale, _ in winners:
-            count = len(rx.findall(value))
+            count = match_count(rx, value, pid)
             metadata.append((pid, classification, hashlib.sha256(rationale.encode()).hexdigest(), count))
     proof = hashlib.sha256(value.encode("utf-8", "replace")).hexdigest() if metadata else ""
     return proof, metadata
 
 def emit(kind, identity, path, proof, metadata):
     global total_matches, admitted_fields, row_count
+    global candidate_fields, candidate_rows, candidate_matches, context_fields, context_rows, context_matches
     if metadata:
         admitted_fields += 1
+    candidate_metadata = [item for item in metadata if item[1].startswith("rewrite_rule")]
+    context_metadata = [item for item in metadata if not item[1].startswith("rewrite_rule")]
+    if candidate_metadata:
+        candidate_fields += 1
+    if context_metadata:
+        context_fields += 1
     per_kind.setdefault(kind, {"scanned_fields": 0, "admitted_fields": 0, "rows": 0, "matches": 0})
     if metadata:
         per_kind[kind]["admitted_fields"] += 1
+    candidate_rows += len(candidate_metadata)
+    candidate_matches += sum(item[3] for item in candidate_metadata)
+    context_rows += len(context_metadata)
+    context_matches += sum(item[3] for item in context_metadata)
     for pid, classification, rationale_sha256, count in metadata:
         total_matches += count
         row = (kind, identity, path, pid, classification, rationale_sha256, proof, str(count))
@@ -250,6 +275,8 @@ if sum(item["scanned_fields"] for item in per_kind.values()) != scanned_fields o
     raise SystemExit("classification field counter mismatch")
 if sum(item["rows"] for item in per_kind.values()) != row_count or sum(item["matches"] for item in per_kind.values()) != total_matches:
     raise SystemExit("classification row/match counter mismatch")
+if candidate_rows + context_rows != row_count or candidate_matches + context_matches != total_matches:
+    raise SystemExit("candidate/context counter mismatch")
 
 def file_digest(path):
     digest = hashlib.sha256()
@@ -277,6 +304,8 @@ metadata = {
     },
     "scanned": {"fields": scanned_fields, "utf8_bytes": scanned_utf8_bytes},
     "admitted": {"fields": admitted_fields, "rows": row_count, "matches": total_matches},
+    "candidate": {"fields": candidate_fields, "rows": candidate_rows, "matches": candidate_matches},
+    "context": {"fields": context_fields, "rows": context_rows, "matches": context_matches},
     "per_kind": per_kind,
     "per_pattern": per_pattern,
     "digests": {
