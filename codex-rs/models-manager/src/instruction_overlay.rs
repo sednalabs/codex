@@ -106,6 +106,9 @@ mod tests {
         );
 
         assert!(model.base_instructions.contains(COMMENTARY_CADENCE_REPLACEMENT));
+        assert!(model.base_instructions.contains("active work is progressing"));
+        assert!(model.base_instructions.contains("passive waits that remain interruptible by mailbox, user steer, or cancellation"));
+        assert!(model.base_instructions.contains("deliberate short timeout of 5 seconds remains allowed"));
         assert!(!model.base_instructions.contains(COMMENTARY_CADENCE_LITERAL));
         assert!(!model.base_instructions.contains(BLOCKING_WAIT_LITERAL));
 
@@ -137,7 +140,7 @@ mod tests {
 
     #[test]
     fn missing_marker_or_non_exact_slug_is_unchanged() {
-        let source = format!("before {BLOCKING_WAIT_LITERAL} after");
+        let source = format!("before {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} after");
         for (slug,) in [("custom",), ("codex-auto-review-v2",)] {
             let mut model = model(slug, &source, Some(&source));
             let original = model.clone();
@@ -147,6 +150,15 @@ mod tests {
             );
             assert_eq!(model, original);
         }
+    }
+
+    #[test]
+    fn non_target_preserves_provider_literals_byte_for_byte() {
+        let source = format!("prefix {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} suffix");
+        let mut model = model("gpt-5.5", &source, Some(&source));
+        let original = model.clone();
+        assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::NotApplicable);
+        assert_eq!(model, original);
     }
 
     #[test]
