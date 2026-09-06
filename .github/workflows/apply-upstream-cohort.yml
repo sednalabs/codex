@@ -59,7 +59,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
           path: source-candidate
 
@@ -109,7 +109,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-producer-validation-20260907",
-              "before": "204fc215e54cba1fa409176d251423b1e31fa652",
+              "before": "8618594409a81716f8cba3114b3bed5a81433e7c",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
