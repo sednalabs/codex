@@ -195,6 +195,7 @@ def codex_rust_crate(
         lib_data_extra = [],
         rustc_flags_extra = [],
         binary_rustc_flags_extra = {},
+        stamped_binaries = [],
         rustc_env = {},
         rustc_env_files = [],
         deps_extra = [],
@@ -239,6 +240,9 @@ def codex_rust_crate(
         lib_data_extra: Extra runtime data for the library target.
         binary_rustc_flags_extra: Mapping from binary names to extra rustc
             flags for those binary targets.
+        stamped_binaries: Binary names that read STABLE_GIT_COMMIT at compile
+            time. Other binaries omit workspace status inputs so Git revisions
+            and build timestamps do not invalidate their cached compilations.
         rustc_env: Extra rustc_env entries to merge with defaults.
         rustc_env_files: Generated compiler environment files for the library target.
         deps_extra: Extra normal deps beyond @crates resolution.
@@ -403,11 +407,10 @@ def codex_rust_crate(
             # generated rust_binary instead of leaking it to sibling binaries.
             compile_data = binary_compile_data_extra.get(binary, []),
             rustc_flags = rustc_flags_extra + binary_rustc_flags_extra.get(binary, []) + WINDOWS_RUSTC_LINK_FLAGS,
-            # rules_rust substitutes workspace status values only for stamped
-            # actions, so pass the existing key through to final binaries.
-            rustc_env = {"STABLE_GIT_COMMIT": "{STABLE_GIT_COMMIT}"},
+            # Only consumers of build identity need workspace status inputs.
+            rustc_env = {"STABLE_GIT_COMMIT": "{STABLE_GIT_COMMIT}"} if binary in stamped_binaries else {},
             srcs = native.glob(["src/**/*.rs"]),
-            stamp = 1,
+            stamp = 1 if binary in stamped_binaries else 0,
             visibility = ["//visibility:public"],
         )
 
