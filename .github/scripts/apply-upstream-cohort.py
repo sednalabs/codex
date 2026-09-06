@@ -4,7 +4,7 @@
 Trusted code comes from the reviewed workflow checkout.  The accepted SDK
 artifact and reviewed build-source commit are immutable data inputs.  The
 consumer verifies every input tuple, retains the three already-materialized
-patch dependencies, and applies only eleven reviewed source entries.  Its
+patch dependencies, and applies only the exact declared source overlay.  Its
 metadata-only mode emits complete content-free tree manifests without running
 generators or creating Git objects.  Its build mode validates the accepted
 manifest inventory, resolves the composed Cargo lock conservatively from its
@@ -32,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "a21eec53ebcbc8523141254bb10afd6a83b35ccd"
+PUSH_PREDECESSOR_SHA = "8a0de69418be6c4ab55dd8bf8a9a0bc2385278c9"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -200,6 +200,150 @@ BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
 }
 BUILD_PATHS = list(BUILD_SOURCE_ENTRIES)
 
+RESTORE_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
+    "codex-rs/ext/guardian/BUILD.bazel": (
+        "100644",
+        "blob",
+        "adcbb090bcdadbfadffb23fe181a4b328072cfbd",
+    ),
+    "codex-rs/ext/guardian/Cargo.toml": (
+        "100644",
+        "blob",
+        "513254b7cf754392d685ce099b0874e576fc9c7a",
+    ),
+    "codex-rs/ext/guardian/src/lib.rs": (
+        "100644",
+        "blob",
+        "a64cf4fed40ae756efb2bc163fe80034376835f0",
+    ),
+    "codex-rs/mcp-server/BUILD.bazel": (
+        "100644",
+        "blob",
+        "5bf39611b93e767ca9a22fd4ba4c238981d94afd",
+    ),
+    "codex-rs/mcp-server/Cargo.toml": (
+        "100644",
+        "blob",
+        "610672f0c2e62b139989543fb329675cb7ac5146",
+    ),
+    "codex-rs/mcp-server/src/codex_tool_config.rs": (
+        "100644",
+        "blob",
+        "2ceaac3000697aa00d828dd763fa7c944f1db300",
+    ),
+    "codex-rs/mcp-server/src/codex_tool_runner.rs": (
+        "100644",
+        "blob",
+        "1100a035d2fe85214b026125183eb04a46c76e26",
+    ),
+    "codex-rs/mcp-server/src/exec_approval.rs": (
+        "100644",
+        "blob",
+        "c1427a0578594ed0a6d27fbe0b1391acca6e7b61",
+    ),
+    "codex-rs/mcp-server/src/lib.rs": (
+        "100644",
+        "blob",
+        "7524234ace207d0028c408a3f85c9f94a5462a52",
+    ),
+    "codex-rs/mcp-server/src/main.rs": (
+        "100644",
+        "blob",
+        "220507446aaa7dd5f604fb581bf3b174a11197db",
+    ),
+    "codex-rs/mcp-server/src/message_processor.rs": (
+        "100644",
+        "blob",
+        "957d14f818f4db26ae2ba671218d9f0ab6772167",
+    ),
+    "codex-rs/mcp-server/src/outgoing_message.rs": (
+        "100644",
+        "blob",
+        "30b96fd18da1b31e5957314a86cb45e504291f9c",
+    ),
+    "codex-rs/mcp-server/src/patch_approval.rs": (
+        "100644",
+        "blob",
+        "56eca276b3c22aaf3f0d2c83a82e6df0d16980a9",
+    ),
+    "codex-rs/mcp-server/tests/all.rs": (
+        "100644",
+        "blob",
+        "fdf98aa9455bffb74f4dc11df6d237aa948248ef",
+    ),
+    "codex-rs/mcp-server/tests/common/BUILD.bazel": (
+        "100644",
+        "blob",
+        "d588b5b8dcced243962c8faab884d18fe0562c16",
+    ),
+    "codex-rs/mcp-server/tests/common/Cargo.toml": (
+        "100644",
+        "blob",
+        "515aa01b5a4a098a6f49cad9d5e4ad3cbbe54f77",
+    ),
+    "codex-rs/mcp-server/tests/common/lib.rs": (
+        "100644",
+        "blob",
+        "57c0ce825d05241523ca5ae39ee33ada1115e9bb",
+    ),
+    "codex-rs/mcp-server/tests/common/mcp_process.rs": (
+        "100644",
+        "blob",
+        "5bfcb39760d1ab500d633379616cdeba934f7687",
+    ),
+    "codex-rs/mcp-server/tests/common/mock_model_server.rs": (
+        "100644",
+        "blob",
+        "7734ae12cd8c603272e37171c97e67ab2bfdce54",
+    ),
+    "codex-rs/mcp-server/tests/common/responses.rs": (
+        "100644",
+        "blob",
+        "48a575a4c6ba255bb760fa185f19f0d460474a43",
+    ),
+    "codex-rs/mcp-server/tests/suite/codex_tool.rs": (
+        "100644",
+        "blob",
+        "41cdc3bbb2e4f283f2a6cc179b246b73daebc400",
+    ),
+    "codex-rs/mcp-server/tests/suite/mod.rs": (
+        "100644",
+        "blob",
+        "6b50853b165b5e940a5514b0919bcb45fdb05acb",
+    ),
+}
+RESTORE_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
+    path: (entry if path in {
+        "codex-rs/mcp-server/Cargo.toml",
+        "codex-rs/mcp-server/src/codex_tool_config.rs",
+        "codex-rs/mcp-server/src/codex_tool_runner.rs",
+        "codex-rs/mcp-server/src/lib.rs",
+        "codex-rs/mcp-server/src/message_processor.rs",
+        "codex-rs/mcp-server/src/outgoing_message.rs",
+        "codex-rs/mcp-server/tests/common/mcp_process.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+    } else None)
+    for path, entry in RESTORE_SOURCE_ENTRIES.items()
+}
+RESTORE_PATHS = list(RESTORE_SOURCE_ENTRIES)
+RESTORE_PATHS_SHA256 = "5428c8fdbb4cc499c3218272fdbd01bb822de4b254de51ee83346a389b44e7b6"
+RESTORE_ENTRIES_SHA256 = "76075be6752151e58794d773314f0dd38e2b98b86d962669876ff9e57a3100db"
+
+OVERLAY_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
+    sorted({**BUILD_SOURCE_ENTRIES, **RESTORE_SOURCE_ENTRIES}.items())
+)
+OVERLAY_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
+    sorted({**BUILD_SOURCE_PREIMAGE_ENTRIES, **RESTORE_SOURCE_PREIMAGE_ENTRIES}.items())
+)
+OVERLAY_PATHS = list(OVERLAY_SOURCE_ENTRIES)
+OVERLAY_PATHS_SHA256 = "39f8d33a5169f8d3ccaa72ddb33ed2cee9eac7d92c72d8ebd3c50d9b46892a04"
+OVERLAY_CHANGED_PATHS = [
+    path
+    for path in OVERLAY_PATHS
+    if OVERLAY_SOURCE_PREIMAGE_ENTRIES[path] != OVERLAY_SOURCE_ENTRIES[path]
+]
+OVERLAY_CHANGED_PATHS_SHA256 = "eac6ca498117c3c132c523097283e953518d81fa20e51595d97bff8926c9f91f"
+
 PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     "patches/rules_rs_windows_msvc_linker.patch": (
         "100644",
@@ -263,7 +407,7 @@ GENERATED_PATHS = [
     "sdk/python/src/openai_codex/generated/v2_all.py",
 ]
 SDK_GENERATED_PATHS = GENERATED_PATHS[3:]
-ALLOWED_MUTABLE_PATHS = sorted(set(BUILD_PATHS) | set(GENERATED_PATHS))
+ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS))
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
@@ -424,7 +568,11 @@ EXECUTION_INPUT_MODES = {
     "sdk/python/src/openai_codex/generated/notification_registry.py": "100644",
     "sdk/python/src/openai_codex/generated/v2_all.py": "100644",
     "sdk/typescript/package.json": "100644",
-    **{path: "100644" for path in BUILD_PATHS},
+    **{
+        path: postimage[0]
+        for path, postimage in OVERLAY_SOURCE_ENTRIES.items()
+        if postimage is not None
+    },
     **{path: "100644" for path in PATCH_DEPENDENCIES},
 }
 
@@ -544,6 +692,85 @@ def load(path: pathlib.Path) -> dict[str, Any]:
 def path_digest(paths: list[str]) -> str:
     data = ("\n".join(paths) + ("\n" if paths else "")).encode()
     return hashlib.sha256(data).hexdigest()
+
+
+def mode_oid_path_digest(entries: dict[str, tuple[str, str, str]]) -> str:
+    canonical = b"".join(
+        f"{mode} {oid}\t{path}".encode("utf-8") + b"\0"
+        for path, (mode, _object_type, oid) in sorted(entries.items())
+    )
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def overlay_operation(
+    preimage: tuple[str, str, str] | None,
+    postimage: tuple[str, str, str] | None,
+) -> str:
+    require(preimage is not None or postimage is not None, "overlay entry cannot be absent on both sides")
+    if preimage is None:
+        return "A"
+    if postimage is None:
+        return "D"
+    if preimage == postimage:
+        return "E"
+    return "M"
+
+
+def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
+    require(list(BUILD_SOURCE_ENTRIES) == BUILD_PATHS, "build source path set mismatch")
+    require(list(BUILD_SOURCE_PREIMAGE_ENTRIES) == BUILD_PATHS, "build source preimage set mismatch")
+    require(list(RESTORE_SOURCE_ENTRIES) == RESTORE_PATHS, "restore source path set mismatch")
+    require(
+        list(RESTORE_SOURCE_PREIMAGE_ENTRIES) == RESTORE_PATHS,
+        "restore source preimage set mismatch",
+    )
+    require(list(OVERLAY_SOURCE_ENTRIES) == OVERLAY_PATHS, "overlay source path set mismatch")
+    require(
+        list(OVERLAY_SOURCE_PREIMAGE_ENTRIES) == OVERLAY_PATHS,
+        "overlay source preimage set mismatch",
+    )
+    require(path_digest(BUILD_PATHS) == BUILD_PATHS_SHA256, "build source path digest mismatch")
+    require(path_digest(RESTORE_PATHS) == RESTORE_PATHS_SHA256, "restore path digest mismatch")
+    require(path_digest(OVERLAY_PATHS) == OVERLAY_PATHS_SHA256, "overlay path digest mismatch")
+    require(
+        path_digest(OVERLAY_CHANGED_PATHS) == OVERLAY_CHANGED_PATHS_SHA256,
+        "changed overlay path digest mismatch",
+    )
+    require(
+        mode_oid_path_digest(RESTORE_SOURCE_ENTRIES) == RESTORE_ENTRIES_SHA256,
+        "restore entry digest mismatch",
+    )
+    operations: dict[str, list[str]] = {state: [] for state in ("A", "M", "D", "E")}
+    for path in OVERLAY_PATHS:
+        preimage = OVERLAY_SOURCE_PREIMAGE_ENTRIES[path]
+        postimage = OVERLAY_SOURCE_ENTRIES[path]
+        operation = overlay_operation(preimage, postimage)
+        operations[operation].append(path)
+        require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == preimage, f"overlay preimage mismatch: {path}")
+        require(tree_entry(repo, BUILD_SOURCE_SHA, path) == postimage, f"overlay postimage mismatch: {path}")
+    changed = sorted([*operations["A"], *operations["M"], *operations["D"]])
+    require(changed == OVERLAY_CHANGED_PATHS, "overlay changed path set mismatch")
+    require(len(operations["A"]) == 14, "overlay addition count mismatch")
+    require(len(operations["M"]) == 11, "overlay modification count mismatch")
+    require(not operations["D"], "unexpected current overlay deletion")
+    require(len(operations["E"]) == 8, "overlay exact-retention count mismatch")
+    return {
+        "declared_path_count": len(OVERLAY_PATHS),
+        "declared_path_set_sha256": OVERLAY_PATHS_SHA256,
+        "changed_path_count": len(OVERLAY_CHANGED_PATHS),
+        "changed_path_set_sha256": OVERLAY_CHANGED_PATHS_SHA256,
+        "restore_path_count": len(RESTORE_PATHS),
+        "restore_path_set_sha256": RESTORE_PATHS_SHA256,
+        "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+        "operations": {
+            state: {
+                "count": len(paths),
+                "path_set_sha256": path_digest(paths),
+                "paths": paths,
+            }
+            for state, paths in operations.items()
+        },
+    }
 
 
 def absolute_argument(path: pathlib.Path, name: str, *, must_exist: bool) -> pathlib.Path:
@@ -668,24 +895,24 @@ def in_memory_composed_manifest(
 ) -> dict[str, Any]:
     entries = manifest_entry_map(sdk_manifest)
     before = {path: list(entry) for path, entry in entries.items()}
-    require(list(BUILD_SOURCE_PREIMAGE_ENTRIES) == BUILD_PATHS, "build source preimage set mismatch")
-    for path, expected in BUILD_SOURCE_ENTRIES.items():
-        require(
-            tree_entry(repo, SDK_CANDIDATE_SHA, path) == BUILD_SOURCE_PREIMAGE_ENTRIES[path],
-            f"accepted SDK candidate did not retain build source preimage: {path}",
-        )
-        require(
-            tree_entry(repo, BUILD_SOURCE_SHA, path) == expected,
-            f"build source tuple changed before overlay manifest: {path}",
-        )
-        mode, object_type, oid = expected
-        require(path in entries, f"build overlay path is absent from SDK candidate: {path}")
-        entries[path] = [mode, object_type, oid, path]
+    overlay_contract = verify_overlay_contract(repo)
+    for path in OVERLAY_PATHS:
+        expected = OVERLAY_SOURCE_ENTRIES[path]
+        if expected is None:
+            entries.pop(path, None)
+        else:
+            mode, object_type, oid = expected
+            entries[path] = [mode, object_type, oid, path]
 
-    changed = sorted(path for path in entries if entries[path] != before.get(path))
-    require(changed == BUILD_PATHS, "in-memory overlay escaped or omitted the exact build path set")
+    changed = sorted(path for path in set(entries) | set(before) if entries.get(path) != before.get(path))
+    require(
+        changed == OVERLAY_CHANGED_PATHS,
+        "in-memory overlay escaped or omitted the exact declared changed path set",
+    )
     composed_entries = sorted(entries.values(), key=lambda entry: entry[3].encode("utf-8"))
-    require(len(composed_entries) == len(before), "in-memory overlay changed the tree entry count")
+    expected_entry_count = len(before) + len(overlay_contract["operations"]["A"]["paths"])
+    expected_entry_count -= len(overlay_contract["operations"]["D"]["paths"])
+    require(len(composed_entries) == expected_entry_count, "in-memory overlay entry count mismatch")
     canonical = canonical_entry_bytes(composed_entries)
     return {
         "complete": True,
@@ -696,6 +923,7 @@ def in_memory_composed_manifest(
         "build_source_tree": BUILD_SOURCE_TREE,
         "overlay_path_count": len(changed),
         "overlay_path_set_sha256": path_digest(changed),
+        "overlay_contract": overlay_contract,
         "entry_count": len(composed_entries),
         "path_set_sha256": path_digest([entry[3] for entry in composed_entries]),
         "canonical_entries_sha256": hashlib.sha256(canonical).hexdigest(),
@@ -788,6 +1016,257 @@ def dependency_tables(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any
     return result
 
 
+def joined_manifest_path(owner_manifest: str, declared_path: str) -> str | None:
+    if not declared_path or "\\" in declared_path or pathlib.PurePosixPath(declared_path).is_absolute():
+        return None
+    if re.search(r"[\x00-\x1f\x7f]", declared_path):
+        return None
+    parts = list(pathlib.PurePosixPath(owner_manifest).parent.parts)
+    for part in pathlib.PurePosixPath(declared_path).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    if not parts:
+        return None
+    return pathlib.PurePosixPath(*parts, "Cargo.toml").as_posix()
+
+
+def manifest_graph_diagnostics(parsed: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    mismatches: list[dict[str, Any]] = []
+    root = parsed.get(ROOT_MANIFEST_PATH, {})
+    workspace = root.get("workspace") if isinstance(root.get("workspace"), dict) else {}
+    raw_members = workspace.get("members", [])
+    raw_excludes = workspace.get("exclude", [])
+    if not isinstance(raw_members, list):
+        mismatches.append({"kind": "workspace-members-invalid"})
+        raw_members = []
+    if not isinstance(raw_excludes, list):
+        mismatches.append({"kind": "workspace-excludes-invalid"})
+        raw_excludes = []
+    elif raw_excludes:
+        mismatches.append(
+            {
+                "kind": "workspace-excludes-unsupported",
+                "excludes": raw_excludes,
+            }
+        )
+
+    resolved_members: list[str] = []
+    nested_workspace_count = 0
+    for member in raw_members:
+        if not isinstance(member, str) or not member:
+            mismatches.append({"kind": "workspace-member-invalid", "member": member})
+            continue
+        if re.search(r"[*?\[]", member):
+            mismatches.append({"kind": "workspace-member-glob-unsupported", "member": member})
+            continue
+        manifest_path = joined_manifest_path(ROOT_MANIFEST_PATH, member)
+        if manifest_path is None:
+            mismatches.append({"kind": "workspace-member-path-invalid", "member": member})
+            continue
+        resolved_members.append(manifest_path)
+        if manifest_path not in parsed:
+            mismatches.append(
+                {
+                    "kind": "workspace-member-target-missing",
+                    "member": member,
+                    "target": manifest_path,
+                }
+            )
+        elif isinstance(parsed[manifest_path].get("workspace"), dict):
+            nested_workspace_count += 1
+            mismatches.append(
+                {
+                    "kind": "nested-workspace-member-unsupported",
+                    "member": member,
+                    "target": manifest_path,
+                }
+            )
+
+    workspace_dependencies = (
+        workspace.get("dependencies") if isinstance(workspace.get("dependencies"), dict) else {}
+    )
+    direct_path_edge_count = 0
+    inherited_workspace_edge_count = 0
+    path_edges: list[dict[str, str]] = []
+
+    def record_path_edge(
+        *,
+        consumer: str,
+        table: str,
+        dependency: str,
+        declaration: Any,
+        edge_kind: str,
+        path_owner: str | None = None,
+    ) -> None:
+        nonlocal direct_path_edge_count
+        path_value = declaration.get("path") if isinstance(declaration, dict) else None
+        if path_value is None:
+            return
+        if edge_kind != "workspace-inherited":
+            direct_path_edge_count += 1
+        if not isinstance(path_value, str):
+            mismatches.append(
+                {
+                    "kind": "dependency-path-invalid",
+                    "consumer": consumer,
+                    "table": table,
+                    "dependency": dependency,
+                }
+            )
+            return
+        target = joined_manifest_path(path_owner or consumer, path_value)
+        if target is None:
+            mismatches.append(
+                {
+                    "kind": "dependency-path-invalid",
+                    "consumer": consumer,
+                    "table": table,
+                    "dependency": dependency,
+                    "path": path_value,
+                }
+            )
+            return
+        edge = {
+            "consumer": consumer,
+            "table": table,
+            "dependency": dependency,
+            "edge_kind": edge_kind,
+            "declared_path": path_value,
+            "target": target,
+        }
+        path_edges.append(edge)
+        if target not in parsed:
+            mismatches.append({"kind": "dependency-path-target-missing", **edge})
+
+    for name, declaration in sorted(workspace_dependencies.items()):
+        record_path_edge(
+            consumer=ROOT_MANIFEST_PATH,
+            table="workspace.dependencies",
+            dependency=name,
+            declaration=declaration,
+            edge_kind="workspace-definition",
+        )
+
+    for path, manifest in sorted(parsed.items()):
+        for table_name, table in dependency_tables(manifest):
+            for name, declaration in sorted(table.items()):
+                if isinstance(declaration, dict) and declaration.get("workspace") is True:
+                    inherited_workspace_edge_count += 1
+                    workspace_declaration = workspace_dependencies.get(name)
+                    if workspace_declaration is not None:
+                        record_path_edge(
+                            consumer=path,
+                            table=table_name,
+                            dependency=name,
+                            declaration=workspace_declaration,
+                            edge_kind="workspace-inherited",
+                            path_owner=ROOT_MANIFEST_PATH,
+                        )
+                else:
+                    record_path_edge(
+                        consumer=path,
+                        table=table_name,
+                        dependency=name,
+                        declaration=declaration,
+                        edge_kind="direct",
+                    )
+
+    mismatches.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    missing_targets = sorted(
+        {
+            item["target"]
+            for item in mismatches
+            if item["kind"] in {"workspace-member-target-missing", "dependency-path-target-missing"}
+        }
+    )
+    return {
+        "workspace_member_spec_count": len(raw_members),
+        "workspace_member_literal_count": len(resolved_members),
+        "workspace_member_resolved_count": sum(path in parsed for path in resolved_members),
+        "workspace_exclude_count": len(raw_excludes),
+        "nested_workspace_count": nested_workspace_count,
+        "dependency_consumer_edge_count": direct_path_edge_count + inherited_workspace_edge_count,
+        "direct_path_edge_count": direct_path_edge_count,
+        "inherited_workspace_edge_count": inherited_workspace_edge_count,
+        "path_edge_count": len(path_edges),
+        "path_edges": path_edges,
+        "missing_target_count": len(missing_targets),
+        "missing_targets": missing_targets,
+        "mismatches": mismatches,
+    }
+
+
+def manifest_structure_fixture_receipt() -> dict[str, Any]:
+    root = {
+        "workspace": {
+            "members": ["core-skills", "ext/guardian", "mcp-server"],
+            "dependencies": {
+                "codex-guardian": {"path": "ext/guardian"},
+                "mcp_test_support": {"path": "mcp-server/tests/common"},
+            },
+        }
+    }
+    invalid = {
+        ROOT_MANIFEST_PATH: root,
+        "codex-rs/app-server/Cargo.toml": {
+            "dependencies": {"codex-guardian": {"workspace": True}},
+        },
+        "codex-rs/mcp-server/Cargo.toml": {
+            "dev-dependencies": {
+                "mcp_test_support": {"workspace": True},
+                "missing_direct_dev": {"path": "tests/direct-dev"},
+            },
+        },
+    }
+    rejected = manifest_graph_diagnostics(invalid)
+    rejected_kinds = {item["kind"] for item in rejected["mismatches"]}
+    require("workspace-member-target-missing" in rejected_kinds, "fixture accepted a missing member")
+    require("dependency-path-target-missing" in rejected_kinds, "fixture accepted a missing path target")
+    require(rejected["missing_target_count"] >= 4, "fixture did not aggregate missing targets")
+
+    accepted_root = {
+        "workspace": {
+            "members": ["ext/guardian", "mcp-server"],
+            "dependencies": root["workspace"]["dependencies"],
+        }
+    }
+    accepted = {
+        **invalid,
+        ROOT_MANIFEST_PATH: accepted_root,
+        "codex-rs/ext/guardian/Cargo.toml": {"package": {"name": "codex-guardian"}},
+        "codex-rs/mcp-server/tests/common/Cargo.toml": {
+            "package": {"name": "mcp-test-support"},
+        },
+        "codex-rs/mcp-server/tests/direct-dev/Cargo.toml": {
+            "package": {"name": "direct-dev"},
+        },
+    }
+    accepted_result = manifest_graph_diagnostics(accepted)
+    require(not accepted_result["mismatches"], "fixture rejected exact declared additions")
+    known_additions = [
+        "codex-rs/ext/guardian/Cargo.toml",
+        "codex-rs/mcp-server/tests/common/Cargo.toml",
+    ]
+    require(all(path in RESTORE_SOURCE_ENTRIES for path in known_additions), "fixture additions drifted")
+    return {
+        "schema": "sdk-build-manifest-structure-fixture",
+        "version": 1,
+        "status": "ready",
+        "rejected_mismatch_count": len(rejected["mismatches"]),
+        "rejected_missing_targets": rejected["missing_targets"],
+        "accepted_manifest_count": len(accepted),
+        "accepted_exact_additions": known_additions,
+        "accepted_exact_additions_sha256": path_digest(known_additions),
+        "accepted_missing_target_count": accepted_result["missing_target_count"],
+    }
+
+
 def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
     accepted_inventory = manifest_inventory_from_tree(worktree, SDK_CANDIDATE_SHA)
     composed_inventory = manifest_inventory_from_index(worktree)
@@ -795,23 +1274,35 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     composed = {item["path"]: item for item in composed_inventory}
     mismatches: list[dict[str, Any]] = []
 
-    for path in sorted(set(accepted) | set(composed)):
+    overlay_manifest_paths = {
+        path for path in OVERLAY_PATHS if path == ROOT_MANIFEST_PATH or path.endswith("/Cargo.toml")
+    }
+    for path in sorted(set(accepted) | set(composed) | overlay_manifest_paths):
         before = accepted.get(path)
         after = composed.get(path)
-        if before is None:
-            mismatches.append({"kind": "unexpected-manifest", "path": path, "actual": after})
-        elif after is None:
-            mismatches.append({"kind": "missing-manifest", "path": path, "accepted": before})
-        elif path == ROOT_MANIFEST_PATH:
-            expected = tuple_json(BUILD_SOURCE_ENTRIES[ROOT_MANIFEST_PATH])
-            actual = {"mode": after["mode"], "type": "blob", "oid": after["oid"]}
-            if actual != expected:
-                mismatches.append(
-                    {"kind": "root-manifest-tuple", "path": path, "expected": expected, "actual": actual}
-                )
-        elif before != after:
+        expected_tuple = (
+            OVERLAY_SOURCE_ENTRIES[path]
+            if path in OVERLAY_SOURCE_ENTRIES
+            else (
+                (before["mode"], "blob", before["oid"])
+                if before is not None
+                else None
+            )
+        )
+        actual_tuple = (
+            (after["mode"], "blob", after["oid"])
+            if after is not None
+            else None
+        )
+        if actual_tuple != expected_tuple:
             mismatches.append(
-                {"kind": "accepted-manifest-blob-changed", "path": path, "accepted": before, "actual": after}
+                {
+                    "kind": "manifest-overlay-tuple-mismatch",
+                    "path": path,
+                    "accepted": before,
+                    "expected": tuple_json(expected_tuple),
+                    "actual": tuple_json(actual_tuple),
+                }
             )
 
     parsed: dict[str, dict[str, Any]] = {}
@@ -828,6 +1319,8 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     workspace_dependencies = (
         workspace.get("dependencies") if isinstance(workspace.get("dependencies"), dict) else {}
     )
+    graph = manifest_graph_diagnostics(parsed)
+    mismatches.extend(graph["mismatches"])
     prior_root = toml_blob(
         worktree,
         f"{BUILD_SOURCE_PARENT}:{ROOT_MANIFEST_PATH}",
@@ -916,7 +1409,7 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     mismatches.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
     receipt = {
         "schema": "sdk-build-composed-manifest-structure",
-        "version": 1,
+        "version": 2,
         "status": "ready" if not mismatches else "invalid",
         "input_sdk_candidate": SDK_CANDIDATE_SHA,
         "input_sdk_tree": SDK_CANDIDATE_TREE,
@@ -933,6 +1426,19 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
         "required_workspace_dependency_count": len(REQUIRED_WORKSPACE_DEPENDENCIES),
         "deferred_workspace_dependencies": sorted(DEFERRED_WORKSPACE_DEPENDENCIES),
         "inherited_workspace_dependency_count": len(inherited_dependencies),
+        "workspace_member_spec_count": graph["workspace_member_spec_count"],
+        "workspace_member_literal_count": graph["workspace_member_literal_count"],
+        "workspace_member_resolved_count": graph["workspace_member_resolved_count"],
+        "workspace_exclude_count": graph["workspace_exclude_count"],
+        "nested_workspace_count": graph["nested_workspace_count"],
+        "dependency_consumer_edge_count": graph["dependency_consumer_edge_count"],
+        "direct_path_edge_count": graph["direct_path_edge_count"],
+        "inherited_workspace_edge_count": graph["inherited_workspace_edge_count"],
+        "path_edge_count": graph["path_edge_count"],
+        "missing_target_count": graph["missing_target_count"],
+        "missing_targets": graph["missing_targets"],
+        "path_edges": graph["path_edges"],
+        "overlay_contract": verify_overlay_contract(worktree),
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
     }
@@ -1236,7 +1742,7 @@ def resolve_composed_cargo_lock(worktree: pathlib.Path, diagnostics: pathlib.Pat
         try:
             require_candidate_paths(
                 worktree,
-                sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]),
+                sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS]),
                 "composed Cargo lock resolution",
             )
         except SystemExit as error:
@@ -1390,9 +1896,9 @@ def verify_build_source_checkout(repo: pathlib.Path) -> None:
         BUILD_SOURCE_SHA,
         cwd=repo,
     ).splitlines()
-    require(changed == BUILD_PATHS, "build source diff is not the exact eleven-path cohort")
+    require(changed == BUILD_PATHS, "build source diff is not the exact eleven-path authored cohort")
     require(path_digest(changed) == BUILD_PATHS_SHA256, "build source path-set digest mismatch")
-    for path, expected in BUILD_SOURCE_ENTRIES.items():
+    for path, expected in OVERLAY_SOURCE_ENTRIES.items():
         require(tree_entry(repo, BUILD_SOURCE_SHA, path) == expected, f"build source tuple mismatch: {path}")
 
 
@@ -1819,7 +2325,7 @@ def emit_tree_metadata_manifest(
     ).hexdigest()
     manifest = {
         "schema": "sdk-build-content-free-tree-manifest",
-        "version": 1,
+        "version": 2,
         "repository": REPOSITORY,
         "signed": False,
         "status": "complete",
@@ -1848,8 +2354,17 @@ def emit_tree_metadata_manifest(
             "sdk_candidate_changed_path_count": len(sdk_changed),
             "sdk_candidate_changed_path_set_sha256": path_digest(sdk_changed),
             "sdk_candidate_changed_paths": sdk_changed,
-            "build_overlay_path_count": len(BUILD_PATHS),
-            "build_overlay_path_set_sha256": BUILD_PATHS_SHA256,
+            "build_overlay_path_count": len(OVERLAY_CHANGED_PATHS),
+            "build_overlay_path_set_sha256": OVERLAY_CHANGED_PATHS_SHA256,
+            "build_source_authored_path_count": len(BUILD_PATHS),
+            "build_source_authored_path_set_sha256": BUILD_PATHS_SHA256,
+            "declared_overlay_path_count": len(OVERLAY_PATHS),
+            "declared_overlay_path_set_sha256": OVERLAY_PATHS_SHA256,
+            "changed_overlay_path_count": len(OVERLAY_CHANGED_PATHS),
+            "changed_overlay_path_set_sha256": OVERLAY_CHANGED_PATHS_SHA256,
+            "restore_path_count": len(RESTORE_PATHS),
+            "restore_path_set_sha256": RESTORE_PATHS_SHA256,
+            "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
         },
         "subjects": {
             "materialized": materialized,
@@ -2292,17 +2807,27 @@ def require_changed_path_boundary(changed: list[str], allowed: list[str], label:
     require(len(changed) == len(set(changed)), f"{label} contains duplicate changed paths")
     require(changed == sorted(changed), f"{label} changed paths are not canonical")
     changed_set = set(changed)
-    require(set(BUILD_PATHS).issubset(changed_set), f"{label} omitted a selected build-source path")
+    require(
+        set(OVERLAY_CHANGED_PATHS).issubset(changed_set),
+        f"{label} omitted a declared changed overlay path",
+    )
     require(changed_set.issubset(allowed), f"{label} escaped the allowed generated-path subset")
 
 
-def require_modified_paths_only(status_lines: list[str], changed: list[str], label: str) -> None:
+def require_declared_path_statuses(status_lines: list[str], changed: list[str], label: str) -> None:
     status_paths: list[str] = []
     for line in status_lines:
         fields = line.split("\t")
         require(len(fields) == 2, f"{label} contains a rename or malformed status: {line}")
         status, path = fields
-        require(status == "M", f"{label} contains a non-modification status: {line}")
+        if path in OVERLAY_SOURCE_ENTRIES:
+            expected = overlay_operation(
+                OVERLAY_SOURCE_PREIMAGE_ENTRIES[path],
+                OVERLAY_SOURCE_ENTRIES[path],
+            )
+        else:
+            expected = "M"
+        require(status == expected, f"{label} path status mismatch for {path}: {status} != {expected}")
         status_paths.append(path)
     require(status_paths == changed, f"{label} status/path mismatch")
 
@@ -2311,28 +2836,28 @@ def require_candidate_paths(worktree: pathlib.Path, allowed: list[str], label: s
     changed = run("git", "diff", "--name-only", SDK_CANDIDATE_SHA, "--", cwd=worktree).splitlines()
     require_changed_path_boundary(changed, allowed, label)
     status_lines = run("git", "diff", "--name-status", SDK_CANDIDATE_SHA, "--", cwd=worktree).splitlines()
-    require_modified_paths_only(status_lines, changed, label)
+    require_declared_path_statuses(status_lines, changed, label)
     require_no_untracked(worktree)
     return changed
 
 
 def prepare_candidate_worktree(repo: pathlib.Path, temp: pathlib.Path) -> pathlib.Path:
-    require(list(BUILD_SOURCE_PREIMAGE_ENTRIES) == BUILD_PATHS, "build source preimage set mismatch")
-    for path in BUILD_PATHS:
-        require(
-            tree_entry(repo, SDK_CANDIDATE_SHA, path) == BUILD_SOURCE_PREIMAGE_ENTRIES[path],
-            f"accepted SDK candidate did not retain build source preimage: {path}",
-        )
+    verify_overlay_contract(repo)
     worktree = temp / "candidate-worktree"
     run("git", "clone", "--shared", "--no-checkout", str(repo), str(worktree))
     run("git", "checkout", "--detach", SDK_CANDIDATE_SHA, cwd=worktree)
     require(not run("git", "status", "--porcelain", cwd=worktree), "candidate worktree is not initially clean")
-    run("git", "checkout", BUILD_SOURCE_SHA, "--", *BUILD_PATHS, cwd=worktree)
-    for path, expected in BUILD_SOURCE_ENTRIES.items():
+    selected_paths = [path for path in OVERLAY_PATHS if OVERLAY_SOURCE_ENTRIES[path] is not None]
+    deleted_paths = [path for path in OVERLAY_PATHS if OVERLAY_SOURCE_ENTRIES[path] is None]
+    if selected_paths:
+        run("git", "checkout", BUILD_SOURCE_SHA, "--", *selected_paths, cwd=worktree)
+    if deleted_paths:
+        run("git", "rm", "--", *deleted_paths, cwd=worktree)
+    for path, expected in OVERLAY_SOURCE_ENTRIES.items():
         require(index_entry(worktree, path) == expected, f"selected build source index tuple mismatch: {path}")
     staged_source = run("git", "diff", "--cached", "--name-only", SDK_CANDIDATE_SHA, cwd=worktree).splitlines()
-    require(staged_source == BUILD_PATHS, "selected build source escaped the eleven-path cohort")
-    require_candidate_paths(worktree, BUILD_PATHS, "build source selection")
+    require(staged_source == OVERLAY_CHANGED_PATHS, "selected source escaped the declared overlay")
+    require_candidate_paths(worktree, OVERLAY_CHANGED_PATHS, "build source selection")
     return worktree
 
 
@@ -2390,7 +2915,7 @@ def require_committed_candidate_paths(repo: pathlib.Path, revision: str, label: 
         revision,
         cwd=repo,
     ).splitlines()
-    require_modified_paths_only(status_lines, changed, label)
+    require_declared_path_statuses(status_lines, changed, label)
     return changed
 
 
@@ -2474,7 +2999,11 @@ def generate_and_test(
         cwd=python_project,
         env=generation_env,
     )
-    require_candidate_paths(worktree, sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]), "SDK generation")
+    require_candidate_paths(
+        worktree,
+        sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS]),
+        "SDK generation",
+    )
     run("git", "add", "--", *SDK_GENERATED_PATHS, cwd=worktree)
 
     run_tool(
@@ -2486,7 +3015,11 @@ def generate_and_test(
         "150.4.0",
         cwd=worktree,
     )
-    require_candidate_paths(worktree, sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS]), "V8 checksum verification")
+    require_candidate_paths(
+        worktree,
+        sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS]),
+        "V8 checksum verification",
+    )
 
     run_tool(
         "MODULE.bazel.lock generation",
@@ -2498,7 +3031,7 @@ def generate_and_test(
     )
     require_candidate_paths(
         worktree,
-        sorted([*BUILD_PATHS, *SDK_GENERATED_PATHS, "MODULE.bazel.lock"]),
+        sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS, "MODULE.bazel.lock"]),
         "Bazel lock generation",
     )
     run("git", "add", "--", "MODULE.bazel.lock", cwd=worktree)
@@ -2613,6 +3146,7 @@ def main() -> None:
     parser.add_argument("--expected-workflow-sha", required=True)
     parser.add_argument("--expected-workflow-tree", required=True)
     parser.add_argument("--validate-runtime-only", action="store_true")
+    parser.add_argument("--validate-manifest-structure-fixtures-only", action="store_true")
     parser.add_argument("--validate-uv-identity")
     parser.add_argument("--prepare-inputs-only", action="store_true")
     parser.add_argument("--metadata-manifest-only", action="store_true")
@@ -2626,6 +3160,7 @@ def main() -> None:
             and args.preflight_dir is None
             and args.output_dir is None
             and args.validate_uv_identity is None
+            and not args.validate_manifest_structure_fixtures_only
             and not args.prepare_inputs_only
             and not args.metadata_manifest_only,
             "runtime-only validation does not accept consumer paths",
@@ -2638,6 +3173,7 @@ def main() -> None:
             and args.artifact_dir is None
             and args.preflight_dir is None
             and args.output_dir is None
+            and not args.validate_manifest_structure_fixtures_only
             and not args.prepare_inputs_only
             and not args.metadata_manifest_only,
             "uv identity validation does not accept consumer paths",
@@ -2645,6 +3181,18 @@ def main() -> None:
         receipt = uv_identity_receipt(args.validate_uv_identity)
         print(json.dumps(receipt, sort_keys=True))
         require(receipt["status"] == "ready", f"uv identity invalid: {receipt['errors']}")
+        return
+    if args.validate_manifest_structure_fixtures_only:
+        require(
+            args.repo_root is None
+            and args.artifact_dir is None
+            and args.preflight_dir is None
+            and args.output_dir is None
+            and not args.prepare_inputs_only
+            and not args.metadata_manifest_only,
+            "manifest structure fixture validation does not accept consumer paths",
+        )
+        print(json.dumps(manifest_structure_fixture_receipt(), sort_keys=True))
         return
     require(
         args.repo_root is not None and args.artifact_dir is not None,
@@ -2740,20 +3288,35 @@ def main() -> None:
 
         path_dispositions: list[dict[str, Any]] = []
         generated_dispositions: list[dict[str, Any]] = []
-        for path in ALLOWED_MUTABLE_PATHS:
+        disposition_paths = sorted(set(ALLOWED_MUTABLE_PATHS) | set(OVERLAY_PATHS))
+        overlay_dispositions: list[dict[str, Any]] = []
+        for path in disposition_paths:
             parent_entry = tree_entry(worktree, SDK_CANDIDATE_SHA, path)
             selected_entry = tree_entry(worktree, candidate_sha, path)
             role = "generated" if path in GENERATED_PATHS else "build-source"
             changed = path in candidate_path_set
             if role == "build-source":
                 source_entry = tree_entry(worktree, BUILD_SOURCE_SHA, path)
-                require(selected_entry == BUILD_SOURCE_ENTRIES[path] == source_entry, f"final build source tuple mismatch: {path}")
-                require(changed, f"final candidate omitted selected build source: {path}")
-                disposition = "selected-build-source"
+                expected_preimage = OVERLAY_SOURCE_PREIMAGE_ENTRIES[path]
+                expected_postimage = OVERLAY_SOURCE_ENTRIES[path]
+                require(parent_entry == expected_preimage, f"final overlay preimage mismatch: {path}")
+                require(source_entry == expected_postimage, f"final overlay source tuple mismatch: {path}")
+                require(selected_entry == expected_postimage, f"final overlay selected tuple mismatch: {path}")
+                require(
+                    changed == (expected_preimage != expected_postimage),
+                    f"final overlay change disposition mismatch: {path}",
+                )
+                operation = overlay_operation(expected_preimage, expected_postimage)
+                disposition = {
+                    "A": "selected-build-source-addition",
+                    "M": "selected-build-source-modification",
+                    "D": "selected-build-source-deletion",
+                    "E": "verified-build-source-exact",
+                }[operation]
             else:
                 source_entry = (
                     tree_entry(worktree, BUILD_SOURCE_SHA, path)
-                    if path in BUILD_SOURCE_ENTRIES
+                    if path in OVERLAY_SOURCE_ENTRIES
                     else None
                 )
                 require(parent_entry is not None and selected_entry is not None, f"generated path missing: {path}")
@@ -2776,7 +3339,14 @@ def main() -> None:
             path_dispositions.append(path_disposition)
             if role == "generated":
                 generated_dispositions.append(path_disposition)
+            else:
+                overlay_dispositions.append(path_disposition)
         require(len(generated_dispositions) == len(GENERATED_PATHS), "generated disposition count mismatch")
+        expected_overlay_dispositions = len(set(OVERLAY_PATHS) - set(GENERATED_PATHS))
+        require(
+            len(overlay_dispositions) == expected_overlay_dispositions,
+            "overlay disposition count mismatch",
+        )
 
         retained_patches = []
         for path, expected in PATCH_DEPENDENCIES.items():
@@ -2808,7 +3378,7 @@ def main() -> None:
 
         receipt = {
             "schema": "sdk-build-hosted-consumer-disposition",
-            "version": 1,
+            "version": 2,
             "repository": REPOSITORY,
             "input_sdk_artifact_id": SDK_INPUT_ARTIFACT_ID,
             "input_sdk_candidate": SDK_CANDIDATE_SHA,
@@ -2818,7 +3388,7 @@ def main() -> None:
             "build_source_sha": BUILD_SOURCE_SHA,
             "build_source_tree": BUILD_SOURCE_TREE,
             "build_source_parent": BUILD_SOURCE_PARENT,
-            "mutable_path_policy": "exact-build-source-plus-allowed-generated-subset",
+            "mutable_path_policy": "exact-declared-overlay-plus-allowed-generated-subset",
             "allowed_mutable_path_count": len(ALLOWED_MUTABLE_PATHS),
             "allowed_mutable_path_set_sha256": path_digest(ALLOWED_MUTABLE_PATHS),
             "actual_changed_path_count": len(candidate_paths),
@@ -2826,6 +3396,15 @@ def main() -> None:
             "actual_changed_paths": candidate_paths,
             "build_source_path_count": len(BUILD_PATHS),
             "build_source_path_set_sha256": BUILD_PATHS_SHA256,
+            "declared_overlay_path_count": len(OVERLAY_PATHS),
+            "declared_overlay_path_set_sha256": OVERLAY_PATHS_SHA256,
+            "changed_overlay_path_count": len(OVERLAY_CHANGED_PATHS),
+            "changed_overlay_path_set_sha256": OVERLAY_CHANGED_PATHS_SHA256,
+            "restore_path_count": len(RESTORE_PATHS),
+            "restore_path_set_sha256": RESTORE_PATHS_SHA256,
+            "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+            "overlay_contract": verify_overlay_contract(worktree),
+            "overlay_dispositions": overlay_dispositions,
             "generated_path_count": len(GENERATED_PATHS),
             "generated_paths": GENERATED_PATHS,
             "generated_path_policy": "mandatory-resolution-or-generation-allowed-change-subset",
@@ -2850,7 +3429,7 @@ def main() -> None:
         receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         provenance = {
             "schema": "sdk-build-hosted-consumer-provenance",
-            "version": 1,
+            "version": 2,
             "signed": False,
             **runtime,
             "input_sdk_artifact_id": SDK_INPUT_ARTIFACT_ID,
@@ -2868,9 +3447,16 @@ def main() -> None:
             "build_source_sha": BUILD_SOURCE_SHA,
             "build_source_tree": BUILD_SOURCE_TREE,
             "build_source_parent": BUILD_SOURCE_PARENT,
-            "mutable_path_policy": "exact-build-source-plus-allowed-generated-subset",
+            "mutable_path_policy": "exact-declared-overlay-plus-allowed-generated-subset",
             "allowed_mutable_path_count": len(ALLOWED_MUTABLE_PATHS),
             "allowed_mutable_path_set_sha256": path_digest(ALLOWED_MUTABLE_PATHS),
+            "declared_overlay_path_count": len(OVERLAY_PATHS),
+            "declared_overlay_path_set_sha256": OVERLAY_PATHS_SHA256,
+            "changed_overlay_path_count": len(OVERLAY_CHANGED_PATHS),
+            "changed_overlay_path_set_sha256": OVERLAY_CHANGED_PATHS_SHA256,
+            "restore_path_count": len(RESTORE_PATHS),
+            "restore_path_set_sha256": RESTORE_PATHS_SHA256,
+            "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
             "actual_changed_path_count": len(candidate_paths),
             "actual_changed_path_set_sha256": path_digest(candidate_paths),
             "actual_changed_paths": candidate_paths,

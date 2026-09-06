@@ -98,7 +98,7 @@ jobs:
           workflow_tree = sys.argv[3]
           push = {
               "ref": "refs/heads/worker/w13825-sdk-build-consumer",
-              "before": "a21eec53ebcbc8523141254bb10afd6a83b35ccd",
+              "before": "8a0de69418be6c4ab55dd8bf8a9a0bc2385278c9",
               "after": workflow_sha,
               "created": False,
               "deleted": False,
@@ -213,6 +213,15 @@ jobs:
             run_uv_fixture 'uvx 0.11.3'
           expect_failure "uv:malformed-identity" \
             run_uv_fixture 'uv 0.11.3 x86_64-unknown-linux-gnu'
+          structure_fixture="$(
+            python3 "${helper}" \
+              --validate-manifest-structure-fixtures-only \
+              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
+              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+          )"
+          test "$(jq -r '.status' <<<"${structure_fixture}")" = ready
+          test "$(jq -r '.accepted_missing_target_count' <<<"${structure_fixture}")" = 0
+          test "$(jq -r '.rejected_missing_targets | length' <<<"${structure_fixture}")" -ge 4
           test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 
       - name: Verify exact accepted SDK artifact provider identity
