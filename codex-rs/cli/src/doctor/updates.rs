@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(
             update_action_label_for_sedna_identity_on_target(
                 &unix,
-                true,
+                /*has_sedna_identity*/ true,
                 "1.2.3-sedna.4",
                 "linux",
                 "x86_64",
@@ -356,12 +356,20 @@ mod tests {
             "Sedna standalone installer"
         );
         assert_eq!(
-            update_action_label_for_sedna_identity(&windows, true, "1.2.3-sedna.4"),
+            update_action_label_for_sedna_identity(
+                &windows,
+                /*has_sedna_identity*/ true,
+                "1.2.3-sedna.4",
+            ),
             "no automatic update action"
         );
         for release_version in ["1.2.3", "not-a-Sedna-release", "1.2.3-alpha.1-sedna.1"] {
             assert_eq!(
-                update_action_label_for_sedna_identity(&unix, true, release_version),
+                update_action_label_for_sedna_identity(
+                    &unix,
+                    /*has_sedna_identity*/ true,
+                    release_version,
+                ),
                 "no automatic update action",
                 "accepted {release_version}"
             );
@@ -374,7 +382,7 @@ mod tests {
             assert_eq!(
                 update_action_label_for_sedna_identity_on_target(
                     &unix,
-                    true,
+                    /*has_sedna_identity*/ true,
                     "1.2.3-sedna.4",
                     target.0,
                     target.1,
@@ -408,14 +416,14 @@ mod tests {
 
         assert!(is_sedna_automatic_update_probe_available_on_target(
             &unix,
-            true,
+            /*has_sedna_identity*/ true,
             "1.2.3-sedna.4",
             "linux",
             "x86_64",
         ));
         assert!(!is_sedna_automatic_update_probe_available_on_target(
             &npm,
-            true,
+            /*has_sedna_identity*/ true,
             "1.2.3-sedna.4",
             "linux",
             "x86_64",
@@ -475,7 +483,7 @@ mod tests {
             (CheckStatus::Ok, LOCALLY_CONSISTENT_SUMMARY)
         );
         assert_eq!(
-            sedna_release_comparison_status(None),
+            sedna_release_comparison_status(/*is_newer*/ None),
             (CheckStatus::Warning, INVALID_SEDNA_VERSION_SUMMARY)
         );
         assert_eq!(
@@ -495,7 +503,11 @@ mod tests {
         };
         let mut details = Vec::new();
 
-        push_cache_info_details(&mut details, &info, true);
+        push_cache_info_details(
+            &mut details,
+            &info,
+            /*automatic_update_probe_available*/ true,
+        );
 
         assert_eq!(
             details,
@@ -536,7 +548,7 @@ mod tests {
         let mut npm_details = Vec::new();
         let npm_probe_available = is_sedna_automatic_update_probe_available_on_target(
             &npm,
-            true,
+            /*has_sedna_identity*/ true,
             "1.2.3-sedna.4",
             "linux",
             "x86_64",
@@ -548,7 +560,7 @@ mod tests {
         let mut unix_details = Vec::new();
         let unix_probe_available = is_sedna_automatic_update_probe_available_on_target(
             &unix,
-            true,
+            /*has_sedna_identity*/ true,
             "1.2.3-sedna.4",
             "linux",
             "x86_64",
@@ -576,7 +588,11 @@ mod tests {
         };
         let mut details = Vec::new();
 
-        push_cache_info_details(&mut details, &info, true);
+        push_cache_info_details(
+            &mut details,
+            &info,
+            /*automatic_update_probe_available*/ true,
+        );
 
         assert_eq!(
             details,
@@ -595,7 +611,11 @@ mod tests {
         };
         let mut details = Vec::new();
 
-        push_cache_info_details(&mut details, &info, true);
+        push_cache_info_details(
+            &mut details,
+            &info,
+            /*automatic_update_probe_available*/ true,
+        );
 
         assert_eq!(
             details,

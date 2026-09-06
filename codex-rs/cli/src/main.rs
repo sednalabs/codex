@@ -810,7 +810,10 @@ fn run_update_command() -> anyhow::Result<()> {
             }
             anyhow::bail!(
                 "Could not detect the Codex installation method. Please update manually: {}",
-                update_manual_install_url()
+                update_manual_install_url_for_release_identity(
+                    option_env!("CODEX_RELEASE_REPOSITORY"),
+                    option_env!("CODEX_RELEASE_TAG_PREFIX"),
+                )
             );
         };
         run_update_action(action)
@@ -830,13 +833,6 @@ fn requires_manual_sedna_update(
             target_os,
             target_arch,
         )
-}
-
-fn update_manual_install_url() -> &'static str {
-    update_manual_install_url_for_release_identity(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-    )
 }
 
 fn update_manual_install_url_for_release_identity(
@@ -2642,7 +2638,10 @@ mod tests {
             "https://developers.openai.com/codex/cli/"
         );
         assert_eq!(
-            update_manual_install_url_for_release_identity(Some("sednalabs/codex"), None),
+            update_manual_install_url_for_release_identity(
+                Some("sednalabs/codex"),
+                /*tag_prefix*/ None,
+            ),
             "https://developers.openai.com/codex/cli/"
         );
     }

@@ -60,7 +60,7 @@ def main() -> None:
         fake_bin.mkdir()
         fake_curl = fake_bin / "curl"
         fake_curl.write_text(
-            "#!/bin/sh\ntouch \"$HOME/curl-called\"\nexit 97\n",
+            '#!/bin/sh\ntouch "$HOME/curl-called"\nexit 97\n',
             encoding="utf-8",
         )
         fake_curl.chmod(0o755)
