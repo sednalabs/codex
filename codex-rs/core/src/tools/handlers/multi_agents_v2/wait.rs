@@ -578,7 +578,7 @@ async fn wait_for_wake_source(
     native_event_wait: bool,
     lease_timer_enabled: bool,
     mut deadline: Instant,
-    #[cfg(test)] mut lease_observer: Option<&mut dyn FnMut()>,
+    #[cfg(test)] mut lease_observer: Option<&mut (dyn FnMut() + Send)>,
 ) -> WakeSource {
     let lease_duration = if lease_timer_enabled {
         deadline
