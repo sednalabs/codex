@@ -775,7 +775,10 @@ mod tests {
             .send(AgentStatus::Shutdown)
             .expect("status receiver should remain active");
 
-        assert_eq!(wait.await.expect("wait task should join"), WakeSource::TargetCompletion);
+        assert_eq!(
+            wait.await.expect("wait task should join"),
+            WakeSource::TargetCompletion
+        );
         assert!(expiries.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     }
 
