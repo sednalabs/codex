@@ -1,17 +1,17 @@
-name: Apply admitted upstream SDK cohort
+name: Build accepted SDK and build-source consumer
 
 on:
   push:
     branches:
-      - worker/w13825-sdk-producer-validation-20260907
+      - worker/w13825-sdk-build-consumer
   workflow_dispatch:
     inputs:
       expected_workflow_sha:
-        description: Exact reviewed producer workflow commit
+        description: Exact reviewed consumer workflow commit
         required: true
         type: string
       expected_workflow_tree:
-        description: Exact reviewed producer workflow tree
+        description: Exact reviewed consumer workflow tree
         required: true
         type: string
 
@@ -20,16 +20,24 @@ permissions:
   actions: read
 
 jobs:
-  apply-sdk-cohort:
-    runs-on: ubuntu-latest
+  build-sdk-build-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     env:
       REQUESTED_WORKFLOW_SHA: ${{ inputs.expected_workflow_sha || '' }}
       REQUESTED_WORKFLOW_TREE: ${{ inputs.expected_workflow_tree || '' }}
-      SDK_SOURCE_SHA: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
-      SDK_SOURCE_TREE: 1e143e2bc5964a4308d9a6f36ca3e2af028e79e9
-      SDK_SOURCE_BRANCH: worker/w13825-sdk-source-authoring-20260906
+      SDK_ARTIFACT_ID: "9992014028"
+      SDK_ARTIFACT_NAME: upstream-sdk-candidate-34042133059-1
+      SDK_ARTIFACT_SIZE: "451611604"
+      SDK_ARTIFACT_DIGEST: sha256:bce7300bd77efe798a463d8006b4291049bfaff5b996c878853ebab95087d433
+      SDK_ARTIFACT_RUN_ID: "34042133059"
+      SDK_ARTIFACT_HEAD_SHA: 0384d8ae9205e142fa4b352256d8c85a9e05f8c4
+      SDK_ARTIFACT_HEAD_BRANCH: worker/w13825-sdk-producer-validation-20260907
+      BUILD_SOURCE_SHA: 54bcd76de2c0c30d655c99faf2e2c9cab271e18b
+      BUILD_SOURCE_TREE: 6adcbddd3dde655a77a385fc75d5af9d39f90802
+      BUILD_SOURCE_BRANCH: worker/w13825-build-source-authoring-20260907
     steps:
-      - name: Check out exact reviewed helper
+      - name: Check out exact reviewed consumer helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -55,26 +63,7 @@ jobs:
             printf 'EXPECTED_WORKFLOW_TREE=%s\n' "${workflow_tree}"
           } >>"${GITHUB_ENV}"
 
-      - name: Check out exact SDK source candidate
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: bc8884624330b6e681cfa3ce5fc575ce8298ed1b
-          fetch-depth: 0
-          persist-credentials: false
-          path: source-candidate
-
-      - name: Verify exact SDK source checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "${SDK_SOURCE_SHA}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD)"
-          test "${SDK_SOURCE_TREE}" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" rev-parse HEAD^{tree})"
-          test "5eb6ca6519b1a79e8997bf21321885de1fd9ed01" = "$(git -C "${GITHUB_WORKSPACE}/source-candidate" show -s --format=%P HEAD)"
-          test -z "$(git -C "${GITHUB_WORKSPACE}/source-candidate" status --porcelain)"
-          remote_source="$({ git -C "${GITHUB_WORKSPACE}/source-candidate" ls-remote --heads origin "refs/heads/${SDK_SOURCE_BRANCH}"; } | awk '{print $1}')"
-          test "${remote_source}" = "${SDK_SOURCE_SHA}"
-
-      - name: Prove fail-closed event and input boundary
+      - name: Prove fail-closed event and path boundary
         shell: bash
         run: |
           set -euo pipefail
@@ -95,8 +84,8 @@ jobs:
             --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}"
             --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
           )
-          validation_ref=refs/heads/worker/w13825-sdk-producer-validation-20260907
-          fixture_dir="${RUNNER_TEMP}/producer-event-fixtures"
+          validation_ref=refs/heads/worker/w13825-sdk-build-consumer
+          fixture_dir="${RUNNER_TEMP}/consumer-event-fixtures"
           mkdir "${fixture_dir}"
           python3 - "${fixture_dir}" "${EXPECTED_WORKFLOW_SHA}" "${EXPECTED_WORKFLOW_TREE}" <<'PY'
           import copy
@@ -108,10 +97,10 @@ jobs:
           workflow_sha = sys.argv[2]
           workflow_tree = sys.argv[3]
           push = {
-              "ref": "refs/heads/worker/w13825-sdk-producer-validation-20260907",
-              "before": "8618594409a81716f8cba3114b3bed5a81433e7c",
+              "ref": "refs/heads/worker/w13825-sdk-build-consumer",
+              "before": "0" * 40,
               "after": workflow_sha,
-              "created": False,
+              "created": True,
               "deleted": False,
               "forced": False,
               "head_commit": {"id": workflow_sha},
@@ -121,11 +110,11 @@ jobs:
           mutations = {
               "push-wrong-repository": ("repository", {"full_name": "wrong/repository"}),
               "push-wrong-ref": ("ref", "refs/heads/main"),
-              "push-wrong-before": ("before", "0" * 40),
+              "push-wrong-before": ("before", "1" * 40),
               "push-wrong-after": ("after", "0" * 40),
               "push-forced": ("forced", True),
               "push-deleted": ("deleted", True),
-              "push-created": ("created", True),
+              "push-not-created": ("created", False),
           }
           for name, (key, value) in mutations.items():
               fixture = copy.deepcopy(push)
@@ -167,12 +156,7 @@ jobs:
               REQUESTED_WORKFLOW_TREE="${EXPECTED_WORKFLOW_TREE}" \
               "${runtime_args[@]}"
           }
-          expect_failure "current repository mismatch" \
-            env GITHUB_REPOSITORY=wrong/repository "${runtime_args[@]}"
-          expect_failure "current event mismatch" \
-            env GITHUB_EVENT_NAME=pull_request "${runtime_args[@]}"
-          expect_failure "current ref mismatch" \
-            env GITHUB_REF=refs/heads/main "${runtime_args[@]}"
+          run_push_fixture "${fixture_dir}/push-valid.json" >/dev/null
           expect_failure "event repository mismatch" \
             run_push_fixture "${fixture_dir}/push-wrong-repository.json"
           expect_failure "push event ref mismatch" \
@@ -185,8 +169,8 @@ jobs:
             run_push_fixture "${fixture_dir}/push-forced.json"
           expect_failure "push event must not delete ref" \
             run_push_fixture "${fixture_dir}/push-deleted.json"
-          expect_failure "push event must update the existing ref" \
-            run_push_fixture "${fixture_dir}/push-created.json"
+          expect_failure "push event must create the new consumer ref" \
+            run_push_fixture "${fixture_dir}/push-not-created.json"
           run_dispatch_fixture \
             "${fixture_dir}/dispatch-valid.json" \
             "${EXPECTED_WORKFLOW_SHA}" >/dev/null
@@ -201,110 +185,100 @@ jobs:
               --output-dir "${RUNNER_TEMP}/not-created" \
               --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
               --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-
-          extra_source="${RUNNER_TEMP}/extra-source"
-          git clone --shared --no-checkout "${GITHUB_WORKSPACE}/source-candidate" "${extra_source}"
-          git -C "${extra_source}" checkout --detach "${SDK_SOURCE_SHA}"
-          git -C "${extra_source}" config user.name github-actions-for-negative-control
-          git -C "${extra_source}" config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          printf '\nnegative-control-only\n' >>"${extra_source}/.github/pull_request_template.md"
-          git -C "${extra_source}" add .github/pull_request_template.md
-          git -C "${extra_source}" commit -m "negative control: reject extra source path"
-          empty_artifact="${RUNNER_TEMP}/empty-source-artifact"
-          mkdir "${empty_artifact}"
-          expect_failure "SDK source head mismatch" \
-            python3 "${helper}" \
-              --repo-root "${extra_source}" \
-              --artifact-dir "${empty_artifact}" \
-              --output-dir "${RUNNER_TEMP}/not-created" \
-              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
-
           test -z "$(grep -nE 'patch_base64|disposition_json|git[[:space:]]+apply' "${helper}" || true)"
 
-      - name: Download exact accepted source artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: upstream-composition-34035744523-1
-          github-token: ${{ github.token }}
-          repository: sednalabs/codex
-          run-id: 34035744523
-          path: ${{ runner.temp }}/w13825-source-artifact
+      - name: Verify exact accepted SDK artifact provider identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          packet="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SDK_ARTIFACT_ID}" \
+              --jq '[.id, .name, .size_in_bytes, .expired, .digest, .workflow_run.id, .workflow_run.head_branch, .workflow_run.head_sha, .workflow_run.repository_id, .workflow_run.head_repository_id] | @tsv'
+          )"
+          IFS=$'\t' read -r artifact_id artifact_name artifact_size expired artifact_digest run_id head_branch head_sha repository_id head_repository_id <<<"${packet}"
+          test "${artifact_id}" = "${SDK_ARTIFACT_ID}"
+          test "${artifact_name}" = "${SDK_ARTIFACT_NAME}"
+          test "${artifact_size}" = "${SDK_ARTIFACT_SIZE}"
+          test "${expired}" = false
+          test "${artifact_digest}" = "${SDK_ARTIFACT_DIGEST}"
+          test "${run_id}" = "${SDK_ARTIFACT_RUN_ID}"
+          test "${head_branch}" = "${SDK_ARTIFACT_HEAD_BRANCH}"
+          test "${head_sha}" = "${SDK_ARTIFACT_HEAD_SHA}"
+          test "${repository_id}" = "${GITHUB_REPOSITORY_ID}"
+          test "${head_repository_id}" = "${GITHUB_REPOSITORY_ID}"
 
-      - name: Prove fail-closed evidence boundary
+      - name: Check out exact reviewed build source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 54bcd76de2c0c30d655c99faf2e2c9cab271e18b
+          fetch-depth: 0
+          persist-credentials: false
+          path: source-candidate
+
+      - name: Verify exact reviewed build-source checkout
         shell: bash
         run: |
           set -euo pipefail
-          helper="${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py"
-          source_artifact="${RUNNER_TEMP}/w13825-source-artifact"
-          make_fixture() {
-            fixture="$1"
-            mkdir "${fixture}"
-            for source_path in "${source_artifact}"/*; do
-              ln -s "${source_path}" "${fixture}/$(basename "${source_path}")"
-            done
-          }
-          expect_failure() {
-            expected="$1"
-            shift
-            set +e
-            output="$("$@" 2>&1)"
-            status=$?
-            set -e
-            test "${status}" -ne 0
-            grep -F -- "${expected}" <<<"${output}" >/dev/null
-          }
+          source_root="${GITHUB_WORKSPACE}/source-candidate"
+          test "${BUILD_SOURCE_SHA}" = "$(git -C "${source_root}" rev-parse HEAD)"
+          test "${BUILD_SOURCE_TREE}" = "$(git -C "${source_root}" rev-parse HEAD^{tree})"
+          test "5eb6ca6519b1a79e8997bf21321885de1fd9ed01" = "$(git -C "${source_root}" show -s --format=%P HEAD)"
+          test -z "$(git -C "${source_root}" status --porcelain)"
+          remote_source="$({ git -C "${source_root}" ls-remote --heads origin "refs/heads/${BUILD_SOURCE_BRANCH}"; } | awk '{print $1}')"
+          test "${remote_source}" = "${BUILD_SOURCE_SHA}"
 
-          staged_fixture="${RUNNER_TEMP}/tampered-staged"
-          make_fixture "${staged_fixture}"
-          rm "${staged_fixture}/staged-auto-merge.txt"
-          cp "${source_artifact}/staged-auto-merge.txt" "${staged_fixture}/staged-auto-merge.txt"
-          printf '\n' >>"${staged_fixture}/staged-auto-merge.txt"
-          expect_failure "staged path-list digest mismatch" \
-            python3 "${helper}" \
-              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-              --artifact-dir "${staged_fixture}" \
-              --output-dir "${RUNNER_TEMP}/tampered-staged-output" \
-              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+      - name: Download exact accepted SDK artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: 9992014028
+          github-token: ${{ github.token }}
+          repository: sednalabs/codex
+          run-id: 34042133059
+          path: ${{ runner.temp }}/w13825-sdk-input
+          merge-multiple: true
 
-          provenance_fixture="${RUNNER_TEMP}/tampered-provenance"
-          make_fixture "${provenance_fixture}"
-          rm "${provenance_fixture}/provenance.json"
-          python3 - "${source_artifact}/provenance.json" "${provenance_fixture}/provenance.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
+      - name: Set up exact uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.11.3
+          enable-cache: false
 
-          source = Path(sys.argv[1])
-          target = Path(sys.argv[2])
-          value = json.loads(source.read_text(encoding="utf-8"))
-          value["materialized_tree"] = "0" * 40
-          target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY
-          expect_failure "source provenance digest mismatch" \
-            python3 "${helper}" \
-              --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-              --artifact-dir "${provenance_fixture}" \
-              --output-dir "${RUNNER_TEMP}/tampered-provenance-output" \
-              --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-              --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
+      - name: Set up exact pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
+        with:
+          version: 10.33.0
+          run_install: false
 
-      - name: Apply SDK cohort and emit candidate
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Set up repository-pinned Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.28.1
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          cache-save: false
+
+      - name: Build, generate, test, and bundle exact consumer candidate
         shell: bash
         run: |
           set -euo pipefail
           python3 "${GITHUB_WORKSPACE}/helper-checkout/.github/scripts/apply-upstream-cohort.py" \
             --repo-root "${GITHUB_WORKSPACE}/source-candidate" \
-            --artifact-dir "${RUNNER_TEMP}/w13825-source-artifact" \
-            --output-dir "${RUNNER_TEMP}/w13825-sdk-candidate" \
+            --artifact-dir "${RUNNER_TEMP}/w13825-sdk-input" \
+            --output-dir "${RUNNER_TEMP}/w13825-sdk-build-candidate" \
             --expected-workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
             --expected-workflow-tree "${EXPECTED_WORKFLOW_TREE}"
 
-      - name: Upload successful candidate evidence (no push)
+      - name: Upload successful consumer candidate evidence (no push)
         if: success()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: upstream-sdk-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/w13825-sdk-candidate
+          name: upstream-sdk-build-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w13825-sdk-build-candidate
           if-no-files-found: error
