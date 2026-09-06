@@ -150,6 +150,15 @@ impl Processor {
         Ok(())
     }
 
+    pub(super) fn reset_render(&mut self) {
+        // Speaker changes discard old references without resetting capture or APM state.
+        self.render.resampler.reset();
+        self.render.input.clear();
+        self.render.output.clear();
+        self.render.end = None;
+        self.render_delay = 0;
+    }
+
     pub(super) fn validate_callback_timing(
         &self,
         input_frames: u32,

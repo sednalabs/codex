@@ -23,13 +23,16 @@ impl CaptureWorker {
         &mut self,
         controls: codex_realtime_webrtc::AudioControls,
     ) -> io::Result<()> {
+        // Retire the old sink before rebuilding microphone processing.
+        self.buffers
+            .set_speaker_disabled(controls.speaker_suppressed)?;
         let previous = self.buffers.microphone.load(Ordering::Acquire);
         Buffers::set_disabled(&self.buffers.microphone, controls.microphone_muted)?;
         if previous != self.buffers.microphone.load(Ordering::Acquire) {
             self.pending.clear();
             self.processor.reset().map_err(io::Error::other)?;
         }
-        Buffers::set_disabled(&self.buffers.speaker, controls.speaker_suppressed)
+        Ok(())
     }
 
     pub(super) async fn service(

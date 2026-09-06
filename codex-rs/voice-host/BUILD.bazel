@@ -4,4 +4,5 @@ codex_rust_crate(
     name = "voice-host",
     crate_name = "codex_voice_host",
     crate_srcs = [],
+    unit_test_args = ["--test-threads=1"],
 )

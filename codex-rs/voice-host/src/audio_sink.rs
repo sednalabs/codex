@@ -2,6 +2,7 @@
 //! Native resets outside an owner-initiated teardown fail the session closed.
 
 use super::playback::PlaybackWriter;
+use audio::prelude::*;
 use audio::subclass::prelude::*;
 use gst::glib;
 use gstreamer as gst;
@@ -13,6 +14,8 @@ mod imp {
     #[derive(Default)]
     pub struct Sink {
         pub(super) writer: OnceLock<PlaybackWriter>,
+        #[cfg(test)]
+        first_event: OnceLock<&'static str>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for Sink {
@@ -89,7 +92,12 @@ mod imp {
                 .writer
                 .get()
                 .ok_or_else(|| gst::loggable_error!(gst::CAT_RUST, "speaker not bound"))?;
-            writer.write(bytes).map(|n| n as i32).map_err(|_| {
+            writer.write(bytes).map(|n| n as i32).map_err(|_error| {
+                #[cfg(test)]
+                self.first_event.get_or_init(|| {
+                    eprintln!("native sink first event: {_error}");
+                    _error
+                });
                 writer.fail_if_current();
                 gst::loggable_error!(gst::CAT_RUST, "speaker write failed")
             })
@@ -99,6 +107,11 @@ mod imp {
         }
         fn reset(&self) {
             if let Some(writer) = self.writer.get() {
+                #[cfg(test)]
+                self.first_event.get_or_init(|| {
+                    eprintln!("native sink first event: reset");
+                    "reset"
+                });
                 writer.fail_if_current();
             }
         }
@@ -107,4 +120,16 @@ mod imp {
 
 glib::wrapper! {
     pub struct Sink(ObjectSubclass<imp::Sink>) @extends audio::AudioSink, audio::AudioBaseSink, audio::gst_base::BaseSink, gst::Element, gst::Object;
+}
+
+impl Sink {
+    pub(super) fn new(writer: PlaybackWriter) -> Self {
+        let sink: Self = glib::Object::new();
+        assert!(sink.imp().writer.set(writer).is_ok());
+        sink.set_provide_clock(false);
+        sink.set_property_from_str("slave-method", "resample");
+        sink.set_async(false);
+        sink.set_enable_last_sample(false);
+        sink
+    }
 }

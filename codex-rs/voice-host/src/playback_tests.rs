@@ -2,15 +2,6 @@ use super::*;
 use crate::devices::buffers::Playback;
 use pretty_assertions::assert_eq;
 
-impl PlaybackPort {
-    pub(super) fn writer(&self) -> PlaybackWriter {
-        PlaybackWriter {
-            state: self.0.clone(),
-            epoch: self.0.buffers.speaker.load(Ordering::Acquire),
-        }
-    }
-}
-
 fn active(rate: u32) -> (Arc<Buffers>, PlaybackPort, PlaybackWriter) {
     let buffers = Arc::new(Buffers::new(rate, rate));
     Buffers::set_disabled(&buffers.speaker, /*disabled*/ false).unwrap();
@@ -70,6 +61,65 @@ fn delay_includes_pending_dac_time_but_not_another_generation() {
     assert!(delay > 10);
     Buffers::set_disabled(&buffers.speaker, /*disabled*/ true).unwrap();
     assert_eq!(writer.delay(), 0);
+}
+
+#[test]
+fn retired_sink_failure_cannot_fail_the_next_speaker_epoch() {
+    let (buffers, port, writer) = active(/*rate*/ 48_000);
+    let transition = buffers.speaker_failure_gate.lock().unwrap();
+    let (started, ready) = std::sync::mpsc::sync_channel(/*bound*/ 0);
+    let failing = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        writer.fail_if_current();
+    });
+    ready.recv().unwrap();
+    // Hold the same transition gate while retiring the old writer, then let
+    // the pending native failure inspect its now-stale epoch.
+    Buffers::set_disabled(&buffers.speaker, /*disabled*/ true).unwrap();
+    drop(transition);
+    failing.join().unwrap();
+    assert!(!buffers.failed.load(Ordering::Acquire));
+
+    buffers.set_speaker_disabled(/*disabled*/ false).unwrap();
+    port.writer().fail_if_current();
+    assert!(buffers.failed.load(Ordering::Acquire));
+}
+
+#[test]
+fn delay_contention_preserves_the_last_snapshot_without_failing_the_device() {
+    let (buffers, port, writer) = active(/*rate*/ 48000);
+    writer.write(&[0; 40]).unwrap();
+    assert_eq!(writer.delay(), 10);
+    buffers
+        .callback_sequence
+        .store(/*val*/ 1, Ordering::Release);
+    let mut playback = Playback::default();
+    let consumed: Vec<_> = (0..10).map(|_| playback.next(&buffers).unwrap()).collect();
+    assert_eq!(consumed, vec![0.0; 10]);
+    assert_eq!(
+        (writer.delay(), buffers.failed.load(Ordering::Acquire)),
+        (10, false)
+    );
+    buffers
+        .callback_sequence
+        .store(/*val*/ 2, Ordering::Release);
+    assert_eq!(writer.delay(), 0);
+
+    writer.write(&[0; 20]).unwrap();
+    assert_eq!(writer.delay(), 5);
+    buffers
+        .callback_sequence
+        .store(/*val*/ 3, Ordering::Release);
+    Buffers::set_disabled(&buffers.speaker, /*disabled*/ true).unwrap();
+    assert_eq!(writer.delay(), 0);
+    Buffers::set_disabled(&buffers.speaker, /*disabled*/ false).unwrap();
+    assert_eq!(
+        (
+            port.writer().delay(),
+            buffers.failed.load(Ordering::Acquire)
+        ),
+        (0, false)
+    );
 }
 
 #[test]

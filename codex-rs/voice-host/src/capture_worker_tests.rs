@@ -81,6 +81,67 @@ fn enqueue(worker: &CaptureWorker, samples: usize, generation: u64, at: Instant)
     }
 }
 
+#[test]
+fn combined_mute_and_suppression_cancel_old_speaker_and_capture_work() {
+    let buffers = Arc::new(Buffers::new(
+        /*input_rate*/ 48_000, /*output_rate*/ 48_000,
+    ));
+    let port = super::super::playback::PlaybackPort::new(buffers.clone(), /*rate*/ 48_000);
+    let mut worker = CaptureWorker {
+        buffers: buffers.clone(),
+        processor: processing::Processor::new(
+            /*input_rate*/ 48_000, /*output_rate*/ 48_000,
+        )
+        .unwrap(),
+        pending: VecDeque::new(),
+    };
+    worker
+        .set_controls(AudioControls {
+            microphone_muted: false,
+            speaker_suppressed: false,
+        })
+        .unwrap();
+    worker.pending.push_back(crate::audio_track::EncodedAudio {
+        data: vec![1],
+        at: Instant::now(),
+    });
+    // A failed speaker transition must not start microphone reset first.
+    buffers.speaker.store(u64::MAX, Ordering::Release);
+    assert!(
+        worker
+            .set_controls(AudioControls {
+                microphone_muted: true,
+                speaker_suppressed: false,
+            })
+            .is_err()
+    );
+    assert_eq!(
+        (
+            buffers.speaker.load(Ordering::Acquire),
+            buffers.microphone.load(Ordering::Acquire),
+            worker.pending.len(),
+        ),
+        (u64::MAX, 2, 1)
+    );
+    buffers.speaker.store(/*val*/ 2, Ordering::Release);
+    let writer = port.writer();
+    worker
+        .set_controls(AudioControls {
+            microphone_muted: true,
+            speaker_suppressed: true,
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            buffers.speaker.load(Ordering::Acquire),
+            buffers.microphone.load(Ordering::Acquire),
+            worker.pending.len(),
+            writer.write(&[0; 4]),
+        ),
+        (3, 3, 0, Err("speaker writer cancelled"))
+    );
+}
+
 async fn receive_capture(
     worker: &mut CaptureWorker,
     local: &mut Transport,

@@ -3,6 +3,8 @@
 //! Generation changes, rejected capture buffers and capture gaps discard incomplete frames.
 //! Capture/render capacity covers the worker deadline; playback and callback limits stay fixed.
 
+use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicU32;
@@ -93,6 +95,7 @@ pub(super) struct Buffers {
     pub(super) playback: ArrayQueue<Frame>,
     pub(super) microphone: AtomicU64,
     pub(super) speaker: AtomicU64,
+    pub(super) speaker_failure_gate: Mutex<()>,
     pub(super) serviced: AtomicBool,
     pub(super) failed: AtomicBool,
     pub(super) microphone_peak: AtomicU16,
@@ -100,6 +103,7 @@ pub(super) struct Buffers {
     pub(super) queued: AtomicU32,
     pub(super) last_dac_ns: AtomicU64,
     pub(super) clock: Instant,
+    pub(super) callback_sequence: AtomicU64,
 }
 
 impl Buffers {
@@ -129,6 +133,7 @@ impl Buffers {
             playback: ArrayQueue::new(QUEUE_CAPACITY),
             microphone: AtomicU64::new(/*v*/ 1),
             speaker: AtomicU64::new(/*v*/ 1),
+            speaker_failure_gate: Mutex::new(()),
             serviced: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             microphone_peak: AtomicU16::new(/*v*/ 0),
@@ -136,6 +141,7 @@ impl Buffers {
             queued: AtomicU32::new(/*v*/ 0),
             last_dac_ns: AtomicU64::new(/*v*/ 0),
             clock: Instant::now(),
+            callback_sequence: AtomicU64::new(/*v*/ 0),
         }
     }
 
@@ -145,6 +151,14 @@ impl Buffers {
         self.playback.push(frame).map_err(|_| {
             self.queued.fetch_sub(len, Ordering::AcqRel);
         })
+    }
+
+    pub(super) fn set_speaker_disabled(&self, disabled: bool) -> std::io::Result<()> {
+        let _transition = self
+            .speaker_failure_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self::set_disabled(&self.speaker, disabled)
     }
 
     // One control worker writes each epoch. Odd epochs are disabled; every

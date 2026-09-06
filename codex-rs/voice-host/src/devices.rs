@@ -11,6 +11,8 @@ mod buffers;
 mod capture_worker;
 #[path = "playback.rs"]
 mod playback;
+#[path = "playout.rs"]
+mod playout;
 #[path = "processing.rs"]
 mod processing;
 
@@ -48,6 +50,7 @@ pub(super) struct Devices {
     output_config: cpal::SupportedStreamConfig,
     output_stream_config: cpal::StreamConfig,
     playback: PlaybackPort,
+    playout: Option<playout::Playout>,
     worker: capture_worker::CaptureWorker,
 }
 
@@ -144,6 +147,7 @@ impl Devices {
             output_config,
             output_stream_config,
             playback,
+            playout: None,
             worker: capture_worker::CaptureWorker {
                 buffers,
                 processor,
@@ -160,19 +164,28 @@ impl Devices {
         let previous = buffers.speaker.load(Ordering::Acquire);
         self.worker.set_controls(controls)?;
         if previous != buffers.speaker.load(Ordering::Acquire) {
-            // Invalidate writers first, then wait off the callback for any in-flight write.
-            let _producer = self
+            // Stop callbacks before native teardown can block the worker.
+            drop(self.output.take());
+            drop(self.playout.take());
+            // The new epoch cancelled writers before either teardown; wait for
+            // any in-flight write before resetting its queue.
+            let producer = self
                 .playback
                 .0
                 .producer
                 .lock()
                 .map_err(|_| io::Error::other("speaker writer failed"))?;
-            // Dropping the stream stops its callbacks and discards device-owned audio.
-            drop(self.output.take());
             while buffers.playback.pop().is_some() {}
             while buffers.rendered.pop().is_some() {}
             buffers.queued.store(/*val*/ 0, Ordering::Release);
             buffers.last_dac_ns.store(/*val*/ 0, Ordering::Release);
+            drop(producer);
+            while buffers.rendered.pop().is_some() {}
+            self.worker.processor.reset_render();
+            if !controls.speaker_suppressed {
+                self.playout =
+                    Some(playout::Playout::new(self.playback.writer()).map_err(io::Error::other)?);
+            }
             let output = stream!(
                 self.output_config.sample_format(),
                 build_output,
@@ -193,15 +206,26 @@ impl Devices {
         &mut self,
         audio: &mut crate::audio_track::AudioTrack,
     ) -> io::Result<usize> {
+        if let Some(playout) = &self.playout {
+            playout.check().map_err(io::Error::other)?;
+        }
         self.worker.service(audio, Instant::now).await
+    }
+
+    pub(super) fn receive(&self, packet: crate::incoming::ReceivedRtp) -> io::Result<()> {
+        if let Some(playout) = &self.playout {
+            playout.push(packet).map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 }
 
 impl Drop for Devices {
     fn drop(&mut self) {
         self.worker.buffers.failed.store(true, Ordering::Release);
-        let _producer = self.playback.0.producer.lock().ok();
         drop(self.output.take());
+        drop(self.playout.take());
+        let _producer = self.playback.0.producer.lock().ok();
     }
 }
 
@@ -340,6 +364,9 @@ where
     device.build_output_stream(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            buffers
+                .callback_sequence
+                .fetch_add(/*val*/ 1, Ordering::AcqRel);
             let timestamp = info.timestamp();
             let start = Instant::now()
                 + timestamp
@@ -347,6 +374,9 @@ where
                     .checked_duration_since(timestamp.callback)
                     .unwrap_or_default();
             render_output(data, channels, rate, start, &buffers, &mut output);
+            buffers
+                .callback_sequence
+                .fetch_add(/*val*/ 1, Ordering::Release);
         },
         move |error| handle_stream_error(&failure, error),
         /*timeout*/ None,

@@ -5,6 +5,10 @@ use std::io;
 pub(super) struct Devices;
 
 impl Devices {
+    pub(super) fn receive(&self, _: crate::incoming::ReceivedRtp) -> io::Result<()> {
+        Self::open().map(|_| ())
+    }
+
     pub(super) fn take_state(&self) -> io::Result<codex_realtime_webrtc::AudioState> {
         Self::open().map(|_| codex_realtime_webrtc::AudioState::default())
     }

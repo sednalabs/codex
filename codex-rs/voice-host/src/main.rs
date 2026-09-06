@@ -105,15 +105,19 @@ fn run(
     let mut answered = false;
     let mut devices: Option<devices::Devices> = None;
     loop {
-        if let Some(peer) = &mut transport {
-            // The next media stage feeds these owned packets into the jitter/decode pipeline.
-            while peer.incoming.take().map_err(io::Error::other)?.is_some() {}
-        }
         let message = if let Some(devices) = &mut devices {
             let peer = transport
                 .as_mut()
                 .ok_or_else(|| io::Error::other("voice peer not started"))?;
             wait_for_control(&receiver, || {
+                // Bound one pass to the ingress queue capacity so new media
+                // cannot indefinitely postpone a waiting privacy control.
+                for _ in 0..64 {
+                    let Some(packet) = peer.incoming.take().map_err(io::Error::other)? else {
+                        break;
+                    };
+                    devices.receive(packet)?;
+                }
                 executor.block_on(devices.service(&mut peer.audio))?;
                 Ok(())
             })?
@@ -141,16 +145,23 @@ fn run(
                 Message::DevicesOpened {}
             }
             Ok(Message::SetAudioControls { controls }) => {
-                transport
+                let peer = transport
                     .as_ref()
-                    .ok_or_else(|| io::Error::other("voice peer not started"))?
-                    .incoming
-                    .set_suppressed(controls.speaker_suppressed)
-                    .map_err(io::Error::other)?;
+                    .ok_or_else(|| io::Error::other("voice peer not started"))?;
+                if controls.speaker_suppressed {
+                    peer.incoming
+                        .set_suppressed(controls.speaker_suppressed)
+                        .map_err(io::Error::other)?;
+                }
                 devices
                     .as_mut()
                     .ok_or_else(|| io::Error::other("audio devices not open"))?
                     .set_controls(controls)?;
+                if !controls.speaker_suppressed {
+                    peer.incoming
+                        .set_suppressed(controls.speaker_suppressed)
+                        .map_err(io::Error::other)?;
+                }
                 Message::AudioControlsApplied {}
             }
             Ok(Message::StartTransport {}) if transport.is_none() => {

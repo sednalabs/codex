@@ -32,6 +32,7 @@ webrtc = "=0.20.3"
 cpal = "=0.18.2"
 crossbeam-queue = "0.3.12"
 gstreamer = { version = "=0.25.3", features = ["v1_28"] }
+gstreamer-app = { version = "=0.25.2", features = ["v1_28"] }
 gstreamer-audio = { version = "=0.25.3", features = ["v1_28"] }
 opus = "=0.4.0"
 rubato = { version = "=5.0.0", default-features = false }
