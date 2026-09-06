@@ -73,7 +73,8 @@ jobs:
           gh api --paginate --slurp "repos/$SOURCE_REPOSITORY/rulesets?per_page=100" > metadata/rulesets.json
           gh api "repos/$SOURCE_REPOSITORY" --jq '{default_branch}' > metadata/default-branch.json
       - name: Build package and restore-test before encryption
-        env: {CANDIDATE_SHA: ${{ inputs.candidate_sha }}}
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail; umask 077
           python3 scripts/recovery-snapshot/snapshot.py package --repo-dir source.git --refs-file refs.txt --metadata-dir metadata --candidate-sha "$CANDIDATE_SHA" --output snapshot.tar.gz > package-info.json
