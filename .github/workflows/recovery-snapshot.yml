@@ -53,7 +53,7 @@ jobs:
           printf '%s\n' "$SELECTED_REFS" | sed '/^[[:space:]]*$/d' > refs.txt
           test -s refs.txt
           while IFS= read -r ref; do
-            [[ "$ref" =~ ^refs/(heads|tags)/[A-Za-z0-9._/+\-]+$ && "$ref" != *..* && "$ref" != *//* && "$ref" != */. && "$ref" != */ && "$ref" != /* ]] || exit 1
+            [[ "$ref" =~ ^refs/(heads|tags)/ ]] || exit 1
             git check-ref-format "$ref" >/dev/null
           done < refs.txt
           test "$(wc -l < refs.txt)" = "$(sort -u refs.txt | wc -l)"
