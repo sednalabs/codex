@@ -127,7 +127,7 @@ try:
             if cached is None:
                 blob = batch.read(identity)
                 if blob is None:
-                    continue
+                    raise RuntimeError(f"git cat-file --batch missing blob {identity}")
                 cached = match_metadata("blob", blob.decode("utf-8", "replace"))
                 blob_match_cache[identity] = cached
             emit("blob", identity, path, cached[0], cached[1])
