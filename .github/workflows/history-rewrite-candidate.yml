@@ -134,7 +134,7 @@ jobs:
           [[ "${GITHUB_SHA}" == "${HARNESS_SHA}" ]] || { echo 'workflow dispatch head differs from bound harness SHA' >&2; exit 1; }
           test "$(git rev-parse "${GITHUB_SHA}^{tree}")" = "${HARNESS_TREE}" || { echo 'workflow harness tree mismatch' >&2; exit 1; }
           python3 - <<'PY'
-          import json, os, re, sys
+          import json, os, re, subprocess, sys
           import base64, gzip
           try:
               selected_json = gzip.decompress(base64.b64decode(os.environ["SELECTED_REFS_GZIP_B64"], validate=True))
@@ -156,7 +156,7 @@ jobs:
               raise SystemExit("backup ref-set SHA must be a complete 64-hex digest")
           forbidden = (("refs/heads/main", "refs/remotes/origin/main") if os.environ["MODE"] == "rewrite" else ("refs/remotes/origin/main",))
           for name, sha in refs.items():
-              if not isinstance(name, str) or not re.fullmatch(r"refs/(heads|tags)/[A-Za-z0-9._/-]+", name):
+              if not isinstance(name, str) or not (name.startswith("refs/heads/") or name.startswith("refs/tags/")) or subprocess.run(["git", "check-ref-format", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
                   raise SystemExit(f"invalid selected ref: {name!r}")
               if any(name == f or name.startswith(f + "/") for f in forbidden):
                   raise SystemExit(f"canonical ref targeted: {name}")
