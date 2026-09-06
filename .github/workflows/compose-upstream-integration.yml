@@ -26,7 +26,7 @@ env:
 
 jobs:
   compose:
-    if: github.event_name == 'workflow_dispatch' || github.event.before == 'db75a712424b06407930aad8de3a93634c55083a'
+    if: github.event_name == 'workflow_dispatch' || github.event.before == 'b188e8016b2920351737f04bb7b2b30da56733cb'
     runs-on: ubuntu-latest
     steps:
       - name: Check out integration branch
@@ -105,6 +105,8 @@ jobs:
             def build_ci_path(p):
                 root_name = p.rsplit("/", 1)[-1]
                 return (p.startswith((".github/", ".codex/", "build/", "defs/")) or
+                        root_name in {"BUILD", "BUILD.bazel"} or
+                        root_name.endswith((".bzl", ".bazel")) or
                         ("/" not in p and (root_name in {
                             "Cargo.lock", "Makefile", "Justfile", "justfile", "MODULE.bazel",
                             "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb", "Cargo.toml",
