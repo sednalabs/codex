@@ -1,5 +1,9 @@
 name: rust-ci-full
 on:
+  # Main pushes enter through postmerge-ci; this opt-in trigger lets
+  # developers run the full suite before merging.
+  push:
+    branches: ["**full-ci**"]
   workflow_call:
   workflow_dispatch:
     inputs:
