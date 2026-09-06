@@ -308,6 +308,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         multi_agent_v2: MultiAgentV2Config::default(),
         max_goal_token_budget: None,
         token_budget: None,
+        token_budget_startup_config: None,
         rollout_budget: None,
         current_time_reminder: None,
         sleep_tool_mode: Default::default(),
