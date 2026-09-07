@@ -147,13 +147,16 @@ async fn update_once(
     };
     if !post_install_release_is_strictly_newer(&installed_from_version, &installed_release.version)
     {
-        reconcile_running_processes_to_managed_release(
+        if let UpdateLoopControl::Stop = reconcile_running_processes_to_managed_release(
             &daemon,
             running_updater_identity,
             &managed_release.executable,
             terminate,
         )
-        .await?;
+        .await?
+        {
+            return Ok(UpdateLoopControl::Stop);
+        }
         return Err(anyhow::anyhow!(
             "managed release after installation was not strictly newer than the release selected for update"
         ));
