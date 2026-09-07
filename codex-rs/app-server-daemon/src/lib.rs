@@ -747,10 +747,20 @@ impl Daemon {
         let updater_is_running = updater.is_starting_or_running().await?;
         let updater_matches_managed_release =
             if managed_release.sedna_auto_update.is_some() && updater_is_running {
-                let managed_identity = executable_identity(&managed_release.executable).await?;
-                updater
-                    .is_running_from_executable(&managed_release.executable, &managed_identity)
-                    .await?
+                #[cfg(unix)]
+                {
+                    let managed_identity = executable_identity(&managed_release.executable).await?;
+                    updater
+                        .is_running_from_executable(
+                            &managed_release.executable,
+                            &managed_identity,
+                        )
+                        .await?
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
             } else {
                 false
             };
