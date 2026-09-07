@@ -1202,14 +1202,16 @@ impl ChatWidget {
         }
     }
 
-    fn flush_completed_command_activity(&mut self) {
-        if self
-            .transcript
-            .active_cell
-            .as_ref()
-            .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
-            .is_some_and(|cell| !cell.is_active())
-        {
+    fn flush_completed_tool_activity(&mut self) {
+        if self.transcript.active_cell.as_ref().is_some_and(|cell| {
+            cell.as_any()
+                .downcast_ref::<ExecCell>()
+                .is_some_and(|cell| !cell.is_active())
+                || cell
+                    .as_any()
+                    .downcast_ref::<history_cell::ComputerActivityCell>()
+                    .is_some_and(|cell| !cell.is_active())
+        }) {
             self.flush_active_cell();
         }
     }
@@ -1247,10 +1249,15 @@ impl ChatWidget {
                 .transcript
                 .active_cell
                 .as_ref()
-                .is_some_and(|active_cell| active_cell.as_any().is::<ExecCell>())
+                .is_some_and(|active_cell| {
+                    active_cell.as_any().is::<ExecCell>()
+                        || active_cell
+                            .as_any()
+                            .is::<history_cell::ComputerActivityCell>()
+                })
             && !cell.transcript_lines(history_width).is_empty()
         {
-            self.flush_completed_command_activity();
+            self.flush_completed_tool_activity();
         }
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
     }
@@ -1389,6 +1396,11 @@ impl ChatWidget {
                 exec.mark_failed();
             } else if let Some(tool) = cell.as_any_mut().downcast_mut::<McpToolCallCell>() {
                 tool.mark_failed();
+            } else if let Some(computer) = cell
+                .as_any_mut()
+                .downcast_mut::<history_cell::ComputerActivityCell>()
+            {
+                computer.mark_failed();
             }
             self.add_boxed_history(cell);
             self.request_pending_usage_output_insertion();

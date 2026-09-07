@@ -79,7 +79,7 @@ impl ChatWidget {
         if active_cell_is_empty {
             self.active_hook_cell = None;
         }
-        self.flush_completed_command_activity();
+        self.flush_completed_tool_activity();
         self.bump_active_cell_revision();
         self.app_event_tx
             .send(AppEvent::InsertHistoryCell(Box::new(completed_cell)));

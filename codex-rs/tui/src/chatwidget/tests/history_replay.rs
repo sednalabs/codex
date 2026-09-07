@@ -1271,10 +1271,15 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
             /*replay_kind*/ None,
         );
 
+        chat.flush_active_cell();
         let cells = drain_insert_history(&mut rx);
         let [lines] = cells.as_slice() else {
             panic!("expected one completed MCP tool call for {server}");
         };
+        if server == "cua_repl" {
+            insta::assert_snapshot!("failed_computer_activity", lines_to_single_string(lines));
+            continue;
+        }
         insta::allow_duplicates! {
             insta::assert_snapshot!(lines_to_single_string(lines), @r#"
             • Called Inspect workspace

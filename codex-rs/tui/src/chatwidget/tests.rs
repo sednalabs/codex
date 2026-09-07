@@ -243,6 +243,8 @@ mod compaction_tests;
 #[path = "tests/completion_styling_tests.rs"]
 mod completion_styling;
 mod composer_submission;
+#[path = "tests/computer_activity_tests.rs"]
+mod computer_activity_tests;
 #[path = "tests/config_errors_tests.rs"]
 mod config_errors;
 mod exec_flow;
