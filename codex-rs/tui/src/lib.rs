@@ -716,7 +716,18 @@ async fn lookup_session_target_with_app_server(
         };
     }
 
-    named_session_lookup::lookup(app_server, config, id_or_name).await
+    let model_provider =
+        (!app_server.uses_remote_workspace()).then_some(config.model_provider_id.as_str());
+    Ok(named_session_lookup::lookup(
+        app_server,
+        config.codex_home.as_path(),
+        id_or_name,
+        &[named_session_lookup::SessionCollection::Active],
+        &[resume_source_kinds(/*include_non_interactive*/ false)],
+        model_provider,
+    )
+    .await?
+    .and_then(session_target_from_app_server_thread))
 }
 
 async fn lookup_latest_session_target_with_app_server(

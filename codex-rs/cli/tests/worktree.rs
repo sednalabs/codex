@@ -307,7 +307,11 @@ trust_level = "trusted"
                 "--add-dir".into(),
                 "extra".into(),
                 "fork".into(),
-                "managed-source".to_owned(),
+                if explicit_cd {
+                    owner.clone().context("previous fork owner")?
+                } else {
+                    "managed-source".to_owned()
+                },
             ]);
         } else {
             args.extend(["--cd".into(), source.display().to_string()]);

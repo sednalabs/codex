@@ -219,6 +219,97 @@ async fn pasted_text_normalizes_mixed_line_endings_at_app_boundary() -> Result<(
 }
 
 #[tokio::test]
+async fn duplicate_named_resume_renders_error_without_replacing_current_session() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let label = format!("duplicate-{}", ThreadId::new());
+    let runtime = codex_state::StateRuntime::init(
+        app.config.sqlite.clone(),
+        app.config.model_provider_id.clone(),
+    )
+    .await
+    .map_err(std::io::Error::other)?;
+    runtime
+        .mark_backfill_complete(/*last_watermark*/ None)
+        .await
+        .map_err(std::io::Error::other)?;
+    let mut thread_ids = Vec::new();
+    for _ in 0..2 {
+        let filename_ts = "2025-02-01T10-00-00";
+        let timestamp = "2025-02-01T10:00:00Z";
+        let thread_id = app_test_support::create_fake_rollout(
+            app.config.codex_home.as_path(),
+            filename_ts,
+            timestamp,
+            &label,
+            Some(&app.config.model_provider_id),
+            /*git_info*/ None,
+        )
+        .expect("materialized rollout should be created");
+        let path = app_test_support::rollout_path(
+            app.config.codex_home.as_path(),
+            filename_ts,
+            &thread_id,
+        );
+        let thread_id = ThreadId::from_string(&thread_id)?;
+        thread_ids.push(thread_id);
+        let created_at =
+            chrono::DateTime::parse_from_rfc3339(timestamp)?.with_timezone(&chrono::Utc);
+        let mut metadata = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            path.to_path_buf(),
+            created_at,
+            serde_json::from_value(serde_json::json!("cli"))?,
+        )
+        .build(&app.config.model_provider_id);
+        metadata.title = label.clone();
+        metadata.first_user_message = Some(label.clone());
+        metadata.preview = Some(label.clone());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .map_err(std::io::Error::other)?;
+    }
+
+    let current = ThreadId::new();
+    app.active_thread_id = Some(current);
+    app.transcript_cells = vec![plain_line_cell("Existing conversation")];
+    let mut app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ResumeSessionByIdOrName(label.clone()),
+    )
+    .await?;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            app.transcript_cells.push(Arc::from(cell));
+        }
+    }
+    let rendered = app
+        .render_transcript_lines_for_reflow(/*width*/ 80)
+        .lines
+        .iter()
+        .map(rendered_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        thread_ids
+            .iter()
+            .all(|id| rendered.contains(&id.to_string()))
+    );
+    let rendered = thread_ids
+        .iter()
+        .fold(rendered.replace(&label, "duplicate-label"), |text, id| {
+            text.replace(&id.to_string(), "<session UUID>")
+        });
+    assert_app_snapshot!("duplicate_named_resume_error", rendered);
+    assert_eq!(app.active_thread_id, Some(current));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn chat_widget_frame_reuses_active_cell_height_across_frame_passes() {
     #[derive(Debug)]
     struct CountingHistoryCell {

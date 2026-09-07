@@ -314,18 +314,26 @@ impl App {
                     &self.config,
                     &id_or_name,
                 )
-                .await?
+                .await
                 {
-                    Some(target_session) => {
+                    Ok(Some(target_session)) => {
                         return self
                             .resume_target_session(tui, app_server, target_session)
                             .await;
                     }
-                    None => {
+                    Ok(None) => {
                         self.chat_widget.add_error_message(format!(
                             "No saved chat found matching '{id_or_name}'."
                         ));
                     }
+                    Err(err)
+                        if err
+                            .downcast_ref::<crate::named_session_lookup::AmbiguousSessionName>()
+                            .is_some() =>
+                    {
+                        self.chat_widget.add_error_message(err.to_string());
+                    }
+                    Err(err) => return Err(err),
                 }
             }
             AppEvent::ArchiveCurrentThread => {

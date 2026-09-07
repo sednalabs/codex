@@ -149,6 +149,7 @@ pub(super) async fn run_main_inner(
     }
 
     let reuse_implicit_local_daemon = !cli.shared.worktree
+        && !cli.oss
         && !workload_identity_selected
         && (cli.agents_overview
             || can_reuse_implicit_local_daemon(
