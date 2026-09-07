@@ -61,12 +61,6 @@ impl AgentControl {
                 root_history
                     .annotated_items()
                     .iter()
-                    .filter(|envelope| {
-                        !envelope
-                            .metadata
-                            .as_ref()
-                            .is_some_and(|metadata| metadata.inherited_user_message)
-                    })
                     .filter_map(|envelope| {
                         let item = &envelope.item;
                         let Some(TurnItem::UserMessage(message)) = parse_turn_item(item) else {
@@ -81,6 +75,7 @@ impl AgentControl {
                         let order = envelope
                             .metadata
                             .as_ref()
+                            .filter(|metadata| !metadata.inherited_user_message)
                             .and_then(|metadata| metadata.user_input_order);
                         Some((
                             order,

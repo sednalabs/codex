@@ -12,7 +12,6 @@ use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowIds;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
-use crate::context::GuardianContextMode;
 use crate::context_manager::ContextManager;
 use crate::context_manager::HistoryReplacement;
 use crate::session::PreviousTurnSettings;
@@ -65,16 +64,15 @@ impl SessionState {
         Self::new_with_auto_compact_window_ids(
             session_configuration,
             AutoCompactWindowIds::new_initial(),
-            GuardianContextMode::Legacy,
+            ContextManager::new(),
         )
     }
 
     pub(crate) fn new_with_auto_compact_window_ids(
         session_configuration: SessionConfiguration,
         auto_compact_window_ids: AutoCompactWindowIds,
-        guardian_context_mode: GuardianContextMode,
+        history: ContextManager,
     ) -> Self {
-        let history = ContextManager::with_guardian_context_mode(guardian_context_mode);
         Self {
             session_configuration,
             base_instructions_provenance: None,

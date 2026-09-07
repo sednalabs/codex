@@ -657,11 +657,32 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
         assert!(answer_position < queued_position);
         let mut partial =
             serde_json::to_value(history.retained_context().expect("retained root context"))?;
+        let mut inherited_instruction = partial["user_messages"]
+            .as_array()
+            .expect("retained user-message records")
+            .iter()
+            .find(|entry| entry["text"] == INITIAL_PROMPT)
+            .expect("initial instruction")
+            .clone();
+        inherited_instruction["inherited"] = json!(true);
+        inherited_instruction["order"] = json!(
+            original_history[queued_position]
+                .metadata
+                .as_ref()
+                .expect("queued input metadata")
+                .user_input_order
+                .expect("queued acceptance order")
+        );
         partial["user_messages"]
             .as_array_mut()
             .expect("retained user-message records")
             .retain(|entry| entry["text"] == USER_APPROVAL);
         partial["user_messages_incomplete"] = json!(true);
+        let mut inherited_prefix = partial.clone();
+        inherited_prefix["user_messages"]
+            .as_array_mut()
+            .expect("retained user-message records")
+            .push(inherited_instruction);
         let mut expected_authorization = expected_messages
             .into_iter()
             .filter(|message| !matches!(message, GuardianRootMessage::Assistant(_)))
@@ -684,12 +705,39 @@ async fn guardian_subagent_review_preserves_late_root_user_authorization(
             (partial, MissingCheckpointSource::RootInstruction, false),
             // Rebuild the local counter even when all retained metadata is absent.
             (Value::Null, MissingCheckpointSource::None, true),
+            // Prefix and local orders can collide numerically. Recovery must keep
+            // the inherited instruction first without losing the queued local grant.
+            (inherited_prefix, MissingCheckpointSource::None, true),
         ] {
             let mut expected = expected_authorization.clone();
+            let inherited_message_id = retained["user_messages"]
+                .as_array()
+                .and_then(|entries| entries.iter().find(|entry| entry["inherited"] == true))
+                .and_then(|entry| entry["message_id"].as_str());
+            if inherited_message_id.is_some() {
+                expected.insert(
+                    /*index*/ 2,
+                    GuardianRootMessage::IncompleteVerifiedAnswers,
+                );
+            }
             if retained.is_null() {
                 expected.retain(|message| !matches!(message, GuardianRootMessage::UserInput(_)));
             }
             let mut replacement_history = original_history.clone();
+            if let Some(id) = inherited_message_id {
+                let metadata = replacement_history
+                    .iter_mut()
+                    .find(|envelope| {
+                        envelope
+                            .item
+                            .id()
+                            .is_some_and(|item_id| item_id.as_str() == id)
+                    })
+                    .and_then(|envelope| envelope.metadata.as_mut())
+                    .expect("inherited input metadata");
+                metadata.inherited_user_message = true;
+                metadata.user_input_order = Some(100);
+            }
             match missing_source {
                 MissingCheckpointSource::None => {}
                 MissingCheckpointSource::VerifiedAnswer => {

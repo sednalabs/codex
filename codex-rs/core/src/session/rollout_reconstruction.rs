@@ -339,7 +339,10 @@ impl Session {
         )
         .unwrap_or(u64::MAX);
 
-        let mut history = ContextManager::with_guardian_context_mode(self.guardian_context_mode);
+        let mut history = ContextManager::with_guardian_context_mode(
+            self.guardian_context_mode,
+            &turn_context.session_source,
+        );
         let mut saw_legacy_compaction_without_replacement_history = false;
         if let Some(checkpoint) = base_compaction
             && let Some(items) = &checkpoint.compacted.replacement_history

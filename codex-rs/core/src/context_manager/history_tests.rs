@@ -1269,7 +1269,10 @@ fn drop_last_n_user_turns_preserves_prefix() {
 
     // A steered message shares its source turn, but rollback must keep the earlier
     // instruction and answer as complete evidence, including after the next compaction.
-    let mut history = ContextManager::with_guardian_context_mode(GuardianContextMode::ThreadOwned);
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Exec,
+    );
     let mut expected = None;
     for (id, text) in [
         ("restriction", "Never publish publicly."),

@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use codex_core::CodexThread;
+use codex_core::ForkSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
@@ -35,7 +36,9 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::ForkBoundary;
 use codex_thread_store::LoadThreadHistoryParams;
+use codex_thread_store::PrepareForkParams;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -891,6 +894,225 @@ async fn retained_answers_rollback_only_the_steered_instruction() -> Result<()> 
 enum LifecycleBoundary {
     Rollback,
     ChildFork,
+}
+
+// Cover live copied history and a truncated referenced checkpoint. Parent-answer
+// omission is already exercised by retained_answers_cross_real_session_boundaries.
+#[test_case(ThreadHistoryMode::Legacy; "copied worker history")]
+#[test_case(ThreadHistoryMode::Paginated; "referenced truncated checkpoint")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_fork_retains_inherited_user_instructions(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
+    let compacted = history_mode == ThreadHistoryMode::Paginated;
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mut test = test_codex()
+        .with_history_mode(history_mode)
+        .with_config(|config| {
+            config.experimental_thread_store = ThreadStoreConfig::Local;
+            config
+                .features
+                .disable(Feature::TokenBudget)
+                .expect("use local compaction for worker checkpoint");
+            config.model_provider.name = "Local compaction test provider".to_owned();
+            for feature in [
+                Feature::GuardianApproval,
+                Feature::GuardianThreadContext,
+                Feature::Collab,
+                Feature::MultiAgentV2,
+                Feature::DefaultModeRequestUserInput,
+            ] {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("enable test feature");
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let instruction = if compacted {
+        format!(
+            "You may publish the release. {} Delegate an inspection.",
+            "Original project detail. ".repeat(500)
+        )
+    } else {
+        "You may publish the release. Delegate an inspection.".to_owned()
+    };
+    let mut created = test.thread_manager.subscribe_thread_created();
+    mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call_with_namespace(
+                    "spawn", "collaboration", "spawn_agent",
+                    &json!({"task_name": "worker", "message": "Inspect the project.", "fork_turns": "all"}).to_string(),
+                ),
+                ev_completed("spawn-response"),
+            ]),
+            sse(vec![ev_completed("root-complete")]),
+            sse(vec![ev_completed("worker-complete")]),
+        ],
+    ).await;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: instruction.clone(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let worker = test
+        .thread_manager
+        .get_thread(created.recv().await?)
+        .await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    test.codex.shutdown_and_wait().await?;
+    let local_instruction = if compacted {
+        // Leave less than Guardian's 900-token budget for the inherited source
+        // within local compaction's 20K user-message budget.
+        format!("Ask me before publishing. {}", "x".repeat(78_000))
+    } else {
+        "Ask me before publishing.".to_owned()
+    };
+    mount_sse_sequence(&server, vec![sse(vec![ev_completed("local-instruction")])]).await;
+    worker
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: local_instruction.clone(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&worker, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    if compacted {
+        // Local compaction keeps the inherited source message in replacement history.
+        mount_sse_sequence(
+            &server,
+            vec![sse(vec![
+                ev_assistant_message("worker-summary", "Inspected the project."),
+                ev_completed("worker-compacted"),
+            ])],
+        )
+        .await;
+        compact_and_assert_answers(&test, &worker, &[]).await?;
+    }
+    let worker_context = worker.conversation_history_snapshot().await;
+    let inherited_text = worker_context
+        .items()
+        .find_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                let [ContentItem::InputText { text }] = content.as_slice() else {
+                    return None;
+                };
+                text.starts_with("You may publish the release.")
+                    .then(|| text.clone())
+            }
+            _ => None,
+        })
+        .context("inherited source in worker history")?;
+    if compacted {
+        assert_ne!(inherited_text, instruction);
+        assert!(inherited_text.contains("tokens truncated"));
+        assert!(inherited_text.len() < 900 * 4);
+    }
+    // The adopted root later compacts through the mechanical path, which can drop originals.
+    test.config
+        .features
+        .enable(Feature::TokenBudget)
+        .expect("use mechanical root compaction");
+    let fork = if history_mode == ThreadHistoryMode::Paginated {
+        let prepared = test
+            .thread_store
+            .prepare_fork(PrepareForkParams {
+                thread_id: worker.session_configured().thread_id,
+                boundary: ForkBoundary::Latest,
+            })
+            .await?;
+        test.thread_manager
+            .fork_prepared_thread(
+                test.config.clone(),
+                prepared,
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await?
+    } else {
+        test.thread_manager
+            .fork_thread_from_history(
+                ForkSnapshot::Interrupted,
+                test.config.clone(),
+                InitialHistory::Resumed(ResumedHistory {
+                    conversation_id: worker.session_configured().thread_id,
+                    history: Arc::new(load_context(&test, &worker).await?),
+                    rollout_path: None,
+                }),
+                /*thread_source*/ None,
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+                /*reserved_thread_id*/ None,
+            )
+            .await?
+    };
+    assert!(fork.thread.guardian_root_snapshot().await.is_none());
+    let history = fork.thread.conversation_history_snapshot().await;
+    let retained = history.retained_context().context("root context")?;
+    let answers = codex_guardian_context::render_verified_answers(retained);
+    assert_eq!(
+        (answers.fragments, answers.complete),
+        (
+            vec![codex_guardian_context::GuardianRootMessage::IncompleteVerifiedAnswers.render()],
+            false
+        ),
+    );
+    assert_eq!(
+        retained
+            .ordered_entries()
+            .map(|(_, entry)| match entry {
+                codex_history::RetainedContextEntry::UserMessage(message) =>
+                    (message.text.clone(), message.complete),
+                codex_history::RetainedContextEntry::VerifiedAnswer(_) =>
+                    panic!("no answers before root adoption"),
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (inherited_text, !compacted),
+            (
+                codex_guardian_context::truncate_text(&local_instruction, /*max_tokens*/ 900),
+                !compacted,
+            ),
+        ],
+    );
+    let after = record_answer(
+        &fork.thread,
+        &server,
+        "root-action",
+        "Do not publish.",
+        /*acceptance_order*/ 2,
+    )
+    .await?;
+    let expected = fork
+        .thread
+        .conversation_history_snapshot()
+        .await
+        .retained_context()
+        .context("root after local answer")?
+        .clone();
+    assert!(!expected.verified_answers_complete());
+    let root = fork.thread;
+    compact_and_assert_answers(&test, &root, &[after]).await?;
+    let root = resume(&test, &root).await?;
+    assert_eq!(
+        root.conversation_history_snapshot()
+            .await
+            .retained_context(),
+        Some(&expected)
+    );
+    root.shutdown_and_wait().await?;
+    worker.shutdown_and_wait().await?;
+    Ok(())
 }
 
 #[test_case(false, true; "enabled without checkpoint")]

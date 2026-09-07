@@ -1267,7 +1267,10 @@ impl Session {
             let mut state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
-                guardian_context_mode,
+                ContextManager::with_guardian_context_mode(
+                    guardian_context_mode,
+                    &session_configuration.session_source,
+                ),
             );
             state.base_instructions_provenance = base_instructions_provenance.clone();
             let managed_network_requirements_configured = config

@@ -1,5 +1,6 @@
 use super::*;
 use crate::RetainedContextEvent;
+use crate::RetainedInputSource;
 use crate::VerifiedAnswer;
 use crate::VerifiedQuestionAnswer;
 use pretty_assertions::assert_eq;
@@ -25,8 +26,8 @@ fn recovery_preserves_source_identity_acceptance_order_and_checkpoint_gaps() {
         ..retained_excerpt.clone()
     };
     let mut retained = RetainedContext::default();
-    retained.record_user_message(initial.clone(), Some(0));
-    retained.record_user_message(retained_excerpt, Some(1));
+    retained.record_user_message(initial.clone(), RetainedInputSource::Local(Some(0)));
+    retained.record_user_message(retained_excerpt, RetainedInputSource::Local(Some(1)));
     retained.record(&RetainedContextEvent::VerifiedAnswer {
         answer: VerifiedAnswer {
             turn_id: "answer-turn".to_owned(),
@@ -70,12 +71,15 @@ fn recovery_preserves_source_identity_acceptance_order_and_checkpoint_gaps() {
         ),
         (
             vec![
-                (0, "Inspect the deployment."),
-                (1, ""),
-                (2, "Make the deployment public."),
-                (3, "Never publicly."),
-                (4, "Do not deploy after all."),
-                (5, "Inspect the deployment."),
+                (RetainedContextOrder::Local(0), "Inspect the deployment."),
+                (RetainedContextOrder::Local(1), ""),
+                (
+                    RetainedContextOrder::Local(2),
+                    "Make the deployment public."
+                ),
+                (RetainedContextOrder::Local(3), "Never publicly."),
+                (RetainedContextOrder::Local(4), "Do not deploy after all."),
+                (RetainedContextOrder::Local(5), "Inspect the deployment."),
             ],
             true,
         ),
@@ -86,7 +90,10 @@ fn recovery_preserves_source_identity_acceptance_order_and_checkpoint_gaps() {
 #[test]
 fn recovery_marks_missing_and_conflicting_orders_incomplete() {
     let mut retained = RetainedContext::default();
-    retained.record_user_message(instruction("Inspect the deployment."), Some(1));
+    retained.record_user_message(
+        instruction("Inspect the deployment."),
+        RetainedInputSource::Local(Some(1)),
+    );
     assert!(!retained.has_missing_user_messages());
     let checkpoint = retained.clone();
 
@@ -111,7 +118,10 @@ fn recovery_marks_missing_and_conflicting_orders_incomplete() {
                 reconciled.missing_user_messages,
             ),
             (
-                vec![(1, "Inspect the deployment."), (2, "Do not deploy.")],
+                vec![
+                    (RetainedContextOrder::Local(1), "Inspect the deployment."),
+                    (RetainedContextOrder::Local(2), "Do not deploy.")
+                ],
                 true,
             ),
             "invalid order: {invalid_order:?}",

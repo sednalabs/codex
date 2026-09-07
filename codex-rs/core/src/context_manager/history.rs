@@ -4,6 +4,9 @@
 //! Oversized instructions keep an incomplete excerpt for bounded root review, including
 //! sources recovered from legacy Guardian checkpoints before their raw history is dropped.
 
+#[path = "history_user_authorization.rs"]
+mod user_authorization;
+
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
 use crate::context::world_state::PersistentModeState;
@@ -30,6 +33,7 @@ use codex_history::GuardianHistoryCheckpoint;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RetainedContext;
 use codex_history::RetainedContextEvent;
+use codex_history::RetainedInputSource;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
@@ -40,6 +44,7 @@ use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
@@ -71,6 +76,7 @@ pub(crate) struct ContextManager {
     retained_context: Arc<RetainedContext>,
     /// Capture, replay, and snapshot selection share the immutable session mode.
     guardian_context_mode: GuardianContextMode,
+    retain_inherited_user_messages: bool,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     /// Monotonic user-input/reset revision, independent of compaction's history generation.
@@ -169,6 +175,7 @@ impl ContextManager {
             review_history: None,
             retained_context: Arc::default(),
             guardian_context_mode: GuardianContextMode::Legacy,
+            retain_inherited_user_messages: false,
             history_version: 0,
             user_message_revision: 0,
             token_info: TokenUsageInfo::new_or_append(
@@ -194,9 +201,15 @@ impl ContextManager {
         &self.retained_context
     }
 
-    pub(crate) fn with_guardian_context_mode(guardian_context_mode: GuardianContextMode) -> Self {
+    pub(crate) fn with_guardian_context_mode(
+        guardian_context_mode: GuardianContextMode,
+        source: &SessionSource,
+    ) -> Self {
         Self {
             guardian_context_mode,
+            retain_inherited_user_messages: guardian_context_mode
+                == GuardianContextMode::ThreadOwned
+                && !source.is_non_root_agent(),
             ..Self::new()
         }
     }
@@ -211,10 +224,6 @@ impl ContextManager {
         }
         self.user_message_revision = self.user_message_revision.saturating_add(1);
         true
-    }
-
-    pub(crate) fn restore_retained_context(&mut self, checkpoint: Option<&RetainedContext>) {
-        Arc::make_mut(&mut self.retained_context).restore(checkpoint, &self.items);
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
@@ -369,54 +378,11 @@ impl ContextManager {
                 review_history.record(&processed.item);
             }
             Arc::make_mut(&mut self.items).push(processed);
-            if crate::context::is_user_authorization_message(item) {
-                if self.guardian_context_mode == GuardianContextMode::Legacy {
-                    Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
-                } else if !metadata.is_some_and(|metadata| metadata.inherited_user_message)
-                    && let ResponseItem::Message {
-                        content,
-                        internal_chat_message_metadata_passthrough,
-                        ..
-                    } = item
-                {
-                    let mut complete = internal_chat_message_metadata_passthrough
-                        .as_ref()
-                        .and_then(|metadata| metadata.content_item_kinds.as_ref())
-                        .is_some_and(|kinds| {
-                            kinds.len() == content.len()
-                                && kinds.iter().all(|kind| kind.0.starts_with("user."))
-                        });
-                    let text = content
-                        .iter()
-                        .filter_map(|content| match content {
-                            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                                Some(text.as_str())
-                            }
-                            _ => {
-                                complete = false;
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    // Keep the same bounded text that child reviewers receive before
-                    // compaction, instead of letting storage discard a large source.
-                    // Local instruction sections still omit incomplete originals whole.
-                    let (text, truncated) =
-                        guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS);
-                    complete &= !truncated;
-                    Arc::make_mut(&mut self.retained_context).record_user_message(
-                        codex_history::RetainedUserMessage {
-                            turn_id: item.turn_id().unwrap_or_default().to_owned(),
-                            message_id: item.id().map(|id| id.as_str().to_owned()),
-                            text,
-                            complete,
-                        },
-                        metadata.and_then(|metadata| metadata.user_input_order),
-                    );
-                }
-                self.user_message_revision = self.user_message_revision.saturating_add(1);
-            }
+            self.record_user_authorization(
+                item,
+                metadata,
+                user_authorization::UserMessageSource::Original,
+            );
         }
     }
 
@@ -590,10 +556,7 @@ impl ContextManager {
         let first_removed_message_id = snapshot[cut_idx]
             .id()
             .map(codex_protocol::ResponseItemId::as_str);
-        let acceptance_order = snapshot[cut_idx]
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.user_input_order);
+        let source = RetainedInputSource::from(snapshot[cut_idx].metadata.as_ref());
         let mut review_history = self.review_history.take();
         if let Some(history) = &mut review_history {
             history.truncate_before(&snapshot[cut_idx].item);
@@ -638,7 +601,7 @@ impl ContextManager {
             Arc::make_mut(&mut retained_context).rollback(
                 &removed_turns,
                 first_removed_message_id,
-                acceptance_order,
+                source,
             );
         } else {
             Arc::make_mut(&mut retained_context).retain_answers(|answer| {

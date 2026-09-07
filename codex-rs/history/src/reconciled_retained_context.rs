@@ -6,12 +6,13 @@ use std::collections::HashSet;
 
 use crate::RetainedContext;
 use crate::RetainedContextEntry;
+use crate::RetainedContextOrder;
 use crate::RetainedUserMessage;
 
 /// Retained evidence supplemented by surviving user messages without changing the checkpoint.
 pub struct ReconciledRetainedContext<'a> {
     retained_context: Option<&'a RetainedContext>,
-    recovered: Vec<(u64, RetainedUserMessage)>,
+    recovered: Vec<(RetainedContextOrder, RetainedUserMessage)>,
     /// Instructions were already missing, or a recovered source could not be ordered.
     pub missing_user_messages: bool,
 }
@@ -19,6 +20,7 @@ pub struct ReconciledRetainedContext<'a> {
 impl<'a> ReconciledRetainedContext<'a> {
     /// Reconciles eligible live user messages with retained sources in acceptance order.
     /// The caller supplies original source identities and filters out non-user context.
+    /// Inherited sources must supply no local order; retained identities match before ordering.
     /// Live messages are consumed only when retained user instructions are incomplete.
     pub fn new(
         retained_context: Option<&'a RetainedContext>,
@@ -57,7 +59,11 @@ impl<'a> ReconciledRetainedContext<'a> {
                 }
                 // Queued steering can enter raw history after a later-accepted answer.
                 // Compare their persisted sequence numbers, including checkpoint-only answers.
-                let Some(order) = order.filter(|order| used_orders.insert(*order)) else {
+                // Parent counters cannot establish an adopted prefix position.
+                let Some(order) = order
+                    .map(RetainedContextOrder::Local)
+                    .filter(|order| used_orders.insert(*order))
+                else {
                     missing_user_messages = true;
                     continue;
                 };
@@ -74,7 +80,7 @@ impl<'a> ReconciledRetainedContext<'a> {
     /// Returns retained and recovered evidence in persisted acceptance order.
     pub fn ordered_entries(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (u64, RetainedContextEntry<'_>)> {
+    ) -> impl DoubleEndedIterator<Item = (RetainedContextOrder, RetainedContextEntry<'_>)> {
         let mut entries = self
             .retained_context
             .into_iter()
