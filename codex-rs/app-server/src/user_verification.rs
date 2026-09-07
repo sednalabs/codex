@@ -1,17 +1,7 @@
-//! Dispatch boundary for experimental verification APIs.
-//! Native operations are introduced separately from the public contract.
+//! Local verification value conversion; provider dispatch follows in the next change.
 
-use codex_app_server_protocol::JSONRPCErrorError;
-use codex_app_server_protocol::UserVerificationErrorDetails;
-use codex_app_server_protocol::UserVerificationUnavailableReason;
+#[allow(dead_code)]
+#[path = "user_verification_adapter.rs"]
+mod adapter;
 
-pub(crate) fn unavailable() -> JSONRPCErrorError {
-    JSONRPCErrorError {
-        code: -32603,
-        message: "User verification is not available in this build.".into(),
-        data: serde_json::to_value(UserVerificationErrorDetails::Unavailable {
-            reason: UserVerificationUnavailableReason::ProviderUnavailable,
-        })
-        .ok(),
-    }
-}
+pub(crate) use adapter::unavailable;

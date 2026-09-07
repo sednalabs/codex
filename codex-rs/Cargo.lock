@@ -2225,6 +2225,7 @@ dependencies = [
  "codex-state",
  "codex-thread-store",
  "codex-tools",
+ "codex-user-verification",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
@@ -4767,6 +4768,17 @@ dependencies = [
  "tokio-util",
  "uds_windows",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "codex-user-verification"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "p256",
+ "pretty_assertions",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -68,7 +68,7 @@ async fn user_verification_without_provider_returns_typed_unavailability() -> Re
         response.error,
         JSONRPCErrorError {
             code: -32603,
-            message: "User verification is not available in this build.".into(),
+            message: "User verification is not available in this build or account.".into(),
             data: Some(json!({"type": "unavailable", "reason": "providerUnavailable"})),
         }
     );
