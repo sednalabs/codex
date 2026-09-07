@@ -32,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "e94a97a999b15028921941ccc2882fe044a1374f"
+PUSH_PREDECESSOR_SHA = "4bcc383d30709f39433e9b1abdb0e203746dc456"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -533,13 +533,19 @@ EXPECTED_V8_LOCK_ENTRY = {
         "which 6.0.3",
     ],
 }
-EXPECTED_SEED_LOCK_EDGES = {
-    ("prost-build", "0.12.6"): "heck 0.4.1",
-    ("prost-build", "0.14.4"): "heck 0.4.1",
+EXPECTED_LOCK_EDGES_BY_STAGE = {
+    "accepted-seed": {
+        ("prost-build", "0.12.6"): "heck 0.4.1",
+        ("prost-build", "0.14.4"): "heck 0.4.1",
+    },
+    "resolved-composed": {
+        ("prost-build", "0.12.6"): "heck 0.5.0",
+        ("prost-build", "0.14.4"): "heck 0.5.0",
+    },
 }
 # A non-empty resolver delta is diagnostic-only until the root explicitly
 # accepts its exact canonical digest in a reviewed successor.
-ACCEPTED_LOCK_DELTA_SHA256: str | None = None
+ACCEPTED_LOCK_DELTA_SHA256: str | None = "8d80a8c0eae8c1055d266730a5c1ac3e645f59349614ba0e4eb641ee622ea4d6"
 MAX_MANIFEST_COUNT = 512
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_LOCK_BYTES = 16 * 1024 * 1024
@@ -1659,8 +1665,12 @@ def observed_seed_lock_edges(
     stage: str,
     mismatches: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    expected_edges = EXPECTED_LOCK_EDGES_BY_STAGE.get(stage)
+    if expected_edges is None:
+        mismatches.append({"kind": "unknown-lock-edge-stage", "stage": stage})
+        return []
     observations: list[dict[str, Any]] = []
-    for (name, version), expected_edge in sorted(EXPECTED_SEED_LOCK_EDGES.items()):
+    for (name, version), expected_edge in sorted(expected_edges.items()):
         matches = [
             package
             for package in packages.values()
