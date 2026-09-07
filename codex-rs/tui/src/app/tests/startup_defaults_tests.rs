@@ -107,6 +107,7 @@ async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
         SessionSelection::Fork(crate::resume_picker::SessionTarget {
             path: None,
             thread_id: source,
+            cwd: None,
             history_mode: None,
         }),
     ));
