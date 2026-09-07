@@ -22,7 +22,9 @@ use tokio::signal::unix::Signal;
 use tokio::signal::unix::SignalKind;
 #[cfg(unix)]
 use tokio::signal::unix::signal;
+use tokio::time::Instant;
 use tokio::time::sleep;
+use tokio::time::sleep_until;
 
 use crate::Daemon;
 use crate::RestartIfRunningOutcome;
@@ -65,55 +67,36 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
         http_client_factory,
         ClientRouteClass::Other,
     );
-    if sleep_or_terminate(INITIAL_UPDATE_DELAY, &mut terminate).await {
-        return Ok(());
-    }
     let daemon = Daemon::from_environment()?;
+    let mut next_check = Instant::now() + INITIAL_UPDATE_DELAY;
     loop {
-        match UpdaterSettings::load(&daemon.settings_file).await {
-            Ok(settings) if !settings.auto_update_enabled => return Ok(()),
-            Err(_) => {
-                if sleep_or_terminate(Duration::from_secs(60), &mut terminate).await {
-                    return Ok(());
+        tokio::select! {
+            _ = sleep_until(next_check) => {
+                match UpdaterSettings::load(&daemon.settings_file).await {
+                    Ok(settings) if !settings.auto_update_enabled => return Ok(()),
+                    Err(_) => {
+                        next_check = Instant::now() + Duration::from_secs(60);
+                        continue;
+                    }
+                    Ok(_) => {}
                 }
-                continue;
-            }
-            Ok(_) => {}
-        }
-        // Failed successor cleanup leaves its PID published. The predecessor
-        // must stop instead of installing again without ownership.
-        #[cfg(windows)]
-        updater.wait_for_ownership().await?;
-        match update_once(&http, &running_updater_identity, &mut terminate).await {
-            Ok(UpdateLoopControl::Continue) | Err(_) => {}
-            Ok(UpdateLoopControl::Stop) => return Ok(()),
-        }
-        match wait_for_next_check(
-            &daemon.settings_file,
-            Duration::from_secs(60),
-            &mut terminate,
-        )
-        .await
-        {
-            Ok(true) => return Ok(()),
-            Ok(false) => {}
-            Err(_) => {
-                if sleep_or_terminate(Duration::from_secs(60), &mut terminate).await {
-                    return Ok(());
+                // Failed successor cleanup leaves its PID published. The predecessor
+                // must stop instead of installing again without ownership.
+                #[cfg(windows)]
+                updater.wait_for_ownership().await?;
+                match update_once(&http, &running_updater_identity, &mut terminate).await {
+                    Ok(UpdateLoopControl::Continue) | Err(_) => {}
+                    Ok(UpdateLoopControl::Stop) => return Ok(()),
                 }
+                next_check = Instant::now() + match UpdaterSettings::load(&daemon.settings_file).await {
+                    Ok(settings) if !settings.auto_update_enabled => return Ok(()),
+                    Ok(settings) => settings.update_interval(Duration::from_secs(60)),
+                    Err(_) => Duration::from_secs(60),
+                };
             }
+            _ = terminate.recv() => return Ok(()),
         }
     }
-}
-
-async fn wait_for_next_check(
-    settings_file: &Path,
-    minute: Duration,
-    terminate: &mut Signal,
-) -> Result<bool> {
-    let settings = UpdaterSettings::load(settings_file).await?;
-    Ok(!settings.auto_update_enabled
-        || sleep_or_terminate(settings.update_interval(minute), terminate).await)
 }
 
 async fn sleep_or_terminate(duration: Duration, terminate: &mut Signal) -> bool {

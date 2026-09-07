@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::managed_install::ExecutableIdentity;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -39,6 +40,8 @@ pub(crate) struct PidBackend {
 struct PidRecord {
     pid: u32,
     process_start_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executable_identity: Option<ExecutableIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +78,17 @@ enum PidCommandKind {
 }
 
 impl PidBackend {
+    // Used by the stacked manual-update command to compare the running image.
+    #[allow(dead_code)]
+    pub(crate) async fn running_executable_identity(&self) -> Result<Option<ExecutableIdentity>> {
+        match self.read_pid_file_state().await? {
+            PidFileState::Running(record) if self.record_is_active(&record).await? => {
+                Ok(record.executable_identity)
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn new(codex_bin: PathBuf, pid_file: PathBuf, remote_control_enabled: bool) -> Self {
         let lock_file = pid_file.with_extension("pid.lock");
         Self {

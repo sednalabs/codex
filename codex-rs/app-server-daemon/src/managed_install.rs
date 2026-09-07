@@ -8,8 +8,8 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use sha2::Digest;
-use sha2::Sha256;
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -127,7 +127,7 @@ pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
     parse_codex_version(&stdout)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExecutableIdentity {
     digest: [u8; 32],
 }
@@ -141,7 +141,7 @@ pub(crate) async fn executable_identity(executable: &Path) -> Result<ExecutableI
 
 pub(crate) fn executable_identity_from_bytes(bytes: &[u8]) -> ExecutableIdentity {
     ExecutableIdentity {
-        digest: Sha256::digest(bytes).into(),
+        digest: *blake3::hash(bytes).as_bytes(),
     }
 }
 

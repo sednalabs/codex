@@ -2299,6 +2299,7 @@ name = "codex-app-server-daemon"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "codex-app-server-protocol",
  "codex-app-server-transport",
  "codex-http-client",
@@ -2309,7 +2310,6 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-tungstenite",

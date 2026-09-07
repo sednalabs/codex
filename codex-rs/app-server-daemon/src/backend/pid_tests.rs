@@ -167,10 +167,12 @@ async fn stale_record_cleanup_preserves_replacement_record() {
     let stale = PidRecord {
         pid: 1,
         process_start_time: "old".to_string(),
+        executable_identity: None,
     };
     let replacement = PidRecord {
         pid: 2,
         process_start_time: "new".to_string(),
+        executable_identity: None,
     };
     tokio::fs::write(
         &pid_file,
@@ -190,6 +192,62 @@ async fn stale_record_cleanup_preserves_replacement_record() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn pid_record_captures_the_resolved_launch_binary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let original = temp.path().join("original-codex");
+    let replacement = temp.path().join("replacement-codex");
+    for (path, bytes) in [
+        (&original, b"#!/bin/sh\nexec sleep 30\n".as_slice()),
+        (
+            &replacement,
+            b"#!/bin/sh\n# replacement\nexec sleep 30\n".as_slice(),
+        ),
+    ] {
+        std::fs::write(path, bytes).expect("binary");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    }
+    let selected = temp.path().join("current-codex");
+    std::os::unix::fs::symlink(&original, &selected).expect("selected binary");
+    let backend = PidBackend::new(
+        selected.clone(),
+        temp.path().join("app-server.pid"),
+        /*remote_control_enabled*/ false,
+    );
+    backend.start().await.expect("start daemon");
+    let record: PidRecord =
+        serde_json::from_slice(&std::fs::read(&backend.pid_file).expect("PID record"))
+            .expect("parse PID record");
+    assert_eq!(
+        record.executable_identity,
+        Some(
+            crate::managed_install::executable_identity(&original)
+                .await
+                .expect("original digest")
+        )
+    );
+    std::fs::remove_file(&selected).expect("remove link");
+    std::os::unix::fs::symlink(&replacement, &selected).expect("retarget link");
+    assert_ne!(
+        record.executable_identity,
+        Some(
+            crate::managed_install::executable_identity(&selected)
+                .await
+                .expect("new digest")
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<PidRecord>(r#"{"pid":1,"processStartTime":"old"}"#)
+            .expect("legacy PID record")
+            .executable_identity,
+        None
+    );
+    backend.stop().await.expect("stop daemon");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn stop_reaps_untracked_app_server_child() {
     let temp_dir = TempDir::new().expect("temp dir");
     let pid_file = temp_dir.path().join("app-server.pid");
@@ -204,6 +262,7 @@ async fn stop_reaps_untracked_app_server_child() {
     let record = PidRecord {
         pid,
         process_start_time: read_process_start_time(pid).await.expect("start time"),
+        executable_identity: None,
     };
     tokio::fs::write(
         &pid_file,
@@ -270,6 +329,7 @@ async fn stopping_updater_signals_its_installer_process_group() {
         serde_json::to_vec(&PidRecord {
             pid,
             process_start_time: read_process_start_time(pid).await.expect("start time"),
+            executable_identity: None,
         })
         .expect("serialize pid"),
     )
@@ -302,6 +362,7 @@ async fn exited_unreaped_updater_is_reaped() {
         process_start_time: read_process_start_time(child.id())
             .await
             .expect("start time"),
+        executable_identity: None,
     };
     let backend =
         PidBackend::new_update_loop(temp.path().join("codex"), temp.path().join("updater.pid"));
@@ -404,6 +465,7 @@ async fn stale_creation_time_never_stops_reused_pid() {
     let record = PidRecord {
         pid: std::process::id(),
         process_start_time: "stale".into(),
+        executable_identity: None,
     };
     tokio::fs::write(&backend.pid_file, serde_json::to_vec(&record).unwrap())
         .await
@@ -431,6 +493,7 @@ async fn failed_updater_handoff_preserves_predecessor_record() {
         process_start_time: super::read_process_start_time(std::process::id())
             .await
             .unwrap(),
+        executable_identity: None,
     };
     for record in [
         record.clone(),
@@ -491,12 +554,14 @@ async fn updater_readiness_and_post_publication_failure_preserve_ownership() {
         process_start_time: super::read_process_start_time(pid)
             .await
             .expect("creation time"),
+        executable_identity: None,
     };
     let predecessor = PidRecord {
         pid: std::process::id(),
         process_start_time: super::read_process_start_time(std::process::id())
             .await
             .expect("creation time"),
+        executable_identity: None,
     };
     tokio::fs::write(&backend.pid_file, serde_json::to_vec(&successor).unwrap())
         .await
@@ -595,6 +660,7 @@ fn inaccessible_reused_pid_is_stale_without_hiding_process_open_errors() {
         let record = PidRecord {
             pid: std::process::id(),
             process_start_time: "stale".into(),
+            executable_identity: None,
         };
         assert!(
             crate::backend::windows::Process::open(record.pid)
