@@ -11,6 +11,7 @@ use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache_with_models;
 use axum::Json;
 use axum::Router;
+use axum::extract::State;
 use axum::http::header;
 use axum::routing::get;
 use axum::routing::post;
@@ -54,6 +55,7 @@ use super::TEST_SERVER_NAME;
 use super::TEST_TOOL_NAME;
 use super::TIMEOUT;
 use super::USER_INPUT_RESTRICTION;
+use super::luna_response;
 use super::luna_websocket;
 use super::start_mcp_server;
 use super::submit_user_input_response;
@@ -182,13 +184,14 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             get(luna_websocket).post({
                 let parent_requests = Arc::clone(&parent_requests);
                 let review_requests = Arc::clone(&review_requests);
-                move |Json(request): Json<Value>| {
+                move |State(classifier): State<Arc<MockResponsesState>>,
+                      Json(request): Json<Value>| {
                     let parent_requests = Arc::clone(&parent_requests);
                     let review_requests = Arc::clone(&review_requests);
                     async move {
-                        let events = if request["client_metadata"]["x-openai-subagent"]
-                            == "guardian"
-                        {
+                        let events = if request["model"] == "gpt-5.6-luna" {
+                            luna_response(&classifier, request).await
+                        } else if request["client_metadata"]["x-openai-subagent"] == "guardian" {
                             review_requests
                                 .lock()
                                 .expect("request log lock")
