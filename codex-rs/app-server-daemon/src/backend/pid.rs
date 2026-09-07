@@ -692,7 +692,7 @@ async fn live_process_uses_executable(pid: u32, executable: &Path) -> bool {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = pid;
-        live_executable_proof_matches(None, executable)
+        live_executable_proof_matches(/*observed*/ None, executable)
     }
 }
 

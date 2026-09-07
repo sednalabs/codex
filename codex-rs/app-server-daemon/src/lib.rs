@@ -675,7 +675,9 @@ impl Daemon {
         let managed_codex_version = {
             #[cfg(unix)]
             {
-                managed_codex_version(&managed_release.executable).await.ok()
+                managed_codex_version(&managed_release.executable)
+                    .await
+                    .ok()
             }
             #[cfg(not(unix))]
             {
@@ -749,7 +751,8 @@ impl Daemon {
             if managed_release.sedna_auto_update.is_some() && updater_is_running {
                 #[cfg(unix)]
                 {
-                    let managed_identity = executable_identity(&managed_release.executable).await?;
+                    let managed_identity =
+                        executable_identity(&managed_release.executable).await?;
                     updater
                         .is_running_from_executable(
                             &managed_release.executable,
