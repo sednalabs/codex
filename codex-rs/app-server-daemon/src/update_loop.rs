@@ -1,5 +1,6 @@
 //! Installs updates, validates the server restart, then transfers updater ownership.
 
+use std::path::Path;
 #[cfg(unix)]
 use std::process::Command as StdCommand;
 use std::process::Stdio;
@@ -98,15 +99,52 @@ async fn update_once(
     running_updater_identity: &ExecutableIdentity,
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
+    let daemon = Daemon::from_environment()?;
+    if !daemon.is_stable_standalone_release()? {
+        // An installer can be between changing current and publishing its
+        // latest-channel marker. Retry after the interval instead of exiting.
+        return Ok(UpdateLoopControl::Continue);
+    }
+    let codex_home = daemon
+        .settings_file
+        .parent()
+        .and_then(Path::parent)
+        .context("daemon settings path has no Codex home")?;
+    let current = std::fs::canonicalize(codex_home.join("packages/standalone/current"))?;
+    let previous_release = current
+        .file_name()
+        .context("managed release has no name")?
+        .to_string_lossy()
+        .into_owned();
+    let script = tokio::select! {
+        result = fetch_installer_script(http) => result?,
+        _ = terminate.recv() => return Ok(UpdateLoopControl::Stop),
+    };
+    anyhow::ensure!(
+        script
+            .windows(b"CODEX_INSTALL_IF_LATEST".len())
+            .any(|window| window == b"CODEX_INSTALL_IF_LATEST"),
+        "standalone installer does not support guarded updates"
+    );
+    if !daemon.is_stable_standalone_release()? {
+        return Ok(UpdateLoopControl::Continue);
+    }
     #[cfg(unix)]
-    install_latest_standalone(http).await?;
+    if matches!(
+        run_installer_script(&script, &previous_release, codex_home, terminate.recv()).await?,
+        UpdateLoopControl::Stop
+    ) {
+        return Ok(UpdateLoopControl::Stop);
+    }
     #[cfg(windows)]
     tokio::select! {
-        result = install_latest_standalone(http) => result?,
+        result = run_installer_script(&script, &previous_release) => { result?; },
         _ = terminate.recv() => return Ok(UpdateLoopControl::Stop),
     }
+    if !daemon.is_stable_standalone_release()? {
+        return Ok(UpdateLoopControl::Continue);
+    }
 
-    let daemon = Daemon::from_environment()?;
     let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
     let managed_identity = executable_identity(&managed_codex_bin).await?;
     let (restart_mode, updater_refresh_mode) =
@@ -134,7 +172,13 @@ async fn update_once(
             }
             RestartIfRunningOutcome::NotRunning
             | RestartIfRunningOutcome::NotReady
-            | RestartIfRunningOutcome::AlreadyCurrent => return Ok(UpdateLoopControl::Continue),
+            | RestartIfRunningOutcome::AlreadyCurrent => {
+                return Ok(if daemon.is_stable_standalone_release()? {
+                    UpdateLoopControl::Continue
+                } else {
+                    UpdateLoopControl::Stop
+                });
+            }
         }
     }
 }
@@ -172,13 +216,17 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
     })
 }
 
-async fn install_latest_standalone(http: &impl InstallerHttp) -> Result<()> {
-    let script = fetch_installer_script(http).await?;
-
+async fn run_installer_script(
+    script: &[u8],
+    previous_release: &str,
+    #[cfg(unix)] codex_home: &Path,
+    #[cfg(unix)] terminate: impl std::future::Future<Output = Option<()>>,
+) -> Result<UpdateLoopControl> {
     #[cfg(unix)]
     let mut command = {
         let mut command = Command::new("/bin/sh");
         command.arg("-s");
+        command.process_group(0);
         command
     };
     #[cfg(windows)]
@@ -191,6 +239,10 @@ async fn install_latest_standalone(http: &impl InstallerHttp) -> Result<()> {
         command
     };
     let mut child = command
+        .env("CODEX_RELEASE", "latest")
+        .env("CODEX_INSTALL_IF_LATEST", "1")
+        .env("CODEX_UPDATE_FROM_RELEASE", previous_release)
+        .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -200,21 +252,62 @@ async fn install_latest_standalone(http: &impl InstallerHttp) -> Result<()> {
         .stdin
         .take()
         .context("standalone Codex updater stdin was unavailable")?;
-    stdin
-        .write_all(&script)
-        .await
-        .context("failed to pass standalone Codex updater to shell")?;
+    #[cfg(unix)]
+    let mut terminate = std::pin::pin!(terminate);
+    #[cfg(unix)]
+    let write_result = tokio::select! {
+        result = stdin.write_all(script) => Some(result),
+        _ = &mut terminate => None,
+    };
+    #[cfg(windows)]
+    let write_result = Some(stdin.write_all(script).await);
     drop(stdin);
-    let status = child
-        .wait()
-        .await
-        .context("failed to wait for standalone Codex updater")?;
+    #[cfg(unix)]
+    if write_result.is_none() {
+        cancel_installer(&mut child, codex_home).await;
+        return Ok(UpdateLoopControl::Stop);
+    }
+    write_result
+        .context("installer write was cancelled")?
+        .context("failed to pass standalone Codex updater to shell")?;
+    #[cfg(unix)]
+    let status = tokio::select! {
+        result = child.wait() => result,
+        _ = &mut terminate => {
+            cancel_installer(&mut child, codex_home).await;
+            return Ok(UpdateLoopControl::Stop);
+        }
+    };
+    #[cfg(windows)]
+    let status = child.wait().await;
+    let status = status.context("failed to wait for standalone Codex updater")?;
 
     if status.success() {
-        Ok(())
+        Ok(UpdateLoopControl::Continue)
     } else {
         anyhow::bail!("standalone Codex updater exited with status {status}")
     }
+}
+
+#[cfg(unix)]
+async fn cancel_installer(child: &mut tokio::process::Child, codex_home: &Path) {
+    let Some(pid) = child.id().and_then(|pid| libc::pid_t::try_from(pid).ok()) else {
+        return;
+    };
+    // Let the shell's EXIT/TERM trap release the installer lock first.
+    unsafe { libc::kill(-pid, libc::SIGTERM) };
+    sleep(Duration::from_secs(2)).await;
+    // Keep the shell unreaped until after the group kill, so its PID cannot
+    // be reused while descendants that ignored TERM are still running.
+    unsafe { libc::kill(-pid, libc::SIGKILL) };
+    // A forced kill can bypass the shell trap on hosts using the mkdir lock.
+    // The lock is ours only if its recorded owner is this still-unreaped shell.
+    let lock = codex_home.join("packages/standalone/install.lock.d");
+    if std::fs::read_to_string(lock.join("pid")).is_ok_and(|owner| owner.trim() == pid.to_string())
+    {
+        let _ = std::fs::remove_dir_all(lock);
+    }
+    let _ = child.wait().await;
 }
 
 async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {

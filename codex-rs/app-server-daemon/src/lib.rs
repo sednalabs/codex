@@ -394,6 +394,18 @@ impl Daemon {
             } else {
                 None
             };
+            // The installer can retarget `current` while the updater waits for
+            // this lock or probes the running server. Never restart from a
+            // release that is no longer the selected latest-channel binary.
+            if !self.is_stable_standalone_release()?
+                || managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+                    .await
+                    .ok()
+                    .as_deref()
+                    != Some(managed_codex_bin)
+            {
+                return Ok(RestartIfRunningOutcome::AlreadyCurrent);
+            }
             match restart_decision(mode, info.as_ref(), managed_version.as_deref()) {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
@@ -401,9 +413,7 @@ impl Daemon {
                     #[cfg(windows)]
                     backend::windows::ensure_detached_launch(managed_codex_bin)?;
                     backend.stop().await?;
-                    let _ = self
-                        .start_managed_backend_with_bin(&settings, managed_codex_bin)
-                        .await?;
+                    let _ = self.start_managed_backend(&settings).await?;
                     self.wait_until_ready().await?;
                     RestartIfRunningOutcome::Restarted
                 }
@@ -416,6 +426,15 @@ impl Daemon {
             RestartIfRunningOutcome::NotRunning
         };
 
+        if !self.is_stable_standalone_release()?
+            || managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+                .await
+                .ok()
+                .as_deref()
+                != Some(managed_codex_bin)
+        {
+            return Ok(RestartIfRunningOutcome::AlreadyCurrent);
+        }
         #[cfg(unix)]
         if should_reexec_updater(updater_refresh_mode, outcome) {
             crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
@@ -634,18 +653,16 @@ impl Daemon {
 
         let backend = backend::pid_backend(self.backend_paths(&settings));
         backend.start().await?;
-        let updater = backend::pid_update_loop_backend(self.backend_paths(&settings));
-        if updater.is_starting_or_running().await? {
-            updater.stop().await?;
-        }
-        updater.start().await?;
-
         let info = self.wait_until_ready().await?;
+        backend::pid_update_loop_backend(self.backend_paths(&settings))
+            .stop()
+            .await?;
+        let auto_update_enabled = self.ensure_managed_updater(&settings).await?;
         let managed_codex_version = self.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
-            auto_update_enabled: true,
+            auto_update_enabled,
             remote_control_enabled: settings.remote_control_enabled,
             managed_codex_path: self.managed_codex_bin.clone(),
             managed_codex_version,
@@ -688,7 +705,51 @@ impl Daemon {
         backend.start().await
     }
 
+    async fn ensure_managed_updater(&self, settings: &DaemonSettings) -> Result<bool> {
+        let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
+        if !self.is_stable_standalone_release()? {
+            updater.stop().await?;
+            return Ok(false);
+        }
+        let Ok(codex_bin) =
+            managed_install::resolved_managed_codex_bin(&self.managed_codex_bin).await
+        else {
+            updater.stop().await?;
+            return Ok(false);
+        };
+        if !managed_install::supports_daemon_update_loop(&codex_bin).await
+            || !self.is_stable_standalone_release()?
+            || !managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+                .await
+                .is_ok_and(|selected| selected == codex_bin)
+        {
+            updater.stop().await?;
+            return Ok(false);
+        }
+        backend::pid_update_loop_backend(self.backend_paths_with_bin(settings, &codex_bin))
+            .start()
+            .await?;
+        Ok(true)
+    }
+
+    fn is_stable_standalone_release(&self) -> Result<bool> {
+        let codex_home = self
+            .settings_file
+            .parent()
+            .and_then(Path::parent)
+            .context("daemon settings path has no Codex home")?;
+        Ok(managed_install::is_stable_standalone_release(
+            codex_home,
+            &self.managed_codex_bin,
+        ))
+    }
+
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
+        if !self.is_stable_standalone_release()?
+            || !managed_install::supports_daemon_update_loop(&self.managed_codex_bin).await
+        {
+            return Ok(self.running_backend_instance(settings).await?.is_some());
+        }
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
         updater.is_starting_or_running().await
     }

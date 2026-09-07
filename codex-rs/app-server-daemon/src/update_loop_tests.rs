@@ -1,4 +1,6 @@
 use std::sync::Mutex;
+#[cfg(unix)]
+use std::time::Duration;
 
 use pretty_assertions::assert_eq;
 
@@ -93,6 +95,48 @@ impl InstallerHttp for FakeInstallerHttp {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelling_installer_stops_children_and_releases_fallback_lock() {
+    let home = tempfile::TempDir::new().expect("home");
+    let ready = home.path().join("ready");
+    let delayed = home.path().join("delayed");
+    let lock = home.path().join("packages/standalone/install.lock.d");
+    let script = format!(
+        "mkdir -p '{lock}'\necho $$ > '{lock}/pid'\n(trap '' TERM; echo ready > '{ready}'; sleep 4; echo late > '{delayed}') &\nwait\n",
+        lock = lock.display(),
+        ready = ready.display(),
+        delayed = delayed.display(),
+    );
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let ready_for_signal = ready.clone();
+    let signal_sender = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !ready_for_signal.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "installer did not start"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        cancel.send(()).expect("cancel installer");
+    });
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        super::run_installer_script(script.as_bytes(), "0.150.0-test", home.path(), async {
+            cancelled.await.ok()
+        }),
+    )
+    .await
+    .expect("installer cancellation timed out")
+    .expect("installer cancellation failed");
+    signal_sender.await.expect("signal sender");
+    assert!(matches!(result, super::UpdateLoopControl::Stop));
+    assert!(!lock.exists());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!delayed.exists());
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn powershell_installer_is_noninteractive_and_reports_script_failure() {
@@ -105,11 +149,21 @@ Test-Installer
 "#
         .to_vec(),
     ));
-    super::install_latest_standalone(&valid)
+    let script = super::fetch_installer_script(&valid)
+        .await
+        .expect("fetch installer");
+    super::run_installer_script(&script, "0.150.0-x86_64-pc-windows-msvc")
         .await
         .expect("installer succeeds");
     let failing = FakeInstallerHttp::new(InstallerResponse::Success(
         b"throw 'installer failed'".to_vec(),
     ));
-    assert!(super::install_latest_standalone(&failing).await.is_err());
+    let script = super::fetch_installer_script(&failing)
+        .await
+        .expect("fetch failing installer");
+    assert!(
+        super::run_installer_script(&script, "0.150.0-x86_64-pc-windows-msvc")
+            .await
+            .is_err()
+    );
 }

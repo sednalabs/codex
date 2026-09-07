@@ -63,7 +63,9 @@ $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.c
 
 `bootstrap` requires the standalone managed install. It records the daemon
 settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
-pidfile-backed detached process, and launches a detached updater loop.
+pidfile-backed detached process. It launches a detached updater loop when the
+installer selected the stable `latest` channel and the managed binary supports
+the updater command.
 
 ## Installation and update cases
 
@@ -74,7 +76,8 @@ on Windows) and its managed binary under `CODEX_HOME/packages/standalone/current
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
 | Installer has run; only `start` is used | Managed binary | No | No; explicit restart is required. |
-| Installer has run; `bootstrap` is used | Managed binary and detached updater | Yes; the platform's installer runs hourly. | Yes; after a successful update, a running app-server restarts with the new binary before the updater replaces itself. |
+| Latest-channel installer has run; `bootstrap` is used | Managed binary and detached updater when supported | Yes; the platform's installer runs hourly. | Yes; after a successful update, a running app-server restarts with the new binary before the updater replaces itself. |
+| Installer selected an explicit release; `bootstrap` is used | Managed binary only | No; the selected release stays pinned. | No; an explicit restart uses the selected binary. |
 | Another tool updates the managed binary | Next start or restart uses it | Only with `bootstrap`, on its normal cadence. | With `bootstrap`, the next successful installer pass compares binary contents and refreshes a running app-server before the updater. |
 
 ### Standalone installs
@@ -83,8 +86,15 @@ For installs created by either platform's standalone installer:
 
 - lifecycle commands always use the standalone managed binary path
 - `bootstrap` is supported
-- `bootstrap` starts a detached pid-backed updater loop that fetches via
-  the platform's installer
+- `bootstrap` starts a detached pid-backed updater loop only for a stable
+  latest-channel release whose managed binary supports the updater command
+- the installer records the latest-channel selection alongside `current`;
+  selecting an explicit release clears it, even if that version is currently
+  latest. The updater checks the selection again while holding the install lock
+  so an in-flight update cannot override a new pin
+- installs made before the installer recorded channel selections need one new
+  `latest` installation to opt into automatic updates; until then the daemon
+  continues to serve app-server without updating the selected release
 - after a successful refresh, if app-server is running and the managed binary
   contents changed, the updater restarts app-server with that binary first and
   only then replaces its own process image

@@ -2,6 +2,8 @@
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -10,6 +12,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use tokio::fs;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 /// Returns the packaged executable when present, otherwise an existing legacy executable.
 /// If neither exists, returns the expected packaged path on Windows and preserves the
@@ -28,6 +31,64 @@ pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
     } else {
         legacy
     }
+}
+
+/// Only latest-channel stable releases may run the public latest-version updater.
+pub(crate) fn is_stable_standalone_release(codex_home: &Path, codex_bin: &Path) -> bool {
+    let standalone = codex_home.join("packages/standalone");
+    let Ok(releases) = std::fs::canonicalize(standalone.join("releases")) else {
+        return false;
+    };
+    let Ok(release) = std::fs::canonicalize(standalone.join("current")) else {
+        return false;
+    };
+    if release.parent() != Some(releases.as_path()) {
+        return false;
+    }
+    let Some(release_name) = release.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let targets = [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl",
+        "aarch64-pc-windows-msvc",
+        "x86_64-pc-windows-msvc",
+    ];
+    let Some(version) = targets
+        .iter()
+        .find_map(|target| release_name.strip_suffix(&format!("-{target}")))
+    else {
+        return false;
+    };
+    let components: Vec<_> = version.split('.').collect();
+    components.len() == 3
+        && components.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && std::fs::read_to_string(standalone.join("auto-update-version"))
+            .is_ok_and(|selected| selected == release_name)
+        && std::fs::canonicalize(codex_bin).is_ok_and(|bin| bin.starts_with(&release))
+}
+
+/// Older managed binaries can serve app-server requests without owning an updater.
+pub(crate) async fn supports_daemon_update_loop(codex_bin: &Path) -> bool {
+    let mut command = Command::new(codex_bin);
+    #[cfg(windows)]
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    timeout(
+        Duration::from_secs(5),
+        command
+            .args(["app-server", "daemon", "pid-update-loop", "--help"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok_and(|status| status.success()))
 }
 
 pub(crate) async fn resolved_managed_codex_bin(codex_bin: &Path) -> Result<PathBuf> {
