@@ -48,7 +48,7 @@ pub(crate) use review::new_guardian_review_id;
 pub(crate) use review::record_guardian_denial_for_test;
 pub(crate) use review::routes_approval_policy_to_guardian;
 pub(crate) use review::routes_approval_to_guardian;
-pub(crate) use review_session::GuardianReviewSessionManager;
+pub use review_session::GuardianReviewSessionManager;
 pub(crate) use review_session::prompt_cache_key_override_for_review_session;
 pub(crate) use runtime::ReviewAction;
 

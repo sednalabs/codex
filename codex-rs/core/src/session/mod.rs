@@ -2084,6 +2084,13 @@ impl Session {
             ));
     }
 
+    /// Uses the extension-owned reviewer, or the same manager for standalone hosts.
+    pub(crate) fn guardian_review_session(&self) -> Arc<GuardianReviewSessionManager> {
+        self.services
+            .thread_extension_data
+            .get_or_init(GuardianReviewSessionManager::default)
+    }
+
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
         let legacy_source = msg.clone();

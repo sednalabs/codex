@@ -6636,7 +6636,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
-        guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
@@ -8574,7 +8573,7 @@ async fn shutdown_and_wait_shuts_down_cached_guardian_subagent() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .cache_for_test(child_session, child_io)
         .await;
 
@@ -8606,13 +8605,13 @@ async fn cached_guardian_subagent_exposes_its_rollout_path() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .cache_for_test(child_session, child_io)
         .await;
 
     assert_eq!(
         parent_session
-            .guardian_review_session
+            .guardian_review_session()
             .trunk_rollout_path()
             .await,
         Some(child_rollout_path)
@@ -8659,7 +8658,7 @@ async fn shutdown_and_wait_shuts_down_tracked_ephemeral_guardian_review() {
         session_loop_termination: session_loop_termination_from_handle(child_session_loop_handle),
     };
     parent_session
-        .guardian_review_session
+        .guardian_review_session()
         .register_ephemeral_for_test(child_session, child_io)
         .await;
 
@@ -8943,7 +8942,6 @@ where
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
-        guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,

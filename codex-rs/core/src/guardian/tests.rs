@@ -2593,7 +2593,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     )
     .await;
     let committed_rollout_items = session
-        .guardian_review_session
+        .guardian_review_session()
         .committed_fork_rollout_items_for_test()
         .await
         .expect("committed guardian fork snapshot");
@@ -2917,7 +2917,7 @@ async fn guardian_reused_trunk_ignores_stale_prior_turn_completion() -> anyhow::
     ));
 
     session
-        .guardian_review_session
+        .guardian_review_session()
         .send_trunk_event_raw_for_test(Event {
             id: "stale-turn".to_string(),
             msg: EventMsg::TurnComplete(TurnCompleteEvent {

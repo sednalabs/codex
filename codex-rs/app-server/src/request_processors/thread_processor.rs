@@ -1049,12 +1049,23 @@ impl ThreadRequestProcessor {
         Ok(ThreadUnsubscribeResponse { status })
     }
 
-    async fn prepare_thread_for_archive(&self, thread_id: ThreadId) {
-        self.prepare_thread_for_removal(thread_id, "archive").await;
+    async fn prepare_thread_for_archive(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), JSONRPCErrorError> {
+        self.prepare_thread_for_removal(thread_id, "archive").await
     }
 
-    pub(super) async fn prepare_thread_for_removal(&self, thread_id: ThreadId, operation: &str) {
-        let removed_conversation = self.thread_manager.remove_thread(&thread_id).await;
+    pub(super) async fn prepare_thread_for_removal(
+        &self,
+        thread_id: ThreadId,
+        operation: &str,
+    ) -> Result<(), JSONRPCErrorError> {
+        let removed_conversation = self
+            .thread_manager
+            .remove_thread_for_client(&thread_id)
+            .await
+            .map_err(|err| core_thread_write_error(operation, err))?;
         if let Some(conversation) = removed_conversation {
             info!("thread {thread_id} was active; shutting down");
             match wait_for_thread_shutdown(&conversation).await {
@@ -1070,6 +1081,7 @@ impl ThreadRequestProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
+        Ok(())
     }
 
     fn listener_task_context(&self) -> ListenerTaskContext {
@@ -1718,9 +1730,10 @@ impl ThreadRequestProcessor {
 
         archive_thread_ids[1..].reverse();
         // Collaboration may resume an archived descendant without unarchiving it.
-        self.prepare_thread_for_archive(thread_id).await;
+        self.prepare_thread_for_archive(thread_id).await?;
         for &descendant_thread_id in subtree_thread_ids.iter().skip(1).rev() {
-            self.prepare_thread_for_archive(descendant_thread_id).await;
+            self.prepare_thread_for_archive(descendant_thread_id)
+                .await?;
         }
 
         let archived_thread_ids = self

@@ -948,7 +948,7 @@ async fn run_guardian_review_session_before_deadline(
     };
     let (session_outcome, session_analytics_result) = Box::pin(
         session
-            .guardian_review_session
+            .guardian_review_session()
             .run_review(GuardianReviewSessionParams {
                 parent_session: Arc::clone(&session),
                 parent_context: context.clone(),

@@ -1,3 +1,9 @@
+//! Shared synchronous reviewer lifecycle. The extension owns its instance; standalone
+//! callers use the same reuse, fork, timeout and cancellation rules.
+
+#[path = "review_session_threads.rs"]
+mod managed_threads;
+
 #[path = "review_session_context.rs"]
 mod context_policy;
 use context_policy::ReviewContextPolicy;
@@ -129,8 +135,11 @@ pub(crate) struct GuardianReviewSessionParams {
     pub(crate) deadline: tokio::time::Instant,
 }
 
+/// One reviewer pool per parent thread, shared by extension and standalone hosts.
+/// The extension supplies its thread manager without replacing the review algorithm.
 #[derive(Default)]
-pub(crate) struct GuardianReviewSessionManager {
+pub struct GuardianReviewSessionManager {
+    managed_threads: Option<managed_threads::ManagedReviewerThreads>,
     state: Arc<Mutex<GuardianReviewSessionState>>,
     cancellation_token: CancellationToken,
 }
@@ -403,6 +412,21 @@ impl Drop for EphemeralReviewCleanup {
 }
 
 impl GuardianReviewSessionManager {
+    /// Creates the extension-owned pool before its parent has been registered.
+    pub fn with_thread_manager(manager: std::sync::Weak<crate::ThreadManager>) -> Self {
+        Self {
+            managed_threads: Some(managed_threads::ManagedReviewerThreads::new(manager)),
+            ..Self::default()
+        }
+    }
+
+    /// Allows startup prewarming to spawn after the parent is registered.
+    pub fn mark_ready(&self) {
+        if let Some(threads) = &self.managed_threads {
+            threads.mark_ready();
+        }
+    }
+
     pub(crate) fn initialize(
         &self,
         parent_session: Arc<Session>,
@@ -444,6 +468,7 @@ impl GuardianReviewSessionManager {
             let spawn_cancel_token = self.cancellation_token.child_token();
             let spawn_cancel_guard = spawn_cancel_token.clone().drop_guard();
             let review_session = spawn_guardian_review_session(
+                self,
                 &parent_session,
                 &parent_context,
                 spawn_config,
@@ -578,6 +603,7 @@ impl GuardianReviewSessionManager {
                         params.external_cancel.as_ref(),
                         &spawn_cancel_token,
                         Box::pin(spawn_guardian_review_session(
+                            self,
                             &params.parent_session,
                             &params.parent_context,
                             params.spawn_config.clone(),
@@ -800,6 +826,7 @@ impl GuardianReviewSessionManager {
             params.external_cancel.as_ref(),
             &spawn_cancel_token,
             Box::pin(spawn_guardian_review_session(
+                self,
                 &params.parent_session,
                 &params.parent_context,
                 fork_config,
@@ -843,7 +870,9 @@ impl GuardianReviewSessionManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn spawn_guardian_review_session(
+    manager: &GuardianReviewSessionManager,
     parent_session: &Arc<Session>,
     parent_context: &GuardianReviewContext,
     spawn_config: Config,
@@ -872,20 +901,35 @@ async fn spawn_guardian_review_session(
             0,
         ),
     };
-    let (session, io) = Box::pin(run_codex_thread_interactive(
-        spawn_config,
-        parent_session.services.auth_manager.clone(),
-        parent_session.services.models_manager.clone(),
-        Arc::clone(parent_session),
-        Arc::clone(parent_context.turn()),
-        parent_context.environments().clone(),
-        cancel_token.clone(),
-        SubAgentSource::Other(GUARDIAN_REVIEWER_NAME.to_string()),
-        initial_history,
-        GitEnrichmentPolicy::Skip,
-        codex_sandboxing::WindowsSandboxProxySettingsMode::Preserve,
-    ))
-    .await?;
+    let (session, io) = match &manager.managed_threads {
+        Some(threads) => {
+            threads
+                .spawn(
+                    parent_session,
+                    parent_context,
+                    spawn_config,
+                    cancel_token.clone(),
+                    initial_history,
+                )
+                .await?
+        }
+        None => {
+            Box::pin(run_codex_thread_interactive(
+                spawn_config,
+                parent_session.services.auth_manager.clone(),
+                parent_session.services.models_manager.clone(),
+                Arc::clone(parent_session),
+                Arc::clone(parent_context.turn()),
+                parent_context.environments().clone(),
+                cancel_token.clone(),
+                SubAgentSource::Other(GUARDIAN_REVIEWER_NAME.to_string()),
+                initial_history,
+                GitEnrichmentPolicy::Skip,
+                codex_sandboxing::WindowsSandboxProxySettingsMode::Preserve,
+            ))
+            .await?
+        }
+    };
 
     Ok(GuardianReviewSession {
         session,

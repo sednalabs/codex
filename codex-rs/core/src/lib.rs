@@ -213,3 +213,6 @@ pub use installation_id::resolve_installation_id;
 pub mod compact;
 mod memory_usage;
 pub mod otel_init;
+
+// Captured environment bindings can be passed back to ThreadManager by internal reviewers.
+pub use environment_selection::TurnEnvironmentSnapshot;
