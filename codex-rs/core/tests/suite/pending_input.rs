@@ -49,10 +49,27 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::from_slice;
 use serde_json::json;
+use std::io::Write;
 use tokio::sync::oneshot;
 use tracing::Level;
 use tracing_subscriber::fmt;
-use tracing_test::internal::MockWriter;
+
+#[derive(Clone)]
+struct NativeWaitLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for NativeWaitLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("trace buffer lock"))?
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 fn ev_message_item_done(id: &str, text: &str) -> Value {
     serde_json::json!({
@@ -472,11 +489,12 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
     const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
     const RENEWAL_MARKER: &str = "native_wait_lease_renewed call_id=native-wait-call";
 
-    let output: &'static Mutex<Vec<u8>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer_output = Arc::clone(&output);
     let subscriber = fmt()
         .with_ansi(false)
         .with_max_level(Level::TRACE)
-        .with_writer(MockWriter::new(output))
+        .with_writer(move || NativeWaitLogWriter(Arc::clone(&writer_output)))
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
 
@@ -550,7 +568,7 @@ async fn native_wait_rearms_without_intermediate_provider_request() {
             if marker_count >= 2 {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
