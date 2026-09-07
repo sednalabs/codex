@@ -32,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "4bcc383d30709f39433e9b1abdb0e203746dc456"
+PUSH_PREDECESSOR_SHA = "d3e8c390c2440fc2feb27780bd7ceaeba66682ca"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -447,6 +447,14 @@ GENERATED_PATHS = [
     "sdk/python/src/openai_codex/generated/v2_all.py",
 ]
 SDK_GENERATED_PATHS = GENERATED_PATHS[3:]
+SDK_BUNDLE_PROBE_PATHS = sorted(
+    [
+        "codex-rs/http-client/src/lib.rs",
+        "codex-rs/http-client/src/route_aware_client_pool.rs",
+        "codex-rs/http-client/src/tls_backend_fallback.rs",
+        "codex-rs/http-client/src/tls_backend_fallback_tests.rs",
+    ]
+)
 ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS))
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
@@ -2205,6 +2213,26 @@ def verify_imported_sdk_objects(repo: pathlib.Path) -> None:
     require(run("git", "show", "-s", "--format=%P", SDK_SOURCE_SHA, cwd=repo).split() == [BASE_SHA], "SDK source parent mismatch")
 
 
+def emit_sdk_bundle_path_receipt(repo: pathlib.Path, diagnostics: pathlib.Path) -> dict[str, Any]:
+    paths = list(SDK_BUNDLE_PROBE_PATHS)
+    require(paths == sorted(paths) and len(paths) == len(set(paths)), "SDK bundle probe path set is not exact")
+    entries = [
+        {"path": path, "entry": tuple_json(tree_entry(repo, SDK_CANDIDATE_SHA, path))}
+        for path in paths
+    ]
+    receipt = {
+        "schema": "sdk-bundle-path-probe",
+        "version": 1,
+        "candidate_sha": SDK_CANDIDATE_SHA,
+        "candidate_tree": SDK_CANDIDATE_TREE,
+        "paths": paths,
+        "path_set_sha256": path_digest(paths),
+        "entries": entries,
+    }
+    write_json(diagnostics / "sdk-bundle-path-receipt.json", receipt)
+    return receipt
+
+
 def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> list[dict[str, Any]]:
     require(
         not set(COMPOSITE_RUNTIME_INPUTS).intersection(ALLOWED_MUTABLE_PATHS),
@@ -3420,15 +3448,15 @@ def main() -> None:
     require(output.parent.is_dir(), "output parent must already exist")
     require(not output.exists(), "output directory already exists")
     preflight_path, execution_inputs = load_execution_inputs(preflight_dir, runtime)
+    output.mkdir()
+    diagnostics = output / "diagnostics"
+    diagnostics.mkdir()
     verify_imported_sdk_objects(repo)
+    emit_sdk_bundle_path_receipt(repo, diagnostics)
     receipt_path = artifact / "receipt.json"
     require(receipt_path.is_file() and not receipt_path.is_symlink(), "SDK input receipt is unavailable")
     require(digest(receipt_path) == SDK_INPUT_RECEIPT_SHA256, "SDK input receipt digest mismatch after preflight")
     sdk_receipt = load(receipt_path)
-    output.mkdir()
-    diagnostics = output / "diagnostics"
-    diagnostics.mkdir()
-
     with tempfile.TemporaryDirectory(prefix="w13825-sdk-build-", dir=str(output.parent)) as temp_name:
         temp = pathlib.Path(temp_name).resolve(strict=True)
         verified_runtime_inputs = verify_sdk_input_entries(repo, sdk_receipt)
