@@ -13,6 +13,7 @@ use codex_guardian_context::GuardianRootMessage;
 #[cfg(test)]
 use codex_guardian_context::MANUAL_APPROVAL_DEVELOPER_PREFIX;
 use codex_guardian_context::PlannedAction;
+use codex_guardian_context::PreviousReviews;
 use codex_guardian_context::SectionError;
 use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
@@ -174,6 +175,7 @@ impl TranscriptConfig {
         root_conversation: &[GuardianRootMessage],
         trusted_user_answers: &[String],
         planned_action: Option<&PlannedAction>,
+        previous_reviews: Option<&PreviousReviews>,
     ) -> Result<RenderedContext, SectionError> {
         let history = SnapshotHistory(history);
         let retention = TranscriptRetentionConfig {
@@ -201,6 +203,7 @@ impl TranscriptConfig {
             trusted_user_answers,
             planned_action,
             permissions: None,
+            previous_reviews,
         })?;
         let mut truncations = Vec::new();
         let sections = context
@@ -222,6 +225,9 @@ impl TranscriptConfig {
                 }
                 ContextSection::PermissionContext { items } => {
                     ContextSection::PermissionContext { items }
+                }
+                ContextSection::PreviousReviews(reviews) => {
+                    ContextSection::PreviousReviews(reviews)
                 }
                 ContextSection::PlannedAction(action) => ContextSection::PlannedAction(action),
             })

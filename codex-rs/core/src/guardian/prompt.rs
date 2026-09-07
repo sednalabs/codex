@@ -248,6 +248,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
                     push_text(text);
                 }
             }
+            ContextSection::PreviousReviews(_) => unreachable!("prior reviews are async-only"),
             ContextSection::ConversationTranscript { .. } => {}
             ContextSection::PermissionContext { items } => permission_items = items,
             ContextSection::PlannedAction(action) => {
@@ -480,6 +481,7 @@ pub(super) fn collect_guardian_context(
         trusted_user_answers,
         planned_action,
         permissions,
+        previous_reviews: None,
     })
 }
 

@@ -1,3 +1,4 @@
+use codex_core::context::ContextualUserFragment;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -58,7 +59,6 @@ use super::metrics::record_classification_risk;
 use super::metrics::sampler_failure_reason;
 use super::parent_compaction::ParentCompactionError;
 use super::parent_compaction::select_parent_compaction;
-use super::review_evidence::render_review_evidence;
 use super::sampler::LunaSampler;
 use super::sampler::LunaSamplerConfig;
 use super::sampler::LunaSamplerError;
@@ -69,6 +69,10 @@ use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
 use super::trusted_tools::trusted_tool_context;
 use super::wrapper_lag::WrapperLag;
+use codex_core::context::GuardianReviewEvidenceFragment;
+use codex_guardian_context::PreviousReviews;
+use codex_guardian_context::ReviewEvidence;
+use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
     Scored,
@@ -548,13 +552,35 @@ impl GuardianV2Extension {
                 kind: PlannedActionKind::Command,
                 reason: None,
             };
-            let transcript = match guardian_config.transcript.build_context(
-                ContextTarget::Async,
-                history.as_ref(),
-                root_conversation.as_deref().unwrap_or_default(),
-                &trusted_user_inputs,
-                Some(&action_section),
-            ) {
+            let review_fragments = sync_reviews
+                .iter()
+                .filter(|review| {
+                    review.authorization_version == authorization_version
+                        && review.root_authorization_version == root_authorization_version
+                })
+                .map(|review| {
+                    let review = render_review_evidence(ReviewEvidence {
+                        correlation: &review.correlation,
+                        decision: &review.decision,
+                        action: &review.action,
+                        rationale: review.rationale.as_deref(),
+                    });
+                    truncations.extend(review.truncations);
+                    GuardianReviewEvidenceFragment::new(review.body).render()
+                })
+                .collect::<Vec<_>>();
+            let transcript =
+                PreviousReviews::try_from_fragments(review_fragments).and_then(|reviews| {
+                    guardian_config.transcript.build_context(
+                        ContextTarget::Async,
+                        history.as_ref(),
+                        root_conversation.as_deref().unwrap_or_default(),
+                        &trusted_user_inputs,
+                        Some(&action_section),
+                        Some(&reviews),
+                    )
+                });
+            let transcript = match transcript {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
@@ -581,8 +607,12 @@ impl GuardianV2Extension {
             );
             let images = rendered_images.images;
             let mut classification_input = Vec::new();
+            let mut trusted_review_evidence = None;
             for section in transcript.sections {
                 match section {
+                    ContextSection::PreviousReviews(reviews) => {
+                        trusted_review_evidence = Some(reviews)
+                    }
                     ContextSection::PermissionContext { items }
                     | ContextSection::RootConversation { items }
                     | ContextSection::RetainedUserInstructions { items }
@@ -599,18 +629,6 @@ impl GuardianV2Extension {
                     }
                 }
             }
-            let trusted_review_evidence = sync_reviews
-                .iter()
-                .filter(|review| {
-                    review.authorization_version == authorization_version
-                        && review.root_authorization_version == root_authorization_version
-                })
-                .map(|review| {
-                    let review = render_review_evidence(review);
-                    truncations.extend(review.truncations);
-                    review.text
-                })
-                .collect();
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;

@@ -51,6 +51,13 @@ mod authorization;
 mod entry;
 mod history;
 mod permissions;
+mod reviews;
+pub use reviews::MAX_PREVIOUS_REVIEWS;
+pub use reviews::PreviousReviews;
+pub use reviews::RenderedReviewEvidence;
+pub use reviews::ReviewEvidence;
+pub use reviews::render_review_evidence;
+pub use truncation::TruncationObservation;
 mod retention;
 mod section;
 pub use permissions::PermissionContext;
@@ -105,6 +112,8 @@ pub struct SectionInput<'a> {
     pub planned_action: Option<&'a PlannedAction>,
     /// Sync-only restrictions resolved from the parent execution environment.
     pub permissions: Option<&'a PermissionContext>,
+    /// Size-validated, host-attested reviews selected against the action's authorization snapshot.
+    pub previous_reviews: Option<&'a PreviousReviews>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -159,6 +168,8 @@ pub trait SectionContributor: Send + Sync {
 pub enum SectionError {
     /// Evidence required by this contributor for the current input is missing.
     MissingRequiredEvidence { section: &'static str },
+    /// Supplied evidence exceeds the section's count or rendered-size limit.
+    EvidenceLimitExceeded { section: &'static str },
 }
 
 impl std::fmt::Display for SectionError {
@@ -166,6 +177,9 @@ impl std::fmt::Display for SectionError {
         match self {
             Self::MissingRequiredEvidence { section } => {
                 write!(formatter, "missing required evidence for section {section}")
+            }
+            Self::EvidenceLimitExceeded { section } => {
+                write!(formatter, "evidence exceeds limits for section {section}")
             }
         }
     }
@@ -187,6 +201,7 @@ pub struct SectionRegistry {
 pub fn default_registry() -> &'static SectionRegistry {
     static REGISTRY: LazyLock<SectionRegistry> = LazyLock::new(|| {
         let mut registry = SectionRegistry::default();
+        registry.register(reviews::PreviousReviewsSection);
         registry.register(RootConversationSection);
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);

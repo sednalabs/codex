@@ -90,6 +90,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         trusted_user_answers: &[],
         planned_action: None,
         permissions: None,
+        previous_reviews: None,
     });
     let async_sections = registry.collect(&SectionInput {
         target: ContextTarget::Async,
@@ -99,6 +100,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         trusted_user_answers: &[],
         planned_action: None,
         permissions: None,
+        previous_reviews: None,
     });
 
     assert_eq!(
@@ -159,6 +161,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
                 trusted_user_answers: &[],
                 planned_action: None,
                 permissions: None,
+                previous_reviews: None,
             }),
             Err(error.clone())
         );
@@ -183,6 +186,10 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
         super::GuardianRootMessage::IncompleteRootInstructions,
     ];
     let answers = ["assistant: Publish?\nuser: No.\n".to_string()];
+    let reviews = super::PreviousReviews::try_from_fragments(vec![
+        "<guardian_sync_review>debug-secret review</guardian_sync_review>".to_string(),
+    ])
+    .unwrap();
     let permissions = super::PermissionContext {
         denied_paths: vec!["/private".into()],
         denied_globs: vec!["**/*.key".into()],
@@ -211,9 +218,10 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                 trusted_user_answers: &answers,
                 planned_action: Some(&action),
                 permissions: Some(&permissions),
+                previous_reviews: Some(&reviews),
             })
             .unwrap();
-        assert!(!format!("{:?}", context.last()).contains("debug-secret"));
+        assert!(!format!("{context:?}").contains("debug-secret"));
         let mut expected = vec![ContextSection::RootConversation {
             items: vec![
                 ">>> ROOT CONVERSATION START\n".into(),
@@ -242,6 +250,9 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                 ">>> PARENT TURN PERMISSION CONTEXT END\n".into(),
             ] });
         }
+        if target == ContextTarget::Async {
+            expected.insert(0, ContextSection::PreviousReviews(reviews.clone()));
+        }
         expected.push(ContextSection::PlannedAction(action.clone()));
         assert_eq!(context, expected);
         assert_eq!(
@@ -254,6 +265,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                     trusted_user_answers: &[],
                     planned_action: None,
                     permissions: None,
+                    previous_reviews: None,
                 })
                 .unwrap(),
             vec![ContextSection::ConversationTranscript { items: Vec::new() }]
