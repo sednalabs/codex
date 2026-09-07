@@ -19,7 +19,6 @@ use crate::outgoing_message::OutgoingMessageSender;
 
 const MATCH_LIMIT: usize = 50;
 const MAX_THREADS: usize = 12;
-const MAX_COMPLETIONS_BEFORE_UPDATE: usize = 8;
 
 pub(crate) async fn run_fuzzy_file_search(
     query: String,
@@ -225,7 +224,6 @@ struct PendingNotifications<T> {
     latest_update: Option<T>,
     completions_before_update: usize,
     completions_after_update: usize,
-    completions_since_update: usize,
     stopped: bool,
 }
 
@@ -235,7 +233,6 @@ impl<T> PendingNotifications<T> {
             latest_update: None,
             completions_before_update: 0,
             completions_after_update: 0,
-            completions_since_update: 0,
             stopped: false,
         }
     }
@@ -270,32 +267,14 @@ impl<T> PendingNotifications<T> {
     }
 
     fn take_next(&mut self) -> Option<PendingNotification<T>> {
-        if self.latest_update.is_some()
-            && self.completions_before_update > 0
-            && self.completions_since_update >= MAX_COMPLETIONS_BEFORE_UPDATE
-        {
-            let Some(update) = self.latest_update.take() else {
-                unreachable!("latest update was checked above");
-            };
-            let deferred_completions = self.completions_before_update;
-            self.completions_before_update = 0;
-            add_completion_count(&mut self.completions_after_update, deferred_completions);
-            self.completions_before_update = self.completions_after_update;
-            self.completions_after_update = 0;
-            self.completions_since_update = 0;
-            return Some(PendingNotification::Update(update));
-        }
-
         if self.completions_before_update > 0 {
             self.completions_before_update -= 1;
-            self.completions_since_update += 1;
             return Some(PendingNotification::Complete);
         }
 
         if let Some(update) = self.latest_update.take() {
             self.completions_before_update = self.completions_after_update;
             self.completions_after_update = 0;
-            self.completions_since_update = 0;
             return Some(PendingNotification::Update(update));
         }
 
@@ -307,7 +286,6 @@ impl<T> PendingNotifications<T> {
         self.latest_update = None;
         self.completions_before_update = 0;
         self.completions_after_update = 0;
-        self.completions_since_update = 0;
     }
 }
 
@@ -500,14 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn completion_churn_yields_to_latest_update() {
+    fn finite_completion_churn_preserves_fifo_to_latest_update() {
         let mut pending = PendingNotifications::new();
-        for _ in 0..(super::MAX_COMPLETIONS_BEFORE_UPDATE + 1) {
+        for _ in 0..9 {
             assert!(pending.push_completion());
         }
         assert!(pending.replace_update("latest"));
 
-        for _ in 0..super::MAX_COMPLETIONS_BEFORE_UPDATE {
+        for _ in 0..9 {
             assert_eq!(pending.take_next(), Some(PendingNotification::Complete));
         }
         assert_eq!(pending.take_next(), Some(PendingNotification::Update("latest")));
@@ -540,7 +518,7 @@ mod tests {
         let forwarder = tokio::spawn(forward_notifications(shared.clone()));
         let _ = event_rx.recv().await.expect("first update should be sent");
 
-        for _ in 0..(super::MAX_COMPLETIONS_BEFORE_UPDATE + 1) {
+        for _ in 0..9 {
             shared.enqueue_completion();
         }
         shared.enqueue_update(FuzzyFileSearchSessionUpdatedNotification {
@@ -549,7 +527,7 @@ mod tests {
             files: Vec::new(),
         });
 
-        for _ in 0..super::MAX_COMPLETIONS_BEFORE_UPDATE {
+        for _ in 0..9 {
             let _ = event_rx.recv().await.expect("completion should be retained");
         }
         let queued = event_rx.recv().await.expect("latest update should progress");
