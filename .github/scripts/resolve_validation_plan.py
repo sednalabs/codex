@@ -1140,7 +1140,7 @@ def setup_parallel_limits(
         "workflow": 8,
         "node": 4,
         "rust_minimal": 6,
-        "rust_integration": 2,
+        "rust_integration": 4,
         "release": 1,
     }
 

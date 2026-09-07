@@ -4216,7 +4216,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["workflow_max_parallel"], "8")
         self.assertEqual(payload["node_max_parallel"], "4")
         self.assertEqual(payload["rust_minimal_max_parallel"], "6")
-        self.assertEqual(payload["rust_integration_max_parallel"], "2")
+        self.assertEqual(payload["rust_integration_max_parallel"], "4")
         self.assertEqual(payload["release_max_parallel"], "1")
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertIn(
