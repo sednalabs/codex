@@ -79,9 +79,9 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
-BUILD_SOURCE_TREE = "f0086ec70af34c151da911fb83546f033f8ace9d"
-BUILD_SOURCE_PARENT = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
+BUILD_SOURCE_SHA = "b8c1a1a176d30bec1c9265cae3d36c66a5dd3841"
+BUILD_SOURCE_TREE = "654403d38b9ef1645ded58aa61d7f7bdff8bb083"
+BUILD_SOURCE_PARENT = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
 BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
 BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
@@ -123,7 +123,7 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     "codex-rs/Cargo.toml": (
         "100644",
         "blob",
-        "7bd8c144e52b169b907928bcf743363949d12cb2",
+        "8b68f14c6901d583716329172bf28f263f39cd02",
     ),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
@@ -451,7 +451,7 @@ ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS)
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
-ROOT_CLOSURE_SHA256 = "83cf30fefe2ebd8f9f6fa6105114018544258549128634b50fddbe7eb5d63345"
+ROOT_CLOSURE_SHA256 = "c175dbb7c791383ba65e9df939b7c8e034021dea2c95b5aa9340d4f5b619e7ff"
 REQUIRED_ROOT_MEMBERS = {
     "agent-roles",
     "app-server-protocol-noop-macros",
@@ -472,7 +472,6 @@ REQUIRED_ROOT_MEMBERS = {
     "utils/audio",
     "utils/git-discovery",
     "utils/redacted-string",
-    "voice-host",
     "windows-sandbox-service",
     "workload-identity",
     "worktree",
