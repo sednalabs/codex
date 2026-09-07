@@ -244,7 +244,6 @@ impl ChatWidget {
             );
             self.update_computer_activity(|cell| cell.complete(call, duration, result));
             self.bump_active_cell_revision();
-            self.transcript.had_work_activity = true;
             self.request_redraw();
             return;
         }
