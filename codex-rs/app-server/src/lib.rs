@@ -134,6 +134,7 @@ mod thread_status;
 mod transport;
 mod turn_cost_worker;
 mod user_verification;
+mod user_verification_response;
 
 pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
@@ -1135,7 +1136,7 @@ pub async fn run_main_with_transport_options(
                                             warn!("dropping response from unknown connection: {connection_id:?}");
                                             continue;
                                         }
-                                        processor.process_response(response).await;
+                                        processor.process_response(connection_id, response).await;
                                     }
                                     JSONRPCMessage::Notification(notification) => {
                                         if !connections.contains_key(&connection_id) {
@@ -1149,7 +1150,7 @@ pub async fn run_main_with_transport_options(
                                             warn!("dropping error from unknown connection: {connection_id:?}");
                                             continue;
                                         }
-                                        processor.process_error(err).await;
+                                        processor.process_error(connection_id, err).await;
                                     }
                                 }
                             }

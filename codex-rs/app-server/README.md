@@ -2061,12 +2061,13 @@ Order of messages:
    - an OpenAI form request: `{ "mode": "openaiForm", "message": "...", "requestedSchema": { ... } }`
    - a legacy OpenAI extended form request: `{ "mode": "openai/form", "message": "...", "requestedSchema": { ... } }`
    - a URL request: `{ "mode": "url", "message": "...", "url": "...", "elicitationId": "..." }`
+   - a user-verification request: `{ "mode": "openai/userVerification", "title": "...", "description": "...", "challenge": "AQID" }`
 2. Client response — `{ "action": "accept", "content": ... }`, `{ "action": "decline", "content": null }`, or `{ "action": "cancel", "content": null }`.
 3. `serverRequest/resolved` — `{ threadId, requestId }` confirms the pending request has been resolved or cleared, including lifecycle cleanup on turn start/complete/interrupt.
 
 `turnId` is best-effort. When the elicitation is correlated with an active turn, the request includes that turn id; otherwise it is `null`.
 
-MCP `openai/elicitation/create` requests must explicitly specify `mode: "form"`.
+MCP form requests to `openai/elicitation/create` must explicitly specify `mode: "form"`.
 App-server forwards them as `mode: "openaiForm"`, preserving
 `requestedSchema` as opaque JSON, including `x-openai-*` annotations. The legacy
 `openai/form` route remains independent and also preserves its schema.
@@ -2075,8 +2076,26 @@ The client owns validation and rendering. Graphical clients show an unsupported
 state for unknown semantic inputs, never a partial form or generic approval,
 and wait for the user to decline or cancel instead of returning a JSON-RPC
 error. The TUI automatically declines OpenAI forms, including requests replayed
-from another client. Capability advertisement describes the session's initial
+from another client. Form capability advertisement describes the session's initial
 client, not all clients that may later attach.
+
+User verification uses the same MCP method with `mode: "openai/userVerification"`.
+App-server forwards the title, description, and challenge to one connected app
+enabled by trusted host activation.
+The app returns `{ "action": "accept", "content": { "credentialId": "...", "signature": "..." } }`.
+TUI/Desktop connected to local app-server can obtain that proof through `userVerification/verify`; a mobile app
+can sign on its own device and answer directly. Neither path returns the proof in
+metadata or requires a previous `verify` call to resolve the elicitation.
+
+Verification bypasses automated approval and review. Only the owning connection
+can respond; disconnect, turn interruption, or a cached authentication change
+cancels the request. Authentication revisions are checked even when an account
+switches away and back before its change notification is processed.
+Malformed acceptance without a proof becomes cancellation. The MCP boundary
+validates bounded, unpadded base64url credential IDs and signatures before forwarding.
+The Codex MCP layer will advertise support when the complete device/UI integration
+is enabled; this transport groundwork does not enable advertisement or add a UI
+capability field.
 
 For MCP tool approval elicitations, form request `meta` includes
 `codex_approval_kind: "mcp_tool_call"` and may include `persist: "session"`,

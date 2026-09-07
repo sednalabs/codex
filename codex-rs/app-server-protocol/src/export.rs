@@ -39,6 +39,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 
+#[path = "export_user_verification.rs"]
+mod user_verification;
+
 pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
@@ -271,6 +274,11 @@ fn filter_experimental_ts(out_dir: &Path) -> Result<()> {
     filter_request_ts(out_dir, "ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS)?;
     filter_experimental_type_fields_ts(out_dir, &registered_fields)?;
     remove_generated_type_files(out_dir, &experimental_method_types, "ts")?;
+    let elicitation_path = out_dir.join("v2/McpServerElicitationRequestParams.ts");
+    if elicitation_path.exists() {
+        let content = fs::read_to_string(&elicitation_path)?;
+        fs::write(elicitation_path, user_verification::filter_ts(&content))?;
+    }
     Ok(())
 }
 
@@ -295,6 +303,11 @@ pub(crate) fn filter_experimental_ts_tree(tree: &mut BTreeMap<PathBuf, String>) 
     }
 
     for (path, content) in tree.iter_mut() {
+        if path.file_stem().and_then(|stem| stem.to_str())
+            == Some("McpServerElicitationRequestParams")
+        {
+            *content = user_verification::filter_ts(content);
+        }
         let Some(type_name) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
@@ -339,7 +352,7 @@ fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]
     let filtered_arms: Vec<String> = arms
         .into_iter()
         .filter(|arm| {
-            extract_method_from_arm(arm)
+            extract_discriminator_from_arm(arm, "method")
                 .is_none_or(|method| !experimental_methods.contains(method.as_str()))
         })
         .collect();
@@ -425,6 +438,7 @@ fn filter_experimental_schema(bundle: &mut Value) -> Result<()> {
     prune_experimental_methods(bundle, EXPERIMENTAL_CLIENT_METHODS);
     prune_experimental_methods(bundle, EXPERIMENTAL_SERVER_METHODS);
     remove_experimental_method_type_definitions(bundle);
+    user_verification::filter_json(bundle);
     Ok(())
 }
 
@@ -804,14 +818,14 @@ fn split_top_level_multi(input: &str, delimiters: &[char]) -> Vec<String> {
     parts
 }
 
-fn extract_method_from_arm(arm: &str) -> Option<String> {
+fn extract_discriminator_from_arm(arm: &str, discriminator: &str) -> Option<String> {
     let (open, close) = find_top_level_brace_span(arm)?;
     let inner = &arm[open + 1..close];
     for field in split_top_level(inner, ',') {
         let Some((name, value)) = parse_property(field.as_str()) else {
             continue;
         };
-        if name != "method" {
+        if name != discriminator {
             continue;
         }
         let value = value.trim_start();

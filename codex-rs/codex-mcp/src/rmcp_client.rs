@@ -897,9 +897,10 @@ async fn start_server_task(
         client_mcp_extensions,
         catalog_item_limit,
     } = params;
+    let send_elicitation =
+        elicitation_requests.make_sender(server_name.clone(), tx_event, &client_mcp_extensions);
     let params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
-    let send_elicitation = elicitation_requests.make_sender(server_name.clone(), tx_event);
 
     let started_at = Instant::now();
     let initialize_result = client

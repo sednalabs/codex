@@ -1,17 +1,19 @@
-//! Before activation, verification never prompts or prevents the enclosing tool/turn completing.
+//! Typed verification holds the enclosing tool until the client answers the request.
 
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
+use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
+use codex_protocol::protocol::ElicitationAction;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::test_codex;
-use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -66,9 +68,9 @@ enum CapabilitySource {
 }
 
 #[test_case(CapabilitySource::HostProjection; "host_projection_does_not_advertise_verification")]
-#[test_case(CapabilitySource::ExplicitSession; "explicit_session_cancels_without_ui")]
+#[test_case(CapabilitySource::ExplicitSession; "explicit_session_routes_typed_verification")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_user_verification_before_activation(source: CapabilitySource) -> Result<()> {
+async fn mcp_user_verification_transport(source: CapabilitySource) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(Ok(()), "the MCP fixture requires a host Python interpreter");
     let server = responses::start_mock_server().await;
@@ -82,8 +84,7 @@ async fn mcp_user_verification_before_activation(source: CapabilitySource) -> Re
             Some(&declarations),
             /*legacy_openai_form_elicitation*/ false,
         ),
-        // Exercise the manager's fail-closed route even if a host directly supplies
-        // this capability before the typed transport/UI activation stage lands.
+        // Exercise the typed route when the host directly supplies this capability.
         CapabilitySource::ExplicitSession => ClientMcpExtensions::new(declarations),
     };
     let mut config = test.config.clone();
@@ -130,14 +131,47 @@ async fn mcp_user_verification_before_activation(source: CapabilitySource) -> Re
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(&thread, |event| {
-        assert!(
-            !matches!(event, EventMsg::ElicitationRequest(_)),
-            "verification must not prompt before activation"
-        );
-        matches!(event, EventMsg::TurnComplete(_))
+    let mut prompted = false;
+    tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 10), async {
+        loop {
+            match thread.next_event().await?.msg {
+                EventMsg::ElicitationRequest(request) => {
+                    assert!(matches!(source, CapabilitySource::ExplicitSession));
+                    assert!(!prompted, "verification must only prompt once");
+                    assert_eq!(
+                        request.request,
+                        ElicitationRequest::UserVerification {
+                            title: "Approve".into(),
+                            description: "".into(),
+                            challenge: "AQID".into(),
+                        }
+                    );
+                    assert!(
+                        follow_up.requests().is_empty(),
+                        "the tool must wait for the response"
+                    );
+                    thread
+                        .submit(Op::ResolveElicitation {
+                            server_name: request.server_name,
+                            request_id: request.id,
+                            decision: ElicitationAction::Cancel,
+                            content: None,
+                            meta: None,
+                        })
+                        .await?;
+                    prompted = true;
+                }
+                EventMsg::TurnComplete(_) => break,
+                _ => {}
+            }
+        }
+        anyhow::Ok(())
     })
-    .await;
+    .await??;
+    assert_eq!(
+        prompted,
+        matches!(source, CapabilitySource::ExplicitSession)
+    );
     let output = follow_up
         .single_request()
         .function_call_output("verify-call");

@@ -869,6 +869,10 @@ pub(crate) async fn apply_bespoke_event_handling(
             });
         }
         EventMsg::ElicitationRequest(request) => {
+            let user_verification = matches!(
+                &request.request,
+                codex_protocol::approvals::ElicitationRequest::UserVerification { .. }
+            );
             let permission_guard = thread_watch_manager
                 .note_permission_requested(&conversation_id.to_string())
                 .await;
@@ -918,7 +922,10 @@ pub(crate) async fn apply_bespoke_event_handling(
                     request.server_name,
                     request.id,
                     pending_request_id,
-                    rx,
+                    PendingMcpElicitationResponse {
+                        receiver: rx,
+                        user_verification,
+                    },
                     conversation,
                     thread_state,
                     permission_guard,
@@ -1811,19 +1818,28 @@ async fn on_request_user_input_response(
     }
 }
 
+struct PendingMcpElicitationResponse {
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    user_verification: bool,
+}
+
 async fn on_mcp_server_elicitation_response(
     server_name: String,
     request_id: codex_protocol::mcp::RequestId,
     pending_request_id: RequestId,
-    receiver: oneshot::Receiver<ClientRequestResult>,
+    pending: PendingMcpElicitationResponse,
     conversation: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
+    let response = pending.receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
-    let response = mcp_server_elicitation_response_from_client_result(response);
+    let response = if pending.user_verification {
+        crate::user_verification_response::from_client_result(response)
+    } else {
+        mcp_server_elicitation_response_from_client_result(response)
+    };
 
     if let Err(err) = conversation
         .submit(Op::ResolveElicitation {

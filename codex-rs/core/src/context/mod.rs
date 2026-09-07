@@ -45,6 +45,7 @@ mod unsupported_media;
 mod update_plan_instructions;
 mod user_instructions;
 mod user_shell_command;
+mod user_verification_notice;
 pub(crate) mod world_state;
 
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
@@ -114,4 +115,5 @@ pub(crate) use unsupported_media::UnsupportedMedia;
 pub use update_plan_instructions::without_update_plan_instructions;
 pub(crate) use user_instructions::UserInstructions;
 pub(crate) use user_shell_command::UserShellCommand;
+pub(crate) use user_verification_notice::UserVerificationNotice;
 pub(crate) use world_state::ManagedDeveloperInstructions;

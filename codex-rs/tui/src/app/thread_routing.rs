@@ -308,6 +308,14 @@ impl App {
                                 message: message.clone(),
                             }),
                         )),
+                        codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. } => {
+                            self.app_event_tx.resolve_elicitation(
+                                thread_id, params.server_name.clone(), request_id.clone(),
+                                codex_app_server_protocol::McpServerElicitationAction::Cancel,
+                                /*content*/ None, /*meta*/ None,
+                            );
+                            None
+                        }
                         codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm {
                             ..
                         }
@@ -1792,6 +1800,9 @@ impl App {
         };
 
         match &params.request {
+            codex_app_server_protocol::McpServerElicitationRequest::UserVerification { .. } => {
+                false
+            }
             codex_app_server_protocol::McpServerElicitationRequest::Form { .. } => true,
             codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm { .. }
             | codex_app_server_protocol::McpServerElicitationRequest::OpenAiElicitationForm {
