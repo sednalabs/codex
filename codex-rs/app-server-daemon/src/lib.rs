@@ -672,9 +672,16 @@ impl Daemon {
         let info = self.wait_until_ready().await?;
         settings.bootstrapped = true;
         settings.save(&self.settings_file).await?;
-        let managed_codex_version = managed_codex_version(&managed_release.executable)
-            .await
-            .ok();
+        let managed_codex_version = {
+            #[cfg(unix)]
+            {
+                managed_codex_version(&managed_release.executable).await.ok()
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        };
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,

@@ -261,7 +261,7 @@ async fn failed_reexec_can_restore_the_previous_updater_identity_record() {
 #[test]
 fn unavailable_live_executable_proof_is_not_treated_as_a_match() {
     assert!(!live_executable_proof_matches(
-        None,
+        /*observed*/ None,
         Path::new("/managed/codex")
     ));
 }
