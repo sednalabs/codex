@@ -1,3 +1,4 @@
+use super::transcript::ContextInput;
 use codex_core::context::ContextualUserFragment;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -571,14 +572,15 @@ impl GuardianV2Extension {
                 .collect::<Vec<_>>();
             let transcript =
                 PreviousReviews::try_from_fragments(review_fragments).and_then(|reviews| {
-                    guardian_config.transcript.build_context(
-                        ContextTarget::Async,
-                        history.as_ref(),
-                        root_conversation.as_deref().unwrap_or_default(),
-                        &trusted_user_inputs,
-                        Some(&action_section),
-                        Some(&reviews),
-                    )
+                    guardian_config.transcript.build_context(ContextInput {
+                        target: ContextTarget::Async,
+                        history: history.as_ref(),
+                        root_conversation: root_conversation.as_deref().unwrap_or_default(),
+                        trusted_user_answers: &trusted_user_inputs,
+                        planned_action: Some(&action_section),
+                        previous_reviews: Some(&reviews),
+                        trusted_tool: trusted_tool_context.as_ref(),
+                    })
                 });
             let transcript = match transcript {
                 Ok(transcript) => transcript,
@@ -608,8 +610,10 @@ impl GuardianV2Extension {
             let images = rendered_images.images;
             let mut classification_input = Vec::new();
             let mut trusted_review_evidence = None;
+            let mut trusted_tool_context = None;
             for section in transcript.sections {
                 match section {
+                    ContextSection::TrustedTool(tool) => trusted_tool_context = Some(tool),
                     ContextSection::PreviousReviews(reviews) => {
                         trusted_review_evidence = Some(reviews)
                     }

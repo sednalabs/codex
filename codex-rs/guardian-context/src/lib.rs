@@ -51,6 +51,8 @@ mod authorization;
 mod entry;
 mod history;
 mod permissions;
+mod trusted_tool;
+pub use trusted_tool::TrustedTool;
 mod reviews;
 pub use reviews::MAX_PREVIOUS_REVIEWS;
 pub use reviews::PreviousReviews;
@@ -114,6 +116,8 @@ pub struct SectionInput<'a> {
     pub permissions: Option<&'a PermissionContext>,
     /// Size-validated, host-attested reviews selected against the action's authorization snapshot.
     pub previous_reviews: Option<&'a PreviousReviews>,
+    /// Metadata verified by the host for the exact action being classified.
+    pub trusted_tool: Option<&'a TrustedTool>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -202,6 +206,7 @@ pub fn default_registry() -> &'static SectionRegistry {
     static REGISTRY: LazyLock<SectionRegistry> = LazyLock::new(|| {
         let mut registry = SectionRegistry::default();
         registry.register(reviews::PreviousReviewsSection);
+        registry.register(trusted_tool::TrustedToolSection);
         registry.register(RootConversationSection);
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);

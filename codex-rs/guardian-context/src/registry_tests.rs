@@ -91,6 +91,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         planned_action: None,
         permissions: None,
         previous_reviews: None,
+        trusted_tool: None,
     });
     let async_sections = registry.collect(&SectionInput {
         target: ContextTarget::Async,
@@ -101,6 +102,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         planned_action: None,
         permissions: None,
         previous_reviews: None,
+        trusted_tool: None,
     });
 
     assert_eq!(
@@ -162,6 +164,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
                 planned_action: None,
                 permissions: None,
                 previous_reviews: None,
+                trusted_tool: None,
             }),
             Err(error.clone())
         );
@@ -199,6 +202,11 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
         kind: super::PlannedActionKind::Command,
         reason: Some("debug-secret reason".into()),
     };
+    let tool = super::TrustedTool {
+        server: "local".into(),
+        connector_id: None,
+        source: "debug-secret/config.toml".into(),
+    };
     let history = [ResponseItem::Message {
         id: None,
         role: "user".into(),
@@ -219,6 +227,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                 planned_action: Some(&action),
                 permissions: Some(&permissions),
                 previous_reviews: Some(&reviews),
+                trusted_tool: Some(&tool),
             })
             .unwrap();
         assert!(!format!("{context:?}").contains("debug-secret"));
@@ -251,6 +260,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
             ] });
         }
         if target == ContextTarget::Async {
+            expected.insert(0, ContextSection::TrustedTool(tool.clone()));
             expected.insert(0, ContextSection::PreviousReviews(reviews.clone()));
         }
         expected.push(ContextSection::PlannedAction(action.clone()));
@@ -266,6 +276,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                     planned_action: None,
                     permissions: None,
                     previous_reviews: None,
+                    trusted_tool: None,
                 })
                 .unwrap(),
             vec![ContextSection::ConversationTranscript { items: Vec::new() }]

@@ -19,6 +19,7 @@ use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
 use codex_guardian_context::TranscriptEntryLimits;
 use codex_guardian_context::TranscriptRetentionConfig;
+use codex_guardian_context::TrustedTool;
 use codex_guardian_context::default_registry;
 pub(crate) use codex_guardian_context::truncate_text as truncate_entry;
 use codex_protocol::models::ContentItem;
@@ -52,6 +53,17 @@ struct TranscriptEntry {
     tokens: usize,
     original_bytes: usize,
     retained_bytes: usize,
+}
+
+/// Host snapshot and evidence borrowed for a single section collection.
+pub(crate) struct ContextInput<'a> {
+    pub(crate) target: ContextTarget,
+    pub(crate) history: &'a dyn ConversationHistorySnapshot,
+    pub(crate) root_conversation: &'a [GuardianRootMessage],
+    pub(crate) trusted_user_answers: &'a [String],
+    pub(crate) planned_action: Option<&'a PlannedAction>,
+    pub(crate) previous_reviews: Option<&'a PreviousReviews>,
+    pub(crate) trusted_tool: Option<&'a TrustedTool>,
 }
 
 pub(crate) struct RenderedContext {
@@ -170,13 +182,17 @@ impl TranscriptConfig {
 
     pub(crate) fn build_context(
         &self,
-        target: ContextTarget,
-        history: &dyn ConversationHistorySnapshot,
-        root_conversation: &[GuardianRootMessage],
-        trusted_user_answers: &[String],
-        planned_action: Option<&PlannedAction>,
-        previous_reviews: Option<&PreviousReviews>,
+        input: ContextInput<'_>,
     ) -> Result<RenderedContext, SectionError> {
+        let ContextInput {
+            target,
+            history,
+            root_conversation,
+            trusted_user_answers,
+            planned_action,
+            previous_reviews,
+            trusted_tool,
+        } = input;
         let history = SnapshotHistory(history);
         let retention = TranscriptRetentionConfig {
             max_message_transcript_tokens: self.max_message_transcript_tokens,
@@ -204,6 +220,7 @@ impl TranscriptConfig {
             planned_action,
             permissions: None,
             previous_reviews,
+            trusted_tool,
         })?;
         let mut truncations = Vec::new();
         let sections = context
@@ -226,6 +243,7 @@ impl TranscriptConfig {
                 ContextSection::PermissionContext { items } => {
                     ContextSection::PermissionContext { items }
                 }
+                ContextSection::TrustedTool(tool) => ContextSection::TrustedTool(tool),
                 ContextSection::PreviousReviews(reviews) => {
                     ContextSection::PreviousReviews(reviews)
                 }

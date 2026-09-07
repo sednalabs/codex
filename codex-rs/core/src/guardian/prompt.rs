@@ -248,7 +248,9 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
                     push_text(text);
                 }
             }
-            ContextSection::PreviousReviews(_) => unreachable!("prior reviews are async-only"),
+            ContextSection::PreviousReviews(_) | ContextSection::TrustedTool(_) => {
+                unreachable!("trusted review and tool sections are async-only")
+            }
             ContextSection::ConversationTranscript { .. } => {}
             ContextSection::PermissionContext { items } => permission_items = items,
             ContextSection::PlannedAction(action) => {
@@ -482,6 +484,7 @@ pub(super) fn collect_guardian_context(
         planned_action,
         permissions,
         previous_reviews: None,
+        trusted_tool: None,
     })
 }
 

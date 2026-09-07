@@ -1018,7 +1018,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                 .as_array()
                 .expect("Luna input should be an array")
                 .iter()
-                .filter(|item| item["role"] == "developer")
+                .filter(|item| {
+                    item["role"] == "developer"
+                        && item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                            == json!(["guardian.trusted_tool"])
+                })
                 .filter_map(|item| item["content"].as_array())
                 .flatten()
                 .filter_map(|entry| entry["text"].as_str())

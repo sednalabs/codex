@@ -40,7 +40,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::trusted_skills::GuardianTrustedSkillsFragment;
-use super::trusted_tools::GuardianTrustedToolFragment;
+use codex_guardian_context::TrustedTool;
 
 pub(crate) const MODEL: &str = "gpt-5.6-luna";
 pub(crate) const CLASSIFICATION_TOKEN_USAGE_METRIC: &str =
@@ -88,7 +88,7 @@ pub struct LunaSamplingRequest {
     /// Host-supplied Guardian reviews isolated from untrusted transcript entries.
     pub trusted_review_evidence: Option<PreviousReviews>,
     /// Host-attested metadata for the current home-owned MCP tool or connector.
-    pub trusted_tool_context: Option<GuardianTrustedToolFragment>,
+    pub trusted_tool_context: Option<TrustedTool>,
     /// Host-verified paths of user-owned skills invoked during this turn.
     pub trusted_skill_paths: Vec<String>,
     /// Ordered untrusted input entries that the model should classify.
