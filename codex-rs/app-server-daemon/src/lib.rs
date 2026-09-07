@@ -312,39 +312,38 @@ impl Daemon {
 
     async fn start(&self) -> Result<LifecycleOutput> {
         let settings = self.load_settings().await?;
-        if let Ok(info) = client::probe(&self.socket_path).await {
-            return Ok(self
-                .output(
-                    LifecycleStatus::AlreadyRunning,
-                    self.running_backend(&settings).await?,
-                    /*pid*/ None,
-                    Some(info.app_server_version),
-                )
-                .await);
-        }
-
-        if self.running_backend_instance(&settings).await?.is_some() {
-            let info = self.wait_until_ready().await?;
-            return Ok(self
-                .output(
-                    LifecycleStatus::AlreadyRunning,
-                    Some(BackendKind::Pid),
-                    /*pid*/ None,
-                    Some(info.app_server_version),
-                )
-                .await);
-        }
-
-        self.ensure_managed_codex_bin()?;
-        let pid = self.start_managed_backend(&settings).await?;
-        let info = self.wait_until_ready().await?;
-        Ok(self
-            .output(
+        let (status, backend, pid, info) = if let Ok(info) = client::probe(&self.socket_path).await
+        {
+            (
+                LifecycleStatus::AlreadyRunning,
+                self.running_backend(&settings).await?,
+                None,
+                info,
+            )
+        } else if self.running_backend_instance(&settings).await?.is_some() {
+            (
+                LifecycleStatus::AlreadyRunning,
+                Some(BackendKind::Pid),
+                None,
+                self.wait_until_ready().await?,
+            )
+        } else {
+            self.ensure_managed_codex_bin()?;
+            let pid = self.start_managed_backend(&settings).await?;
+            (
                 LifecycleStatus::Started,
                 Some(BackendKind::Pid),
                 pid,
-                Some(info.app_server_version),
+                self.wait_until_ready().await?,
             )
+        };
+        if backend.is_some()
+            && let Err(err) = self.ensure_managed_updater(&settings).await
+        {
+            eprintln!("warning: failed to ensure managed updater after app-server start: {err:#}");
+        }
+        Ok(self
+            .output(status, backend, pid, Some(info.app_server_version))
             .await)
     }
 
@@ -365,6 +364,11 @@ impl Daemon {
 
         let pid = self.start_managed_backend(&settings).await?;
         let info = self.wait_until_ready().await?;
+        if let Err(err) = self.ensure_managed_updater(&settings).await {
+            eprintln!(
+                "warning: failed to ensure managed updater after app-server restart: {err:#}"
+            );
+        }
         Ok(self
             .output(
                 LifecycleStatus::Restarted,
@@ -619,7 +623,13 @@ impl Daemon {
         let app_server_version = if let Some(backend) = backend {
             backend.stop().await?;
             let _ = self.start_managed_backend(&settings).await?;
-            Some(self.wait_until_ready().await?.app_server_version)
+            let info = self.wait_until_ready().await?;
+            if let Err(err) = self.ensure_managed_updater(&settings).await {
+                eprintln!(
+                    "warning: failed to ensure managed updater after remote-control change: {err:#}"
+                );
+            }
+            Some(info.app_server_version)
         } else {
             None
         };
@@ -708,13 +718,19 @@ impl Daemon {
     async fn ensure_managed_updater(&self, settings: &DaemonSettings) -> Result<bool> {
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
         if !self.is_stable_standalone_release()? {
-            updater.stop().await?;
+            // An installer publishes current and the latest marker separately.
+            // Keep its updater alive while that publication may be in progress.
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
             return Ok(false);
         }
         let Ok(codex_bin) =
             managed_install::resolved_managed_codex_bin(&self.managed_codex_bin).await
         else {
-            updater.stop().await?;
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
             return Ok(false);
         };
         if !managed_install::supports_daemon_update_loop(&codex_bin).await
@@ -723,7 +739,9 @@ impl Daemon {
                 .await
                 .is_ok_and(|selected| selected == codex_bin)
         {
-            updater.stop().await?;
+            if !self.has_latest_selection_marker() {
+                updater.stop().await?;
+            }
             return Ok(false);
         }
         backend::pid_update_loop_backend(self.backend_paths_with_bin(settings, &codex_bin))
@@ -742,6 +760,16 @@ impl Daemon {
             codex_home,
             &self.managed_codex_bin,
         ))
+    }
+
+    fn has_latest_selection_marker(&self) -> bool {
+        self.settings_file
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|home| {
+                home.join("packages/standalone/auto-update-version")
+                    .is_file()
+            })
     }
 
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
@@ -970,6 +998,8 @@ mod tests {
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
+    #[cfg(unix)]
+    use crate::settings::DaemonSettings;
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -1129,6 +1159,49 @@ mod tests {
                 .status,
             LifecycleStatus::NotRunning,
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_local_backend_counts_as_bootstrapped_without_updater() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = TempDir::new().expect("home");
+        let standalone = home.path().join("packages/standalone");
+        let local_bin = standalone.join("local-main/bin/codex");
+        tokio::fs::create_dir_all(local_bin.parent().expect("bin parent"))
+            .await
+            .expect("local bin directory");
+        tokio::fs::write(&local_bin, b"#!/bin/sh\nexec sleep 30\n")
+            .await
+            .expect("local bin");
+        std::fs::set_permissions(&local_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("executable local bin");
+        std::os::unix::fs::symlink("local-main", standalone.join("current"))
+            .expect("current local build");
+        let state = home.path().join("app-server-daemon");
+        let daemon = Daemon {
+            socket_path: home
+                .path()
+                .join("app-server-control/app-server-control.sock"),
+            pid_file: state.join("app-server.pid"),
+            update_pid_file: state.join("app-server-updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: standalone.join("current/bin/codex"),
+        };
+        let settings = DaemonSettings::default();
+        assert!(
+            !daemon
+                .is_bootstrapped(&settings)
+                .await
+                .expect("not running")
+        );
+        let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
+        backend.start().await.expect("start local backend");
+        let bootstrapped = daemon.is_bootstrapped(&settings).await;
+        backend.stop().await.expect("stop local backend");
+        assert!(bootstrapped.expect("managed local backend"));
     }
 
     #[tokio::test]

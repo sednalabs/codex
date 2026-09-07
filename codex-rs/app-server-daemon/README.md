@@ -75,10 +75,10 @@ on Windows) and its managed binary under `CODEX_HOME/packages/standalone/current
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| Installer has run; only `start` is used | Managed binary | No | No; explicit restart is required. |
-| Latest-channel installer has run; `bootstrap` is used | Managed binary and detached updater when supported | Yes; the platform's installer runs hourly. | Yes; after a successful update, a running app-server restarts with the new binary before the updater replaces itself. |
+| Latest-channel installer has run; `start` is used | Managed binary and detached updater when supported | When supported, the platform's installer runs hourly. | When supported, the running server restarts with the new binary before the updater replaces itself. |
+| Latest-channel installer has run; `bootstrap` is used | Managed binary and detached updater when supported | When supported, the platform's installer runs hourly. | When supported, the running server restarts with the new binary before the updater replaces itself. |
 | Installer selected an explicit release; `bootstrap` is used | Managed binary only | No; the selected release stays pinned. | No; an explicit restart uses the selected binary. |
-| Another tool updates the managed binary | Next start or restart uses it | Only with `bootstrap`, on its normal cadence. | With `bootstrap`, the next successful installer pass compares binary contents and refreshes a running app-server before the updater. |
+| Another tool updates the managed binary | A fresh start or explicit restart uses it; a running server is reused. | Yes, when a latest-channel updater is running. | An updater that was running through the change compares binary contents on its next successful installer pass and refreshes the server first. |
 
 ### Standalone installs
 
@@ -86,8 +86,9 @@ For installs created by either platform's standalone installer:
 
 - lifecycle commands always use the standalone managed binary path
 - `bootstrap` is supported
-- `bootstrap` starts a detached pid-backed updater loop only for a stable
-  latest-channel release whose managed binary supports the updater command
+- managed `start`, `restart`, and `bootstrap` ensure a single detached pid-backed
+  updater loop only for a stable latest-channel release whose managed binary
+  supports the updater command
 - the installer records the latest-channel selection alongside `current`;
   selecting an explicit release clears it, even if that version is currently
   latest. The updater checks the selection again while holding the install lock
@@ -98,20 +99,21 @@ For installs created by either platform's standalone installer:
 - after a successful refresh, if app-server is running and the managed binary
   contents changed, the updater restarts app-server with that binary first and
   only then replaces its own process image
-- the updater loop is not reboot-persistent; it must be started again by
-  rerunning `bootstrap` after a reboot
+- the updater loop is not reboot-persistent; a managed start after reboot
+  starts it again
 
 ### Out-of-band updates
 
 This daemon does not watch arbitrary executable files for replacement. If some
 other tool updates the managed binary path:
 
-- without `bootstrap`, a currently running app-server remains on the old
-  executable image until an explicit `restart`
-- with `bootstrap`, the detached updater loop notices the changed managed
+- an updater that was already running notices a changed managed
   binary on its next successful scheduled installer pass; if
   app-server is running, it refreshes app-server first and then refreshes itself
   once that replacement starts successfully
+- if the updater was absent during a same-version binary replacement, a later
+  managed start recovers it but cannot infer the running server's previous
+  executable identity; use `codex app-server daemon restart` to refresh the server
 
 ## Lifecycle semantics
 
