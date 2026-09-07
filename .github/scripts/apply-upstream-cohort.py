@@ -79,11 +79,11 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "a4ece2e14d9ca6551c753d06443e82ddb374ca6e"
-BUILD_SOURCE_TREE = "ff6b77cdc37ab7570c7e4fcf153933f809ecfe1a"
-BUILD_SOURCE_PARENT = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
-BUILD_SOURCE_BRANCH = "worker/w13825-build-source-join-20260907"
-BUILD_PATHS_SHA256 = "a9b50623545666e332bcbd8661030dc75f422875986c65cd96f6c3c6382aa091"
+BUILD_SOURCE_SHA = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
+BUILD_SOURCE_TREE = "f0086ec70af34c151da911fb83546f033f8ace9d"
+BUILD_SOURCE_PARENT = "4addbc431785bdedf77e8ef8b1c1a982267fdbc4"
+BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
+BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     ".github/workflows/bazel.yml": (
         "100644",
@@ -123,19 +123,7 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     "codex-rs/Cargo.toml": (
         "100644",
         "blob",
-        "d8dfea9d6bdc33ce482ca4edae5c8be13891a20d",
-    ),
-    "codex-rs/core-skills/src/loader_tests.rs": None,
-    "codex-rs/core-skills/src/service.rs": None,
-    "codex-rs/ext/skills/src/host_service.rs": (
-        "100644",
-        "blob",
-        "0648debb6435da437715ac60f1b0058bbac42cbb",
-    ),
-    "codex-rs/ext/skills/src/host_service_tests.rs": (
-        "100644",
-        "blob",
-        "e6e0108758bded2fba770a032eeabfed79092ccb",
+        "7bd8c144e52b169b907928bcf743363949d12cb2",
     ),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
@@ -153,7 +141,7 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
         "fc884c8ebc1e2f36154a12ecbcd4cbe509d3bbc5",
     ),
 }
-BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
+BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
     ".github/workflows/bazel.yml": (
         "100644",
         "blob",
@@ -194,22 +182,6 @@ BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
         "blob",
         "b7d06b98391ef2f3307096d963eea4e19853d8f0",
     ),
-    "codex-rs/core-skills/src/loader_tests.rs": (
-        "100644",
-        "blob",
-        "f052485a57d5fbbc70545d6a1314758fd71ff8ba",
-    ),
-    "codex-rs/core-skills/src/service.rs": (
-        "100644",
-        "blob",
-        "82f3c18ac8a22ee411f5ad3142fef4d6eef15290",
-    ),
-    "codex-rs/ext/skills/src/host_service.rs": (
-        "100644",
-        "blob",
-        "3feda36e77f29aea9af387d6374798c277c31b66",
-    ),
-    "codex-rs/ext/skills/src/host_service_tests.rs": None,
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
         "blob",
@@ -226,6 +198,42 @@ BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
         "628ae7a9ac94eee0e0dd66c927964a0ad06544d7",
     ),
 }
+CORE_SKILLS_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
+    "codex-rs/core-skills/BUILD.bazel": ("100644", "blob", "77c4253e73ba223700cac0be15235a4e468aa701"),
+    "codex-rs/core-skills/Cargo.toml": ("100644", "blob", "f86ecdf75b8ffe2507f33ab8557718c46a7de9e6"),
+    "codex-rs/core-skills/src/config_rules.rs": ("100644", "blob", "8a64adfa69c41752819c4336b94fb7a6ceb1b1f7"),
+    "codex-rs/core-skills/src/injection.rs": ("100644", "blob", "2a243b9ee9f69437ffc206de7220f10737029374"),
+    "codex-rs/core-skills/src/injection_tests.rs": ("100644", "blob", "1b6e14dac3ed39ee672ea2c68b7637d6eb761879"),
+    "codex-rs/core-skills/src/invocation_utils.rs": ("100644", "blob", "50864a8349192c719e6da4e70e84db949be6dccf"),
+    "codex-rs/core-skills/src/invocation_utils_tests.rs": ("100644", "blob", "cbbf4c52aff9a8ce9f354842cb87fcc9409acbf2"),
+    "codex-rs/core-skills/src/lib.rs": ("100644", "blob", "dcfc6568a5dcbc6ac0872418c1df19fd68e75ab0"),
+    "codex-rs/core-skills/src/loader.rs": ("100644", "blob", "bb043ab971775c8af0378b699687c6ea550c223f"),
+    "codex-rs/core-skills/src/loader/discovery.rs": ("100644", "blob", "cadc8218c02030ef13d3b8a6d4130be826c5bfe5"),
+    "codex-rs/core-skills/src/loader/environment.rs": ("100644", "blob", "0e881b6c24dad0766fd381822ea985c3b3f9269d"),
+    "codex-rs/core-skills/src/loader/environment_tests.rs": ("100644", "blob", "a817830b37e90316fab40f7e8e89bb9084659ade"),
+    "codex-rs/core-skills/src/loader/namespace.rs": ("100644", "blob", "fa00b1005d19794f8ae7a954cbc6d18a6a9d4142"),
+    "codex-rs/core-skills/src/loader_tests.rs": ("100644", "blob", "f052485a57d5fbbc70545d6a1314758fd71ff8ba"),
+    "codex-rs/core-skills/src/mention_counts.rs": ("100644", "blob", "b7482ca36ecc3f9f58cc85a3e5a17c58fd91e424"),
+    "codex-rs/core-skills/src/model.rs": ("100644", "blob", "e146b7986638c02f4396a29ca2f0d1849123af6e"),
+    "codex-rs/core-skills/src/remote.rs": ("100644", "blob", "b7e27e34f7e873c11fba0981e8bd587debf92639"),
+    "codex-rs/core-skills/src/render.rs": ("100644", "blob", "73a37e502bcb33383c9d6cae0d08e0589712b026"),
+    "codex-rs/core-skills/src/root_loader.rs": ("100644", "blob", "f18f96e85d1fb2d220a9526805aba57a6a2746d1"),
+    "codex-rs/core-skills/src/service.rs": ("100644", "blob", "82f3c18ac8a22ee411f5ad3142fef4d6eef15290"),
+    "codex-rs/core-skills/src/service_tests.rs": ("100644", "blob", "968867bd48d929695a163b9acda887bcfb5bb069"),
+    "codex-rs/core-skills/src/skill_instructions.rs": ("100644", "blob", "b2a002d9025b7ef4594812da19bf08249759948e"),
+    "codex-rs/core-skills/src/system.rs": ("100644", "blob", "5eec94c72967246ee76b960155e250b273c464b7"),
+    "codex-rs/core-skills/tests/environment_loader.rs": ("100644", "blob", "e33b010b4db345d49d9de8df0b125f9860fb6446"),
+}
+CORE_SKILLS_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
+    path: (entry if path in {"codex-rs/core-skills/src/loader_tests.rs", "codex-rs/core-skills/src/service.rs"} else None)
+    for path, entry in CORE_SKILLS_SOURCE_ENTRIES.items()
+}
+CORE_SKILLS_PATHS = list(CORE_SKILLS_SOURCE_ENTRIES)
+CORE_SKILLS_PATHS_SHA256 = "35f2221d0ac15b26a75bf34789f4abc3d9391808313ec42c601d5627c8b4ca9b"
+CORE_SKILLS_ENTRIES_SHA256 = "3d750d875777906261a420e189759982b9d8f8da2a535ec23a5f119856918d04"
+CORE_SKILLS_ADDITIONS_SHA256 = "04f0c6022797fad1b9eca3b28187331050753c76545167b8cfb783f15f2179b2"
+CORE_SKILLS_EXACT_SHA256 = "6b58a39c530f7d9c02138d51e85860aec1b36892d806028d55f8a2005fbf04a2"
+
 BUILD_PATHS = list(BUILD_SOURCE_ENTRIES)
 
 RESTORE_SOURCE_ENTRIES: dict[str, tuple[str, str, str]] = {
@@ -358,19 +366,23 @@ RESTORE_PATHS_SHA256 = "5428c8fdbb4cc499c3218272fdbd01bb822de4b254de51ee83346a38
 RESTORE_ENTRIES_SHA256 = "76075be6752151e58794d773314f0dd38e2b98b86d962669876ff9e57a3100db"
 
 OVERLAY_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
-    sorted({**BUILD_SOURCE_ENTRIES, **RESTORE_SOURCE_ENTRIES}.items())
+    sorted({**BUILD_SOURCE_ENTRIES, **RESTORE_SOURCE_ENTRIES, **CORE_SKILLS_SOURCE_ENTRIES}.items())
 )
 OVERLAY_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
-    sorted({**BUILD_SOURCE_PREIMAGE_ENTRIES, **RESTORE_SOURCE_PREIMAGE_ENTRIES}.items())
+    sorted({
+        **BUILD_SOURCE_PREIMAGE_ENTRIES,
+        **RESTORE_SOURCE_PREIMAGE_ENTRIES,
+        **CORE_SKILLS_SOURCE_PREIMAGE_ENTRIES,
+    }.items())
 )
 OVERLAY_PATHS = list(OVERLAY_SOURCE_ENTRIES)
-OVERLAY_PATHS_SHA256 = "2047f24417be04e754fd4ca15e08e7d7b407d5dd31b9d871040f8aefa825a0a7"
+OVERLAY_PATHS_SHA256 = "e53b95a32ffaac461fa334b523da8b23238c75543b6c65b4c9d2a78dada071de"
 OVERLAY_CHANGED_PATHS = [
     path
     for path in OVERLAY_PATHS
     if OVERLAY_SOURCE_PREIMAGE_ENTRIES[path] != OVERLAY_SOURCE_ENTRIES[path]
 ]
-OVERLAY_CHANGED_PATHS_SHA256 = "4464397fd5e6c6ef10e979274fde89490b9b5fd2cceb0cb105c71fe495002db4"
+OVERLAY_CHANGED_PATHS_SHA256 = "47af70e8708c1b8779819733ec1777cc82fba8d9f1edb52ef79dfcbe863e4c57"
 
 PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     "patches/rules_rs_windows_msvc_linker.patch": (
@@ -440,8 +452,6 @@ ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS)
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
 ROOT_CLOSURE_SHA256 = "83cf30fefe2ebd8f9f6fa6105114018544258549128634b50fddbe7eb5d63345"
-EXPECTED_REMOVED_ROOT_MEMBERS = {"core-skills"}
-EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES = {"codex-core-skills"}
 REQUIRED_ROOT_MEMBERS = {
     "agent-roles",
     "app-server-protocol-noop-macros",
@@ -732,6 +742,14 @@ def mode_oid_path_digest(entries: dict[str, tuple[str, str, str]]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def mode_type_oid_path_digest(entries: dict[str, tuple[str, str, str]]) -> str:
+    canonical = b"".join(
+        f"{mode} {_object_type} {oid}\t{path}".encode("utf-8") + b"\0"
+        for path, (mode, _object_type, oid) in sorted(entries.items())
+    )
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def overlay_operation(
     preimage: tuple[str, str, str] | None,
     postimage: tuple[str, str, str] | None,
@@ -761,6 +779,7 @@ def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
     )
     require(path_digest(BUILD_PATHS) == BUILD_PATHS_SHA256, "build source path digest mismatch")
     require(path_digest(RESTORE_PATHS) == RESTORE_PATHS_SHA256, "restore path digest mismatch")
+    require(path_digest(CORE_SKILLS_PATHS) == CORE_SKILLS_PATHS_SHA256, "core-skills path digest mismatch")
     require(path_digest(OVERLAY_PATHS) == OVERLAY_PATHS_SHA256, "overlay path digest mismatch")
     require(
         path_digest(OVERLAY_CHANGED_PATHS) == OVERLAY_CHANGED_PATHS_SHA256,
@@ -770,6 +789,22 @@ def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
         mode_oid_path_digest(RESTORE_SOURCE_ENTRIES) == RESTORE_ENTRIES_SHA256,
         "restore entry digest mismatch",
     )
+    require(
+        mode_type_oid_path_digest(CORE_SKILLS_SOURCE_ENTRIES) == CORE_SKILLS_ENTRIES_SHA256,
+        "core-skills entry digest mismatch",
+    )
+    core_additions = {
+        path: entry
+        for path, entry in CORE_SKILLS_SOURCE_ENTRIES.items()
+        if CORE_SKILLS_SOURCE_PREIMAGE_ENTRIES[path] is None
+    }
+    core_exact = {
+        path: entry
+        for path, entry in CORE_SKILLS_SOURCE_ENTRIES.items()
+        if CORE_SKILLS_SOURCE_PREIMAGE_ENTRIES[path] == entry
+    }
+    require(path_digest(sorted(core_additions)) == CORE_SKILLS_ADDITIONS_SHA256, "core-skills additions digest mismatch")
+    require(path_digest(sorted(core_exact)) == CORE_SKILLS_EXACT_SHA256, "core-skills exact digest mismatch")
     operations: dict[str, list[str]] = {state: [] for state in ("A", "M", "D", "E")}
     for path in OVERLAY_PATHS:
         preimage = OVERLAY_SOURCE_PREIMAGE_ENTRIES[path]
@@ -780,10 +815,10 @@ def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
         require(tree_entry(repo, BUILD_SOURCE_SHA, path) == postimage, f"overlay postimage mismatch: {path}")
     changed = sorted([*operations["A"], *operations["M"], *operations["D"]])
     require(changed == OVERLAY_CHANGED_PATHS, "overlay changed path set mismatch")
-    require(len(operations["A"]) == 14, "overlay addition count mismatch")
+    require(len(operations["A"]) == 36, "overlay addition count mismatch")
     require(len(operations["M"]) == 11, "overlay modification count mismatch")
     require(not operations["D"], "unexpected current overlay deletion")
-    require(len(operations["E"]) == 8, "overlay exact-retention count mismatch")
+    require(len(operations["E"]) == 10, "overlay exact-retention count mismatch")
     return {
         "declared_path_count": len(OVERLAY_PATHS),
         "declared_path_set_sha256": OVERLAY_PATHS_SHA256,
@@ -792,6 +827,11 @@ def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
         "restore_path_count": len(RESTORE_PATHS),
         "restore_path_set_sha256": RESTORE_PATHS_SHA256,
         "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+        "core_skills_path_count": len(CORE_SKILLS_PATHS),
+        "core_skills_path_set_sha256": CORE_SKILLS_PATHS_SHA256,
+        "core_skills_entries_sha256": CORE_SKILLS_ENTRIES_SHA256,
+        "core_skills_additions_sha256": CORE_SKILLS_ADDITIONS_SHA256,
+        "core_skills_exact_sha256": CORE_SKILLS_EXACT_SHA256,
         "operations": {
             state: {
                 "count": len(paths),
@@ -1421,31 +1461,18 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     prior_members = prior_workspace.get("members", [])
     prior_dependencies = prior_workspace.get("dependencies", {})
 
-    removed_members = set(prior_members) - set(members)
-    if removed_members != EXPECTED_REMOVED_ROOT_MEMBERS:
-        mismatches.append(
-            {
-                "kind": "prior-member-removal-mismatch",
-                "expected": sorted(EXPECTED_REMOVED_ROOT_MEMBERS),
-                "actual": sorted(removed_members),
-            }
-        )
-    changed_prior_dependencies = {
-        name
-        for name in prior_dependencies
-        if workspace_dependencies.get(name) != prior_dependencies[name]
-    }
-    if changed_prior_dependencies != EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES:
-        mismatches.append(
-            {
-                "kind": "prior-workspace-dependency-change-mismatch",
-                "expected": sorted(EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES),
-                "actual": sorted(changed_prior_dependencies),
-            }
-        )
-    for name in sorted(EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES):
-        if name in workspace_dependencies:
-            mismatches.append({"kind": "retired-workspace-dependency-present", "dependency": name})
+    for member in sorted(set(prior_members) - set(members)):
+        mismatches.append({"kind": "prior-member-removed", "member": member})
+    for name in sorted(prior_dependencies):
+        if workspace_dependencies.get(name) != prior_dependencies[name]:
+            mismatches.append(
+                {
+                    "kind": "prior-workspace-dependency-changed",
+                    "dependency": name,
+                    "accepted": prior_dependencies[name],
+                    "actual": workspace_dependencies.get(name),
+                }
+            )
     for member in sorted(REQUIRED_ROOT_MEMBERS - set(members)):
         mismatches.append({"kind": "required-member-missing", "member": member})
     for member in sorted(REQUIRED_ROOT_MEMBERS):
@@ -1529,10 +1556,6 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
         "required_root_member_count": len(REQUIRED_ROOT_MEMBERS),
         "required_workspace_dependency_count": len(REQUIRED_WORKSPACE_DEPENDENCIES),
         "deferred_workspace_dependencies": sorted(DEFERRED_WORKSPACE_DEPENDENCIES),
-        "expected_removed_root_members": sorted(EXPECTED_REMOVED_ROOT_MEMBERS),
-        "expected_removed_workspace_dependencies": sorted(
-            EXPECTED_REMOVED_WORKSPACE_DEPENDENCIES
-        ),
         "inherited_workspace_dependency_count": len(inherited_dependencies),
         "workspace_member_spec_count": graph["workspace_member_spec_count"],
         "workspace_member_literal_count": graph["workspace_member_literal_count"],
@@ -2004,7 +2027,7 @@ def verify_build_source_checkout(repo: pathlib.Path) -> None:
         BUILD_SOURCE_SHA,
         cwd=repo,
     ).splitlines()
-    require(changed == BUILD_PATHS, "build source diff is not the exact fifteen-path authored cohort")
+    require(changed == BUILD_PATHS, "build source diff is not the exact eleven-path authored cohort")
     require(path_digest(changed) == BUILD_PATHS_SHA256, "build source path-set digest mismatch")
     for path, expected in OVERLAY_SOURCE_ENTRIES.items():
         require(tree_entry(repo, BUILD_SOURCE_SHA, path) == expected, f"build source tuple mismatch: {path}")
@@ -2473,6 +2496,11 @@ def emit_tree_metadata_manifest(
             "restore_path_count": len(RESTORE_PATHS),
             "restore_path_set_sha256": RESTORE_PATHS_SHA256,
             "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+            "core_skills_path_count": len(CORE_SKILLS_PATHS),
+            "core_skills_path_set_sha256": CORE_SKILLS_PATHS_SHA256,
+            "core_skills_entries_sha256": CORE_SKILLS_ENTRIES_SHA256,
+            "core_skills_additions_sha256": CORE_SKILLS_ADDITIONS_SHA256,
+            "core_skills_exact_sha256": CORE_SKILLS_EXACT_SHA256,
         },
         "subjects": {
             "materialized": materialized,
@@ -3045,21 +3073,21 @@ def generate_and_test(
     require(execution_inputs["status"] == "ready", "execution inputs are not ready")
     resolve_composed_cargo_lock(worktree, diagnostics)
     run_tool(
-        "skills host-service library tests",
+        "core-skills service library tests",
         "cargo",
         "test",
         "--manifest-path",
         "codex-rs/Cargo.toml",
         "-p",
-        "codex-skills-extension",
+        "codex-core-skills",
         "--lib",
-        "host_service::tests::",
+        "service::tests::",
         cwd=worktree,
     )
     require_candidate_paths(
         worktree,
         sorted([*OVERLAY_CHANGED_PATHS, *SDK_GENERATED_PATHS]),
-        "skills host-service library tests",
+        "core-skills service library tests",
     )
     require(tool_observations["status"] == "ready", f"tool smoke invalid: {tool_observations['errors']}")
     generator_identity["manifest_structure_receipt_sha256"] = digest(
@@ -3219,7 +3247,7 @@ def generate_and_test(
     generator_identity["commands"] = [
         "cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1",
         "cargo metadata --manifest-path codex-rs/Cargo.toml --locked --format-version 1",
-        "cargo test --manifest-path codex-rs/Cargo.toml -p codex-skills-extension --lib host_service::tests::",
+        "cargo test --manifest-path codex-rs/Cargo.toml -p codex-core-skills --lib service::tests::",
         "uv sync --project sdk/python --group dev --frozen",
         "uv run --project sdk/python --frozen --no-sync python scripts/update_sdk_artifacts.py generate-types",
         "python3 .github/scripts/rusty_v8_bazel.py check-module-bazel --version 150.4.0",
@@ -3529,6 +3557,11 @@ def main() -> None:
             "restore_path_count": len(RESTORE_PATHS),
             "restore_path_set_sha256": RESTORE_PATHS_SHA256,
             "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+            "core_skills_path_count": len(CORE_SKILLS_PATHS),
+            "core_skills_path_set_sha256": CORE_SKILLS_PATHS_SHA256,
+            "core_skills_entries_sha256": CORE_SKILLS_ENTRIES_SHA256,
+            "core_skills_additions_sha256": CORE_SKILLS_ADDITIONS_SHA256,
+            "core_skills_exact_sha256": CORE_SKILLS_EXACT_SHA256,
             "overlay_contract": verify_overlay_contract(worktree),
             "overlay_dispositions": overlay_dispositions,
             "generated_path_count": len(GENERATED_PATHS),
@@ -3583,6 +3616,11 @@ def main() -> None:
             "restore_path_count": len(RESTORE_PATHS),
             "restore_path_set_sha256": RESTORE_PATHS_SHA256,
             "restore_entries_sha256": RESTORE_ENTRIES_SHA256,
+            "core_skills_path_count": len(CORE_SKILLS_PATHS),
+            "core_skills_path_set_sha256": CORE_SKILLS_PATHS_SHA256,
+            "core_skills_entries_sha256": CORE_SKILLS_ENTRIES_SHA256,
+            "core_skills_additions_sha256": CORE_SKILLS_ADDITIONS_SHA256,
+            "core_skills_exact_sha256": CORE_SKILLS_EXACT_SHA256,
             "actual_changed_path_count": len(candidate_paths),
             "actual_changed_path_set_sha256": path_digest(candidate_paths),
             "actual_changed_paths": candidate_paths,
