@@ -188,9 +188,11 @@ async fn deliver_in_process_events(
                 }) {
                     Ok(()) => skipped_events = 0,
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        skipped_events = skipped_events
-                            .checked_add(1)
-                            .expect("in-process skipped event count should fit in usize");
+                        let Some(next_skipped_events) = skipped_events.checked_add(1) else {
+                            warn!("in-process skipped event count overflowed");
+                            break;
+                        };
+                        skipped_events = next_skipped_events;
                         warn!("dropping in-process event lag marker (queue full)");
                         if let Some(write_complete_tx) = queued_message.write_complete_tx {
                             let _ = write_complete_tx.send(());
@@ -209,9 +211,11 @@ async fn deliver_in_process_events(
         } else if let Err(send_error) = event_tx.try_send(event) {
             match send_error {
                 mpsc::error::TrySendError::Full(_) => {
-                    skipped_events = skipped_events
-                        .checked_add(1)
-                        .expect("in-process skipped event count should fit in usize");
+                    let Some(next_skipped_events) = skipped_events.checked_add(1) else {
+                        warn!("in-process skipped event count overflowed");
+                        break;
+                    };
+                    skipped_events = next_skipped_events;
                     warn!("dropping in-process server event (queue full)");
                 }
                 mpsc::error::TrySendError::Closed(_) => break,
