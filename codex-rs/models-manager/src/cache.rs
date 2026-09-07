@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use chrono::Utc;
-use codex_protocol::openai_models::deserialize_model_infos_with_legacy_base;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::deserialize_model_infos_with_legacy_base;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io;
@@ -216,8 +216,8 @@ mod tests {
                 "experimental_supported_tools": []
             }]
         });
-        let cache: ModelsCache = serde_json::from_value(payload.clone())
-        .expect("cache catalog should deserialize");
+        let cache: ModelsCache =
+            serde_json::from_value(payload.clone()).expect("cache catalog should deserialize");
 
         assert_eq!(cache.models[0].base_instructions, "template");
 

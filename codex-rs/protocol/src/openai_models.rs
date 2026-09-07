@@ -467,7 +467,8 @@ impl ModelInfo {
 
     pub fn get_model_instructions(&self, personality: Option<Personality>) -> String {
         if let Some(model_messages) = &self.model_messages
-            && let Some(template) = usable_instruction(model_messages.instructions_template.as_deref())
+            && let Some(template) =
+                usable_instruction(model_messages.instructions_template.as_deref())
         {
             let personality_message = model_messages
                 .get_personality_message(personality)
@@ -819,10 +820,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.models[0].base_instructions, template);
-        assert_eq!(
-            response.models[0].get_model_instructions(None),
-            template
-        );
+        assert_eq!(response.models[0].get_model_instructions(None), template);
         assert_eq!(response.models[1].base_instructions, "base");
         assert_eq!(response.models[1].get_model_instructions(None), "base");
     }
@@ -851,7 +849,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(fallback_response.models[0].base_instructions, "base");
-        assert_eq!(fallback_response.models[0].get_model_instructions(None), "base");
+        assert_eq!(
+            fallback_response.models[0].get_model_instructions(None),
+            "base"
+        );
 
         let mut invalid = serde_json::to_value(test_model(/*spec*/ None)).unwrap();
         let invalid_object = invalid.as_object_mut().unwrap();
