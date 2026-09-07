@@ -950,9 +950,20 @@ fn collect_guardian_transcript_entries(
     history: &dyn codex_guardian_context::SectionHistory,
     node_repl_result_token_limit: usize,
 ) -> Vec<ConversationTranscriptEntry> {
-    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[])
-        .expect("collect Guardian context")
-        .transcript
+    prompt::collect_guardian_context(
+        history,
+        node_repl_result_token_limit,
+        &[],
+        &[],
+        /*planned_action*/ None,
+    )
+    .expect("collect Guardian context")
+    .into_iter()
+    .find_map(|section| match section {
+        codex_guardian_context::ContextSection::ConversationTranscript { items } => Some(items),
+        _ => None,
+    })
+    .unwrap_or_default()
 }
 
 #[test]

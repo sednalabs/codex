@@ -31,7 +31,11 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_guardian_context::ActionPresentation;
+use codex_guardian_context::ContextSection;
 use codex_guardian_context::ContextTarget;
+use codex_guardian_context::PlannedAction;
+use codex_guardian_context::PlannedActionKind;
 use codex_history::RolloutItem;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
@@ -515,11 +519,41 @@ impl GuardianV2Extension {
                 model: parent_model.clone(),
                 ..score_authorization
             };
+            let planned_action = match action.render(guardian_config.max_action_tokens) {
+                Ok(RenderedAction {
+                    text,
+                    original_bytes,
+                }) => {
+                    truncations.record("action", original_bytes, text.len());
+                    text
+                }
+                Err(error) => {
+                    Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
+                    record_classification(
+                        metrics.as_deref(),
+                        classification_started_at.elapsed(),
+                        "failure",
+                        Some("action_serialization_error"),
+                    );
+                    event_sink.emit_warning(ExtensionWarning {
+                        thread_id,
+                        turn_id: Some(turn_id),
+                        message: format!("Guardian V2 action serialization failed: {error}"),
+                    });
+                    return;
+                }
+            };
+            let action_section = PlannedAction {
+                json: planned_action.clone(),
+                kind: PlannedActionKind::Command,
+                reason: None,
+            };
             let transcript = match guardian_config.transcript.build_context(
                 ContextTarget::Async,
                 history.as_ref(),
                 root_conversation.as_deref().unwrap_or_default(),
                 &trusted_user_inputs,
+                Some(&action_section),
             ) {
                 Ok(transcript) => transcript,
                 Err(error) => {
@@ -546,34 +580,24 @@ impl GuardianV2Extension {
                 /*retained_bytes*/ 0,
             );
             let images = rendered_images.images;
-            let planned_action = match action.render(guardian_config.max_action_tokens) {
-                Ok(RenderedAction {
-                    text,
-                    original_bytes,
-                }) => {
-                    truncations.record("action", original_bytes, text.len());
-                    text
+            let mut classification_input = Vec::new();
+            for section in transcript.sections {
+                match section {
+                    ContextSection::RootConversation { items }
+                    | ContextSection::RetainedUserInstructions { items }
+                    | ContextSection::TrustedUserAnswers { items } => {
+                        classification_input.extend(items)
+                    }
+                    ContextSection::ConversationTranscript { items } => {
+                        classification_input.push(">>> TRANSCRIPT START\n".to_owned());
+                        classification_input.extend(items);
+                        classification_input.push(">>> TRANSCRIPT END\n\n".to_owned());
+                    }
+                    ContextSection::PlannedAction(action) => {
+                        classification_input.extend(action.render(ActionPresentation::Async))
+                    }
                 }
-                Err(error) => {
-                    Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
-                    record_classification(
-                        metrics.as_deref(),
-                        classification_started_at.elapsed(),
-                        "failure",
-                        Some("action_serialization_error"),
-                    );
-                    event_sink.emit_warning(ExtensionWarning {
-                        thread_id,
-                        turn_id: Some(turn_id),
-                        message: format!("Guardian V2 action serialization failed: {error}"),
-                    });
-                    return;
-                }
-            };
-            let mut classification_input = transcript.authorization;
-            classification_input.push(">>> TRANSCRIPT START\n".to_owned());
-            classification_input.extend(transcript.entries);
-            classification_input.push(">>> TRANSCRIPT END\n\n".to_owned());
+            }
             let trusted_review_evidence = sync_reviews
                 .iter()
                 .filter(|review| {
@@ -586,13 +610,6 @@ impl GuardianV2Extension {
                     review.text
                 })
                 .collect();
-            classification_input.extend([
-                "The Codex agent has requested the following action:\n".to_owned(),
-                ">>> APPROVAL REQUEST START\n".to_owned(),
-                "Planned action JSON:\n".to_owned(),
-                format!("{planned_action}\n"),
-                ">>> APPROVAL REQUEST END\n".to_owned(),
-            ]);
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;
