@@ -3,12 +3,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use pretty_assertions::assert_eq;
+#[cfg(unix)]
+use tempfile::TempDir;
 
 use super::INSTALL_URL;
 use super::InstallerHttp;
 use super::InstallerResponse;
 use super::fetch_installer_script;
 use super::update_modes_for_identities;
+#[cfg(unix)]
+use super::wait_for_next_check;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
 use crate::managed_install::executable_identity_from_bytes;
@@ -35,6 +39,43 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
             RestartMode::Always,
             UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
         )
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recurring_wait_reads_persisted_interval_and_enabled_state() {
+    let temp = TempDir::new().expect("temp dir");
+    let settings_file = temp.path().join("settings.json");
+    tokio::fs::write(&settings_file, r#"{"updater":{"updateIntervalMinutes":2}}"#)
+        .await
+        .expect("write settings");
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install signal handler");
+    let started = tokio::time::Instant::now();
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_next_check(&settings_file, Duration::from_millis(10), &mut terminate),
+        )
+        .await
+        .expect("recurring wait should finish")
+        .expect("load persisted settings"),
+        false
+    );
+    assert!(started.elapsed() >= Duration::from_millis(20));
+
+    tokio::fs::write(
+        &settings_file,
+        r#"{"updater":{"autoUpdateEnabled":false,"updateIntervalMinutes":2}}"#,
+    )
+    .await
+    .expect("disable updates");
+    assert_eq!(
+        wait_for_next_check(&settings_file, Duration::from_millis(10), &mut terminate)
+            .await
+            .expect("reload settings"),
+        true
     );
 }
 

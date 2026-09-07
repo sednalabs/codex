@@ -361,6 +361,9 @@ impl PidBackend {
     fn terminate_process(&self, pid: u32) -> Result<()> {
         match self.command_kind {
             PidCommandKind::AppServer { .. } => terminate_process(pid),
+            #[cfg(unix)]
+            PidCommandKind::UpdateLoop => terminate_process_group(pid),
+            #[cfg(not(unix))]
             PidCommandKind::UpdateLoop => terminate_process(pid),
         }
     }
@@ -465,6 +468,21 @@ fn force_terminate_process(pid: u32) -> Result<()> {
         return Ok(());
     }
     Err(err).with_context(|| format!("failed to force terminate pid-managed app server {pid}"))
+}
+
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) -> Result<()> {
+    let raw_pid = libc::pid_t::try_from(pid)
+        .with_context(|| format!("pid-managed updater pid {pid} is out of range"))?;
+    let result = unsafe { libc::kill(-raw_pid, libc::SIGTERM) };
+    if result == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err).with_context(|| format!("failed to terminate pid-managed updater group {pid}"))
 }
 
 #[cfg(unix)]

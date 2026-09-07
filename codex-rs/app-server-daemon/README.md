@@ -44,6 +44,17 @@ should parse that JSON rather than relying on human-readable text. Lifecycle
 responses report the resolved backend, socket path, local CLI version, and
 running app-server version when applicable.
 
+Standalone-managed daemons check for updates after five minutes, then hourly by
+default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
+
+```json
+{"remoteControlEnabled": false,
+ "updater": {"autoUpdateEnabled": false, "updateIntervalMinutes": 120}}
+```
+
+Positive minute intervals have no configured cap. `daemon restart` applies the
+enabled state; the next updater wait reads a new interval. `codex update` is unaffected.
+
 ## Bootstrap flow
 
 For a new Linux or macOS machine:
@@ -63,9 +74,9 @@ $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.c
 
 `bootstrap` requires the standalone managed install. It records the daemon
 settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
-pidfile-backed detached process. It launches a detached updater loop when the
-installer selected the stable `latest` channel and the managed binary supports
-the updater command.
+pidfile-backed detached process. It launches a detached updater loop when
+automatic updates are enabled, the installer selected the stable `latest`
+channel, and the managed binary supports the updater command.
 
 ## Installation and update cases
 
@@ -75,10 +86,9 @@ on Windows) and its managed binary under `CODEX_HOME/packages/standalone/current
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| Latest-channel installer has run; `start` is used | Managed binary and detached updater when supported | When supported, the platform's installer runs hourly. | When supported, the running server restarts with the new binary before the updater replaces itself. |
-| Latest-channel installer has run; `bootstrap` is used | Managed binary and detached updater when supported | When supported, the platform's installer runs hourly. | When supported, the running server restarts with the new binary before the updater replaces itself. |
+| Latest-channel installer has run; `start` or `bootstrap` is used with automatic updates enabled | Managed binary and detached updater when supported | When supported, the platform's installer runs on the configured cadence. | When supported, the running server restarts with the new binary before the updater replaces itself. |
 | Installer selected an explicit release; `bootstrap` is used | Managed binary only | No; the selected release stays pinned. | No; an explicit restart uses the selected binary. |
-| Another tool updates the managed binary | A fresh start or explicit restart uses it; a running server is reused. | Yes, when a latest-channel updater is running. | An updater that was running through the change compares binary contents on its next successful installer pass and refreshes the server first. |
+| Another tool updates the managed binary | A fresh start or explicit restart uses it; a running server is reused. | Yes, when a latest-channel updater is running, on the configured cadence. | An updater that was running through the change compares binary contents on its next successful installer pass and refreshes the server first. |
 
 ### Standalone installs
 
@@ -87,8 +97,8 @@ For installs created by either platform's standalone installer:
 - lifecycle commands always use the standalone managed binary path
 - `bootstrap` is supported
 - managed `start`, `restart`, and `bootstrap` ensure a single detached pid-backed
-  updater loop only for a stable latest-channel release whose managed binary
-  supports the updater command
+  updater loop only when automatic updates are enabled for a stable latest-channel
+  release whose managed binary supports the updater command
 - the installer records the latest-channel selection alongside `current`;
   selecting an explicit release clears it, even if that version is currently
   latest. The updater checks the selection again while holding the install lock
@@ -126,9 +136,13 @@ JSON-RPC initialize handshake on the Unix control socket.
 for future starts. If a managed app-server is already running, they restart it
 so the new setting takes effect immediately.
 
-Top-level `codex remote-control` bootstraps with `--remote-control` when the
-updater loop is not running. Otherwise it enables remote control and starts the
-daemon normally.
+Top-level `codex remote-control start` enables and persists remote control for
+the managed daemon, overriding a saved disabled value. It starts or bootstraps
+the daemon as needed. Plain `codex remote-control` runs a separate foreground
+server and does not change daemon settings; `codex remote-control stop` stops
+the managed daemon without clearing its saved remote-control preference.
+`daemon start` and `daemon restart` use that saved preference. `daemon bootstrap`
+sets it according to `--remote-control` (disabled when omitted).
 
 `stop` sends a graceful termination request first, then sends a second
 termination signal after the grace window if the process is still alive.
@@ -141,7 +155,7 @@ or `bootstrap` does not race another in-flight lifecycle operation.
 
 The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
 
-- `settings.json` for persisted launch settings
+- `settings.json` for remote-control launch settings and updater preferences
 - `app-server.pid` for the app-server process record
 - `app-server-updater.pid` for the pid-backed standalone updater loop
 - `daemon.lock` for daemon-wide lifecycle serialization

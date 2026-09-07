@@ -356,6 +356,11 @@ impl Daemon {
                 "app server is running but is not managed by codex app-server daemon"
             ));
         }
+        if !settings.auto_update_enabled {
+            backend::pid_update_loop_backend(self.backend_paths(&settings))
+                .stop()
+                .await?;
+        }
 
         self.ensure_managed_codex_bin()?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
@@ -456,7 +461,8 @@ impl Daemon {
     }
 
     async fn stop(&self) -> Result<LifecycleOutput> {
-        let settings = self.load_settings().await?;
+        // Stopping a managed process does not require readable settings.
+        let settings = DaemonSettings::default();
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             backend.stop().await?;
             return Ok(self
@@ -645,9 +651,8 @@ impl Daemon {
     async fn bootstrap_locked(&self, options: BootstrapOptions) -> Result<BootstrapOutput> {
         self.ensure_managed_codex_bin()?;
 
-        let settings = DaemonSettings {
-            remote_control_enabled: options.remote_control_enabled,
-        };
+        let mut settings = self.load_settings().await?;
+        settings.remote_control_enabled = options.remote_control_enabled;
         if client::probe(&self.socket_path).await.is_ok()
             && self.running_backend(&settings).await?.is_none()
         {
@@ -657,6 +662,9 @@ impl Daemon {
         }
         settings.save(&self.settings_file).await?;
 
+        backend::pid_update_loop_backend(self.backend_paths(&settings))
+            .stop()
+            .await?;
         if let Some(backend) = self.running_backend_instance(&settings).await? {
             backend.stop().await?;
         }
@@ -664,9 +672,6 @@ impl Daemon {
         let backend = backend::pid_backend(self.backend_paths(&settings));
         backend.start().await?;
         let info = self.wait_until_ready().await?;
-        backend::pid_update_loop_backend(self.backend_paths(&settings))
-            .stop()
-            .await?;
         let auto_update_enabled = self.ensure_managed_updater(&settings).await?;
         let managed_codex_version = self.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
@@ -717,6 +722,10 @@ impl Daemon {
 
     async fn ensure_managed_updater(&self, settings: &DaemonSettings) -> Result<bool> {
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
+        if !settings.auto_update_enabled {
+            updater.stop().await?;
+            return Ok(false);
+        }
         if !self.is_stable_standalone_release()? {
             // An installer publishes current and the latest marker separately.
             // Keep its updater alive while that publication may be in progress.
@@ -773,7 +782,8 @@ impl Daemon {
     }
 
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
-        if !self.is_stable_standalone_release()?
+        if !settings.auto_update_enabled
+            || !self.is_stable_standalone_release()?
             || !managed_install::supports_daemon_update_loop(&self.managed_codex_bin).await
         {
             return Ok(self.running_backend_instance(settings).await?.is_some());

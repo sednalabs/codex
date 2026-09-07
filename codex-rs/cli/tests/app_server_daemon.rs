@@ -184,7 +184,39 @@ fn managed_start_keeps_updater_on_marker_mismatch_but_stops_it_for_pin() -> Resu
 }
 
 #[test]
-fn start_does_not_launch_updater_for_unmanaged_app_server() -> Result<()> {
+fn restart_applies_saved_updater_preference() -> Result<()> {
+    let daemon = TestDaemon::new()?;
+    assert_eq!(daemon.lifecycle("start")?["status"], "started");
+    let updater_pid = daemon.pid("app-server-updater.pid")?;
+    let settings = daemon.home.path().join("app-server-daemon/settings.json");
+    std::fs::write(
+        &settings,
+        serde_json::to_vec(&serde_json::json!({
+            "updater": {"autoUpdateEnabled": false, "updateIntervalMinutes": 2},
+        }))?,
+    )?;
+    assert_eq!(daemon.lifecycle("restart")?["status"], "restarted");
+    wait_for_exit(updater_pid)?;
+    assert!(daemon.pid("app-server-updater.pid").is_err());
+    assert_eq!(daemon.lifecycle("bootstrap")?["autoUpdateEnabled"], false);
+    assert!(daemon.pid("app-server-updater.pid").is_err());
+
+    std::fs::write(
+        &settings,
+        serde_json::to_vec(&serde_json::json!({
+            "updater": {"autoUpdateEnabled": true, "updateIntervalMinutes": 2},
+        }))?,
+    )?;
+    assert_eq!(daemon.lifecycle("restart")?["status"], "restarted");
+    assert_ne!(daemon.pid("app-server-updater.pid")?, updater_pid);
+
+    std::fs::write(&settings, "{malformed")?;
+    assert_eq!(daemon.lifecycle("stop")?["status"], "stopped");
+    Ok(())
+}
+
+#[test]
+fn unmanaged_app_server_does_not_launch_updater() -> Result<()> {
     let mut daemon = TestDaemon::new()?;
     daemon.unmanaged = Some(
         daemon

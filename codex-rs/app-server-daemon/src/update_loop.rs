@@ -31,10 +31,12 @@ use crate::UpdaterRefreshMode;
 use crate::managed_install::ExecutableIdentity;
 use crate::managed_install::executable_identity;
 use crate::managed_install::resolved_managed_codex_bin;
+#[cfg(windows)]
+use crate::settings::DaemonSettings;
+use crate::settings::UpdaterSettings;
 
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 #[cfg(unix)]
 const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
 #[cfg(windows)]
@@ -47,9 +49,8 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
     #[cfg(windows)]
     let updater = {
         let daemon = Daemon::from_environment()?;
-        crate::backend::pid_update_loop_backend(
-            daemon.backend_paths(&daemon.load_settings().await?),
-        )
+        // Updater ownership needs only paths, not settings that may be mid-edit.
+        crate::backend::pid_update_loop_backend(daemon.backend_paths(&DaemonSettings::default()))
     };
     #[cfg(windows)]
     updater.wait_for_ownership().await?;
@@ -67,7 +68,18 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
     if sleep_or_terminate(INITIAL_UPDATE_DELAY, &mut terminate).await {
         return Ok(());
     }
+    let daemon = Daemon::from_environment()?;
     loop {
+        match UpdaterSettings::load(&daemon.settings_file).await {
+            Ok(settings) if !settings.auto_update_enabled => return Ok(()),
+            Err(_) => {
+                if sleep_or_terminate(Duration::from_secs(60), &mut terminate).await {
+                    return Ok(());
+                }
+                continue;
+            }
+            Ok(_) => {}
+        }
         // Failed successor cleanup leaves its PID published. The predecessor
         // must stop instead of installing again without ownership.
         #[cfg(windows)]
@@ -76,10 +88,32 @@ pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
             Ok(UpdateLoopControl::Continue) | Err(_) => {}
             Ok(UpdateLoopControl::Stop) => return Ok(()),
         }
-        if sleep_or_terminate(UPDATE_INTERVAL, &mut terminate).await {
-            return Ok(());
+        match wait_for_next_check(
+            &daemon.settings_file,
+            Duration::from_secs(60),
+            &mut terminate,
+        )
+        .await
+        {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(_) => {
+                if sleep_or_terminate(Duration::from_secs(60), &mut terminate).await {
+                    return Ok(());
+                }
+            }
         }
     }
+}
+
+async fn wait_for_next_check(
+    settings_file: &Path,
+    minute: Duration,
+    terminate: &mut Signal,
+) -> Result<bool> {
+    let settings = UpdaterSettings::load(settings_file).await?;
+    Ok(!settings.auto_update_enabled
+        || sleep_or_terminate(settings.update_interval(minute), terminate).await)
 }
 
 async fn sleep_or_terminate(duration: Duration, terminate: &mut Signal) -> bool {
@@ -100,6 +134,12 @@ async fn update_once(
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
     let daemon = Daemon::from_environment()?;
+    if !UpdaterSettings::load(&daemon.settings_file)
+        .await?
+        .auto_update_enabled
+    {
+        return Ok(UpdateLoopControl::Stop);
+    }
     if !daemon.is_stable_standalone_release()? {
         // An installer can be between changing current and publishing its
         // latest-channel marker. Retry after the interval instead of exiting.
@@ -126,6 +166,12 @@ async fn update_once(
             .any(|window| window == b"CODEX_INSTALL_IF_LATEST"),
         "standalone installer does not support guarded updates"
     );
+    if !UpdaterSettings::load(&daemon.settings_file)
+        .await?
+        .auto_update_enabled
+    {
+        return Ok(UpdateLoopControl::Stop);
+    }
     if !daemon.is_stable_standalone_release()? {
         return Ok(UpdateLoopControl::Continue);
     }

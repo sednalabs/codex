@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+#[cfg(unix)]
+use tokio::time::sleep;
 
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 
@@ -224,6 +226,67 @@ async fn stop_reaps_untracked_app_server_child() {
     // `sleep` is not tracked by Tokio, so stop must reap it instead of leaving a zombie.
     result.expect("stop timed out").expect("stop");
     assert!(!pid_file.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_updater_signals_its_installer_process_group() {
+    use std::os::unix::process::CommandExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let ready = temp.path().join("installer.ready");
+    let stopped = temp.path().join("installer.stopped");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "sh -c 'trap \"touch $STOP_MARKER; exit 0\" TERM; touch $READY_MARKER; while :; do sleep 1; done' & wait",
+        ])
+        .env("READY_MARKER", &ready)
+        .env("STOP_MARKER", &stopped)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().expect("spawn updater shim");
+    let pid = child.id();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !ready.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "installer did not start"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    let pid_file = temp.path().join("updater.pid");
+    tokio::fs::write(
+        &pid_file,
+        serde_json::to_vec(&PidRecord {
+            pid,
+            process_start_time: read_process_start_time(pid).await.expect("start time"),
+        })
+        .expect("serialize pid"),
+    )
+    .await
+    .expect("write pid file");
+    let backend = PidBackend::new_update_loop(temp.path().join("codex"), pid_file);
+    backend.stop().await.expect("stop updater");
+    // The backend normally reaps the shim, so a second wait may return ECHILD.
+    let _ = child.wait();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !stopped.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "installer was not stopped"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[cfg(unix)]
