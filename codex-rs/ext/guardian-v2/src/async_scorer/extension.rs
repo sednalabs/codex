@@ -583,7 +583,8 @@ impl GuardianV2Extension {
             let mut classification_input = Vec::new();
             for section in transcript.sections {
                 match section {
-                    ContextSection::RootConversation { items }
+                    ContextSection::PermissionContext { items }
+                    | ContextSection::RootConversation { items }
                     | ContextSection::RetainedUserInstructions { items }
                     | ContextSection::TrustedUserAnswers { items } => {
                         classification_input.extend(items)

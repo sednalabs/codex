@@ -50,8 +50,10 @@ mod action;
 mod authorization;
 mod entry;
 mod history;
+mod permissions;
 mod retention;
 mod section;
+pub use permissions::PermissionContext;
 mod transcript;
 mod truncation;
 
@@ -101,6 +103,8 @@ pub struct SectionInput<'a> {
     pub trusted_user_answers: &'a [String],
     /// Exact action JSON and reason, already bounded by the requesting host.
     pub planned_action: Option<&'a PlannedAction>,
+    /// Sync-only restrictions resolved from the parent execution environment.
+    pub permissions: Option<&'a PermissionContext>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -187,6 +191,7 @@ pub fn default_registry() -> &'static SectionRegistry {
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);
         registry.register(ConversationTranscriptSection);
+        registry.register(permissions::PermissionContextSection);
         registry.register(action::PlannedActionSection);
         registry
     });

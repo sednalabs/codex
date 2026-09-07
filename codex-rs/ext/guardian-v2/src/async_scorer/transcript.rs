@@ -200,6 +200,7 @@ impl TranscriptConfig {
             root_conversation,
             trusted_user_answers,
             planned_action,
+            permissions: None,
         })?;
         let mut truncations = Vec::new();
         let sections = context
@@ -218,6 +219,9 @@ impl TranscriptConfig {
                 }
                 ContextSection::RetainedUserInstructions { items } => {
                     ContextSection::RetainedUserInstructions { items }
+                }
+                ContextSection::PermissionContext { items } => {
+                    ContextSection::PermissionContext { items }
                 }
                 ContextSection::PlannedAction(action) => ContextSection::PlannedAction(action),
             })

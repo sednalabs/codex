@@ -16,4 +16,5 @@ pub enum ContextSection<T = ConversationTranscriptEntry> {
     TrustedUserAnswers { items: Vec<String> },
     RetainedUserInstructions { items: Vec<String> },
     PlannedAction(PlannedAction),
+    PermissionContext { items: Vec<String> },
 }

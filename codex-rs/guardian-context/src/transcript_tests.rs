@@ -99,6 +99,7 @@ fn registered_transcript_preserves_shared_roles_and_node_repl_tool_attribution()
             root_conversation: &[],
             trusted_user_answers: &[],
             planned_action: None,
+            permissions: None,
         })
         .expect("transcript collection should succeed");
 
@@ -172,6 +173,7 @@ fn excluded_tool_calls_still_attribute_included_results() {
             root_conversation: &[],
             trusted_user_answers: &[],
             planned_action: None,
+            permissions: None,
         })
         .expect("transcript collection should succeed");
 
@@ -264,6 +266,7 @@ fn outputs_with_call_ids_or_explicit_names_are_retained() {
                     root_conversation: &[],
                     trusted_user_answers: &[],
                     planned_action: None,
+                    permissions: None,
                 })
                 .expect("transcript collection should succeed");
             let mut expected = vec![
@@ -310,6 +313,7 @@ fn reused_registry_applies_current_history_sources_and_entry_limits() {
                 root_conversation: &[],
                 trusted_user_answers: &[],
                 planned_action: None,
+                permissions: None,
             })
             .expect("transcript collection should succeed");
         assert_eq!(
@@ -343,6 +347,7 @@ fn reused_registry_applies_current_history_sources_and_entry_limits() {
                 root_conversation: &[],
                 trusted_user_answers: &[],
                 planned_action: None,
+                permissions: None,
             })
             .expect("transcript collection should succeed");
         let mut expected = vec![ConversationTranscriptEntry {

@@ -191,7 +191,8 @@ impl PromptBuilder {
 
         for section in transcript.sections {
             match section {
-                ContextSection::RootConversation { items }
+                ContextSection::PermissionContext { items }
+                | ContextSection::RootConversation { items }
                 | ContextSection::RetainedUserInstructions { items }
                 | ContextSection::TrustedUserAnswers { items } => {
                     for text in items {

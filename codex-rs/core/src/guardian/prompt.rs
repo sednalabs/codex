@@ -7,6 +7,7 @@ use codex_guardian_context::ConversationTranscriptEntry;
 use codex_guardian_context::ConversationTranscriptEntryKind;
 use codex_guardian_context::ConversationTranscriptOptions;
 use codex_guardian_context::GuardianRootMessage;
+use codex_guardian_context::PermissionContext;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
 use codex_guardian_context::SectionError;
@@ -150,12 +151,14 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             )
         }),
     };
+    let permissions = parent_context.map(parent_turn_permissions);
     let sections = collect_guardian_context(
         &GuardianReviewHistory(history),
         node_repl_result_token_limit,
         root_authorization.as_deref().unwrap_or_default(),
         &trusted_user_inputs,
         Some(&planned_action),
+        permissions.as_ref(),
     )?;
     let transcript_entries = sections
         .iter()
@@ -235,6 +238,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
 
     push_text(headings.intro.to_string());
     let mut action_items = Vec::new();
+    let mut permission_items = Vec::new();
     for section in sections {
         match section {
             ContextSection::RootConversation { items }
@@ -245,6 +249,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
                 }
             }
             ContextSection::ConversationTranscript { .. } => {}
+            ContextSection::PermissionContext { items } => permission_items = items,
             ContextSection::PlannedAction(action) => {
                 action_items = action.render(action_presentation)
             }
@@ -263,10 +268,8 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     if let Some(note) = omission_note {
         push_text(format!("\n{note}\n"));
     }
-    if let Some(denied_reads_context) = parent_context.and_then(parent_turn_denied_reads_context) {
-        push_text("\n>>> PARENT TURN PERMISSION CONTEXT START\n".to_string());
-        push_text(denied_reads_context);
-        push_text(">>> PARENT TURN PERMISSION CONTEXT END\n".to_string());
+    for text in permission_items {
+        push_text(text);
     }
     let mut node_repl_evidence_sequence = reviewed_node_repl_evidence_sequence;
     if node_repl_transcripts_enabled
@@ -291,7 +294,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     })
 }
 
-fn parent_turn_denied_reads_context(context: &GuardianReviewContext) -> Option<String> {
+fn parent_turn_permissions(context: &GuardianReviewContext) -> PermissionContext {
     let turn = context.turn();
     let environment = context.environments().primary();
     #[allow(deprecated)]
@@ -302,25 +305,14 @@ fn parent_turn_denied_reads_context(context: &GuardianReviewContext) -> Option<S
         .environments()
         .permission_profile_or_else(|| turn.permission_profile());
     let file_system_policy = permission_profile.file_system_sandbox_policy();
-    let mut entries = file_system_policy
-        .get_unreadable_roots_with_cwd(&cwd)
-        .into_iter()
-        .map(|root| format!("- path `{}`", root.to_string_lossy()))
-        .collect::<Vec<_>>();
-    entries.extend(
-        file_system_policy
-            .get_unreadable_globs_with_cwd(&cwd)
+    PermissionContext {
+        denied_paths: file_system_policy
+            .get_unreadable_roots_with_cwd(&cwd)
             .into_iter()
-            .map(|glob| format!("- glob `{glob}`")),
-    );
-    if entries.is_empty() {
-        return None;
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect(),
+        denied_globs: file_system_policy.get_unreadable_globs_with_cwd(&cwd),
     }
-
-    Some(format!(
-        "The parent turn's active permission profile denies reading these paths/globs. These are policy restrictions; do not approve escalation whose purpose is to read them.\n{}\n",
-        entries.join("\n")
-    ))
 }
 
 enum GuardianPromptShape {
@@ -470,6 +462,7 @@ pub(super) fn collect_guardian_context(
     root_conversation: &[GuardianRootMessage],
     trusted_user_answers: &[String],
     planned_action: Option<&PlannedAction>,
+    permissions: Option<&PermissionContext>,
 ) -> Result<Vec<ContextSection>, SectionError> {
     let transcript = ConversationTranscriptConfig {
         options: ConversationTranscriptOptions::default(),
@@ -486,6 +479,7 @@ pub(super) fn collect_guardian_context(
         root_conversation,
         trusted_user_answers,
         planned_action,
+        permissions,
     })
 }
 

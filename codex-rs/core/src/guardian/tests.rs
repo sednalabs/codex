@@ -956,6 +956,7 @@ fn collect_guardian_transcript_entries(
         &[],
         &[],
         /*planned_action*/ None,
+        /*permissions*/ None,
     )
     .expect("collect Guardian context")
     .into_iter()

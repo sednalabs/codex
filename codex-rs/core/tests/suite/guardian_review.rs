@@ -34,6 +34,7 @@ use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -944,6 +945,12 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
                 secret_file.into(),
                 FileSystemAccessMode::Deny,
             ));
+            file_system_policy.entries.push(FileSystemSandboxEntry::new(
+                FileSystemPath::GlobPattern {
+                    pattern: "guardian-*.key".to_string(),
+                },
+                FileSystemAccessMode::Deny,
+            ));
             config
                 .permissions
                 .set_permission_profile(PermissionProfile::from_runtime_permissions(
@@ -1117,6 +1124,28 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
         })
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 3);
+    let permission_section = [
+        "\n>>> PARENT TURN PERMISSION CONTEXT START\n".to_string(),
+        format!(
+            "The parent turn's active permission profile denies reading these paths/globs. These are policy restrictions; do not approve escalation whose purpose is to read them.\n- path `{}`\n- glob `{}`\n",
+            fs::canonicalize(&secret_file)?.display(),
+            test.config.cwd.join("guardian-*.key").display(),
+        ),
+        ">>> PARENT TURN PERMISSION CONTEXT END\n".to_string(),
+    ];
+    // Both the full request and the next review's delta must carry the resolved policy.
+    for request in [guardian_requests[0], guardian_requests[2]] {
+        let user_messages = request.message_input_text_groups("user");
+        let latest_input = user_messages.last().expect("Guardian assessment input");
+        let section_start = latest_input
+            .iter()
+            .position(|text| text == &permission_section[0])
+            .expect("parent permission section");
+        assert_eq!(
+            &latest_input[section_start..section_start + permission_section.len()],
+            permission_section.as_slice()
+        );
+    }
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
     let first_parent_request = requests[0].body_json();
