@@ -3286,8 +3286,9 @@ impl ThreadRequestProcessor {
         connection_ids: Vec<ConnectionId>,
     ) {
         let mut raw_events_enabled = false;
-        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            let config_snapshot = thread.config_snapshot().await;
+        let mut started_notification = None;
+        if let Ok(live_thread) = self.thread_manager.get_thread(thread_id).await {
+            let config_snapshot = live_thread.config_snapshot().await;
             self.thread_watch_manager
                 .upsert_thread(&thread_id.to_string())
                 .await;
@@ -3300,9 +3301,59 @@ impl ThreadRequestProcessor {
                     .await
                     .experimental_raw_events;
             }
+
+            // AgentControl-created children are attached asynchronously through the
+            // thread-created broadcast and do not receive the ordinary thread/start
+            // notification. Publish the same session summary before attaching their
+            // listener so clients can route child-scoped provider requests even when
+            // the child is never selected in the UI. Explicit thread/start and
+            // thread/fork paths already have a listener and notification, so the
+            // per-connection subscription check below prevents duplicates.
+            if config_snapshot.parent_thread_id.is_some() {
+                // Build the summary from the live snapshot rather than reading the
+                // store: a newly-created child may not have appended its first
+                // rollout item yet, and ephemeral children have no persistence at
+                // all. The live rollout path, when present, still gives clients the
+                // owning codex home needed for per-thread provider routing.
+                let mut thread = build_thread_from_snapshot(
+                    thread_id,
+                    live_thread.session_configured().session_id.to_string(),
+                    /*multi_agent_version*/ None,
+                    &config_snapshot,
+                    live_thread.rollout_path(),
+                );
+                // The async creation broadcast does not carry the originating
+                // multi-agent version. Leave this capability unknown so clients
+                // conservatively derive V2 subagent restrictions from the source
+                // instead of advertising direct input as allowed.
+                thread.can_accept_direct_input = None;
+                thread.forked_from_id = config_snapshot
+                    .forked_from_thread_id
+                    .map(|id| id.to_string());
+                thread.status = resolve_thread_status(
+                    self.thread_watch_manager
+                        .loaded_status_for_thread(&thread.id)
+                        .await,
+                    /*has_in_progress_turn*/ false,
+                );
+                started_notification = Some(thread_started_notification(thread));
+            }
         }
 
         for connection_id in connection_ids {
+            let already_subscribed = self
+                .thread_state_manager
+                .subscribed_connection_ids(thread_id)
+                .await
+                .contains(&connection_id);
+            if !already_subscribed && let Some(notification) = started_notification.clone() {
+                self.outgoing
+                    .send_server_notification_to_connections(
+                        &[connection_id],
+                        ServerNotification::ThreadStarted(notification),
+                    )
+                    .await;
+            }
             log_listener_attach_result(
                 self.ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
                     .await,

@@ -17,6 +17,10 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_protocol::ThreadId;
+use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+use std::path::Path;
+use std::path::PathBuf;
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -199,7 +203,14 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            match handle_computer_use(params).await {
+            // Only Browser needs a session home. Android and Desktop have their own
+            // provider configuration and must not be gated by rollout metadata.
+            let browser_codex_home = if params.adapter == COMPUTER_USE_ADAPTER_BROWSER {
+                self.codex_home_for_thread(&params.thread_id).await
+            } else {
+                None
+            };
+            match handle_computer_use(params, browser_codex_home.as_deref()).await {
                 ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
                         Ok(result) => result,
@@ -268,6 +279,113 @@ impl App {
             };
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");
+        }
+    }
+
+    /// Resolve the provider home from the session owning a server request. A request must never
+    /// fall back to the TUI root config: child sessions can deliberately use different homes.
+    async fn codex_home_for_thread(&self, thread_id: &str) -> Option<PathBuf> {
+        let thread_id = ThreadId::from_string(thread_id).ok()?;
+        let session = if self.primary_thread_id == Some(thread_id) {
+            self.primary_session_configured.as_ref()
+        } else {
+            None
+        };
+        if let Some(session) = session {
+            return session_effective_codex_home(session, self.config.codex_home.as_path());
+        }
+
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let store = channel.store.lock().await;
+        session_effective_codex_home(store.session.as_ref()?, self.config.codex_home.as_path())
+    }
+}
+
+fn session_effective_codex_home(
+    session: &crate::session_state::ThreadSessionState,
+    default_codex_home: &Path,
+) -> Option<PathBuf> {
+    // A present session with no rollout is an in-memory (ephemeral) session. Its
+    // effective home is the app-server home captured by this TUI config. An
+    // absent session remains unresolved and is handled by the caller as unavailable.
+    session.rollout_path.as_deref().map_or_else(
+        || Some(default_codex_home.to_path_buf()),
+        rollout_codex_home,
+    )
+}
+
+fn rollout_codex_home(rollout_path: &Path) -> Option<PathBuf> {
+    if !rollout_path.is_absolute() {
+        return None;
+    }
+
+    let mut home = PathBuf::new();
+    let mut session_root_home = None;
+    for component in rollout_path.components() {
+        if matches!(
+            component.as_os_str().to_str(),
+            Some("sessions" | "archived_sessions")
+        ) {
+            session_root_home = (!home.as_os_str().is_empty()).then_some(home.clone());
+        }
+        home.push(component.as_os_str());
+    }
+    session_root_home
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rollout_codex_home;
+    use std::path::Path;
+
+    #[test]
+    fn rollout_codex_home_requires_absolute_sessions_path() {
+        let temp_dir = std::env::temp_dir();
+        let temp_dir = if temp_dir.is_absolute() {
+            temp_dir
+        } else {
+            std::env::current_dir()
+                .expect("current working directory")
+                .join(temp_dir)
+        };
+        let primary = temp_dir.join("primary");
+        assert_eq!(
+            rollout_codex_home(primary.join("sessions/2026/01/rollout.jsonl").as_path()),
+            Some(primary.clone())
+        );
+        let child = temp_dir.join("child");
+        assert_eq!(
+            rollout_codex_home(child.join("sessions/2026/01/rollout.jsonl").as_path()),
+            Some(child.clone())
+        );
+        let archived = temp_dir.join("archived");
+        assert_eq!(
+            rollout_codex_home(archived.join("archived_sessions/rollout.jsonl").as_path()),
+            Some(archived.clone())
+        );
+        let sessions = temp_dir.join("sessions");
+        assert_eq!(
+            rollout_codex_home(sessions.join("sessions/2026/01/rollout.jsonl").as_path()),
+            Some(sessions.clone())
+        );
+        let archived_sessions = temp_dir.join("archived_sessions");
+        assert_eq!(
+            rollout_codex_home(
+                archived_sessions
+                    .join("archived_sessions/rollout.jsonl")
+                    .as_path(),
+            ),
+            Some(archived_sessions)
+        );
+
+        let no_session_directory = temp_dir.join("no-session-directory/rollout.jsonl");
+        let sessions_but_no_boundary = temp_dir.join("sessions-but-no-boundary");
+        for malformed in [
+            Path::new("sessions/2026/01/rollout.jsonl"),
+            no_session_directory.as_path(),
+            sessions_but_no_boundary.as_path(),
+        ] {
+            assert_eq!(rollout_codex_home(malformed), None);
         }
     }
 }

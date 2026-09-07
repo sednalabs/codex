@@ -283,6 +283,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) agent_control: AgentControl,
     pub(crate) session_source: SessionSource,
     pub(crate) parent_thread_id: Option<ThreadId>,
+    pub(crate) dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
 }
@@ -1723,22 +1724,47 @@ impl ThreadManagerState {
         config: Config,
         agent_control: AgentControl,
     ) -> CodexResult<NewThread> {
-        Box::pin(self.spawn_new_thread_with_source(
+        Box::pin(self.spawn_new_thread_with_dynamic_tools(config, agent_control, Vec::new())).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_new_thread_with_dynamic_tools(
+        &self,
+        config: Config,
+        agent_control: AgentControl,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+    ) -> CodexResult<NewThread> {
+        let environments = default_thread_environment_selections(
+            self.environment_manager.as_ref(),
+            &config.cwd,
+            &config.workspace_roots,
+        );
+        Box::pin(self.spawn_thread_with_source(
             config,
+            InitialHistory::New,
+            /*history_mode*/ None,
+            /*allow_provider_model_fallback*/ false,
+            Arc::clone(&self.auth_manager),
             agent_control,
             self.session_source.clone(),
-            /*history_mode*/ None,
             /*parent_thread_id*/ None,
             /*forked_from_thread_id*/ None,
+            ForkPersistence::Copied,
             /*thread_source*/ None,
+            dynamic_tools,
             /*metrics_service_name*/ None,
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
-            /*environments*/ None,
+            /*parent_trace*/ None,
+            environments,
+            /*thread_extension_init*/ ExtensionDataInit::default(),
+            /*supports_openai_form_elicitation*/ false,
+            /*user_shell_override*/ None,
         ))
         .await
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_new_thread_with_source(
         &self,
@@ -1750,6 +1776,39 @@ impl ThreadManagerState {
         forked_from_thread_id: Option<ThreadId>,
         thread_source: Option<ThreadSource>,
         metrics_service_name: Option<String>,
+        inherited_environments: Option<TurnEnvironmentSnapshot>,
+        inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+        environments: Option<Vec<TurnEnvironmentSelection>>,
+    ) -> CodexResult<NewThread> {
+        Box::pin(self.spawn_new_thread_with_source_and_dynamic_tools(
+            config,
+            agent_control,
+            session_source,
+            history_mode,
+            parent_thread_id,
+            forked_from_thread_id,
+            thread_source,
+            metrics_service_name,
+            Vec::new(),
+            inherited_environments,
+            inherited_exec_policy,
+            environments,
+        ))
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_new_thread_with_source_and_dynamic_tools(
+        &self,
+        config: Config,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+        history_mode: Option<ThreadHistoryMode>,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        thread_source: Option<ThreadSource>,
+        metrics_service_name: Option<String>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
@@ -1773,7 +1832,7 @@ impl ThreadManagerState {
             forked_from_thread_id,
             ForkPersistence::Copied,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             metrics_service_name,
             inherited_environments,
             inherited_exec_policy,
@@ -1796,6 +1855,7 @@ impl ThreadManagerState {
             agent_control,
             session_source,
             parent_thread_id,
+            dynamic_tools,
             inherited_environments,
             inherited_exec_policy,
         } = options;
@@ -1817,7 +1877,7 @@ impl ThreadManagerState {
             /*forked_from_thread_id*/ None,
             ForkPersistence::Copied,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             /*metrics_service_name*/ None,
             inherited_environments,
             inherited_exec_policy,
@@ -1841,6 +1901,7 @@ impl ThreadManagerState {
         thread_source: Option<ThreadSource>,
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
@@ -1865,7 +1926,7 @@ impl ThreadManagerState {
             forked_from_thread_id,
             ForkPersistence::Copied,
             thread_source,
-            Vec::new(),
+            dynamic_tools,
             /*metrics_service_name*/ None,
             inherited_environments,
             inherited_exec_policy,
