@@ -108,6 +108,8 @@ pub(crate) enum GuardianReviewSessionOutcome {
 pub(crate) struct GuardianReviewSessionParams {
     pub(crate) parent_session: Arc<Session>,
     pub(crate) parent_context: GuardianReviewContext,
+    // Checkpoint selection and thread-owned prompt evidence must use the same history.
+    pub(crate) parent_history: ContextManager,
     pub(crate) spawn_config: Config,
     pub(crate) node_repl_policy: GuardianNodeReplPolicy,
     pub(crate) request: GuardianApprovalRequest,
@@ -572,7 +574,7 @@ impl GuardianReviewSessionManager {
         params: GuardianReviewSessionParams,
     ) -> (GuardianReviewSessionOutcome, GuardianReviewAnalyticsResult) {
         let deadline = params.deadline;
-        let parent_history = params.parent_session.clone_history().await;
+        let parent_history = &params.parent_history;
         let root_authorization_version = if params
             .parent_session
             .enabled(Feature::GuardianThreadContext)
@@ -588,7 +590,7 @@ impl GuardianReviewSessionManager {
             None
         };
         let parent_compaction = match encrypted_parent_compaction(
-            &parent_history,
+            parent_history,
             &params.spawn_config.features,
             params.compaction_model_hash.as_deref(),
         ) {
@@ -1127,8 +1129,17 @@ async fn run_review_on_session(
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
+            let history = if params
+                .parent_session
+                .enabled(Feature::GuardianThreadContext)
+            {
+                params.parent_history.conversation_history_snapshot()
+            } else {
+                params.parent_session.conversation_history_snapshot().await
+            };
             let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
+                history.as_ref(),
                 Some(&params.parent_context),
                 params.reasons.clone(),
                 params.request.clone(),

@@ -587,14 +587,14 @@ pub(super) async fn run_synchronous_review(
         .root_user_authorization(session.thread_id)
         .await
         .map(|snapshot| snapshot.authorization_version);
+    // Keep the authorization revision even when no cacheable review evidence exists.
+    let history = session.conversation_history_snapshot().await;
+    let user_message_revision = history.user_message_revision();
     let review_evidence = if let Some(evidence) = session
         .services
         .thread_extension_data
         .get::<GuardianReviewEvidence>()
     {
-        // Root rewrites and new user messages during this review make its evidence
-        // stale even if it later completes against a newer prompt snapshot.
-        let history = session.conversation_history_snapshot().await;
         let authorization_version = evidence.authorization_version(history.as_ref());
         format_guardian_action_pretty(&request).ok().map(|action| {
             (
@@ -607,6 +607,7 @@ pub(super) async fn run_synchronous_review(
     } else {
         None
     };
+    drop(history);
     let (mut outcome, analytics_result) =
         Box::pin(run_guardian_review_session_with_retry_before_deadline(
             session.clone(),
@@ -623,15 +624,21 @@ pub(super) async fn run_synchronous_review(
         .await;
     if session.enabled(Feature::GuardianThreadContext)
         && matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
-        && root_authorization_version
+        && (root_authorization_version
             != session
                 .services
                 .agent_control
                 .root_user_authorization(session.thread_id)
                 .await
                 .map(|snapshot| snapshot.authorization_version)
+            || user_message_revision
+                != session
+                    .conversation_history_snapshot()
+                    .await
+                    .user_message_revision())
     {
-        // A completed approval cannot outlive the root evidence it evaluated.
+        // A completed approval cannot outlive the owning-session or root evidence
+        // it evaluated, including when either changed before prompt construction.
         outcome = GuardianReviewOutcome::Error(GuardianReviewError::Cancelled);
     }
 
@@ -1100,6 +1107,7 @@ async fn run_guardian_review_session_before_deadline(
             .run_review(GuardianReviewSessionParams {
                 parent_session: Arc::clone(&session),
                 parent_context: context.clone(),
+                parent_history: session.clone_history().await,
                 spawn_config: session_config.spawn_config,
                 node_repl_policy: session_config.node_repl_policy,
                 request,

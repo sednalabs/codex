@@ -287,10 +287,11 @@ async fn guardian_session_inherits_parent_http_fallback(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(60_000; "reviewer_window_is_already_exhausted")]
-#[test_case(49_990; "followup_reminder_exhausts_reviewer_window")]
+#[test_case(60_000, false; "legacy_reviewer_window_is_already_exhausted")]
+#[test_case(49_990, true; "retained_followup_reminder_exhausts_reviewer_window")]
 async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover(
     first_review_total_tokens: i64,
+    thread_owned: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
@@ -303,7 +304,11 @@ async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover
         .with_model_info_override("gpt-5.5", |model| {
             model.auto_review_model_override = Some(model.slug.clone());
         })
-        .with_config(|config| {
+        .with_config(move |config| {
+            config
+                .features
+                .set_enabled(Feature::GuardianThreadContext, thread_owned)
+                .expect("configure Guardian context mode");
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(50_000);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);

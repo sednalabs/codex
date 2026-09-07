@@ -9,6 +9,130 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 
+#[tokio::test]
+#[allow(
+    clippy::await_holding_invalid_type,
+    reason = "hold session selection while the parent compacts to reproduce the race"
+)]
+async fn run_review_preserves_evidence_during_parent_compaction() {
+    const EVIDENCE: &str = "The inspected repository is public.";
+    let (parent, turn, _events) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                config
+                    .features
+                    .enable(Feature::GuardianThreadContext)
+                    .unwrap();
+                config.features.disable(Feature::TokenBudget).unwrap();
+            },
+        )
+        .await;
+    let mut params = test_review_params().await;
+    params.spawn_config = build_guardian_review_session_config(
+        turn.config.as_ref(),
+        /*live_network_config*/ None,
+        &params.model,
+        params.reasoning_effort.clone(),
+        /*model_messages*/ None,
+    )
+    .unwrap();
+    params.parent_session = Arc::clone(&parent);
+    params.parent_context = GuardianReviewContext::from(Arc::clone(&turn));
+    params.compaction_model_hash = Some("matching".to_owned());
+    let evidence: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output", "call_id": "prior-inspection", "output": EVIDENCE
+    }))
+    .unwrap();
+    parent.record_conversation_items(&turn, &[evidence]).await;
+    params.parent_history = parent.clone_history().await;
+
+    // An idle, prewarmed reviewer is a normal manager state.
+    let (mut reviewer, tx_event, rx_sub) = test_review_session().await;
+    reviewer.reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
+        &params.spawn_config,
+        parent.user_instructions().await,
+        params.parent_history.history_version(),
+    )
+    .with_environments(params.parent_context.environments())
+    .with_node_repl_policy_eligibility(
+        params
+            .parent_context
+            .turn()
+            .model_info()
+            .node_repl_auto_review_required,
+    )
+    .with_node_repl_policy(&params.node_repl_policy);
+    let manager = GuardianReviewSessionManager {
+        state: Arc::new(Mutex::new(GuardianReviewSessionState {
+            trunk: Some(Arc::new(reviewer)),
+            ephemeral_reviews: Vec::new(),
+        })),
+        ..Default::default()
+    };
+    let gate = manager.state.lock().await;
+    let review = manager.run_review(params);
+    tokio::pin!(review);
+    // Earlier awaits use unlocked in-memory state; this polls through checkpoint
+    // selection and deterministically stops at the held manager mutex.
+    assert!(futures::poll!(&mut review).is_pending());
+    let checkpoint: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "compaction", "id": "cmp_new", "encrypted_content": "new-checkpoint"
+    }))
+    .unwrap();
+    let (window_number, window_ids) = parent.advance_auto_compact_window().await;
+    parent
+        .replace_compacted_history(
+            vec![checkpoint.into()],
+            /*reference_context_item*/ None,
+            /*world_state_baseline*/ None,
+            crate::compact::CompactedHistoryMetadata {
+                message: String::new(),
+                window_number,
+                window_ids,
+                compaction_response_id: None,
+                compaction_model_hash: Some("matching".to_owned()),
+            },
+        )
+        .await;
+    drop(gate);
+
+    let ((outcome, _), submitted_text) = tokio::join!(review, async {
+        let submission = rx_sub.recv().await.unwrap();
+        let id = submission.id;
+        let Op::TurnInput { request, reply, .. } = submission.op else {
+            panic!("expected reviewer prompt");
+        };
+        let codex_protocol::turn_input::TurnInput::UserInput { content, .. } = request.input else {
+            panic!("expected user input");
+        };
+        let text = serde_json::to_string(&content).unwrap();
+        reply
+            .send(Ok(TurnInputSubmission::Started {
+                turn_id: id.clone(),
+            }))
+            .unwrap();
+        tx_event
+            .send(turn_complete_event(
+                &id,
+                Some("review finished"),
+                /*time_to_first_token_ms*/ None,
+            ))
+            .await
+            .unwrap();
+        text
+    });
+    assert!(matches!(
+        outcome,
+        GuardianReviewSessionOutcome::Completed(Ok(_))
+    ));
+    assert!(
+        submitted_text.contains(EVIDENCE),
+        "review must retain evidence from before the concurrent compaction: {submitted_text}"
+    );
+}
+
 async fn test_review_session() -> (
     GuardianReviewSession,
     async_channel::Sender<Event>,
@@ -99,6 +223,7 @@ async fn test_review_params() -> GuardianReviewSessionParams {
     .expect("guardian config");
 
     GuardianReviewSessionParams {
+        parent_history: session.clone_history().await,
         parent_session: Arc::new(session),
         parent_context: GuardianReviewContext::from(Arc::new(turn)),
         spawn_config,

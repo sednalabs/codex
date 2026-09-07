@@ -87,6 +87,7 @@ pub(crate) async fn build_guardian_prompt_items(
 ) -> anyhow::Result<GuardianPromptItems> {
     build_guardian_prompt_items_with_parent_turn(
         session,
+        session.conversation_history_snapshot().await.as_ref(),
         /*parent_context*/ None,
         ApprovalRequestReasons {
             approval: None,
@@ -101,6 +102,7 @@ pub(crate) async fn build_guardian_prompt_items(
 
 pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     session: &Session,
+    history: &dyn ConversationHistorySnapshot,
     parent_context: Option<&GuardianReviewContext>,
     reasons: ApprovalRequestReasons,
     request: GuardianApprovalRequest,
@@ -116,7 +118,6 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     } else {
         GUARDIAN_MAX_TOOL_ENTRY_TOKENS
     };
-    let history = session.conversation_history_snapshot().await;
     let root_authorization = session
         .services
         .agent_control
@@ -127,13 +128,13 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .services
         .thread_extension_data
         .get_or_init(GuardianReviewEvidence::default)
-        .user_input_snapshot(history.as_ref())
+        .user_input_snapshot(history)
         .fragments;
     let ComposedContext {
         authorization,
         transcript: transcript_entries,
     } = collect_guardian_context(
-        &GuardianReviewHistory(history.as_ref()),
+        &GuardianReviewHistory(history),
         node_repl_result_token_limit,
         root_authorization.as_deref().unwrap_or_default(),
         &trusted_user_inputs,
