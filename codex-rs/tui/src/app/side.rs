@@ -524,6 +524,7 @@ impl App {
         } else {
             self.refresh_pending_thread_approvals().await;
         }
+        self.forget_realtime_replay_thread(thread_id);
         self.sync_active_agent_label();
     }
 

@@ -6,6 +6,7 @@
 mod fs;
 mod history;
 mod models;
+mod realtime;
 mod rollout_history;
 mod thread_list;
 

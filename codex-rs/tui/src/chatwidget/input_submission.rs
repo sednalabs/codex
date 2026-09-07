@@ -410,6 +410,7 @@ impl ChatWidget {
             return (false, None);
         }
         self.dismiss_backend_banner_for_new_turn();
+        self.note_realtime_typed_input(&submitted_message.text);
         if render_in_history {
             self.input_queue.user_turn_pending_start = true;
         }

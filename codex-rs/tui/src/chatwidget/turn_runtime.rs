@@ -208,7 +208,14 @@ impl ChatWidget {
                 .current_goal_status
                 .as_ref()
                 .is_some_and(GoalStatusState::is_active);
-            if !follow_up_started && !active_goal_continuing {
+            if !follow_up_started
+                && !active_goal_continuing
+                && !self
+                    .turn_lifecycle
+                    .last_turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| self.should_hide_realtime_delegation(turn_id))
+            {
                 self.notify(Notification::AgentTurnComplete {
                     response: notification_response,
                 });

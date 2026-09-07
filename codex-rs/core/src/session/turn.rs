@@ -636,6 +636,12 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
+                if matches!(
+                    e.details(),
+                    CodexErrorDetails::MisalignmentPolicyViolation { .. }
+                ) {
+                    sess.conversation.retire_handoffs_for_misalignment().await;
+                }
                 let error = e.to_codex_protocol_error();
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;

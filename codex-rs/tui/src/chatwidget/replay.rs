@@ -46,13 +46,31 @@ impl ChatWidget {
                 completed_at,
                 duration_ms,
             } = turn;
+            let delegated = items.iter().any(|item| {
+                matches!(item, ThreadItem::UserMessage { content, .. }
+                    if realtime::realtime_delegation_input(content).is_some())
+            });
             if matches!(status, TurnStatus::InProgress) {
+                if delegated {
+                    self.remember_realtime_delegated_reasoning_turn(&turn_id);
+                }
                 self.warning_display_state.startup_complete = true;
                 self.turn_lifecycle.last_turn_id = Some(turn_id.clone());
                 self.last_non_retry_error = None;
                 self.on_task_started();
             }
+            let mut replaying_delegation = false;
             for item in items {
+                if matches!(&item, ThreadItem::UserMessage { content, .. }
+                    if realtime::realtime_delegation_input(content).is_some())
+                {
+                    replaying_delegation = true;
+                }
+                // Voice can steer a typed turn already in progress. Its earlier
+                // commentary and reasoning still belong to the typed request.
+                if replaying_delegation && realtime::is_private_realtime_agent_item(&item) {
+                    continue;
+                }
                 if hidden_nested_review_turn && matches!(item, ThreadItem::UserMessage { .. }) {
                     continue;
                 }
@@ -122,7 +140,12 @@ impl ChatWidget {
             ThreadItem::UserMessage {
                 content, client_id, ..
             } => {
-                self.on_committed_user_message(&content, client_id.as_deref(), from_replay);
+                self.on_committed_user_message(
+                    &content,
+                    client_id.as_deref(),
+                    from_replay,
+                    &turn_id,
+                );
             }
             ThreadItem::AgentMessage {
                 id,
@@ -133,6 +156,20 @@ impl ChatWidget {
                 questions,
                 ..
             } => {
+                if self.complete_realtime_delegated_agent_item(
+                    &turn_id,
+                    &ThreadItem::AgentMessage {
+                        id: id.clone(),
+                        text: text.clone(),
+                        phase: phase.clone(),
+                        memory_citation: memory_citation.clone(),
+                        delivery,
+                        questions: questions.clone(),
+                    },
+                    from_replay,
+                ) {
+                    return;
+                }
                 self.on_agent_message_item_completed(
                     AgentMessageItem {
                         id,
