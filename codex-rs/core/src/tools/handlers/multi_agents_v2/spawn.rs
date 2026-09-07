@@ -47,6 +47,22 @@ async fn handle_spawn_agent(
         call_id,
         ..
     } = invocation;
+    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+        turn.session_telemetry.counter(
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+            1,
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnHandlerAttempt.as_str(),
+            )],
+        );
+        tracing::info!(
+            turn_id = %turn.sub_id,
+            call_id = %call_id,
+            "multi-agent stress diagnostic entered V2 spawn handler"
+        );
+    }
+
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
@@ -116,6 +132,22 @@ async fn handle_spawn_agent(
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
     let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+        turn.session_telemetry.counter(
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+            1,
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnControlAttempt.as_str(),
+            )],
+        );
+        tracing::info!(
+            turn_id = %turn.sub_id,
+            call_id = %call_id,
+            task_name = %args.task_name,
+            "multi-agent stress diagnostic calling V2 spawn control"
+        );
+    }
     let spawned_agent = Box::pin(
         session
             .services
@@ -175,6 +207,16 @@ async fn handle_spawn_agent(
         /*inc*/ 1,
         &[("role", role_tag), ("version", "v2")],
     );
+    if crate::diagnostic_flags::goal_multi_agent_stress_enabled() {
+        turn.session_telemetry.counter(
+            crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+            1,
+            &[(
+                "stage",
+                crate::diagnostic_flags::GoalMultiAgentStressStage::SpawnPublished.as_str(),
+            )],
+        );
+    }
     let task_name = String::from(new_agent_path);
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
@@ -223,19 +265,45 @@ impl CoreToolRuntime for Handler {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnAgentArgs {
     message: String,
     task_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     expected_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     expected_reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fork_turns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fork_context: Option<bool>,
+}
+
+pub(crate) fn diagnostic_spawn_arguments(
+    message: String,
+    task_name: String,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&SpawnAgentArgs {
+        message,
+        task_name,
+        agent_type: None,
+        model: None,
+        expected_model: None,
+        reasoning_effort: None,
+        expected_reasoning_effort: None,
+        service_tier: None,
+        fork_turns: Some("none".to_string()),
+        fork_context: None,
+    })
 }
 
 impl SpawnAgentArgs {
@@ -372,5 +440,38 @@ impl ToolOutput for SpawnAgentResult {
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "spawn_agent")
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::SpawnAgentArgs;
+    use super::diagnostic_spawn_arguments;
+
+    #[test]
+    fn goal_diagnostic_spawn_arguments_round_trip_through_handler_schema() {
+        let arguments = diagnostic_spawn_arguments(
+            "inspect one thing".to_string(),
+            "goal_probe_test".to_string(),
+        )
+        .expect("diagnostic spawn arguments should serialize");
+        let parsed: SpawnAgentArgs =
+            serde_json::from_str(&arguments).expect("diagnostic arguments should parse");
+
+        assert_eq!(parsed.message, "inspect one thing");
+        assert_eq!(parsed.task_name, "goal_probe_test");
+        assert!(
+            parsed
+                .fork_mode()
+                .expect("fork mode should parse")
+                .is_none()
+        );
+        assert!(parsed.agent_type.is_none());
+        assert!(parsed.model.is_none());
+        assert!(parsed.expected_model.is_none());
+        assert!(parsed.reasoning_effort.is_none());
+        assert!(parsed.expected_reasoning_effort.is_none());
+        assert!(parsed.service_tier.is_none());
+        assert!(parsed.fork_context.is_none());
     }
 }

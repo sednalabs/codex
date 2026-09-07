@@ -142,6 +142,14 @@ pub(crate) struct CachedEndpointRecommendedPluginCandidates {
 }
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
+const GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER: &str =
+    "<goal_multi_agent_stress_continuation_probe>";
+
+#[derive(Clone, Copy, Debug)]
+struct GoalMultiAgentStressTurn;
+
+#[derive(Clone, Copy, Debug)]
+struct GoalMultiAgentStressPostUsageLimitProbeDispatched;
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -1246,6 +1254,154 @@ pub(crate) fn build_prompt(
     }
 }
 
+fn goal_multi_agent_stress_continuation_input(input: &[ResponseItem]) -> bool {
+    input.iter().any(|item| {
+        let ResponseItem::Message { content, .. } = item else {
+            return false;
+        };
+        content.iter().any(|content_item| {
+            matches!(
+                content_item,
+                ContentItem::InputText { text }
+                    if text.contains(GOAL_MULTI_AGENT_STRESS_CONTINUATION_MARKER)
+            )
+        })
+    })
+}
+
+fn record_goal_multi_agent_stress_stage(
+    turn_context: &TurnContext,
+    stage: crate::diagnostic_flags::GoalMultiAgentStressStage,
+) {
+    turn_context.session_telemetry.counter(
+        crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+        1,
+        &[("stage", stage.as_str())],
+    );
+}
+
+async fn run_goal_multi_agent_stress_post_usage_limit_probe(
+    tool_runtime: ToolCallRuntime,
+    turn_context: Arc<TurnContext>,
+    cancellation_token: CancellationToken,
+) {
+    use crate::diagnostic_flags::GoalMultiAgentStressStage;
+
+    if !crate::diagnostic_flags::try_reserve_post_usage_limit_spawn_probe() {
+        record_goal_multi_agent_stress_stage(
+            turn_context.as_ref(),
+            GoalMultiAgentStressStage::PostUsageLimitSpawnBudgetExhausted,
+        );
+        warn!(
+            turn_id = %turn_context.sub_id,
+            "multi-agent stress diagnostic post-usage-limit spawn budget exhausted or diagnostic window closed"
+        );
+        return;
+    }
+
+    let task_name = crate::diagnostic_flags::next_goal_multi_agent_probe_task_name("post_429");
+    let call_id = format!("diag_{task_name}");
+    let tool_name = if turn_context.provider.capabilities().namespace_tools {
+        turn_context
+            .config
+            .multi_agent_v2
+            .tool_namespace
+            .as_deref()
+            .map(|namespace| ToolName::namespaced(namespace, "spawn_agent"))
+            .unwrap_or_else(|| ToolName::plain("spawn_agent"))
+    } else {
+        ToolName::plain("spawn_agent")
+    };
+    let arguments = match crate::tools::handlers::multi_agents_v2::diagnostic_spawn_arguments(
+        "Run one bounded diagnostic child step: use an available read-only tool to inspect the current environment or worktree, then report one concise evidence-backed fact to the parent."
+            .to_string(),
+        task_name,
+    ) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchBuildFailed,
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                %error,
+                "multi-agent stress diagnostic failed to build V2 spawn arguments"
+            );
+            return;
+        }
+    };
+    let call = crate::tools::router::ToolCall {
+        tool_name: tool_name.clone(),
+        call_id: call_id.clone(),
+        payload: crate::tools::context::ToolPayload::Function { arguments },
+    };
+
+    record_goal_multi_agent_stress_stage(
+        turn_context.as_ref(),
+        GoalMultiAgentStressStage::PostUsageLimitDispatchAttempt,
+    );
+    tracing::info!(
+        turn_id = %turn_context.sub_id,
+        %call_id,
+        tool = %tool_name,
+        "multi-agent stress diagnostic dispatching bounded post-usage-limit V2 spawn"
+    );
+
+    let probe_cancellation_token = cancellation_token.child_token();
+    let probe = tool_runtime.handle_tool_call_with_source(
+        call,
+        crate::tools::router::ToolCallSource::Direct,
+        probe_cancellation_token.clone(),
+    );
+    tokio::pin!(probe);
+    let (result, timed_out) = tokio::select! {
+        result = &mut probe => (result, false),
+        () = tokio::time::sleep(crate::diagnostic_flags::goal_multi_agent_probe_timeout()) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchTimeoutCancelRequested,
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                "multi-agent stress diagnostic probe deadline reached; requesting cooperative tool cancellation"
+            );
+            probe_cancellation_token.cancel();
+            (probe.await, true)
+        }
+    };
+
+    match result {
+        Ok(_) if timed_out => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchSettledAfterTimeout,
+            );
+        }
+        Ok(_) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchCompleted,
+            );
+        }
+        Err(error) => {
+            record_goal_multi_agent_stress_stage(
+                turn_context.as_ref(),
+                GoalMultiAgentStressStage::PostUsageLimitDispatchFailed,
+            );
+            warn!(
+                turn_id = %turn_context.sub_id,
+                %call_id,
+                timed_out,
+                %error,
+                "multi-agent stress diagnostic post-usage-limit V2 spawn failed"
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 #[instrument(level = "trace",
@@ -1284,7 +1440,22 @@ async fn run_sampling_request(
         Arc::clone(&turn_diff_tracker),
     );
     let max_retries = turn_context.provider.info().stream_max_retries();
+    let multi_agent_stress_enabled = crate::diagnostic_flags::goal_multi_agent_stress_active();
+    if multi_agent_stress_enabled && goal_multi_agent_stress_continuation_input(&input) {
+        turn_context.extension_data.insert(GoalMultiAgentStressTurn);
+    }
+    let multi_agent_stress_goal_turn = multi_agent_stress_enabled
+        && turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
+        && !matches!(
+            &turn_context.session_source,
+            codex_protocol::protocol::SessionSource::SubAgent(_)
+        )
+        && turn_context
+            .extension_data
+            .get::<GoalMultiAgentStressTurn>()
+            .is_some();
     let mut retries = 0;
+    let mut usage_limit_retries = 0;
     let mut capacity_retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;
@@ -1324,11 +1495,35 @@ async fn run_sampling_request(
                     return Err(err);
                 }
                 CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
+                    crate::diagnostic_flags::goal_diagnostic_mark_usage_limit_observed();
+                    if !crate::diagnostic_flags::suppress_usage_limit_state_updates() {
+                        let rate_limits = e.rate_limits.clone();
+                        if let Some(rate_limits) = rate_limits {
+                            sess.update_rate_limits(&turn_context, *rate_limits).await;
+                        }
+                    } else {
+                        warn!(
+                            turn_id = %turn_context.sub_id,
+                            "goal error diagnostic mode skipped rate-limit snapshot update"
+                        );
                     }
-                    return Err(err);
+                    if multi_agent_stress_goal_turn
+                        && turn_context
+                            .extension_data
+                            .get::<GoalMultiAgentStressPostUsageLimitProbeDispatched>()
+                            .is_none()
+                    {
+                        turn_context
+                            .extension_data
+                            .insert(GoalMultiAgentStressPostUsageLimitProbeDispatched);
+                        run_goal_multi_agent_stress_post_usage_limit_probe(
+                            tool_runtime.clone(),
+                            Arc::clone(&turn_context),
+                            cancellation_token.child_token(),
+                        )
+                        .await;
+                    }
+                    err
                 }
                 _ => err,
             },
@@ -1336,6 +1531,29 @@ async fn run_sampling_request(
 
         if original_input.is_none() {
             original_input = Some(prompt.input);
+        }
+
+        if matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
+            && crate::diagnostic_flags::goal_error_retry_in_place_active()
+        {
+            if usage_limit_retries >= max_retries {
+                return Err(err);
+            }
+            usage_limit_retries += 1;
+            let retry_count = usage_limit_retries;
+            let delay = err
+                .retry_delay()
+                .unwrap_or_else(|| crate::util::backoff(retry_count));
+            warn!(
+                turn_id = %turn_context.sub_id,
+                retry_count,
+                max_retries,
+                ?delay,
+                "retrying usage-limit diagnostic sampling request in place"
+            );
+            tokio::time::sleep(delay).await;
+            turn_context.turn_timing_state.record_sampling_retry();
+            continue;
         }
 
         if matches!(err.details(), CodexErrorDetails::ServerOverloaded) {

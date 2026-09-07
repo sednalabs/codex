@@ -311,6 +311,23 @@ where
                 return;
             };
 
+            let usage_limit_error = matches!(input.error, CodexErrorInfo::UsageLimitExceeded);
+            if usage_limit_error {
+                codex_core::diagnostic_flags::goal_diagnostic_mark_usage_limit_observed();
+            }
+            if usage_limit_error && codex_core::diagnostic_flags::goal_error_continuation_active() {
+                if let Err(err) = runtime
+                    .preserve_active_goal_after_turn_error(input.turn_id)
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?input.error,
+                        "failed to preserve active goal after turn error in diagnostic mode: {err}"
+                    );
+                }
+                return;
+            }
+
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
                 // The turn has ended because the error was non-retryable or its

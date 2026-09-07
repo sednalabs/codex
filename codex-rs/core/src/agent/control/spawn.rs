@@ -835,6 +835,24 @@ impl AgentControl {
             return Err(error);
         }
 
+        if multi_agent_version == MultiAgentVersion::V2
+            && crate::diagnostic_flags::goal_multi_agent_stress_enabled()
+        {
+            new_thread.thread.session_telemetry().counter(
+                crate::diagnostic_flags::GOAL_MULTI_AGENT_STRESS_METRIC,
+                1,
+                &[(
+                    "stage",
+                    crate::diagnostic_flags::GoalMultiAgentStressStage::ChildInitialWorkSubmitted
+                        .as_str(),
+                )],
+            );
+            tracing::info!(
+                child_thread_id = %new_thread.thread_id,
+                "multi-agent stress diagnostic submitted V2 child initial work"
+            );
+        }
+
         #[cfg(test)]
         self.await_after_initial_delivery_test_hook(new_thread.thread_id)
             .await;
