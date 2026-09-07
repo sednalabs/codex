@@ -451,7 +451,7 @@ ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS)
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
-ROOT_CLOSURE_SHA256 = "6ef78a0e75c813f6b6d7a2d2f3305b8a93db5131d63404909991e719ece208ac"
+ROOT_CLOSURE_SHA256 = "489401f326edc4f9e9b3a4b2aa57de6be1ff5eb5cc29390761d9d1b6f2ac29fb"
 REQUIRED_ROOT_MEMBERS = {
     "agent-roles",
     "app-server-protocol-noop-macros",
