@@ -129,6 +129,10 @@ async fn account_switch_reloads_telemetry_collectors_and_preserves_trace_context
         next_metrics.contains("codex.thread.started"),
         "the next account's metrics did not reach its collector: {next_metrics}"
     );
+    assert!(
+        next_metrics.contains("is_worktree"),
+        "the thread-start worktree tag did not reach its collector: {next_metrics}"
+    );
 
     Ok(())
 }

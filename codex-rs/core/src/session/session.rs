@@ -1130,17 +1130,25 @@ impl Session {
                 slug: Some(session_model),
             };
             config.features.emit_metrics(&session_telemetry);
+            let is_worktree = session_configuration.cwd().canonicalize().ok().and_then(|cwd| {
+                codex_git_utils::repository_identity(&cwd).and_then(|_| {
+                    get_git_repo_root(&cwd).map(|root| root.join(".git").is_file())
+                })
+            });
+            let is_worktree_tag = match is_worktree {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "unknown",
+            };
+            let is_git_tag = if get_git_repo_root(session_configuration.cwd()).is_some() {
+                "true"
+            } else {
+                "false"
+            };
             session_telemetry.counter(
                 THREAD_STARTED_METRIC,
                 /*inc*/ 1,
-                &[(
-                    "is_git",
-                    if get_git_repo_root(session_configuration.cwd()).is_some() {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                )],
+                &[("is_git", is_git_tag), ("is_worktree", is_worktree_tag)],
             );
 
             let mcp_server_names =
