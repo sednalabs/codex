@@ -484,6 +484,7 @@ mod tests {
             assert!(pending.push_completion());
         }
         assert!(pending.replace_update("latest"));
+        assert!(pending.push_completion());
 
         for _ in 0..9 {
             assert_eq!(pending.take_next(), Some(PendingNotification::Complete));
