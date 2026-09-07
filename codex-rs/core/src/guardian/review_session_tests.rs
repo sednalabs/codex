@@ -1,8 +1,11 @@
+use super::super::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
+use super::super::prompt::guardian_policy_prompt_with_config_and_template;
 use super::*;
 use crate::context_manager::ContextManager;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::openai_models::AutoReviewMessages;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Submission;
@@ -243,7 +246,7 @@ async fn test_review_params() -> GuardianReviewSessionParams {
             tty: false,
         },
         reasons: ApprovalRequestReasons::default(),
-        schema: super::super::prompt::guardian_output_schema(),
+        schema: super::super::guardian_output_schema(),
         model,
         compaction_model_hash: None,
         reasoning_effort,

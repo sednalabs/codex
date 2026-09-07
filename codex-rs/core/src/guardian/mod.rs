@@ -3,6 +3,7 @@
 //! review requirements. Each approval retains its issuing context and cancellation.
 
 mod approval_request;
+mod assessment;
 mod coverage;
 mod decision;
 mod feedback;
@@ -10,6 +11,7 @@ mod metrics;
 mod prompt;
 mod review;
 mod review_session;
+mod reviewer_config;
 mod runtime;
 
 use std::sync::Arc;
@@ -21,8 +23,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GuardianAssessmentOutcome;
-use serde::Deserialize;
-use serde::Serialize;
 
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::session::step_context::StepContext;
@@ -165,14 +165,10 @@ impl From<&Arc<TurnContext>> for GuardianReviewContext {
     }
 }
 
-/// Structured output contract that the guardian reviewer must satisfy.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub(crate) struct GuardianAssessment {
-    pub(crate) risk_level: codex_protocol::protocol::GuardianRiskLevel,
-    pub(crate) user_authorization: codex_protocol::protocol::GuardianUserAuthorization,
-    pub(crate) outcome: GuardianAssessmentOutcome,
-    pub(crate) rationale: String,
-}
+pub use assessment::GuardianAssessment;
+pub use assessment::guardian_output_schema;
+pub use assessment::parse_guardian_assessment;
+pub use reviewer_config::build_guardian_review_session_config;
 
 #[derive(Debug, Default)]
 pub(crate) struct GuardianRejectionCircuitBreaker {
@@ -266,10 +262,6 @@ use prompt::GuardianTranscriptCursor;
 use prompt::build_guardian_prompt_items;
 #[cfg(test)]
 use prompt::build_guardian_prompt_items_with_parent_turn;
-#[cfg(test)]
-use prompt::guardian_output_schema;
-#[cfg(test)]
-use prompt::parse_guardian_assessment;
 #[cfg(test)]
 use prompt::render_guardian_transcript_entries;
 #[cfg(test)]
