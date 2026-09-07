@@ -5,11 +5,12 @@ use crate::app::startup::prepare_fresh_startup_config;
 use crate::app::startup::startup_model;
 use pretty_assertions::assert_eq;
 
-async fn run_fresh_startup_for_test(
+async fn run_startup_for_test(
     tui: &mut crate::tui::Tui,
     server: AppServerSession,
     config: Config,
     bootstrap: AppServerBootstrap,
+    selection: SessionSelection,
 ) -> Result<AppExitInfo> {
     App::run(
         tui,
@@ -22,7 +23,7 @@ async fn run_fresh_startup_for_test(
         CloudConfigBundleLoader::default(),
         /*initial_prompt*/ None,
         Vec::new(),
-        SessionSelection::StartFresh,
+        selection,
         codex_feedback::CodexFeedback::new(),
         /*is_first_run*/ false,
         /*should_prompt_windows_sandbox_nux_at_startup*/ false,
@@ -38,6 +39,103 @@ async fn run_fresh_startup_for_test(
     .await
 }
 
+#[tokio::test]
+async fn cli_fork_omits_implicit_model_and_effort() -> Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"gpt-5.2\"\nmodel_reasoning_effort = \"low\"\nfeatures.fast_mode = true\n",
+    )?;
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    let source = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            home.path(),
+            "2026-01-01T00-00-00",
+            "2026-01-01T00:00:00Z",
+            "source prompt",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create source rollout"),
+    )?;
+    let (mut server, requests, proxy) = start_recording_remote_app_server(&config).await?;
+    let mut bootstrap = server.bootstrap(&config).await?;
+    let mut target_preset = bootstrap
+        .available_models
+        .iter()
+        .find(|preset| preset.show_in_picker)
+        .expect("visible migration target")
+        .clone();
+    target_preset.id = "server-model".into();
+    target_preset.model = "server-model".into();
+    bootstrap.available_models.push(target_preset);
+    let client_preset = bootstrap
+        .available_models
+        .iter_mut()
+        .find(|preset| preset.model == "gpt-5.2")
+        .expect("client model in catalog");
+    client_preset.upgrade = Some(codex_protocol::openai_models::ModelUpgrade {
+        id: "server-model".into(),
+        migration_config_key: "test-fork-migration".into(),
+        model_link: None,
+        upgrade_copy: None,
+        migration_markdown: None,
+        retirement_at: None,
+    });
+    assert!(
+        crate::app::startup_prompts::should_show_model_migration_prompt(
+            "gpt-5.2",
+            "server-model",
+            &Default::default(),
+            &bootstrap.available_models,
+        )
+    );
+    std::fs::write(
+        home.path().join("config.toml"),
+        "model = \"server-model\"\nmodel_reasoning_effort = \"high\"\n",
+    )?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut run = Box::pin(run_startup_for_test(
+        &mut tui,
+        server,
+        config,
+        bootstrap,
+        SessionSelection::Fork(crate::resume_picker::SessionTarget {
+            path: None,
+            thread_id: source,
+            history_mode: None,
+        }),
+    ));
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
+        loop {
+            if !recorded_params(&requests, "thread/fork").is_empty() {
+                return Ok::<(), color_eyre::eyre::Report>(());
+            }
+            tokio::select! {
+                result = &mut run => {
+                    result?;
+                    return Err(color_eyre::eyre::eyre!("startup exited before thread/fork"));
+                }
+                () = tokio::time::sleep(Duration::from_millis(/*millis*/ 20)) => {}
+            }
+        }
+    })
+    .await??;
+    let fork = recorded_params(&requests, "thread/fork");
+    assert_eq!(fork.len(), 1);
+    assert_eq!(fork[0]["model"], serde_json::Value::Null);
+    assert!(fork[0]["config"].get("model_reasoning_effort").is_none());
+    assert_eq!(fork[0]["serviceTier"], serde_json::Value::Null);
+    assert!(recorded_params(&requests, "config/read").is_empty());
+    drop(run);
+    proxy.abort();
+    Ok(())
+}
+
 async fn run_until_thread_start(
     server: AppServerSession,
     config: Config,
@@ -46,8 +144,12 @@ async fn run_until_thread_start(
 ) -> Result<()> {
     let mut tui = crate::tui::test_support::make_test_tui()?;
     tui.pause_events();
-    let mut run = Box::pin(run_fresh_startup_for_test(
-        &mut tui, server, config, bootstrap,
+    let mut run = Box::pin(run_startup_for_test(
+        &mut tui,
+        server,
+        config,
+        bootstrap,
+        SessionSelection::StartFresh,
     ));
     tokio::time::timeout(Duration::from_secs(/*secs*/ 15), async {
         loop {
@@ -408,7 +510,14 @@ async fn startup_read_failure_exits_before_thread_creation() -> Result<()> {
     .await?;
     let bootstrap = server.bootstrap(&config).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    let result = run_fresh_startup_for_test(&mut tui, server, config, bootstrap).await;
+    let result = run_startup_for_test(
+        &mut tui,
+        server,
+        config,
+        bootstrap,
+        SessionSelection::StartFresh,
+    )
+    .await;
     insta::assert_snapshot!(result.expect_err("startup read must fail").to_string(), @"config/read failed in TUI");
     assert_eq!(recorded_params(&requests, "config/read").len(), 1);
     assert!(recorded_params(&requests, "thread/start").is_empty());

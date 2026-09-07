@@ -955,7 +955,12 @@ impl AppServerSession {
                 .is_some_and(|thread| thread.history_mode == ThreadHistoryMode::Paginated)
                 || presentation == ForkPresentation::SideConversation);
         let request_id = self.next_request_id();
-        let session_config = self.session_config_with_effective_service_tier(&config);
+        let session_config = if config.model.is_none() {
+            // Avoid inferring a tier from the stale client default model.
+            config.clone()
+        } else {
+            self.session_config_with_effective_service_tier(&config)
+        };
         let mut params = ThreadForkParams {
             last_turn_id,
             before_turn_id,

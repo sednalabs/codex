@@ -218,6 +218,20 @@ impl App {
             "connected app-server platform"
         );
         let bootstrap_ms = bootstrap.duration.as_millis();
+        if matches!(&session_selection, SessionSelection::Fork(_)) {
+            // The app server resolves omitted overrides from the fork destination's config.
+            if harness_overrides.model.is_none()
+                && !super::new_session::has_launch_setting(&config, &cli_kv_overrides, "model")
+                && !super::new_session::has_launch_setting(
+                    &config,
+                    &cli_kv_overrides,
+                    "model_reasoning_effort",
+                )
+            {
+                config.model = None;
+                config.model_reasoning_effort = None;
+            }
+        }
         let server_defaults_read = if matches!(
             &session_selection,
             SessionSelection::StartFresh | SessionSelection::Exit
@@ -258,15 +272,20 @@ impl App {
         if let Err(err) = startup_draft.flush_pending_events(tui).await {
             return shutdown_on_startup_error(app_server, err).await;
         }
-        let exit_info = handle_model_migration_prompt_if_needed(
-            tui,
-            &mut config,
-            &local_settings,
-            model.as_str(),
-            &app_event_tx,
-            &available_models,
-        )
-        .await?;
+        let exit_info =
+            if matches!(&session_selection, SessionSelection::Fork(_)) && config.model.is_none() {
+                None
+            } else {
+                handle_model_migration_prompt_if_needed(
+                    tui,
+                    &mut config,
+                    &local_settings,
+                    model.as_str(),
+                    &app_event_tx,
+                    &available_models,
+                )
+                .await?
+            };
         if let Some(exit_info) = exit_info {
             app_server
                 .shutdown()
@@ -605,6 +624,9 @@ impl App {
                     && let Err(err) = worktree.bind(forked.session.thread_id)
                 {
                     return shutdown_on_startup_error(app_server, err).await;
+                }
+                if config.model_reasoning_effort.is_none() {
+                    config.model_reasoning_effort = forked.session.reasoning_effort.clone();
                 }
                 let init = crate::chatwidget::ChatWidgetInit {
                     local_settings: local_settings.clone(),
