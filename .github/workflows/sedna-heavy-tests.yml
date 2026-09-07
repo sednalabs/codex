@@ -954,7 +954,6 @@ jobs:
       - smoke_node_lanes
       - smoke_rust_minimal_lanes
       - smoke_rust_integration_lanes
-      - smoke_release_lanes
     if: >-
       ${{
         always() &&
@@ -965,8 +964,7 @@ jobs:
           (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
           (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
           (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
-          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
-          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped')
         ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
@@ -1005,7 +1003,6 @@ jobs:
       - smoke_node_lanes
       - smoke_rust_minimal_lanes
       - smoke_rust_integration_lanes
-      - smoke_release_lanes
     if: >-
       ${{
         always() &&
@@ -1016,8 +1013,7 @@ jobs:
           (needs.smoke_workflow_lanes.result == 'success' || needs.smoke_workflow_lanes.result == 'skipped') &&
           (needs.smoke_node_lanes.result == 'success' || needs.smoke_node_lanes.result == 'skipped') &&
           (needs.smoke_rust_minimal_lanes.result == 'success' || needs.smoke_rust_minimal_lanes.result == 'skipped') &&
-          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped') &&
-          (needs.smoke_release_lanes.result == 'success' || needs.smoke_release_lanes.result == 'skipped')
+          (needs.smoke_rust_integration_lanes.result == 'success' || needs.smoke_rust_integration_lanes.result == 'skipped')
         ) &&
         needs.metadata.outputs.run_selected_lanes == 'true'
       }}
