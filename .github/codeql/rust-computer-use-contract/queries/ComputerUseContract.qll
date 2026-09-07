@@ -5,7 +5,7 @@ import rust
  */
 
 predicate cfgTestMeta(Meta meta) {
-  meta.getPath().getText() = "cfg" and
+  meta.getMetaPath().getText() = "cfg" and
   meta.toString().regexpMatch("(?s).*\\btest\\b.*")
 }
 
