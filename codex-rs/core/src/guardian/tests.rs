@@ -1696,6 +1696,7 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
         },
         /*retry_reason*/ None,
         GuardianReviewOptions {
+            require_guardian: false,
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: Some(cancel_token),

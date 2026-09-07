@@ -891,6 +891,7 @@ async fn review_guardian_mcp_elicitation(
             guardian_request,
             /*retry_reason*/ None,
             crate::guardian::GuardianReviewOptions {
+                require_guardian: false,
                 plugin_attribution_override: None,
                 approval_request_source: codex_analytics::GuardianApprovalRequestSource::MainTurn,
                 external_cancel: Some(cancellation_token),
@@ -984,6 +985,7 @@ async fn review_guardian_mcp_elicitation(
         guardian_request,
         /*retry_reason*/ None,
         crate::guardian::GuardianReviewOptions {
+            require_guardian: false,
             plugin_attribution_override: None,
             approval_request_source: codex_analytics::GuardianApprovalRequestSource::MainTurn,
             external_cancel: Some(cancellation_token),

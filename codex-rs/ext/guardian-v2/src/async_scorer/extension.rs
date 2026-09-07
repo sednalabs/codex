@@ -987,7 +987,7 @@ impl GuardianV2Extension {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-enum ParentCompactionError {
+pub(super) enum ParentCompactionError {
     Serialization,
     Oversized,
     Unusable,
@@ -1010,7 +1010,7 @@ pub(super) fn requires_sync_for_compaction(
 
 // An unusable latest compaction must never fall back to an older one. Missing
 // encrypted content is rejected here; only legacy callers may omit that checkpoint.
-fn encrypted_parent_compaction<'a>(
+pub(super) fn encrypted_parent_compaction<'a>(
     items: impl Iterator<Item = &'a ResponseItem>,
     max_parent_compaction_tokens: usize,
 ) -> Result<Option<ResponseItem>, ParentCompactionError> {

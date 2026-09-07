@@ -7,7 +7,6 @@ use codex_analytics::GuardianReviewTrackContext;
 use codex_analytics::GuardianReviewedAction;
 use codex_analytics::GuardianV2Event;
 use codex_analytics::GuardianV2EventKind;
-use codex_async_utils::THREAD_STACK_SIZE_BYTES;
 use codex_core_plugins::PluginCommandAttribution;
 use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ThreadIdleCause;
@@ -29,10 +28,10 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::WarningEvent;
+#[cfg(test)]
 use futures::future::BoxFuture;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
 use tokio_util::sync::CancellationToken;
@@ -268,7 +267,7 @@ fn track_guardian_review(
         .track_guardian_review(tracking, result, completed_at_ms);
 }
 
-async fn record_guardian_non_denial(session: &Arc<Session>, turn_id: &str) {
+pub(super) async fn record_guardian_non_denial(session: &Arc<Session>, turn_id: &str) {
     session
         .services
         .guardian_rejection_circuit_breaker
@@ -432,21 +431,17 @@ async fn run_guardian_review(
         session,
         context,
         review_id,
-        request,
+        request: request.into(),
         reasons,
         options,
     };
-    codex_extension_api::SynchronousApprovalReviewer::review(
-        &runtime,
-        codex_protocol::approvals::GuardianReviewReason::Policy,
-    )
-    .await
+    run_synchronous_review(runtime, /*review_reason*/ None).await
 }
 
 /// Runs the existing synchronous reviewer without choosing policy or reusing a score.
 pub(super) async fn run_synchronous_review(
     runtime: super::runtime::ReviewRuntime,
-    _review_reason: codex_protocol::approvals::GuardianReviewReason,
+    review_reason: Option<codex_protocol::approvals::GuardianReviewReason>,
 ) -> ReviewDecision {
     let super::runtime::ReviewRuntime {
         session,
@@ -456,12 +451,17 @@ pub(super) async fn run_synchronous_review(
         reasons,
         options,
     } = runtime;
+    let request = match request.validate(&context) {
+        Ok(request) => request.clone(),
+        Err(decision) => return decision,
+    };
     let turn = Arc::clone(context.turn());
     let GuardianReviewOptions {
         plugin_attribution_override,
         approval_request_source,
         external_cancel,
         require_synchronous_review: _,
+        require_guardian: _,
     } = options;
     // Bound executor attribution and the Guardian session with one review deadline.
     let deadline = Instant::now() + GUARDIAN_REVIEW_TIMEOUT;
@@ -518,6 +518,7 @@ pub(super) async fn run_synchronous_review(
         .send_event(
             turn.as_ref(),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                review_reason,
                 id: review_id.clone(),
                 target_item_id: target_item_id.clone(),
                 plugin_id: plugin_id.clone(),
@@ -557,6 +558,7 @@ pub(super) async fn run_synchronous_review(
             .send_event(
                 turn.as_ref(),
                 EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                    review_reason,
                     id: review_id,
                     target_item_id,
                     plugin_id: plugin_id.clone(),
@@ -696,6 +698,7 @@ pub(super) async fn run_synchronous_review(
                     .send_event(
                         turn.as_ref(),
                         EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                            review_reason,
                             id: review_id,
                             target_item_id,
                             plugin_id: plugin_id.clone(),
@@ -733,6 +736,7 @@ pub(super) async fn run_synchronous_review(
                     .send_event(
                         turn.as_ref(),
                         EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                            review_reason,
                             id: review_id,
                             target_item_id,
                             plugin_id: plugin_id.clone(),
@@ -818,6 +822,7 @@ pub(super) async fn run_synchronous_review(
         GuardianAssessmentStatus::Denied
     };
     let assessment_event = GuardianAssessmentEvent {
+        review_reason,
         id: review_id,
         target_item_id,
         plugin_id: plugin_id.clone(),
@@ -879,6 +884,8 @@ pub(super) async fn run_synchronous_review(
 
 #[derive(Clone)]
 pub(crate) struct GuardianReviewOptions {
+    /// Requires Guardian rather than a manual approval; cached evidence may still satisfy it.
+    pub(crate) require_guardian: bool,
     pub(crate) plugin_attribution_override: Option<PluginCommandAttribution>,
     pub(crate) approval_request_source: GuardianApprovalRequestSource,
     pub(crate) external_cancel: Option<CancellationToken>,
@@ -887,6 +894,7 @@ pub(crate) struct GuardianReviewOptions {
 }
 
 /// Public entrypoint for approval requests that should be reviewed by guardian.
+#[cfg(test)]
 pub(crate) async fn review_approval_request(
     session: &Arc<Session>,
     context: impl Into<GuardianReviewContext>,
@@ -902,6 +910,7 @@ pub(crate) async fn review_approval_request(
         request,
         reasons,
         GuardianReviewOptions {
+            require_guardian: false,
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: None,
@@ -931,32 +940,6 @@ pub(crate) async fn review_approval_request_with_cancel(
         options,
     )
     .await
-}
-
-pub(crate) fn spawn_approval_request_review(
-    session: Arc<Session>,
-    context: impl Into<GuardianReviewContext>,
-    review_id: String,
-    request: GuardianApprovalRequest,
-    reasons: ApprovalRequestReasons,
-    options: GuardianReviewOptions,
-) -> oneshot::Receiver<ReviewDecision> {
-    let context = context.into();
-    let (tx, rx) = oneshot::channel();
-    let runtime = session.services.runtime_handle.clone();
-    let spawn_result = std::thread::Builder::new()
-        .name("codex-approval-review".to_string())
-        .stack_size(THREAD_STACK_SIZE_BYTES)
-        .spawn(move || {
-            let decision = runtime.block_on(run_guardian_review(
-                session, context, review_id, request, reasons, options,
-            ));
-            let _ = tx.send(decision);
-        });
-    if let Err(err) = spawn_result {
-        tracing::error!(%err, "failed to spawn automatic approval review worker");
-    }
-    rx
 }
 
 pub(super) struct GuardianReviewSessionConfig {

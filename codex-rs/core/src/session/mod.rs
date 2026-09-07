@@ -2780,7 +2780,6 @@ impl Session {
     ) -> Option<RequestPermissionsResponse> {
         let turn_context = &step_context.turn;
         let approval_policy = step_context.settings.approval_policy();
-        let approvals_reviewer = step_context.settings.approvals_reviewer();
         let Some(environment) = step_context
             .environments
             .turn_environments()
@@ -2827,7 +2826,6 @@ impl Session {
                 strict_auto_review: false,
             });
         };
-        if crate::guardian::routes_approval_policy_to_guardian(approval_policy, approvals_reviewer)
         {
             let originating_turn_state = {
                 let active = self.active_turn.lock().await;
@@ -2836,13 +2834,13 @@ impl Session {
             let action = ApprovalAction::RequestPermissions {
                 id: call_id.clone(),
                 turn_id: turn_context.sub_id.clone(),
-                reason: args.reason,
+                reason: args.reason.clone(),
                 permissions: requested_permissions.clone(),
             };
             let approval_context = ApprovalContext {
                 review_context: crate::guardian::GuardianReviewContext::from(step_context),
                 cancellation_token: Some(cancellation_token.clone()),
-                call_id,
+                call_id: call_id.clone(),
                 tool_name: ToolName::plain("request_permissions"),
                 strict_auto_review: false,
                 approval_reason: None,
@@ -2857,54 +2855,53 @@ impl Session {
                     &approval_context,
                 ) => decision,
             };
-            let response = match decision {
-                ReviewDecision::Approved | ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
-                    RequestPermissionsResponse {
-                        permissions: requested_permissions.clone(),
-                        scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
+            if let Some(decision) = decision {
+                let (permissions, scope) = match decision {
+                    ReviewDecision::Approved
+                    | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+                    | ReviewDecision::NetworkPolicyAmendment {
+                        network_policy_amendment:
+                            NetworkPolicyAmendment {
+                                action: NetworkPolicyRuleAction::Allow,
+                                ..
+                            },
+                    } => (requested_permissions.clone(), PermissionGrantScope::Turn),
+                    ReviewDecision::ApprovedForSession => {
+                        (requested_permissions.clone(), PermissionGrantScope::Session)
                     }
-                }
-                ReviewDecision::ApprovedForSession => RequestPermissionsResponse {
-                    permissions: requested_permissions.clone(),
-                    scope: PermissionGrantScope::Session,
+                    ReviewDecision::ApprovedMcpPolicyAmendment
+                    | ReviewDecision::NetworkPolicyAmendment {
+                        network_policy_amendment:
+                            NetworkPolicyAmendment {
+                                action: NetworkPolicyRuleAction::Deny,
+                                ..
+                            },
+                    }
+                    | ReviewDecision::Abort
+                    | ReviewDecision::Denied { .. }
+                    | ReviewDecision::TimedOut => (
+                        RequestPermissionProfile::default(),
+                        PermissionGrantScope::Turn,
+                    ),
+                };
+                let response = RequestPermissionsResponse {
+                    permissions,
+                    scope,
                     strict_auto_review: false,
-                },
-                ReviewDecision::NetworkPolicyAmendment {
-                    network_policy_amendment,
-                } => match network_policy_amendment.action {
-                    NetworkPolicyRuleAction::Allow => RequestPermissionsResponse {
-                        permissions: requested_permissions.clone(),
-                        scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
-                    },
-                    NetworkPolicyRuleAction::Deny => RequestPermissionsResponse {
-                        permissions: RequestPermissionProfile::default(),
-                        scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
-                    },
-                },
-                ReviewDecision::ApprovedMcpPolicyAmendment
-                | ReviewDecision::Abort
-                | ReviewDecision::Denied { .. }
-                | ReviewDecision::TimedOut => RequestPermissionsResponse {
-                    permissions: RequestPermissionProfile::default(),
-                    scope: PermissionGrantScope::Turn,
-                    strict_auto_review: false,
-                },
-            };
-            let response = Self::normalize_request_permissions_response(
-                requested_permissions,
-                response,
-                &context,
-            );
-            self.record_granted_request_permissions_for_turn(
-                &response,
-                &environment.selection.environment_id,
-                originating_turn_state.as_ref(),
-            )
-            .await;
-            return Some(response);
+                };
+                let response = Self::normalize_request_permissions_response(
+                    requested_permissions,
+                    response,
+                    &context,
+                );
+                self.record_granted_request_permissions_for_turn(
+                    &response,
+                    &environment.selection.environment_id,
+                    originating_turn_state.as_ref(),
+                )
+                .await;
+                return Some(response);
+            }
         }
 
         let _elicitation = self.services.elicitations.register();

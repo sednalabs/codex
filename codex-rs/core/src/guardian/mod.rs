@@ -1,18 +1,10 @@
-//! Guardian review decides whether an `on-request` approval should be granted
-//! automatically instead of shown to the user.
-//! Full Access (`never` approvals with a disabled sandbox) approves without review.
-//!
-//! High-level approach:
-//! 1. Reconstruct a compact transcript that preserves user intent plus the most
-//!    relevant recent assistant and tool context.
-//! 2. Ask a dedicated guardian review session to assess the exact planned
-//!    action and return strict JSON.
-//!    The guardian clones the parent config, so it inherits any managed
-//!    network proxy / allowlist that the parent turn already had.
-//! 3. Fail closed on timeout, execution failure, or malformed output.
-//! 4. Apply the guardian's explicit allow/deny outcome.
+//! Hosts approval decisions and the isolated synchronous reviewer.
+//! The extension chooses policy and evidence; core enforces permissions and mandatory
+//! review requirements. Each approval retains its issuing context and cancellation.
 
 mod approval_request;
+mod coverage;
+mod decision;
 mod feedback;
 mod metrics;
 mod prompt;
@@ -43,6 +35,8 @@ pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;
 #[cfg(test)]
 pub(crate) use approval_request::guardian_approval_request_to_json;
+pub(crate) use decision::decide_approval;
+pub(crate) use decision::spawn_approval_decision;
 pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY;
 pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 pub(crate) use prompt::guardian_truncate_text;
@@ -52,13 +46,14 @@ pub(crate) use review::is_basic_session_source;
 pub(crate) use review::new_guardian_review_id;
 #[cfg(test)]
 pub(crate) use review::record_guardian_denial_for_test;
+#[cfg(test)]
 pub(crate) use review::review_approval_request;
 pub(crate) use review::review_approval_request_with_cancel;
 pub(crate) use review::routes_approval_policy_to_guardian;
 pub(crate) use review::routes_approval_to_guardian;
-pub(crate) use review::spawn_approval_request_review;
 pub(crate) use review_session::GuardianReviewSessionManager;
 pub(crate) use review_session::prompt_cache_key_override_for_review_session;
+pub(crate) use runtime::ReviewAction;
 
 pub(crate) const GUARDIAN_REVIEW_TIMEOUT: Duration = Duration::from_secs(90);
 pub(crate) const GUARDIAN_REVIEWER_NAME: &str = "guardian";
@@ -83,9 +78,7 @@ const GUARDIAN_RECENT_ENTRY_LIMIT: usize = 40;
 /// Background network approvals and Unix interception use the active task's resolved settings.
 /// Startup reviewer prewarming intentionally uses turn-only inputs because it has no issuing step.
 ///
-/// MCP elicitation reviews still use turn-only inputs.
-/// TODO(sayan): See if we can find a way to model those as StepContext as well without holding
-/// step-scoped things past their lifetime (like MCP bindings)
+/// MCP elicitation reviews continue to use turn-only inputs.
 #[derive(Clone)]
 pub(crate) struct GuardianReviewContext {
     /// The response currently handled in this execution context.

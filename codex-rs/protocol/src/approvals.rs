@@ -204,6 +204,10 @@ pub enum GuardianReviewReason {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct GuardianAssessmentEvent {
+    /// Request-scoped trigger; absent in events recorded by older clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review_reason: Option<GuardianReviewReason>,
     /// Stable identifier for this guardian review lifecycle.
     pub id: String,
     /// Thread item being reviewed, when the review maps to a concrete item.

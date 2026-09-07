@@ -355,10 +355,21 @@ pub(crate) async fn apply_bespoke_event_handling(
             );
             outgoing.send_server_notification(notification).await;
             if assessment.status == codex_protocol::protocol::GuardianAssessmentStatus::InProgress
-                && conversation
-                    .thread_extension_data()
-                    .remove::<StrictReviewReason>()
-                    .is_some()
+                && match assessment.review_reason {
+                    Some(reason) => matches!(
+                        reason,
+                        codex_protocol::approvals::GuardianReviewReason::ElevatedRisk
+                            | codex_protocol::approvals::GuardianReviewReason::StaleScore
+                            | codex_protocol::approvals::GuardianReviewReason::IncompatibleCompaction
+                            | codex_protocol::approvals::GuardianReviewReason::ScoringFailure
+                            | codex_protocol::approvals::GuardianReviewReason::AuthorizationChanged
+                    ),
+                    // MCP elicitations migrate to per-approval reasons next.
+                    None => conversation
+                        .thread_extension_data()
+                        .remove::<StrictReviewReason>()
+                        .is_some(),
+                }
             {
                 outgoing
                     .send_server_notification(ServerNotification::StrictReviewRequired(
@@ -2429,6 +2440,7 @@ mod tests {
             GuardianAssessmentStatus::Aborted => (None, None, None),
         };
         GuardianAssessmentEvent {
+            review_reason: None,
             id: format!("review-{id}"),
             target_item_id: Some(id.to_string()),
             plugin_id: Some("sample@openai-curated".to_string()),
@@ -2498,6 +2510,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-1".to_string(),
                 target_item_id: Some("item-1".to_string()),
                 plugin_id: None,
@@ -2546,6 +2559,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-2".to_string(),
                 target_item_id: Some("item-2".to_string()),
                 plugin_id: None,
@@ -2602,6 +2616,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-3".to_string(),
                 target_item_id: None,
                 plugin_id: None,

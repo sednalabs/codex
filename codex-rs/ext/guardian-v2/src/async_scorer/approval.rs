@@ -5,6 +5,7 @@ use super::authorization::ScoreAuthorization;
 use super::config::GuardianV2Config;
 use super::coverage::GuardianPolicy;
 use super::extension::GuardianV2ScoreProgress;
+use super::extension::encrypted_parent_compaction;
 use super::extension::requires_sync_for_compaction;
 use super::metrics::TOOL_CALL_LAG_METRIC;
 use super::metrics::record_fast_decision;
@@ -139,7 +140,10 @@ async fn cached_evidence(
             .get::<LunaSampler>()
             .ok_or(GuardianReviewReason::MissingScore)?;
         let history = thread.conversation_history_snapshot().await;
-        if requires_sync_for_compaction(config, history.as_ref(), &sampler) {
+        if requires_sync_for_compaction(config, history.as_ref(), &sampler)
+            || encrypted_parent_compaction(history.items(), config.max_parent_compaction_tokens)
+                .is_err()
+        {
             record_fast_decision(metrics, "deferred", "incompatible_compaction");
             return Err(GuardianReviewReason::IncompatibleCompaction);
         }
