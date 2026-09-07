@@ -1,9 +1,9 @@
 use std::num::NonZero;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use codex_app_server_protocol::FuzzyFileSearchMatchType;
 use codex_app_server_protocol::FuzzyFileSearchResult;
@@ -408,20 +408,20 @@ fn collect_files(snapshot: &file_search::FileSearchSnapshot) -> Vec<FuzzyFileSea
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
 
     use codex_analytics::AnalyticsEventsClient;
     use codex_app_server_protocol::ServerNotificationEnvelope;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
 
-    use super::forward_notifications;
     use super::FuzzyFileSearchSessionUpdatedNotification;
     use super::PendingNotification;
     use super::PendingNotifications;
     use super::SessionShared;
+    use super::forward_notifications;
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
     use crate::outgoing_message::OutgoingMessageSender;
@@ -590,11 +590,13 @@ mod tests {
         shared.cancel();
         forwarder.abort();
         assert!(forwarder.await.is_err());
-        assert!(shared
-            .pending_notifications
-            .lock()
-            .unwrap()
-            .take_next()
-            .is_none());
+        assert!(
+            shared
+                .pending_notifications
+                .lock()
+                .unwrap()
+                .take_next()
+                .is_none()
+        );
     }
 }
