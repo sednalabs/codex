@@ -4944,6 +4944,7 @@ impl ThreadRequestProcessor {
             None
         };
         let latest_context = if paginated_source
+            && needs_latest_settings
             && loaded_parent.is_none()
             && (last_turn_id.is_some() || before_turn_id.is_some())
         {
