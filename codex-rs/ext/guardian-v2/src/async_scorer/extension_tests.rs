@@ -69,7 +69,6 @@ use serde_json::json;
 
 use super::GuardianV2Extension;
 use super::GuardianV2ScoreProgress;
-use super::StrictReviewReason;
 
 use crate::async_scorer::config::CLASSIFICATION_OUTPUT_INSTRUCTIONS;
 use crate::async_scorer::config::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
@@ -285,14 +284,13 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
         })
         .await?;
         assert_eq!(
-            registry
-                .fast_approval_decision(
-                    &session_store,
-                    thread_store,
-                    r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
-                    /*extension_metrics*/ None,
-                )
-                .await,
+            cached_approval(
+                &registry,
+                thread_store,
+                r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
+                /*metrics*/ None,
+            )
+            .await,
             Some(ReviewDecision::Approved)
         );
     }
@@ -669,33 +667,29 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
     ] {
         let prompt = action.to_string();
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    &prompt,
-                    thread_store
-                        .get::<RecordingMetrics>()
-                        .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-                )
-                .await,
-            expected,
-            "unexpected fast approval for {action}"
-        );
-    }
-    assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
+            cached_approval(
+                &fixture.registry,
                 thread_store,
-                "not valid JSON",
+                &prompt,
                 thread_store
                     .get::<RecordingMetrics>()
                     .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
             )
             .await,
+            expected,
+            "unexpected fast approval for {action}"
+        );
+    }
+    assert_eq!(
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            "not valid JSON",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None,
         "malformed approval actions must not reuse a browser score"
     );
@@ -711,16 +705,13 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
     });
     thread_store.insert(changed_model);
     assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
-                thread_store,
-                &json!({"tool": "mcp_tool_call", "server": "node_repl", "tool_name": "js"})
-                    .to_string(),
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            &json!({"tool": "mcp_tool_call", "server": "node_repl", "tool_name": "js"}).to_string(),
+            /*metrics*/ None,
+        )
+        .await,
         None,
         "a score from the previous model policy must not approve a call"
     );
@@ -772,15 +763,13 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
             sampled_at: None,
         });
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    r#"{"tool":"mcp_tool_call","server":"node_repl","tool_name":"js"}"#,
-                    /*extension_metrics*/ None,
-                )
-                .await,
+            cached_approval(
+                &fixture.registry,
+                thread_store,
+                r#"{"tool":"mcp_tool_call","server":"node_repl","tool_name":"js"}"#,
+                /*metrics*/ None,
+            )
+            .await,
             None,
             "switching back to a reviewed model must not revive a skipped score"
         );
@@ -909,14 +898,13 @@ async fn sample_configured_conversation_history_with_source(
         thread_store.insert(parent_model);
     }
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     registry.thread_lifecycle_contributors()[0]
@@ -1123,16 +1111,15 @@ impl GuardianFailureFixture {
         .await?;
         thread_store.insert(RecordingMetrics::default());
         assert_eq!(
-            self.registry
-                .fast_approval_decision(
-                    &self.session_store,
-                    thread_store,
-                    "review action",
-                    thread_store
-                        .get::<RecordingMetrics>()
-                        .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-                )
-                .await,
+            cached_approval(
+                &self.registry,
+                thread_store,
+                "review action",
+                thread_store
+                    .get::<RecordingMetrics>()
+                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+            )
+            .await,
             None
         );
         assert!(
@@ -1434,7 +1421,6 @@ max_recent_non_user_entries = 8
     let retained_action_bytes = i64::try_from(serde_json::to_string_pretty(&action)?.len())?;
     assert_eq!(action["tool"], "read_file");
 
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let score_progress = thread_store
         .get::<GuardianV2ScoreProgress>()
@@ -1451,7 +1437,6 @@ max_recent_non_user_entries = 8
         }
     })
     .await?;
-    assert_eq!(thread_store.get::<StrictReviewReason>(), None);
     thread_store.insert(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_owned(), 0.65)]),
         call_id: None,
@@ -1459,21 +1444,16 @@ max_recent_non_user_entries = 8
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None
-    );
-    assert_eq!(
-        thread_store.remove::<StrictReviewReason>().as_deref(),
-        Some(&StrictReviewReason::ElevatedRisk)
     );
     thread_store.insert(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_owned(), 0.55)]),
@@ -1482,16 +1462,15 @@ max_recent_non_user_entries = 8
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1505,16 +1484,15 @@ max_recent_non_user_entries = 8
         .latest_tool_call
         .store(/*val*/ 3, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1524,37 +1502,31 @@ max_recent_non_user_entries = 8
         .latest_tool_call
         .store(/*val*/ 4, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None
-    );
-    assert_eq!(
-        thread_store.remove::<StrictReviewReason>().as_deref(),
-        Some(&StrictReviewReason::StaleScore)
     );
 
     score_progress
         .latest_scored_tool_call
         .store(/*val*/ 2, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1822,7 +1794,6 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         .expect("planned action should be a text item");
     assert!(action.len() <= TruncationPolicy::Tokens(/*limit*/ 128).byte_budget());
 
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let guardian_config = thread_store
         .get::<crate::async_scorer::config::GuardianV2Config>()
@@ -1857,14 +1828,13 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1931,7 +1901,6 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
     )
     .await?;
     let thread_id = test.session_configured.thread_id;
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     assert_eq!(request["model"], "gpt-5.6-luna");
     let classifier_thread_id = request["client_metadata"]["thread_id"]
@@ -2043,14 +2012,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         "risk scores should not be persisted unless explicitly enabled"
     );
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     thread_store.insert(SecurityRiskScore {
@@ -2060,14 +2028,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -2078,14 +2045,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -2097,14 +2063,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                &disabled_thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &registry,
+            &disabled_thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         None
     );
 
@@ -2254,14 +2219,13 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -2316,7 +2280,6 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
         /*model_defaults*/ None,
     )
     .await?;
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let progress = thread_store.get::<GuardianV2ScoreProgress>().unwrap();
     tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
@@ -2346,14 +2309,13 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
     })
     .await;
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved),
     );
 
@@ -2369,14 +2331,13 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
         }])
         .await?;
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         None,
     );
     Ok(())
@@ -2408,15 +2369,13 @@ async fn assert_compaction_approval_policy(thread_context_enabled: bool) -> Resu
         sampled_at: None,
     });
     assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
     let authorization = fixture.test.codex.guardian_authorization_version().await;
@@ -2472,20 +2431,14 @@ async fn assert_compaction_approval_policy(thread_context_enabled: bool) -> Resu
             .js_executions
             .store(/*val*/ 1, Ordering::Release);
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    prompt,
-                    /*extension_metrics*/ None
-                )
-                .await,
+            cached_approval(
+                &fixture.registry,
+                thread_store,
+                prompt,
+                /*metrics*/ None
+            )
+            .await,
             (!thread_context_enabled).then_some(ReviewDecision::Approved)
-        );
-        assert_eq!(
-            thread_store.remove::<StrictReviewReason>().as_deref(),
-            thread_context_enabled.then_some(&StrictReviewReason::IncompatibleCompaction)
         );
     }
     Ok(())
@@ -2525,14 +2478,13 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -2563,14 +2515,13 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
 
     assert_eq!(score_progress.latest_tool_call.load(Ordering::Acquire), 2);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -3098,14 +3049,13 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
     // Raw injection did not attach producer provenance to the live checkpoint.
     // The sample's mock snapshot cannot make that live checkpoint safe for approval.
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         (!thread_context_enabled).then_some(ReviewDecision::Approved),
     );
 
@@ -3149,14 +3099,13 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
         }
     );
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     assert_eq!(
@@ -3288,4 +3237,69 @@ async fn contributor_bounds_oversized_actions_and_fairly_truncates_nested_fields
     );
 
     Ok(())
+}
+
+struct CacheMiss;
+impl codex_extension_api::SynchronousApprovalReviewer for CacheMiss {
+    fn review(
+        &self,
+        _reason: codex_protocol::approvals::GuardianReviewReason,
+    ) -> codex_extension_api::ExtensionFuture<'_, ReviewDecision> {
+        Box::pin(async { ReviewDecision::denied("cache miss") })
+    }
+}
+
+/// Exercises decision routing; a fresh review is observed as a cache miss.
+async fn cached_approval(
+    registry: &codex_extension_api::ExtensionRegistry<Config>,
+    store: &ExtensionData,
+    action: &str,
+    metrics: Option<Arc<dyn ExtensionMetrics>>,
+) -> Option<ReviewDecision> {
+    let action = serde_json::from_str(action).unwrap_or(serde_json::Value::Null);
+    let category = match review_scope(&action) {
+        Some(category) => category,
+        None if store.get::<super::GuardianV2Config>()?.policy.other_tools
+            == codex_protocol::openai_models::GuardianReviewMode::Adaptive =>
+        {
+            codex_protocol::openai_models::GuardianScope::Shell
+        }
+        None => {
+            super::super::metrics::record_fast_decision(
+                metrics.as_deref(),
+                "deferred",
+                "out_of_scope",
+            );
+            return None;
+        }
+    };
+    let input = codex_extension_api::ApprovalDecisionInput {
+        approval_id: "cache-probe",
+        action: &action,
+        thread_id: codex_protocol::ThreadId::from_string(store.level_id()).unwrap(),
+        thread_store: store,
+        category,
+        approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
+        approvals_reviewer: ApprovalsReviewer::AutoReview,
+        require_guardian: false,
+        require_fresh_review: false,
+        full_access: false,
+        metrics,
+        synchronous_reviewer: &CacheMiss,
+    };
+    match registry.decide_approval(&input).await {
+        Some(codex_extension_api::ApprovalDecision::Allow) => Some(ReviewDecision::Approved),
+        _ => None,
+    }
+}
+
+fn review_scope(action: &serde_json::Value) -> Option<GuardianScope> {
+    match action.get("tool").and_then(serde_json::Value::as_str)? {
+        "mcp_tool_call" => action
+            .get("server")
+            .and_then(serde_json::Value::as_str)
+            .map(GuardianScope::for_mcp_server),
+        "network_access" => Some(GuardianScope::Network),
+        tool => GuardianScope::for_tool(&ToolName::plain(tool)),
+    }
 }

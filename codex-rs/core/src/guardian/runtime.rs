@@ -89,6 +89,6 @@ impl SynchronousApprovalReviewer for ReviewRuntime {
         &self,
         reason: codex_protocol::approvals::GuardianReviewReason,
     ) -> ExtensionFuture<'_, ReviewDecision> {
-        Box::pin(run_synchronous_review(self.clone(), Some(reason)))
+        Box::pin(run_synchronous_review(self.clone(), reason))
     }
 }

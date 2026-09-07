@@ -1688,8 +1688,8 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
     let cancel_token = CancellationToken::new();
     cancel_token.cancel();
 
-    let decision = review_approval_request_with_cancel(
-        &session,
+    let decision = super::decide_approval(
+        Arc::clone(&session),
         &turn,
         "review-cancelled-guardian".to_string(),
         GuardianApprovalRequest::ApplyPatch {
@@ -1699,9 +1699,12 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
             patch: "*** Begin Patch\n*** Update File: guardian.txt\n@@\n+hello\n*** End Patch"
                 .to_string(),
         },
-        /*retry_reason*/ None,
+        ApprovalRequestReasons {
+            approval: None,
+            retry: None,
+        },
         GuardianReviewOptions {
-            require_guardian: false,
+            require_guardian: true,
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: Some(cancel_token),
@@ -1710,7 +1713,7 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Abort);
+    assert_eq!(decision, Some(ReviewDecision::Abort));
 
     let mut guardian_statuses = Vec::new();
     let mut warnings = Vec::new();
@@ -3399,14 +3402,12 @@ async fn escalated_retry_bypasses_extension_approval_and_runs_guardian() -> anyh
     struct AutoApprovingReviewContributor;
 
     impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContributor {
-        fn fast_decision<'a>(
+        fn decide<'a>(
             &'a self,
-            _session_store: &'a codex_extension_api::ExtensionData,
-            _thread_store: &'a codex_extension_api::ExtensionData,
-            _prompt: &'a str,
-            _extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
-        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
-            Box::pin(async move { Some(ReviewDecision::Approved) })
+            _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+        {
+            Box::pin(async { Some(codex_extension_api::ApprovalDecision::Allow) })
         }
     }
 
@@ -4187,4 +4188,30 @@ async fn guardian_review_session_config_uses_default_guardian_policy_without_req
             BUNDLED_GUARDIAN_POLICY_TEMPLATE,
         ))
     );
+}
+
+// Keep the existing reviewer tests on the production decision path.
+async fn review_approval_request(
+    session: &Arc<Session>,
+    context: impl Into<GuardianReviewContext>,
+    review_id: String,
+    request: GuardianApprovalRequest,
+    reasons: ApprovalRequestReasons,
+) -> ReviewDecision {
+    super::decide_approval(
+        Arc::clone(session),
+        context,
+        review_id,
+        request,
+        reasons,
+        GuardianReviewOptions {
+            require_guardian: true,
+            plugin_attribution_override: None,
+            approval_request_source: GuardianApprovalRequestSource::MainTurn,
+            external_cancel: None,
+            require_synchronous_review: false,
+        },
+    )
+    .await
+    .expect("Guardian should handle the request")
 }
