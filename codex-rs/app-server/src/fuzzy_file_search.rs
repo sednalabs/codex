@@ -19,6 +19,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 
 const MATCH_LIMIT: usize = 50;
 const MAX_THREADS: usize = 12;
+const MAX_COMPLETIONS_BEFORE_UPDATE: usize = 8;
 
 pub(crate) async fn run_fuzzy_file_search(
     query: String,
@@ -224,6 +225,7 @@ struct PendingNotifications<T> {
     latest_update: Option<T>,
     completions_before_update: usize,
     completions_after_update: usize,
+    completions_since_update: usize,
     stopped: bool,
 }
 
@@ -233,6 +235,7 @@ impl<T> PendingNotifications<T> {
             latest_update: None,
             completions_before_update: 0,
             completions_after_update: 0,
+            completions_since_update: 0,
             stopped: false,
         }
     }
@@ -267,14 +270,32 @@ impl<T> PendingNotifications<T> {
     }
 
     fn take_next(&mut self) -> Option<PendingNotification<T>> {
+        if self.latest_update.is_some()
+            && self.completions_before_update > 0
+            && self.completions_since_update >= MAX_COMPLETIONS_BEFORE_UPDATE
+        {
+            let Some(update) = self.latest_update.take() else {
+                unreachable!("latest update was checked above");
+            };
+            let deferred_completions = self.completions_before_update;
+            self.completions_before_update = 0;
+            add_completion_count(&mut self.completions_after_update, deferred_completions);
+            self.completions_before_update = self.completions_after_update;
+            self.completions_after_update = 0;
+            self.completions_since_update = 0;
+            return Some(PendingNotification::Update(update));
+        }
+
         if self.completions_before_update > 0 {
             self.completions_before_update -= 1;
+            self.completions_since_update += 1;
             return Some(PendingNotification::Complete);
         }
 
         if let Some(update) = self.latest_update.take() {
             self.completions_before_update = self.completions_after_update;
             self.completions_after_update = 0;
+            self.completions_since_update = 0;
             return Some(PendingNotification::Update(update));
         }
 
@@ -286,6 +307,7 @@ impl<T> PendingNotifications<T> {
         self.latest_update = None;
         self.completions_before_update = 0;
         self.completions_after_update = 0;
+        self.completions_since_update = 0;
     }
 }
 
@@ -412,10 +434,19 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_app_server_protocol::ServerNotificationEnvelope;
     use pretty_assertions::assert_eq;
+    use tokio::sync::mpsc;
 
+    use super::FuzzyFileSearchSessionUpdatedNotification;
+    use super::SessionShared;
     use super::PendingNotification;
     use super::PendingNotifications;
+    use super::forward_notifications;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
+    use crate::outgoing_message::OutgoingMessageSender;
 
     #[test]
     fn pending_notifications_replace_latest_and_preserve_completion_order() {
@@ -466,5 +497,110 @@ mod tests {
         assert!(!pending.push_completion());
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         assert!(pending.take_next().is_none());
+    }
+
+    #[test]
+    fn completion_churn_yields_to_latest_update() {
+        let mut pending = PendingNotifications::new();
+        for _ in 0..(super::MAX_COMPLETIONS_BEFORE_UPDATE + 1) {
+            assert!(pending.push_completion());
+        }
+        assert!(pending.replace_update("latest"));
+
+        for _ in 0..super::MAX_COMPLETIONS_BEFORE_UPDATE {
+            assert_eq!(pending.take_next(), Some(PendingNotification::Complete));
+        }
+        assert_eq!(pending.take_next(), Some(PendingNotification::Update("latest")));
+        assert_eq!(pending.take_next(), Some(PendingNotification::Complete));
+    }
+
+    #[tokio::test]
+    async fn blocked_outgoing_sender_still_delivers_latest_update() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new_with_senders(
+            event_tx,
+            response_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let shared = Arc::new(SessionShared {
+            session_id: "session".to_string(),
+            latest_query: std::sync::Mutex::new(String::new()),
+            outgoing,
+            canceled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending_notifications: std::sync::Mutex::new(PendingNotifications::new()),
+            notification_ready: tokio::sync::Notify::new(),
+        });
+
+        shared.enqueue_update(FuzzyFileSearchSessionUpdatedNotification {
+            session_id: "session".to_string(),
+            query: "first".to_string(),
+            files: Vec::new(),
+        });
+        let forwarder = tokio::spawn(forward_notifications(shared.clone()));
+        let _ = event_rx.recv().await.expect("first update should be sent");
+
+        for _ in 0..(super::MAX_COMPLETIONS_BEFORE_UPDATE + 1) {
+            shared.enqueue_completion();
+        }
+        shared.enqueue_update(FuzzyFileSearchSessionUpdatedNotification {
+            session_id: "session".to_string(),
+            query: "latest".to_string(),
+            files: Vec::new(),
+        });
+
+        for _ in 0..super::MAX_COMPLETIONS_BEFORE_UPDATE {
+            let _ = event_rx.recv().await.expect("completion should be retained");
+        }
+        let queued = event_rx.recv().await.expect("latest update should progress");
+        let OutgoingEnvelope::Broadcast { message } = queued else {
+            panic!("expected broadcast event");
+        };
+        let OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification,
+            ..
+        }) = message
+        else {
+            panic!("expected server notification");
+        };
+        assert!(matches!(
+            notification,
+            codex_app_server_protocol::ServerNotification::FuzzyFileSearchSessionUpdated(
+                notification
+            ) if notification.query == "latest"
+        ));
+
+        shared.cancel();
+        forwarder.abort();
+    }
+
+    #[tokio::test]
+    async fn cancellation_releases_forwarder_blocked_on_outgoing_send() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (response_tx, _response_rx) = mpsc::channel(1);
+        let shared = Arc::new(SessionShared {
+            session_id: "session".to_string(),
+            latest_query: std::sync::Mutex::new(String::new()),
+            outgoing: Arc::new(OutgoingMessageSender::new_with_senders(
+                event_tx,
+                response_tx,
+                AnalyticsEventsClient::disabled(),
+            )),
+            canceled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pending_notifications: std::sync::Mutex::new(PendingNotifications::new()),
+            notification_ready: tokio::sync::Notify::new(),
+        });
+
+        shared.enqueue_completion();
+        shared.enqueue_completion();
+        shared.enqueue_completion();
+        let forwarder = tokio::spawn(forward_notifications(shared.clone()));
+        let _ = event_rx.recv().await.expect("first completion should be sent");
+        tokio::task::yield_now().await;
+
+        shared.cancel();
+        forwarder.abort();
+        assert!(forwarder.await.is_err());
+        assert!(shared.pending_notifications.lock().unwrap().take_next().is_none());
     }
 }
