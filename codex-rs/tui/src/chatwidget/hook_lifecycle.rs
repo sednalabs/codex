@@ -81,7 +81,6 @@ impl ChatWidget {
         }
         self.flush_completed_command_activity();
         self.bump_active_cell_revision();
-        self.transcript.needs_final_message_separator = true;
         self.app_event_tx
             .send(AppEvent::InsertHistoryCell(Box::new(completed_cell)));
         self.request_pending_usage_output_insertion();
@@ -101,7 +100,6 @@ impl ChatWidget {
             && let Some(cell) = self.active_hook_cell.take()
         {
             self.bump_active_cell_revision();
-            self.transcript.needs_final_message_separator = true;
             self.app_event_tx
                 .send(AppEvent::InsertHistoryCell(Box::new(cell)));
             self.request_pending_usage_output_insertion();

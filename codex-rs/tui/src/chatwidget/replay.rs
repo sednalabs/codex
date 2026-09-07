@@ -6,22 +6,10 @@
 use super::*;
 
 impl ChatWidget {
-    /// Flush prior activity and preserve its separator before live or replayed assistant text.
+    /// Flush prior activity before live or replayed assistant text.
     pub(super) fn prepare_assistant_message(&mut self) {
-        // Before starting an agent stream, flush any active exec cell group.
         self.flush_unified_exec_wait_streak();
         self.flush_active_cell();
-        // If the previous turn inserted non-stream history (exec output, patch status, MCP
-        // calls), render a separator before starting the next streamed assistant message.
-        if self.transcript.needs_final_message_separator && self.transcript.had_work_activity {
-            self.add_to_history(history_cell::FinalMessageSeparator::new(
-                /*elapsed_seconds*/ None, /*runtime_metrics*/ None,
-            ));
-            self.transcript.needs_final_message_separator = false;
-        } else if self.transcript.needs_final_message_separator {
-            // Reset the flag even if we don't show separator (no work was done)
-            self.transcript.needs_final_message_separator = false;
-        }
     }
 
     /// Replay a subset of initial events into the UI to seed the transcript when
@@ -40,6 +28,14 @@ impl ChatWidget {
             }))
             .collect::<Vec<_>>();
         for (turn, hidden_nested_review_turn) in turns.into_iter().zip(hidden_nested_review_turns) {
+            // Defer completed metadata-only turns until their page loads. Active
+            // turns must restore their lifecycle even before any items are available.
+            if turn.status == TurnStatus::Completed
+                && turn.items_view == codex_app_server_protocol::TurnItemsView::NotLoaded
+                && turn.items.is_empty()
+            {
+                continue;
+            }
             let Turn {
                 id: turn_id,
                 items_view: _,
@@ -75,6 +71,11 @@ impl ChatWidget {
                 })
             {
                 error = None;
+            }
+            if hidden_nested_review_turn {
+                self.turn_lifecycle
+                    .rendered_completion_turn_ids
+                    .insert(turn_id.clone());
             }
             if matches!(
                 status,

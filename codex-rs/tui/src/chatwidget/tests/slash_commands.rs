@@ -2437,11 +2437,13 @@ async fn slash_export_opens_destination_picker() {
     let cells = drain_insert_history(&mut rx);
     assert_chatwidget_snapshot!(
         "slash_export_completion_message",
-        cells
-            .iter()
-            .map(|cell| lines_to_single_string(cell).trim().to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
+        normalize_completion_timestamps(
+            cells
+                .iter()
+                .map(|cell| lines_to_single_string(cell).trim().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
     );
 }
 

@@ -463,7 +463,6 @@ impl ChatWidget {
             }
         }
 
-        self.transcript.needs_final_message_separator = false;
         (true, Some(op))
     }
 

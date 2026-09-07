@@ -105,7 +105,6 @@ impl ChatWidget {
         if !handled {
             self.add_to_history(history_cell::new_web_search_call(call_id, query, action));
         }
-        self.transcript.had_work_activity = true;
     }
 
     pub(super) fn on_collab_event(&mut self, cell: PlainHistoryCell) {
@@ -160,8 +159,6 @@ impl ChatWidget {
         if matches!(status, codex_app_server_protocol::PatchApplyStatus::Failed) {
             self.add_to_history(history_cell::new_patch_apply_failure(String::new()));
         }
-        // Mark that actual work was done (patch applied)
-        self.transcript.had_work_activity = true;
     }
 
     pub(crate) fn handle_mcp_tool_call_started_now(&mut self, item: ThreadItem) {
@@ -251,8 +248,6 @@ impl ChatWidget {
         if let Some(extra) = extra_cell {
             self.add_boxed_history(extra);
         }
-        // Mark that actual work was done (MCP tool call)
-        self.transcript.had_work_activity = true;
     }
 
     pub(crate) fn handle_queued_item_started_now(&mut self, item: ThreadItem) {

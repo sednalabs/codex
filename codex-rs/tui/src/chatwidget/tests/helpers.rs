@@ -1724,3 +1724,25 @@ pub(super) async fn assert_hook_events_snapshot(
         .collect::<String>();
     assert_chatwidget_snapshot!(snapshot_name, combined);
 }
+
+/// Normalize complete footer lines only, in snapshots that opt into clock normalization.
+pub(crate) fn normalize_completion_timestamps(value: impl std::fmt::Display) -> String {
+    static COMPLETION_FOOTER: std::sync::LazyLock<regex_lite::Regex> = std::sync::LazyLock::new(
+        || {
+            regex_lite::Regex::new(r"(?m)^(?P<indent>[ \t]*)(?P<duration>Worked for (?:[0-9]+h )?(?:[0-9]+m )?[0-9]+s · )?done (?:[A-Z][a-z]{2} [0-9]{1,2}(?:, [0-9]{4})? at )?[0-9]{1,2}:[0-9]{2} (?:AM|PM)(?P<padding>[ \t]*)$")
+                .expect("valid completion footer pattern")
+        },
+    );
+    COMPLETION_FOOTER
+        .replace_all(&value.to_string(), |captures: &regex_lite::Captures<'_>| {
+            let indent = &captures["indent"];
+            let padding = &captures["padding"];
+            let duration = if captures.name("duration").is_some() {
+                "Worked for [duration] · "
+            } else {
+                ""
+            };
+            format!("{indent}{duration}done [completion time]{padding}")
+        })
+        .into_owned()
+}
