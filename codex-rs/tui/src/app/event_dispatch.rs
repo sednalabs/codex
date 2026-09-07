@@ -126,7 +126,8 @@ impl App {
                 thread_id,
                 requested_cwd,
             } => {
-                if self.primary_thread_id != Some(thread_id)
+                if self.pending_working_directory_change.is_some()
+                    || self.primary_thread_id != Some(thread_id)
                     || !self.chat_widget.can_change_working_directory(thread_id)
                 {
                     self.chat_widget.add_error_message(
@@ -148,7 +149,12 @@ impl App {
                     );
                     match std::fs::metadata(cwd.as_path()) {
                         Ok(metadata) if metadata.is_dir() => {
-                            self.change_working_directory(tui, app_server, cwd).await;
+                            self.pending_working_directory_change =
+                                Some(working_directory::PendingWorkingDirectoryChange {
+                                    source_thread_id: thread_id,
+                                    source_cwd: self.config.cwd.clone(),
+                                    destination: cwd,
+                                });
                         }
                         Ok(_) => self
                             .chat_widget
@@ -278,7 +284,7 @@ impl App {
                 .await;
             }
             AppEvent::OpenResumePicker => {
-                return Box::pin(self.open_resume_picker(tui, app_server)).await;
+                self.pending_open_resume_picker = true;
             }
             AppEvent::OpenExternalAgentConfigMigration => {
                 match crate::external_agent_config_migration::flow::handle_external_agent_config_migration_prompt(

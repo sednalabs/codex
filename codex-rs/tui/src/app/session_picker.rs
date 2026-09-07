@@ -9,8 +9,8 @@ impl App {
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
     ) -> Result<AppRunControl> {
-        // This runs inside the active TUI event future. Starting a second embedded server
-        // inline can exhaust that thread's stack while initializing its auth manager.
+        // Keep embedded-server initialization on its own runtime task as well as opening the
+        // picker on a fresh event-loop iteration; its auth manager needs more stack headroom.
         let picker_config = self.config.clone();
         let picker_target = self.app_server_target.clone();
         let picker_state_db = self.state_db.clone();

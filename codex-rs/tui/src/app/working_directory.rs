@@ -25,7 +25,42 @@ pub(super) struct ManagedWorktreeAttach {
     name_error: Option<String>,
 }
 
+/// A /cd request awaiting a fresh event-loop iteration.
+pub(super) struct PendingWorkingDirectoryChange {
+    pub(super) source_thread_id: ThreadId,
+    pub(super) source_cwd: AbsolutePathBuf,
+    pub(super) destination: AbsolutePathBuf,
+}
+
 impl App {
+    pub(super) async fn finish_working_directory_change(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        pending: PendingWorkingDirectoryChange,
+    ) {
+        if self.primary_thread_id != Some(pending.source_thread_id)
+            || self.config.cwd != pending.source_cwd
+            || !self
+                .chat_widget
+                .can_change_working_directory(pending.source_thread_id)
+        {
+            return self.working_directory_error(
+                "Changing directories requires an idle primary session without queued input.",
+            );
+        }
+        if crate::uses_remote_workspace_or_environment(
+            &self.app_server_target,
+            self.environment_manager.as_ref(),
+        ) {
+            return self.working_directory_error(
+                "Changing directories is not supported for remote workspaces or remote execution environments.",
+            );
+        }
+        self.change_working_directory(tui, app_server, pending.destination)
+            .await;
+    }
+
     pub(super) fn working_directory_error(&mut self, message: impl Into<String>) {
         self.chat_widget.add_error_message(message.into());
     }

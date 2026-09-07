@@ -636,6 +636,10 @@ pub(crate) struct App {
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
     dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
     pending_startup_thread_start: bool,
+    /// Opens the session picker after event dispatch returns, with a fresh stack.
+    pending_open_resume_picker: bool,
+    /// Runs a requested /cd after event dispatch returns, with a fresh stack.
+    pending_working_directory_change: Option<working_directory::PendingWorkingDirectoryChange>,
     /// Starts worktree setup after the event handler returns, with a fresh stack.
     pending_start_managed_worktree: Option<(crate::app_event::ManagedWorktreeMode, Option<String>)>,
     pending_managed_worktree_creation: bool,

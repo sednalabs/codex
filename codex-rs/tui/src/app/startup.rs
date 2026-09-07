@@ -724,6 +724,8 @@ See the Codex keymap documentation for supported actions and examples."
             dynamic_tool_status_updates,
             dynamic_tool_tasks: HashMap::new(),
             pending_startup_thread_start,
+            pending_open_resume_picker: false,
+            pending_working_directory_change: None,
             pending_start_managed_worktree: None,
             pending_managed_worktree_creation: false,
             pending_managed_worktree_created: None,
@@ -921,6 +923,21 @@ See the Codex keymap documentation for supported actions and examples."
             Ok(exit_reason)
         } else {
             loop {
+                if app.pending_open_resume_picker {
+                    app.pending_open_resume_picker = false;
+                    match Box::pin(app.open_resume_picker(tui, &mut app_server)).await {
+                        Ok(AppRunControl::Continue) => {}
+                        Ok(AppRunControl::Exit(reason)) => break Ok(reason),
+                        Err(err) if app.recover_transport_error(&err) => {}
+                        Err(err) => break Err(err),
+                    }
+                    continue;
+                }
+                if let Some(pending) = app.pending_working_directory_change.take() {
+                    Box::pin(app.finish_working_directory_change(tui, &mut app_server, pending))
+                        .await;
+                    continue;
+                }
                 if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
                     Box::pin(app.start_managed_worktree(&mut app_server, mode, name)).await;
                     continue;
