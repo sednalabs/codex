@@ -960,7 +960,35 @@ impl ThreadManager {
     pub async fn spawn_internal_session(
         &self,
         parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        self.spawn_internal_session_with_history(parent_thread_id, options, InitialHistory::New)
+            .await
+    }
+
+    /// Starts an internal session from an explicitly selected, committed history.
+    ///
+    /// The caller selects the history; this never reads an in-flight parent turn or
+    /// appends an interruption marker. Authentication and budget still come from the parent.
+    pub async fn fork_internal_session(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+        history: Vec<RolloutItem>,
+    ) -> CodexResult<NewThread> {
+        self.spawn_internal_session_with_history(
+            parent_thread_id,
+            options,
+            InitialHistory::Forked(history),
+        )
+        .await
+    }
+
+    async fn spawn_internal_session_with_history(
+        &self,
+        parent_thread_id: ThreadId,
         mut options: StartThreadOptions,
+        history: InitialHistory,
     ) -> CodexResult<NewThread> {
         if !matches!(options.session_source, Some(SessionSource::Internal(_))) {
             return Err(CodexErr::InvalidRequest(
@@ -968,13 +996,15 @@ impl ThreadManager {
             ));
         }
         let parent = self.get_thread(parent_thread_id).await?;
-        options.initial_history = InitialHistory::New;
+        let forked_from_thread_id = history.forked_from_id();
+        options.initial_history = history;
         let mut request = ThreadSpawnRequest::new(
             options,
             Arc::clone(&parent.session.services.auth_manager),
             parent.session.services.agent_control.clone(),
         );
         request.parent_thread_id = Some(parent_thread_id);
+        request.forked_from_thread_id = forked_from_thread_id;
         Box::pin(self.state.spawn_thread(request)).await
     }
 
