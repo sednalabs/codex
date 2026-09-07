@@ -580,6 +580,7 @@ impl GuardianV2Extension {
                         planned_action: Some(&action_section),
                         previous_reviews: Some(&reviews),
                         trusted_tool: trusted_tool_context.as_ref(),
+                        trusted_skill_paths: &trusted_skill_paths,
                     })
                 });
             let transcript = match transcript {
@@ -611,8 +612,10 @@ impl GuardianV2Extension {
             let mut classification_input = Vec::new();
             let mut trusted_review_evidence = None;
             let mut trusted_tool_context = None;
+            let mut trusted_skills = None;
             for section in transcript.sections {
                 match section {
+                    ContextSection::TrustedSkills(skills) => trusted_skills = Some(skills),
                     ContextSection::TrustedTool(tool) => trusted_tool_context = Some(tool),
                     ContextSection::PreviousReviews(reviews) => {
                         trusted_review_evidence = Some(reviews)
@@ -668,7 +671,7 @@ impl GuardianV2Extension {
                         instructions,
                         trusted_review_evidence,
                         trusted_tool_context,
-                        trusted_skill_paths,
+                        trusted_skills,
                         input: classification_input,
                         images,
                         parent_compaction,

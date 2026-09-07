@@ -92,6 +92,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         permissions: None,
         previous_reviews: None,
         trusted_tool: None,
+        trusted_skill_paths: &[],
     });
     let async_sections = registry.collect(&SectionInput {
         target: ContextTarget::Async,
@@ -103,6 +104,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         permissions: None,
         previous_reviews: None,
         trusted_tool: None,
+        trusted_skill_paths: &[],
     });
 
     assert_eq!(
@@ -165,6 +167,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
                 permissions: None,
                 previous_reviews: None,
                 trusted_tool: None,
+                trusted_skill_paths: &[],
             }),
             Err(error.clone())
         );
@@ -228,6 +231,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                 permissions: Some(&permissions),
                 previous_reviews: Some(&reviews),
                 trusted_tool: Some(&tool),
+                trusted_skill_paths: &["debug-secret/SKILL.md".into()],
             })
             .unwrap();
         assert!(!format!("{context:?}").contains("debug-secret"));
@@ -260,6 +264,12 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
             ] });
         }
         if target == ContextTarget::Async {
+            expected.insert(
+                0,
+                ContextSection::TrustedSkills(super::TrustedSkills {
+                    paths: vec!["debug-secret/SKILL.md".into()],
+                }),
+            );
             expected.insert(0, ContextSection::TrustedTool(tool.clone()));
             expected.insert(0, ContextSection::PreviousReviews(reviews.clone()));
         }
@@ -277,6 +287,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                     permissions: None,
                     previous_reviews: None,
                     trusted_tool: None,
+                    trusted_skill_paths: &[],
                 })
                 .unwrap(),
             vec![ContextSection::ConversationTranscript { items: Vec::new() }]

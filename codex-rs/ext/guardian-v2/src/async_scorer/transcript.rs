@@ -64,6 +64,7 @@ pub(crate) struct ContextInput<'a> {
     pub(crate) planned_action: Option<&'a PlannedAction>,
     pub(crate) previous_reviews: Option<&'a PreviousReviews>,
     pub(crate) trusted_tool: Option<&'a TrustedTool>,
+    pub(crate) trusted_skill_paths: &'a [String],
 }
 
 pub(crate) struct RenderedContext {
@@ -192,6 +193,7 @@ impl TranscriptConfig {
             planned_action,
             previous_reviews,
             trusted_tool,
+            trusted_skill_paths,
         } = input;
         let history = SnapshotHistory(history);
         let retention = TranscriptRetentionConfig {
@@ -221,6 +223,7 @@ impl TranscriptConfig {
             permissions: None,
             previous_reviews,
             trusted_tool,
+            trusted_skill_paths,
         })?;
         let mut truncations = Vec::new();
         let sections = context
@@ -243,6 +246,7 @@ impl TranscriptConfig {
                 ContextSection::PermissionContext { items } => {
                     ContextSection::PermissionContext { items }
                 }
+                ContextSection::TrustedSkills(skills) => ContextSection::TrustedSkills(skills),
                 ContextSection::TrustedTool(tool) => ContextSection::TrustedTool(tool),
                 ContextSection::PreviousReviews(reviews) => {
                     ContextSection::PreviousReviews(reviews)

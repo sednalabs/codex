@@ -39,7 +39,7 @@ use thiserror::Error;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use super::trusted_skills::GuardianTrustedSkillsFragment;
+use codex_guardian_context::TrustedSkills;
 use codex_guardian_context::TrustedTool;
 
 pub(crate) const MODEL: &str = "gpt-5.6-luna";
@@ -90,7 +90,7 @@ pub struct LunaSamplingRequest {
     /// Host-attested metadata for the current home-owned MCP tool or connector.
     pub trusted_tool_context: Option<TrustedTool>,
     /// Host-verified paths of user-owned skills invoked during this turn.
-    pub trusted_skill_paths: Vec<String>,
+    pub trusted_skills: Option<TrustedSkills>,
     /// Ordered untrusted input entries that the model should classify.
     pub input: Vec<String>,
     /// Optional bounded screenshots accompanying the transcript.
@@ -293,12 +293,8 @@ impl LunaSampler {
         if let Some(fragment) = request.trusted_tool_context {
             input.push(ContextualUserFragment::into(fragment));
         }
-        if !request.trusted_skill_paths.is_empty() {
-            input.push(ContextualUserFragment::into(
-                GuardianTrustedSkillsFragment {
-                    paths: request.trusted_skill_paths,
-                },
-            ));
+        if let Some(skills) = request.trusted_skills {
+            input.push(ContextualUserFragment::into(skills));
         }
         input.push(ResponseItem::Message {
             id: None,

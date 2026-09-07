@@ -3,6 +3,7 @@
 use crate::ConversationTranscriptEntry;
 use crate::PlannedAction;
 use crate::PreviousReviews;
+use crate::TrustedSkills;
 use crate::TrustedTool;
 
 /// Ordered evidence with a stable section identity and source-specific content.
@@ -21,5 +22,6 @@ pub enum ContextSection<T = ConversationTranscriptEntry> {
     PlannedAction(PlannedAction),
     PreviousReviews(PreviousReviews),
     TrustedTool(TrustedTool),
+    TrustedSkills(TrustedSkills),
     PermissionContext { items: Vec<String> },
 }

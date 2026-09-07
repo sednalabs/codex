@@ -51,7 +51,9 @@ mod authorization;
 mod entry;
 mod history;
 mod permissions;
+mod trusted_skills;
 mod trusted_tool;
+pub use trusted_skills::TrustedSkills;
 pub use trusted_tool::TrustedTool;
 mod reviews;
 pub use reviews::MAX_PREVIOUS_REVIEWS;
@@ -118,6 +120,8 @@ pub struct SectionInput<'a> {
     pub previous_reviews: Option<&'a PreviousReviews>,
     /// Metadata verified by the host for the exact action being classified.
     pub trusted_tool: Option<&'a TrustedTool>,
+    /// Current-turn and delegated skill paths verified and bounded by the host.
+    pub trusted_skill_paths: &'a [String],
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -207,6 +211,7 @@ pub fn default_registry() -> &'static SectionRegistry {
         let mut registry = SectionRegistry::default();
         registry.register(reviews::PreviousReviewsSection);
         registry.register(trusted_tool::TrustedToolSection);
+        registry.register(trusted_skills::TrustedSkillsSection);
         registry.register(RootConversationSection);
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);

@@ -222,7 +222,7 @@ pub(super) fn sample_request(parent_turn_id: &str) -> LunaSamplingRequest {
         instructions: "Return high for high risk or low for low risk.".to_owned(),
         trusted_review_evidence: None,
         trusted_tool_context: None,
-        trusted_skill_paths: Vec::new(),
+        trusted_skills: None,
         input: vec!["The user requested a README summary.".to_owned()],
         images: Vec::new(),
         parent_compaction: None,
@@ -480,7 +480,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: None,
             trusted_tool_context: None,
-            trusted_skill_paths: Vec::new(),
+            trusted_skills: None,
             input: vec![
                 "The user requested a README summary.".to_owned(),
                 "The assistant inspected README.md.".to_owned(),
@@ -515,7 +515,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: None,
             trusted_tool_context: None,
-            trusted_skill_paths: Vec::new(),
+            trusted_skills: None,
             input: vec!["The user requested a source review.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,
@@ -693,7 +693,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
             instructions: "Return high for high risk or low for low risk.".to_owned(),
             trusted_review_evidence: None,
             trusted_tool_context: None,
-            trusted_skill_paths: Vec::new(),
+            trusted_skills: None,
             input: vec!["The user requested a README summary.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,
@@ -898,7 +898,9 @@ async fn sampler_retries_expired_websockets_on_another_warm_connection() -> Resu
     request.trusted_review_evidence = Some(PreviousReviews::try_from_fragments(vec![
         "trusted review".to_owned(),
     ])?);
-    request.trusted_skill_paths = vec!["/skills/review/SKILL.md".to_owned()];
+    request.trusted_skills = Some(codex_guardian_context::TrustedSkills {
+        paths: vec!["/skills/review/SKILL.md".to_owned()],
+    });
     request.root_turn_id = Some("root-turn".to_owned());
     let output = sampler.sample(request).await?;
 
