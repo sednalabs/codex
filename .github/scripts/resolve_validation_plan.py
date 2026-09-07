@@ -40,6 +40,13 @@ DEFAULT_FOLLOWUP_ROUTE_PRIORITY = 0
 LAB_MATRIX_JOB_LIMIT = 256
 VALID_LAB_FANOUT_TIERS = {"balanced", "enterprise", "soak"}
 SAFE_NEXTEST_ARCHIVE_FIELD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+DEFAULT_TARGETED_PARALLEL_LIMITS = {
+    "workflow": 8,
+    "node": 4,
+    "rust_minimal": 6,
+    "rust_integration": 4,
+    "release": 1,
+}
 RECOMMENDATION_DOMAIN_ORDER = [
     "workflow",
     "docs",
@@ -1136,13 +1143,7 @@ def setup_parallel_limits(
             "rust_integration": 5,
             "release": 1,
         }
-    return {
-        "workflow": 8,
-        "node": 4,
-        "rust_minimal": 6,
-        "rust_integration": 2,
-        "release": 1,
-    }
+    return DEFAULT_TARGETED_PARALLEL_LIMITS
 
 
 def determine_lab_matrix_policy(
