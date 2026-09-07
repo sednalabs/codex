@@ -138,6 +138,7 @@ impl TranscriptConfig {
             trusted_tool,
             trusted_skill_paths,
             images,
+            node_repl: None,
         })?;
         let mut truncations = Vec::new();
         let sections = context
@@ -159,6 +160,9 @@ impl TranscriptConfig {
                 }
                 ContextSection::PermissionContext { items } => {
                     ContextSection::PermissionContext { items }
+                }
+                ContextSection::NodeReplEvidence(evidence) => {
+                    ContextSection::NodeReplEvidence(evidence)
                 }
                 ContextSection::TranscriptImages(images) => {
                     ContextSection::TranscriptImages(images)

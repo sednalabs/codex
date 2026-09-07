@@ -3,6 +3,7 @@
 use crate::ConversationTranscriptEntry;
 use crate::PlannedAction;
 use crate::PreviousReviews;
+use crate::RenderedNodeReplEvidence;
 use crate::TranscriptImages;
 use crate::TrustedSkills;
 use crate::TrustedTool;
@@ -25,5 +26,6 @@ pub enum ContextSection<T = ConversationTranscriptEntry> {
     TrustedTool(TrustedTool),
     TrustedSkills(TrustedSkills),
     TranscriptImages(TranscriptImages),
+    NodeReplEvidence(RenderedNodeReplEvidence),
     PermissionContext { items: Vec<String> },
 }

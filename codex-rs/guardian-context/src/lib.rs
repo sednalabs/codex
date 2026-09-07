@@ -51,6 +51,11 @@ mod authorization;
 mod entry;
 mod history;
 mod images;
+mod node_repl;
+pub use node_repl::NodeReplContext;
+pub use node_repl::NodeReplResponse;
+pub use node_repl::NodeReplReviewEvidenceMode;
+pub use node_repl::RenderedNodeReplEvidence;
 mod permissions;
 pub use images::TranscriptImageInput;
 pub use images::TranscriptImages;
@@ -127,6 +132,8 @@ pub struct SectionInput<'a> {
     pub trusted_skill_paths: &'a [String],
     /// Optional consumer image policy; no history images are added implicitly.
     pub images: Option<TranscriptImageInput<'a>>,
+    /// Sync-only frozen REPL snapshot selected by the host's delivery cursor.
+    pub node_repl: Option<&'a NodeReplContext<'a>>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -222,6 +229,7 @@ pub fn default_registry() -> &'static SectionRegistry {
         registry.register(TrustedUserAnswersSection);
         registry.register(ConversationTranscriptSection);
         registry.register(images::TranscriptImagesSection);
+        registry.register(node_repl::NodeReplEvidenceSection);
         registry.register(permissions::PermissionContextSection);
         registry.register(action::PlannedActionSection);
         registry

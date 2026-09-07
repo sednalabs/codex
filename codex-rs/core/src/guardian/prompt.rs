@@ -152,6 +152,23 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         }),
     };
     let permissions = parent_context.map(parent_turn_permissions);
+    let node_repl_snapshot = if node_repl_transcripts_enabled {
+        session
+            .services
+            .thread_extension_data
+            .get::<NodeReplReviewEvidence>()
+            .and_then(|evidence| evidence.snapshot_since(reviewed_node_repl_evidence_sequence))
+    } else {
+        None
+    };
+    let node_repl_context = node_repl_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.context(evidence_mode));
+    let node_repl_evidence_sequence = node_repl_snapshot
+        .as_ref()
+        .map_or(reviewed_node_repl_evidence_sequence, |snapshot| {
+            snapshot.sequence
+        });
     let sections = collect_guardian_context(
         &GuardianReviewHistory(history),
         node_repl_result_token_limit,
@@ -159,6 +176,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         &trusted_user_inputs,
         Some(&planned_action),
         permissions.as_ref(),
+        node_repl_context.as_ref(),
     )?;
     let transcript_entries = sections
         .iter()
@@ -240,6 +258,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     let mut action_items = Vec::new();
     let mut permission_items = Vec::new();
     let mut image_items = Vec::new();
+    let mut node_repl_items = Vec::new();
     for section in sections {
         match section {
             ContextSection::RootConversation { items }
@@ -254,6 +273,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             | ContextSection::TrustedSkills(_) => {
                 unreachable!("trusted review and tool sections are async-only")
             }
+            ContextSection::NodeReplEvidence(evidence) => node_repl_items = evidence.items,
             ContextSection::TranscriptImages(images) => {
                 image_items.extend(images.images.into_iter().filter_map(|image| match image {
                     codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
@@ -286,17 +306,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         push_text(text);
     }
     items.extend(image_items);
-    let mut node_repl_evidence_sequence = reviewed_node_repl_evidence_sequence;
-    if node_repl_transcripts_enabled
-        && let Some(fragment) = session
-            .services
-            .thread_extension_data
-            .get::<NodeReplReviewEvidence>()
-            .and_then(|evidence| evidence.snapshot_since(reviewed_node_repl_evidence_sequence))
-    {
-        node_repl_evidence_sequence = fragment.sequence;
-        items.extend(fragment.into_inputs(evidence_mode));
-    }
+    items.extend(node_repl_items);
     items.extend(action_items.into_iter().map(|text| UserInput::Text {
         text,
         text_elements: Vec::new(),
@@ -478,6 +488,7 @@ pub(super) fn collect_guardian_context(
     trusted_user_answers: &[String],
     planned_action: Option<&PlannedAction>,
     permissions: Option<&PermissionContext>,
+    node_repl: Option<&codex_guardian_context::NodeReplContext<'_>>,
 ) -> Result<Vec<ContextSection>, SectionError> {
     let transcript = ConversationTranscriptConfig {
         options: ConversationTranscriptOptions::default(),
@@ -499,6 +510,7 @@ pub(super) fn collect_guardian_context(
         trusted_tool: None,
         trusted_skill_paths: &[],
         images: None,
+        node_repl,
     })
 }
 

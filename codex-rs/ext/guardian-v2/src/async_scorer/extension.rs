@@ -618,6 +618,9 @@ impl GuardianV2Extension {
             let mut rendered_images = TranscriptImages::default();
             for section in transcript.sections {
                 match section {
+                    ContextSection::NodeReplEvidence(_) => {
+                        unreachable!("REPL response sections are sync-only")
+                    }
                     ContextSection::TranscriptImages(images) => rendered_images = images,
                     ContextSection::TrustedSkills(skills) => trusted_skills = Some(skills),
                     ContextSection::TrustedTool(tool) => trusted_tool_context = Some(tool),
