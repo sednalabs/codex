@@ -779,6 +779,7 @@ impl App {
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
         self.pending_startup_thread_start = false;
+        self.pending_server_version_notice = None;
         self.chat_widget.set_pending_thread_approvals(Vec::new());
         self.sync_active_agent_label();
     }
@@ -860,6 +861,9 @@ impl App {
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.apply_backend_banner_fallback(app_server).await;
+                if let Some(notice) = self.pending_server_version_notice.take() {
+                    self.chat_widget.add_server_version_warning(notice);
+                }
                 if !recovery_was_pending {
                     self.chat_widget.finish_rate_limit_recovery();
                 }

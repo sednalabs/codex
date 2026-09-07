@@ -1562,6 +1562,14 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn add_server_version_warning(
+        &mut self,
+        notice: crate::status::remote_connection::ServerVersionNotice,
+    ) {
+        self.add_to_history(history_cell::new_server_version_warning(notice));
+        self.request_redraw();
+    }
+
     pub(crate) fn add_error_message(&mut self, message: String) {
         self.add_to_history(history_cell::new_error_event(message));
         self.request_redraw();

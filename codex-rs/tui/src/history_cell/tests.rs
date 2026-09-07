@@ -19,6 +19,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::parse_command::ParsedCommand;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use dirs::home_dir;
 use http::StatusCode;
 use pretty_assertions::assert_eq;
@@ -34,6 +35,51 @@ use codex_protocol::mcp::Tool;
 use rmcp::model::ContentBlock;
 
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+
+#[test]
+fn connected_server_version_notice_snapshot() {
+    let target = crate::AppServerTarget::Remote {
+        endpoint: crate::RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::from_absolute_path(
+                std::env::temp_dir().join("codex.sock"),
+            )
+            .expect("absolute socket path"),
+        },
+    };
+    let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
+        &target,
+        /*server_home*/ None,
+        "0.153.0",
+        Some("0.152.1"),
+        /*last_shown*/ None,
+    )
+    .expect("older remote service should have a notice");
+    let cell = new_server_version_warning(notice);
+    insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 100)).join("\n"));
+}
+
+#[test]
+fn local_daemon_version_notice_snapshot() {
+    let target = crate::AppServerTarget::LocalDaemon {
+        endpoint: crate::RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::from_absolute_path(
+                std::env::temp_dir().join("codex.sock"),
+            )
+            .expect("absolute socket path"),
+        },
+    };
+    let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
+        &target,
+        /*server_home*/ None,
+        "0.153.0",
+        Some("0.152.1"),
+        /*last_shown*/ None,
+    )
+    .expect("older local service should have a notice");
+    let cell = new_server_version_warning(notice);
+    insta::assert_snapshot!(render_lines(&cell.display_lines(/*width*/ 100)).join("\n"));
+}
+
 async fn test_config() -> Config {
     let codex_home = std::env::temp_dir();
     ConfigBuilder::default()

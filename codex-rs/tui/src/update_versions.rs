@@ -1,3 +1,4 @@
+#[cfg(any(not(debug_assertions), test))]
 pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
     match (parse_version(latest), parse_version(current)) {
         (Some(l), Some(c)) => Some(l > c),
@@ -5,6 +6,7 @@ pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
+#[cfg(any(not(debug_assertions), test))]
 pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
     latest_tag_name
         .strip_prefix("rust-v")
@@ -12,6 +14,7 @@ pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::
         .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
 }
 
+#[cfg(any(not(debug_assertions), test))]
 pub(crate) fn is_source_build_version(version: &str) -> bool {
     parse_version(version) == Some((0, 0, 0))
 }
@@ -42,6 +45,7 @@ pub(crate) fn is_official_server_older(client: &str, server: &str) -> bool {
     matches!((stable_version(client), stable_version(server)), (Some(client), Some(server)) if client > server)
 }
 
+#[cfg(any(not(debug_assertions), test))]
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut iter = v.trim().split('.');
     let maj = iter.next()?.parse::<u64>().ok()?;

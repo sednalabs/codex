@@ -1051,6 +1051,43 @@ async fn startup_thread_started_submits_queued_startup_input() {
 }
 
 #[tokio::test]
+async fn fresh_startup_notice_follows_session_attachment() {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    app.pending_startup_thread_start = true;
+    app.pending_server_version_notice =
+        Some(crate::status::remote_connection::ServerVersionNotice {
+            message: "Older server notice".to_string(),
+            offer_update: false,
+        });
+    assert!(events.try_recv().is_err());
+
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    app.handle_startup_thread_started(
+        &mut app_server,
+        Ok(AppServerStartedThread {
+            session: test_thread_session(ThreadId::new(), test_path_buf("/tmp/project")),
+            turns: Vec::new(),
+            blocks_direct_input: false,
+            task_tools_available: false,
+        }),
+    )
+    .await
+    .expect("startup thread should attach");
+
+    let cells = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(cells.len() > 1, "session history should precede the notice");
+    insta::assert_snapshot!(lines_to_single_string(&cells.last().unwrap().display_lines(/*width*/ 80)), @"⚠ Older server notice");
+    assert_eq!(app.pending_server_version_notice, None);
+}
+
+#[tokio::test]
 async fn startup_thread_started_discards_another_threads_buffered_events() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.pending_startup_thread_start = true;
