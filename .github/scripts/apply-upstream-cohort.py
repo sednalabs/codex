@@ -32,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "b74867d91486e04da06d365e6fa81140708e1ff0"
+PUSH_PREDECESSOR_SHA = "b77c115d523761426a1464f031714d6b189661d0"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -83,6 +83,8 @@ BUILD_SOURCE_SHA = "5de836bbd93d4d62f01d7860d8bfed5d635b533c"
 BUILD_SOURCE_TREE = "954e3e5ab099d247a1b641d74d6df19154a4be9a"
 BUILD_SOURCE_PARENT = "b8c1a1a176d30bec1c9265cae3d36c66a5dd3841"
 BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
+VOICE_HOST_DEFERRAL_BASELINE_SHA = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
+VOICE_HOST_DEFERRAL_BASELINE_ROOT_ENTRY = ("100644", "blob", "7bd8c144e52b169b907928bcf743363949d12cb2")
 BUILD_PATHS_SHA256 = "52ef6b8ac2325fc482bf2e20fe09b1032ad671338d76272e2b9faa63085ce137"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     ".github/workflows/bazel.yml": (
@@ -1475,7 +1477,7 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     mismatches.extend(graph["mismatches"])
     prior_root = toml_blob(
         worktree,
-        f"{BUILD_SOURCE_PARENT}:{ROOT_MANIFEST_PATH}",
+        f"{VOICE_HOST_DEFERRAL_BASELINE_SHA}:{ROOT_MANIFEST_PATH}",
         "accepted root manifest preimage",
     )
     prior_workspace = prior_root.get("workspace", {})
@@ -2055,6 +2057,12 @@ def verify_build_source_checkout(repo: pathlib.Path) -> None:
     require(run("git", "rev-parse", "HEAD", cwd=repo).strip() == BUILD_SOURCE_SHA, "build source head mismatch")
     require(run("git", "rev-parse", "HEAD^{tree}", cwd=repo).strip() == BUILD_SOURCE_TREE, "build source tree mismatch")
     require(run("git", "show", "-s", "--format=%P", BUILD_SOURCE_SHA, cwd=repo).split() == [BUILD_SOURCE_PARENT], "build source parent mismatch")
+    run("git", "merge-base", "--is-ancestor", VOICE_HOST_DEFERRAL_BASELINE_SHA, BUILD_SOURCE_SHA, cwd=repo)
+    require(
+        tree_entry(repo, VOICE_HOST_DEFERRAL_BASELINE_SHA, ROOT_MANIFEST_PATH)
+        == VOICE_HOST_DEFERRAL_BASELINE_ROOT_ENTRY,
+        "voice-host deferral baseline root manifest tuple mismatch",
+    )
     require(not run("git", "status", "--porcelain", cwd=repo), "build source checkout is dirty")
     changed = run(
         "git",
