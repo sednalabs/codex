@@ -451,7 +451,7 @@ ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS)
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
 ROOT_LOCK_PATH = "codex-rs/Cargo.lock"
-ROOT_CLOSURE_SHA256 = "c175dbb7c791383ba65e9df939b7c8e034021dea2c95b5aa9340d4f5b619e7ff"
+ROOT_CLOSURE_SHA256 = "6ef78a0e75c813f6b6d7a2d2f3305b8a93db5131d63404909991e719ece208ac"
 REQUIRED_ROOT_MEMBERS = {
     "agent-roles",
     "app-server-protocol-noop-macros",
@@ -476,6 +476,7 @@ REQUIRED_ROOT_MEMBERS = {
     "workload-identity",
     "worktree",
 }
+DEFERRED_ROOT_MEMBERS = {"voice-host"}
 REQUIRED_WORKSPACE_DEPENDENCIES: dict[str, Any] = {
     "appcontainer_common": {
         "git": "https://github.com/microsoft/mxc",
@@ -1460,8 +1461,19 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
     prior_members = prior_workspace.get("members", [])
     prior_dependencies = prior_workspace.get("dependencies", {})
 
-    for member in sorted(set(prior_members) - set(members)):
-        mismatches.append({"kind": "prior-member-removed", "member": member})
+    removed_root_members = sorted(set(prior_members) - set(members))
+    deferred_root_members = sorted(DEFERRED_ROOT_MEMBERS)
+    for member in removed_root_members:
+        if member not in DEFERRED_ROOT_MEMBERS:
+            mismatches.append({"kind": "prior-member-removed", "member": member})
+    for member in deferred_root_members:
+        if member not in removed_root_members:
+            mismatches.append({"kind": "deferred-member-not-removed", "member": member})
+        manifest_path = f"codex-rs/{member}/Cargo.toml"
+        if manifest_path not in composed:
+            mismatches.append(
+                {"kind": "deferred-member-manifest-missing", "member": member, "path": manifest_path}
+            )
     for name in sorted(prior_dependencies):
         if workspace_dependencies.get(name) != prior_dependencies[name]:
             mismatches.append(
@@ -1522,6 +1534,7 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
         )
 
     closure_lines = [f"member\t{name}" for name in sorted(REQUIRED_ROOT_MEMBERS)]
+    closure_lines.extend(f"deferred-member\t{name}" for name in deferred_root_members)
     closure_lines.extend(
         f"dependency\t{name}\t{json.dumps(value, sort_keys=True, separators=(',', ':'))}"
         for name, value in sorted(REQUIRED_WORKSPACE_DEPENDENCIES.items())
@@ -1553,6 +1566,8 @@ def validate_composed_manifests(worktree: pathlib.Path, diagnostics: pathlib.Pat
         "composed_manifest_inventory": composed_inventory,
         "root_closure_sha256": closure_sha256,
         "required_root_member_count": len(REQUIRED_ROOT_MEMBERS),
+        "deferred_root_members": deferred_root_members,
+        "removed_root_members": removed_root_members,
         "required_workspace_dependency_count": len(REQUIRED_WORKSPACE_DEPENDENCIES),
         "deferred_workspace_dependencies": sorted(DEFERRED_WORKSPACE_DEPENDENCIES),
         "inherited_workspace_dependency_count": len(inherited_dependencies),
