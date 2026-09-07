@@ -102,6 +102,8 @@ mod thread_archive;
 mod thread_delete;
 mod thread_environments;
 mod thread_fork;
+#[path = "thread_fork_multi_agent_tests.rs"]
+mod thread_fork_multi_agent;
 mod thread_inject_items;
 mod thread_list;
 mod thread_loaded_list;
