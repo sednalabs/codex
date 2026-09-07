@@ -500,7 +500,7 @@ impl GuardianReviewSessionManager {
                 parent_context
                     .turn()
                     .model_info()
-                    .node_repl_auto_review_required,
+                    .computer_use_review_required(),
             )
             .with_node_repl_policy(&session_config.node_repl_policy);
             reuse_key.root_authorization_version = root_authorization_version;
@@ -613,7 +613,7 @@ impl GuardianReviewSessionManager {
                 .parent_context
                 .turn()
                 .model_info()
-                .node_repl_auto_review_required,
+                .computer_use_review_required(),
         )
         .with_node_repl_policy(&params.node_repl_policy);
         next_reuse_key.root_authorization_version = root_authorization_version;
@@ -1424,7 +1424,7 @@ async fn ensure_guardian_node_repl_policy(
         .parent_context
         .turn()
         .model_info()
-        .node_repl_auto_review_required
+        .computer_use_review_required()
         || !matches!(
             &params.request,
             GuardianApprovalRequest::McpToolCall { server, tool_name, .. }

@@ -17,9 +17,9 @@ use crate::session::session::Session;
 /// This lets the extension return AskUser before invoking that renderer.
 #[derive(Clone)]
 pub(crate) struct ReviewAction {
-    pub(super) action: Result<serde_json::Value, String>,
-    pub(super) category: codex_protocol::openai_models::GuardianScope,
-    pub(super) request: Result<GuardianApprovalRequest, String>,
+    pub(crate) action: Result<serde_json::Value, String>,
+    pub(crate) category: codex_protocol::openai_models::GuardianScope,
+    pub(crate) request: Result<GuardianApprovalRequest, String>,
 }
 
 impl From<GuardianApprovalRequest> for ReviewAction {

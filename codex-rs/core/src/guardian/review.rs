@@ -5,9 +5,12 @@ use codex_analytics::GuardianReviewFailureReason;
 use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewTrackContext;
 use codex_analytics::GuardianReviewedAction;
+#[cfg(test)]
 use codex_analytics::GuardianV2Event;
+#[cfg(test)]
 use codex_analytics::GuardianV2EventKind;
 use codex_core_plugins::PluginCommandAttribution;
+#[cfg(test)]
 use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
@@ -53,6 +56,7 @@ use super::GuardianAssessmentOutcome;
 use super::GuardianRejectionCircuitBreakerAction;
 use super::GuardianRejectionCircuitBreakerPolicy;
 use super::GuardianReviewContext;
+#[cfg(test)]
 use super::approval_request::format_guardian_action_compact;
 use super::approval_request::format_guardian_action_pretty;
 use super::approval_request::guardian_assessment_action;
@@ -340,6 +344,7 @@ pub(crate) async fn record_guardian_denial_for_test(
 /// Runs Guardian unless Full Access or an installed extension resolves the review.
 /// Guardian timeouts, review-session failures, and parse failures all block
 /// execution, with timeouts surfaced separately from explicit denials.
+#[cfg(test)]
 async fn run_guardian_review(
     session: Arc<Session>,
     context: GuardianReviewContext,
@@ -927,6 +932,7 @@ pub(crate) async fn review_approval_request(
     review.await
 }
 
+#[cfg(test)]
 pub(crate) async fn review_approval_request_with_cancel(
     session: &Arc<Session>,
     context: impl Into<GuardianReviewContext>,
@@ -1038,7 +1044,7 @@ pub(super) async fn guardian_review_session_config(
         guardian_reasoning_effort.clone(),
         guardian_model_info.model_messages.as_ref(),
     )?;
-    if turn.model_info().node_repl_auto_review_required {
+    if turn.model_info().computer_use_review_required() {
         spawn_config
             .features
             .enable(Feature::RetainClientDeveloperMessages)

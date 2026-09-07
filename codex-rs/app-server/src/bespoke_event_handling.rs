@@ -97,7 +97,6 @@ use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_features::Feature;
-use codex_guardian_v2::StrictReviewReason;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::TurnItem as CoreTurnItem;
@@ -355,21 +354,16 @@ pub(crate) async fn apply_bespoke_event_handling(
             );
             outgoing.send_server_notification(notification).await;
             if assessment.status == codex_protocol::protocol::GuardianAssessmentStatus::InProgress
-                && match assessment.review_reason {
-                    Some(reason) => matches!(
-                        reason,
+                && matches!(
+                    assessment.review_reason,
+                    Some(
                         codex_protocol::approvals::GuardianReviewReason::ElevatedRisk
                             | codex_protocol::approvals::GuardianReviewReason::StaleScore
                             | codex_protocol::approvals::GuardianReviewReason::IncompatibleCompaction
                             | codex_protocol::approvals::GuardianReviewReason::ScoringFailure
                             | codex_protocol::approvals::GuardianReviewReason::AuthorizationChanged
-                    ),
-                    // MCP elicitations migrate to per-approval reasons next.
-                    None => conversation
-                        .thread_extension_data()
-                        .remove::<StrictReviewReason>()
-                        .is_some(),
-                }
+                    )
+                )
             {
                 outgoing
                     .send_server_notification(ServerNotification::StrictReviewRequired(

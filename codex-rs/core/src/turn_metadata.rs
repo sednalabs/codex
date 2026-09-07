@@ -218,7 +218,7 @@ impl TurnMetadataState {
             turn_id,
             sandbox_tags,
             auto_review_enabled,
-            node_repl_auto_review_required: model_info.node_repl_auto_review_required,
+            node_repl_auto_review_required: model_info.computer_use_review_required(),
             node_repl_disabled: model_info.node_repl_disabled,
             enriched_workspaces: RwLock::new(None),
             tool_namespaces_info: RwLock::new(None),
