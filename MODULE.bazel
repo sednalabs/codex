@@ -200,6 +200,8 @@ rules_rust.patch(
         # Skip transient native-Windows linker outputs while consolidating
         # dependency search paths.
         "//patches:rules_rust_windows_process_wrapper_skip_temp_outputs.patch",
+        # Group build-script argument files to avoid Windows command-line limits.
+        "//patches:rules_rust_group_build_script_arg_files.patch",
     ],
     strip = 1,
 )
