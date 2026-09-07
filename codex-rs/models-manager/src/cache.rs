@@ -229,5 +229,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing both"));
+
+        let mut whitespace = json!({
+            "fetched_at": "2026-09-07T00:00:00Z",
+            "models": [{
+                "slug": "astra",
+                "display_name": "Astra",
+                "description": null,
+                "supported_reasoning_levels": [],
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": true,
+                "priority": 1,
+                "availability_nux": null,
+                "upgrade": null,
+                "model_messages": {
+                    "instructions_template": " \n\t",
+                    "instructions_variables": null
+                },
+                "support_verbosity": false,
+                "default_verbosity": null,
+                "apply_patch_tool_type": null,
+                "truncation_policy": {"mode": "bytes", "limit": 10000},
+                "supports_parallel_tool_calls": false,
+                "experimental_supported_tools": []
+            }]
+        });
+        let error = serde_json::from_value::<ModelsCache>(whitespace.take())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing both"));
     }
 }
