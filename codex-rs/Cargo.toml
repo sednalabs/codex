@@ -107,7 +107,6 @@ members = [
     "tui",
     "tools",
     "v8-poc",
-    "voice-host",
     "websocket-client",
     "windows-sandbox-service",
     "workload-identity",
