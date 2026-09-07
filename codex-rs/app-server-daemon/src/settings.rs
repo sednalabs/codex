@@ -11,12 +11,15 @@ use serde_json::Value;
 use tokio::fs;
 
 pub(crate) const DEFAULT_UPDATE_INTERVAL_MINUTES: u32 = 60;
+pub(crate) const DEFAULT_SHUTDOWN_GRACE_SECONDS: u32 = 60;
+pub(crate) const MAX_SHUTDOWN_GRACE_SECONDS: u32 = 5 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DaemonSettings {
     pub(crate) remote_control_enabled: bool,
     pub(crate) auto_update_enabled: bool,
     pub(crate) update_interval_minutes: u32,
+    pub(crate) shutdown_grace_seconds: u32,
 }
 
 impl Default for DaemonSettings {
@@ -25,17 +28,36 @@ impl Default for DaemonSettings {
             remote_control_enabled: false,
             auto_update_enabled: true,
             update_interval_minutes: DEFAULT_UPDATE_INTERVAL_MINUTES,
+            shutdown_grace_seconds: DEFAULT_SHUTDOWN_GRACE_SECONDS,
         }
     }
 }
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct StopSettings {
+    shutdown_grace_seconds: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StoredSettings {
     #[serde(default)]
     remote_control_enabled: bool,
+    #[serde(default = "default_shutdown_grace_seconds")]
+    shutdown_grace_seconds: u32,
     #[serde(default)]
     updater: UpdaterSettings,
+}
+
+impl Default for StoredSettings {
+    fn default() -> Self {
+        Self {
+            remote_control_enabled: false,
+            shutdown_grace_seconds: DEFAULT_SHUTDOWN_GRACE_SECONDS,
+            updater: UpdaterSettings::default(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,9 +86,22 @@ fn default_update_interval_minutes() -> u32 {
     DEFAULT_UPDATE_INTERVAL_MINUTES
 }
 
+fn default_shutdown_grace_seconds() -> u32 {
+    DEFAULT_SHUTDOWN_GRACE_SECONDS
+}
+
+fn validate_shutdown_grace(seconds: u32) -> Result<()> {
+    ensure!(
+        seconds <= MAX_SHUTDOWN_GRACE_SECONDS,
+        "shutdown grace must be between 0 and {MAX_SHUTDOWN_GRACE_SECONDS} seconds"
+    );
+    Ok(())
+}
+
 impl UpdaterSettings {
     pub(crate) async fn load(settings_file: &Path) -> Result<Self> {
         let settings: StoredSettings = read_settings(settings_file).await?;
+        validate_shutdown_grace(settings.shutdown_grace_seconds)?;
         let settings = settings.updater;
         settings.validate()?;
         Ok(settings)
@@ -89,11 +124,27 @@ impl DaemonSettings {
     pub(crate) async fn load(path: &Path) -> Result<Self> {
         let settings: StoredSettings = read_settings(path).await?;
         settings.updater.validate()?;
+        validate_shutdown_grace(settings.shutdown_grace_seconds)?;
         Ok(Self {
             remote_control_enabled: settings.remote_control_enabled,
             auto_update_enabled: settings.updater.auto_update_enabled,
             update_interval_minutes: settings.updater.update_interval_minutes,
+            shutdown_grace_seconds: settings.shutdown_grace_seconds,
         })
+    }
+
+    pub(crate) async fn load_for_stop(path: &Path) -> Self {
+        // Stop must work even when settings are unreadable or partially edited.
+        let shutdown_grace_seconds = read_settings::<StopSettings>(path)
+            .await
+            .ok()
+            .and_then(|settings| settings.shutdown_grace_seconds)
+            .filter(|&seconds| seconds <= MAX_SHUTDOWN_GRACE_SECONDS)
+            .unwrap_or(DEFAULT_SHUTDOWN_GRACE_SECONDS);
+        Self {
+            shutdown_grace_seconds,
+            ..Self::default()
+        }
     }
 
     pub(crate) async fn save(&self, path: &Path) -> Result<()> {

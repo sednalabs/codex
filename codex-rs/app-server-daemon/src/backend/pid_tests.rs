@@ -1,10 +1,10 @@
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::process::Stdio;
 use std::time::Duration;
 
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::time::sleep;
 
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
@@ -285,6 +285,107 @@ async fn stop_reaps_untracked_app_server_child() {
     // `sleep` is not tracked by Tokio, so stop must reap it instead of leaving a zombie.
     result.expect("stop timed out").expect("stop");
     assert!(!pid_file.exists());
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn shutdown_grace_child() {
+    let Some(ready) = std::env::var_os("CODEX_TEST_SHUTDOWN_GRACE_READY") else {
+        return;
+    };
+    let ready = std::path::PathBuf::from(ready);
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install shutdown handler");
+    tokio::fs::write(&ready, "").await.expect("ready marker");
+    let _ = tokio::time::timeout(Duration::from_secs(8), async {
+        #[cfg(unix)]
+        terminate.recv().await;
+        #[cfg(windows)]
+        loop {
+            if ready.with_extension("shutdown").exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        if std::env::var_os("CODEX_TEST_SHUTDOWN_GRACE_EXIT").is_some() {
+            sleep(Duration::from_millis(150)).await;
+            tokio::fs::write(ready.with_extension("exited"), "")
+                .await
+                .expect("graceful exit marker");
+            return;
+        }
+        std::future::pending::<()>().await;
+    })
+    .await;
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn shutdown_grace_handles_process_exit() {
+    let temp = TempDir::new().expect("temp dir");
+    for (name, grace_seconds, exits) in [
+        ("zero", 0, false),
+        ("finite_exit", 1, true),
+        ("finite_force", 1, false),
+    ] {
+        let ready = temp.path().join(format!("{name}.ready"));
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "backend::pid::tests::shutdown_grace_child"])
+            .env("CODEX_TEST_SHUTDOWN_GRACE_READY", &ready)
+            .envs(exits.then_some(("CODEX_TEST_SHUTDOWN_GRACE_EXIT", "1")))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn daemon shim");
+        let pid = child.id();
+        let wait_until = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !ready.exists() {
+            assert!(
+                tokio::time::Instant::now() < wait_until,
+                "shim did not start"
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+        let pid_file = temp.path().join(format!("{name}.pid"));
+        let record = PidRecord {
+            pid,
+            process_start_time: super::read_process_start_time(pid)
+                .await
+                .expect("start time"),
+            executable_identity: None,
+        };
+        tokio::fs::write(
+            &pid_file,
+            serde_json::to_vec(&record).expect("serialize pid"),
+        )
+        .await
+        .expect("write pid file");
+        #[cfg(unix)]
+        let backend = PidBackend::new(
+            temp.path().join("codex"),
+            pid_file,
+            /*remote_control_enabled*/ false,
+        );
+        #[cfg(windows)]
+        let backend = PidBackend::new_update_loop(temp.path().join("codex"), pid_file);
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            backend.stop_with_grace(grace_seconds),
+        )
+        .await;
+        let still_running = backend
+            .record_is_active(&record)
+            .await
+            .expect("child status");
+        if still_running {
+            child.kill().expect("clean up daemon shim");
+        }
+        let _ = child.wait(); // The backend may already have reaped a Unix child.
+        result.expect("stop deadline").expect("stop outcome");
+        assert_eq!(ready.with_extension("exited").exists(), exits);
+        assert!(!still_running, "{name}");
+    }
 }
 
 #[cfg(unix)]

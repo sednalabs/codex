@@ -50,6 +50,7 @@ default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
 
 ```json
 {"remoteControlEnabled": false,
+ "shutdownGraceSeconds": 60,
  "updater": {"autoUpdateEnabled": false, "updateIntervalMinutes": 120}}
 ```
 
@@ -65,6 +66,12 @@ update restarts a running managed daemon, so active or queued work may be
 interrupted.
 Accepted updates continue if the CLI exits. Installer errors return nonzero.
 The updater uses saved network settings; CLI `-c` overrides do not reach it.
+
+For all managed app-server shutdowns, including explicit stop and restart and
+updater-triggered restarts, `shutdownGraceSeconds` defaults to 60 and accepts
+an integer from 0 through 300. Zero forces shutdown immediately after requesting
+a graceful exit; the five-minute maximum bounds the wait even if a turn is still
+running.
 
 ## Bootstrap flow
 
@@ -155,8 +162,8 @@ the managed daemon without clearing its saved remote-control preference.
 `daemon start` and `daemon restart` use that saved preference. `daemon bootstrap`
 sets it according to `--remote-control` (disabled when omitted).
 
-`stop` sends a graceful termination request first, then sends a second
-termination signal after the grace window if the process is still alive.
+`stop` sends a graceful termination request first, then force-terminates the
+process after the configured grace window if it is still alive.
 
 All mutating lifecycle commands are serialized per `CODEX_HOME`, so a concurrent
 `start`, `restart`, `enable-remote-control`, `disable-remote-control`, `stop`,
