@@ -32,7 +32,7 @@ REPOSITORY_ID = "1152496647"
 WORKFLOW_PATH = ".github/workflows/apply-upstream-cohort.yml"
 VALIDATION_BRANCH = "worker/w13825-sdk-build-consumer"
 VALIDATION_REF = f"refs/heads/{VALIDATION_BRANCH}"
-PUSH_PREDECESSOR_SHA = "d3e8c390c2440fc2feb27780bd7ceaeba66682ca"
+PUSH_PREDECESSOR_SHA = "dd11518dac5478fbce212a33216a1fa7362a3aa2"
 
 BASE_SHA = "5eb6ca6519b1a79e8997bf21321885de1fd9ed01"
 BASE_TREE = "7a4e9d32c7a13a22215335a850cf879e284fdc63"
@@ -79,11 +79,11 @@ COMMON_PROVENANCE_SHA256 = "afbf269c8593c978ed706c9f2fddc0031383350fe216d88512ec
 COMMON_STAGED_PATCH_SHA256 = "dd4b59d9be8c2727d08de673085b36a1c61f6cee617855f210706412a5bfc66c"
 COMMON_STAGED_PATHS_SHA256 = "90b44134bb538a07fa03dfd674e96f08de4ba04a40252f6dc9f5c740dd5bb1ae"
 
-BUILD_SOURCE_SHA = "b8c1a1a176d30bec1c9265cae3d36c66a5dd3841"
-BUILD_SOURCE_TREE = "654403d38b9ef1645ded58aa61d7f7bdff8bb083"
-BUILD_SOURCE_PARENT = "22a0c45ee711dc5ce47847dc04cbc5e7e76507c0"
+BUILD_SOURCE_SHA = "5de836bbd93d4d62f01d7860d8bfed5d635b533c"
+BUILD_SOURCE_TREE = "954e3e5ab099d247a1b641d74d6df19154a4be9a"
+BUILD_SOURCE_PARENT = "b8c1a1a176d30bec1c9265cae3d36c66a5dd3841"
 BUILD_SOURCE_BRANCH = "worker/w13825-build-source-authoring-20260907"
-BUILD_PATHS_SHA256 = "69f15ab670d1f971c6f48f3efa8e38b954fb4161df6aa0608c14b2c155b261f2"
+BUILD_PATHS_SHA256 = "4acc268b1b53c3acc45d9b927c9da7bc1da47bc7308454171ec5e6b10c696c5c"
 BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
     ".github/workflows/bazel.yml": (
         "100644",
@@ -125,6 +125,9 @@ BUILD_SOURCE_ENTRIES: dict[str, tuple[str, str, str] | None] = {
         "blob",
         "8b68f14c6901d583716329172bf28f263f39cd02",
     ),
+    "codex-rs/http-client/src/lib.rs": ("100644", "blob", "e200f61af40f4c8464d819cb8c4d017f85fcd4ba"),
+    "codex-rs/http-client/src/tls_backend_fallback.rs": ("100644", "blob", "760df1824ad752fe8d4b5f3f2b0d0e3e848c0144"),
+    "codex-rs/http-client/src/tls_backend_fallback_tests.rs": ("100644", "blob", "c7ca0adceb94a6729d8657c7a7feb4e066044f68"),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
         "blob",
@@ -182,6 +185,9 @@ BUILD_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str]] = {
         "blob",
         "b7d06b98391ef2f3307096d963eea4e19853d8f0",
     ),
+    "codex-rs/http-client/src/lib.rs": ("100644", "blob", "837d1dc27e2409f41d27c84a1cab638c71e47bbc"),
+    "codex-rs/http-client/src/tls_backend_fallback.rs": ("100644", "blob", "760df1824ad752fe8d4b5f3f2b0d0e3e848c0144"),
+    "codex-rs/http-client/src/tls_backend_fallback_tests.rs": ("100644", "blob", "c7ca0adceb94a6729d8657c7a7feb4e066044f68"),
     "codex-rs/realtime-webrtc/BUILD.bazel": (
         "100644",
         "blob",
@@ -376,13 +382,13 @@ OVERLAY_SOURCE_PREIMAGE_ENTRIES: dict[str, tuple[str, str, str] | None] = dict(
     }.items())
 )
 OVERLAY_PATHS = list(OVERLAY_SOURCE_ENTRIES)
-OVERLAY_PATHS_SHA256 = "e53b95a32ffaac461fa334b523da8b23238c75543b6c65b4c9d2a78dada071de"
+OVERLAY_PATHS_SHA256 = "144039b925692dc820ed16b6807dfe8f1fbb9ce22473580f5cc90c878be2741a"
 OVERLAY_CHANGED_PATHS = [
     path
     for path in OVERLAY_PATHS
     if OVERLAY_SOURCE_PREIMAGE_ENTRIES[path] != OVERLAY_SOURCE_ENTRIES[path]
 ]
-OVERLAY_CHANGED_PATHS_SHA256 = "47af70e8708c1b8779819733ec1777cc82fba8d9f1edb52ef79dfcbe863e4c57"
+OVERLAY_CHANGED_PATHS_SHA256 = "13c59313037caade1aad9c3d40a37ffbbb3458c1be2916903890580ebb5239c6"
 
 PATCH_DEPENDENCIES: dict[str, tuple[str, str, str]] = {
     "patches/rules_rs_windows_msvc_linker.patch": (
@@ -455,6 +461,7 @@ SDK_BUNDLE_PROBE_PATHS = sorted(
         "codex-rs/http-client/src/tls_backend_fallback_tests.rs",
     ]
 )
+SDK_BUNDLE_ROUTE_WITNESS = ("100644", "blob", "29705e44eb66f235adee5a8932264ee778f98ced")
 ALLOWED_MUTABLE_PATHS = sorted(set(OVERLAY_CHANGED_PATHS) | set(GENERATED_PATHS))
 
 ROOT_MANIFEST_PATH = "codex-rs/Cargo.toml"
@@ -830,9 +837,9 @@ def verify_overlay_contract(repo: pathlib.Path) -> dict[str, Any]:
     changed = sorted([*operations["A"], *operations["M"], *operations["D"]])
     require(changed == OVERLAY_CHANGED_PATHS, "overlay changed path set mismatch")
     require(len(operations["A"]) == 36, "overlay addition count mismatch")
-    require(len(operations["M"]) == 11, "overlay modification count mismatch")
+    require(len(operations["M"]) == 12, "overlay modification count mismatch")
     require(not operations["D"], "unexpected current overlay deletion")
-    require(len(operations["E"]) == 10, "overlay exact-retention count mismatch")
+    require(len(operations["E"]) == 12, "overlay exact-retention count mismatch")
     return {
         "declared_path_count": len(OVERLAY_PATHS),
         "declared_path_set_sha256": OVERLAY_PATHS_SHA256,
@@ -2257,6 +2264,11 @@ def verify_sdk_input_entries(repo: pathlib.Path, receipt: dict[str, Any]) -> lis
             tree_entry(repo, SDK_CANDIDATE_SHA, path) == tree_entry(repo, SDK_SOURCE_SHA, path),
             f"accepted SDK candidate/source tuple mismatch: {path}",
         )
+    require(
+        tree_entry(repo, SDK_CANDIDATE_SHA, "codex-rs/http-client/src/route_aware_client_pool.rs")
+        == SDK_BUNDLE_ROUTE_WITNESS,
+        "accepted SDK route witness tuple mismatch",
+    )
     for path, expected in PATCH_DEPENDENCIES.items():
         require(tree_entry(repo, MATERIALIZED_SHA, path) == expected, f"materialized patch dependency mismatch: {path}")
         require(tree_entry(repo, SDK_CANDIDATE_SHA, path) == expected, f"SDK candidate patch dependency mismatch: {path}")
