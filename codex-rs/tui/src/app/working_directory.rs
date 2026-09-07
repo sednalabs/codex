@@ -125,6 +125,24 @@ impl App {
         let Some(thread_id) = self.chat_widget.thread_id() else {
             return;
         };
+        if self.pending_server_profiles.contains_key(&thread_id) {
+            return self.working_directory_error(
+                "Wait for permissions to update before changing directories.",
+            );
+        }
+        if self.app_server_target.thread_params_mode()
+            == crate::app_server_session::ThreadParamsMode::Remote
+            && self
+                .chat_widget
+                .config_ref()
+                .permissions
+                .active_permission_profile()
+                .is_some_and(|profile| !profile.id.starts_with(':'))
+        {
+            return self.working_directory_error(
+                "Changing directories with a named profile is not supported.",
+            );
+        }
         let cells = &self.transcript_cells;
         if cells.iter().any(|cell| cell.as_any().is::<LoadingCell>()) {
             return self.working_directory_error("MCP inventory is still loading.");
@@ -286,6 +304,7 @@ impl App {
                     /*last_turn_id*/ None,
                     /*before_turn_id*/ None,
                     DeferUntilNextTurn,
+                    /*selected_profile*/ None,
                 )
                 .await
         } else {
@@ -295,6 +314,7 @@ impl App {
                     &config,
                     /*session_start_source*/ None,
                     /*remote_cwd_override*/ None,
+                    /*selected_profile*/ None,
                 )
                 .await
         };

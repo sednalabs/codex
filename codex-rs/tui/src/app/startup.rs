@@ -682,6 +682,7 @@ See the Codex keymap documentation for supported actions and examples."
             cloud_config_bundle,
             runtime_approval_policy_override: None,
             runtime_permission_profile_override: None,
+            pending_server_profiles: HashMap::new(),
             file_search,
             enhanced_keys_supported,
             keymap: runtime_keymap,

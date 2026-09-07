@@ -357,13 +357,28 @@ impl App {
                 self.chat_widget
                     .add_plain_history_lines(vec!["/fork".magenta().into()]);
                 if let Some(thread_id) = self.chat_widget.thread_id() {
+                    if self.pending_server_profiles.contains_key(&thread_id) {
+                        self.chat_widget.add_error_message(
+                            "Wait for permissions to update before forking.".into(),
+                        );
+                        return Ok(AppRunControl::Continue);
+                    }
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;
                     let mut fork_config = self.config.clone();
                     fork_config.model = Some(self.chat_widget.current_model().to_string());
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
-                    match app_server.fork_thread(&self.local_settings, fork_config, thread_id).await {
+                    let selected_profile = self.confirmed_server_profile(thread_id);
+                    match app_server.fork_thread_at(
+                        &self.local_settings,
+                        fork_config,
+                        thread_id,
+                        /*last_turn_id*/ None,
+                        /*before_turn_id*/ None,
+                        ForkGoalContinuation::StartIfIdle,
+                        selected_profile.as_ref(),
+                    ).await {
                         Ok(mut forked) => {
                             let name_error = if let Some(name) = name {
                                 match app_server
@@ -441,6 +456,14 @@ impl App {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
                 }
+                if self.pending_server_profiles.contains_key(&thread_id) {
+                    self.chat_widget.restore_user_message_to_composer(prompt);
+                    self.chat_widget.add_error_message(
+                        "Wait for permissions to update before editing this prompt.".into(),
+                    );
+                    tui.frame_requester().schedule_frame();
+                    return Ok(AppRunControl::Continue);
+                }
                 self.session_telemetry.counter(
                     "codex.thread.fork",
                     /*inc*/ 1,
@@ -449,6 +472,7 @@ impl App {
                 self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                     .await;
                 let config = self.fresh_session_config();
+                let selected_profile = self.confirmed_server_profile(thread_id);
                 let turns = match self.thread_event_channels.get(&thread_id) {
                     Some(channel) => {
                         let store = channel.store.lock().await;
@@ -521,6 +545,7 @@ impl App {
                                     /*last_turn_id*/ None,
                                     before_turn_id,
                                     ForkGoalContinuation::StartIfIdle,
+                                    selected_profile.as_ref(),
                                 )
                                 .await
                         }
@@ -530,6 +555,7 @@ impl App {
 &self.local_settings,
                                     &config, /*session_start_source*/ None,
                                     /*remote_cwd_override*/ None,
+                                    selected_profile.as_ref(),
                                 )
                                 .await
                         }
@@ -724,6 +750,25 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(mut op) => {
+                if let AppCommand::OverrideTurnContext {
+                    cwd,
+                    approval_policy,
+                    approvals_reviewer,
+                    permission_profile,
+                    active_permission_profile,
+                    windows_sandbox_level,
+                    ..
+                } = &op
+                    && (cwd.is_some()
+                        || approval_policy.is_some()
+                        || approvals_reviewer.is_some()
+                        || permission_profile.is_some()
+                        || active_permission_profile.is_some()
+                        || windows_sandbox_level.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 if self.active_thread_id == self.chat_widget.thread_id() {
                     if matches!(&op, AppCommand::UserTurn { .. })
                         && self.chat_widget.defer_pending_turn_for_luna_reserve()
@@ -1583,6 +1628,13 @@ impl App {
                     .await;
             }
             AppEvent::UpdateModel(model) => {
+                if self
+                    .active_thread_model_setting_update_params(model.clone())
+                    .is_some_and(|params| params.permissions.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
                 if model_changed {
@@ -1602,7 +1654,12 @@ impl App {
                 self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
             }
             AppEvent::SettingsSelectionSettled => {
-                if self.chat_widget.no_modal_or_popup_active() {
+                if self.chat_widget.no_modal_or_popup_active()
+                    && !self
+                        .chat_widget
+                        .thread_id()
+                        .is_some_and(|thread_id| self.pending_server_profiles.contains_key(&thread_id))
+                {
                     let config = self.chat_widget.config_ref();
                     let permissions_override = Self::turn_permissions_override_from_config(
                         config,
@@ -1653,6 +1710,13 @@ impl App {
                 self.chat_widget.open_advanced_reasoning_popup(model);
             }
             AppEvent::ApplyAdvancedReasoning { model, effort } => {
+                if self
+                    .active_thread_model_setting_update_params(model.clone())
+                    .is_some_and(|params| params.permissions.is_some())
+                    && self.reject_pending_permission_change()
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 let model_changed = self.chat_widget.current_model() != model
                     || self.chat_widget.current_collaboration_mode().model() != model;
                 let default_effort =
@@ -2327,6 +2391,9 @@ impl App {
                 }
             }
             AppEvent::UpdateAskForApprovalPolicy(policy) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 let mut config = self.config.clone();
                 if !self.try_set_approval_policy_on_config(
                     &mut config,
@@ -2346,6 +2413,9 @@ impl App {
                     .await;
             }
             AppEvent::UpdateActivePermissionProfile(active_permission_profile) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 let mut config = self.config.clone();
                 let Some(permission_profile) = self
                     .try_set_builtin_active_permission_profile_on_config(
@@ -2420,11 +2490,12 @@ impl App {
                 }
             }
             AppEvent::SelectPermissionProfile(selection) => {
-                if self.apply_permission_profile_selection(selection).await {
-                    self.chat_widget.submit_initial_user_message_if_pending();
-                }
+                self.select_permission_profile(app_server, selection).await;
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
                 self.sync_active_thread_permission_settings_to_cached_session()
@@ -2804,6 +2875,9 @@ impl App {
                 }
             }
             AppEvent::OpenPermissionsPopup | AppEvent::OpenApprovalsPopup => {
+                if self.reject_pending_permission_change() {
+                    return Ok(AppRunControl::Continue);
+                }
                 if app_server.uses_remote_workspace() {
                     self.chat_widget.request_permission_profiles();
                 } else {

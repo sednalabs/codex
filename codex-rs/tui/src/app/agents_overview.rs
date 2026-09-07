@@ -303,7 +303,6 @@ impl App {
         {
             return Ok(AppRunControl::Continue);
         }
-
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             let mut previous_thread_ids =
@@ -725,6 +724,7 @@ impl App {
                 &config,
                 /*session_start_source*/ None,
                 remote_cwd.as_deref(),
+                /*selected_profile*/ None,
             )
             .await
         {

@@ -18,6 +18,7 @@ pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::thread_items_page_params;
 
+use crate::app_event::PermissionProfileSelection;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::FeedbackAudience;
 use crate::dynamic_tools_mcp::DynamicToolMcpServer;
@@ -783,6 +784,7 @@ impl AppServerSession {
             config,
             /*session_start_source*/ None,
             /*remote_cwd_override*/ None,
+            /*selected_profile*/ None,
         )
         .await
     }
@@ -793,6 +795,7 @@ impl AppServerSession {
         config: &Config,
         session_start_source: Option<ThreadStartSource>,
         remote_cwd_override: Option<&std::path::Path>,
+        selected_profile: Option<&PermissionProfileSelection>,
     ) -> Result<AppServerStartedThread> {
         let request_id = self.next_request_id();
         let session_config = self.session_config_with_effective_service_tier(config);
@@ -802,6 +805,14 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        if let Some(selected_profile) = selected_profile {
+            params.runtime_workspace_roots = None;
+            params.permissions = Some(selected_profile.profile_id.clone());
+            params.sandbox = None;
+            params.approval_policy = selected_profile.approval_policy;
+            params.approvals_reviewer = selected_profile.approvals_reviewer.map(Into::into);
+            remove_permission_config_overrides(&mut params.config);
+        }
         if self.history_support == ThreadHistorySupport::LegacyOnly {
             params.history_mode = None;
         }
@@ -830,6 +841,7 @@ impl AppServerSession {
         Ok(started)
     }
 
+    #[cfg(test)]
     pub(crate) async fn fork_thread(
         &mut self,
         local_settings: &LocalSettings,
@@ -860,11 +872,16 @@ impl AppServerSession {
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
             ForkPresentation::Regular,
+            /*selected_profile*/ None,
             permission_mode,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "fork position and named permissions are independent"
+    )]
     pub(crate) async fn fork_thread_at(
         &mut self,
         local_settings: &LocalSettings,
@@ -873,6 +890,7 @@ impl AppServerSession {
         last_turn_id: Option<String>,
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
+        selected_profile: Option<&PermissionProfileSelection>,
     ) -> Result<AppServerStartedThread> {
         self.fork_thread_at_with_presentation(
             local_settings,
@@ -882,6 +900,7 @@ impl AppServerSession {
             before_turn_id,
             goal_continuation,
             ForkPresentation::Regular,
+            selected_profile,
             ForkPermissionMode::InheritSaved,
         )
         .await
@@ -901,6 +920,7 @@ impl AppServerSession {
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
             ForkPresentation::SideConversation,
+            /*selected_profile*/ None,
             ForkPermissionMode::InheritSaved,
         )
         .await
@@ -919,6 +939,7 @@ impl AppServerSession {
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
         presentation: ForkPresentation,
+        selected_profile: Option<&PermissionProfileSelection>,
         permission_mode: ForkPermissionMode,
     ) -> Result<AppServerStartedThread> {
         let fork_parent = match presentation {
@@ -954,6 +975,13 @@ impl AppServerSession {
             params.approvals_reviewer = None;
             params.sandbox = None;
             params.permissions = None;
+            remove_permission_config_overrides(&mut params.config);
+        } else if let Some(selected_profile) = selected_profile {
+            params.runtime_workspace_roots = None;
+            params.permissions = Some(selected_profile.profile_id.clone());
+            params.sandbox = None;
+            params.approval_policy = selected_profile.approval_policy;
+            params.approvals_reviewer = selected_profile.approvals_reviewer.map(Into::into);
             remove_permission_config_overrides(&mut params.config);
         }
         self.thread_tool_transport()
@@ -1276,8 +1304,8 @@ impl AppServerSession {
         client_user_message_id: String,
         items: Vec<UserInput>,
         cwd: PathBuf,
-        approval_policy: AskForApproval,
-        approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
+        approval_policy: Option<AskForApproval>,
+        approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
         permissions_override: TurnPermissionsOverride,
         workspace_roots: &[AbsolutePathBuf],
         model: String,
@@ -1305,8 +1333,8 @@ impl AppServerSession {
                     environments: None,
                     cwd: Some(cwd),
                     runtime_workspace_roots: Some(workspace_roots.to_vec()),
-                    approval_policy: Some(approval_policy),
-                    approvals_reviewer: Some(approvals_reviewer.into()),
+                    approval_policy,
+                    approvals_reviewer,
                     sandbox_policy,
                     permissions,
                     model: Some(model),

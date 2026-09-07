@@ -1,3 +1,4 @@
+use super::super::ForkGoalContinuation;
 use super::super::ForkPermissionMode;
 use super::super::ResumeModelSettings;
 use super::super::ThreadParamsMode;
@@ -126,8 +127,23 @@ async fn remote_resume_restores_saved_server_profile_without_permission_override
         resumed.session.approvals_reviewer,
         codex_protocol::config_types::ApprovalsReviewer::AutoReview
     );
+    // A locally remembered profile may have been removed since selection.
+    let stale_selection = crate::app_event::PermissionProfileSelection {
+        profile_id: "removed-profile".into(),
+        approval_policy: None,
+        approvals_reviewer: None,
+        display_label: "removed-profile".into(),
+    };
     let forked = server
-        .fork_thread(&local_settings, client_config, thread_id)
+        .fork_thread_at(
+            &local_settings,
+            client_config.clone(),
+            thread_id,
+            /*last_turn_id*/ None,
+            /*before_turn_id*/ None,
+            ForkGoalContinuation::StartIfIdle,
+            Some(&stale_selection),
+        )
         .await?;
     assert_eq!(
         forked
@@ -144,6 +160,13 @@ async fn remote_resume_restores_saved_server_profile_without_permission_override
     assert_eq!(
         forked.session.approvals_reviewer,
         codex_protocol::config_types::ApprovalsReviewer::AutoReview
+    );
+    let side = server
+        .fork_side_thread(&local_settings, client_config, thread_id)
+        .await?;
+    assert_eq!(
+        side.session.active_permission_profile.unwrap().id,
+        "server-only"
     );
     let explicit_config = ConfigBuilder::default()
         .codex_home(home.path().to_path_buf())

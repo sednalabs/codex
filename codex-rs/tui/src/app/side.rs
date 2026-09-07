@@ -515,6 +515,7 @@ impl App {
             });
         self.abort_thread_event_listener(thread_id);
         self.thread_event_channels.remove(&thread_id);
+        self.pending_server_profiles.remove(&thread_id);
         self.agents_overview.activity.remove(&thread_id);
         self.side_threads.remove(&thread_id);
         self.agent_navigation.remove(thread_id);
@@ -681,6 +682,13 @@ impl App {
             self.restore_side_user_message(user_message.take());
             self.sync_side_thread_ui();
             self.chat_widget.add_error_message(message.to_string());
+            return Ok(AppRunControl::Continue);
+        }
+        if self.pending_server_profiles.contains_key(&parent_thread_id) {
+            self.restore_side_user_message(user_message.take());
+            self.sync_side_thread_ui();
+            self.chat_widget
+                .add_error_message("Wait for permissions to update before forking.".into());
             return Ok(AppRunControl::Continue);
         }
 

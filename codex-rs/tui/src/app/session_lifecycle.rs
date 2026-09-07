@@ -518,6 +518,8 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<()> {
+        let pending_profile_on_unavailable_thread = self.thread_unavailable(thread_id)
+            && self.pending_server_profiles.contains_key(&thread_id);
         let cached_session = if self.thread_unavailable(thread_id) {
             self.thread_event_channels[&thread_id]
                 .store
@@ -591,13 +593,30 @@ impl App {
             return Ok(());
         };
 
-        self.refresh_snapshot_session_if_needed(
-            app_server,
-            thread_id,
-            is_replay_only,
-            &mut snapshot,
-        )
-        .await;
+        let session_verified = self
+            .refresh_snapshot_session_if_needed(
+                app_server,
+                thread_id,
+                is_replay_only,
+                &mut snapshot,
+            )
+            .await;
+        if !is_replay_only
+            && !self.side_threads.contains_key(&thread_id)
+            && snapshot.session.as_ref().is_some_and(|session| {
+                session
+                    .active_permission_profile
+                    .as_ref()
+                    .is_some_and(|profile| !profile.id.starts_with(':'))
+            })
+            && !session_verified
+        {
+            is_replay_only = true;
+            attached_replay_only = true;
+        }
+        if pending_profile_on_unavailable_thread && !is_replay_only && session_verified {
+            self.pending_server_profiles.remove(&thread_id);
+        }
         // Refreshing can merge restored turns into the store, so recap progress must be read only
         // after the refresh while the activated thread channel is still retained.
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
@@ -610,7 +629,9 @@ impl App {
             if let (Some(cached), Some(session)) =
                 (cached_session.as_ref(), snapshot.session.as_mut())
             {
-                self.restore_runtime_permissions(session, cached);
+                if !pending_profile_on_unavailable_thread {
+                    self.restore_runtime_permissions(session, cached);
+                }
                 store.session = Some(session.clone());
                 if !is_replay_only && self.primary_thread_id == Some(thread_id) {
                     self.primary_session_configured = Some(session.clone());
@@ -728,6 +749,7 @@ impl App {
     pub(super) fn reset_thread_event_state(&mut self) {
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
+        self.pending_server_profiles.clear();
         self.agents_overview.activity.clear();
         self.agent_navigation.clear();
         self.side_threads.clear();
@@ -886,6 +908,7 @@ impl App {
                 &config,
                 session_start_source,
                 /*remote_cwd_override*/ None,
+                /*selected_profile*/ None,
             )
             .await
         {

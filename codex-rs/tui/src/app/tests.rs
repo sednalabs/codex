@@ -787,6 +787,15 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
         std::future::pending::<()>().await;
     });
     app.thread_event_listener_tasks.insert(thread_id, handle);
+    app.pending_server_profiles.insert(
+        thread_id,
+        PermissionProfileSelection {
+            profile_id: "server-only".into(),
+            approval_policy: None,
+            approvals_reviewer: None,
+            display_label: "server-only".into(),
+        },
+    );
     started_rx
         .await
         .expect("listener task should report it started");
@@ -794,6 +803,7 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
     app.reset_thread_event_state();
 
     assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
+    assert!(app.pending_server_profiles.is_empty());
     time::timeout(Duration::from_millis(50), dropped_rx)
         .await
         .expect("timed out waiting for listener task abort")
@@ -2894,6 +2904,129 @@ async fn reset_memories_clears_local_memory_directories() -> Result<()> {
         Ok(())
     })
     .await
+}
+
+#[tokio::test]
+async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    app.config.ephemeral = false;
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n[permissions.server-only]\nextends = \":read-only\"\n",
+    )?;
+    let server_config = ConfigBuilder::default()
+        .codex_home(home.path().into())
+        .build()
+        .await?;
+    let mut server = crate::start_embedded_app_server_for_picker(&server_config).await?;
+    let selection = PermissionProfileSelection {
+        profile_id: "server-only".into(),
+        approval_policy: None,
+        approvals_reviewer: None,
+        display_label: "server-only".into(),
+    };
+    app.select_permission_profile(&mut server, selection.clone())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for the task to connect before selecting permissions."
+    );
+    let started = server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    while events.try_recv().is_ok() {}
+    app.select_permission_profile(&mut server, selection.clone())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"• Permission selection requested: server-only"
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_permission_profile(&mut server, selection).await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for permissions to update before changing permissions."
+    );
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::ForkCurrentSession { name: None },
+    )
+    .await?;
+    let _ = next_history_message(&mut events);
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for permissions to update before forking."
+    );
+    app.chat_widget
+        .restore_user_message_to_composer("use the selected profile".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let turn = next_user_turn_op(&mut ops);
+    app.submit_thread_op(&mut server, thread_id, turn).await?;
+    server.startup_interrupt(thread_id).await?;
+    let settings = next_thread_settings_updated(&mut server, thread_id).await;
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadSettingsUpdated(settings),
+    )
+    .await?;
+    assert!(!app.pending_server_profiles.contains_key(&thread_id));
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    while events.try_recv().is_ok() {}
+    app.change_working_directory(&mut tui, &mut server, home.path().abs())
+        .await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Changing directories with a named profile is not supported."
+    );
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        turn_completed_notification(thread_id, "first", TurnStatus::Interrupted),
+    )));
+    while events.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer("busy".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut turn = next_user_turn_op(&mut ops);
+    if let Op::UserTurn {
+        active_permission_profile,
+        ..
+    } = &mut turn
+    {
+        *active_permission_profile = Some(ActivePermissionProfile::new("stale-profile"));
+    }
+    app.submit_thread_op(&mut server, thread_id, turn).await?;
+    let thread = server
+        .thread_read(thread_id, /*include_turns*/ true)
+        .await?;
+    assert_eq!(thread.turns.len(), 2);
+    while events.try_recv().is_ok() {}
+    app.chat_widget
+        .set_queue_autosend_suppressed(/*suppressed*/ true);
+    app.chat_widget
+        .restore_user_message_to_composer("queued follow-up".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let selection = app
+        .confirmed_server_profile(thread_id)
+        .expect("server profile");
+    app.select_permission_profile(&mut server, selection).await;
+    insta::assert_snapshot!(
+        next_history_message(&mut events),
+        @"■ Wait for the current turn to finish before changing permissions."
+    );
+    app.handle_event(&mut tui, &mut server, AppEvent::SettingsSelectionSettled)
+        .await?;
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        turn_completed_notification(thread_id, "second", TurnStatus::Completed),
+    )));
+    assert!(app.chat_widget.has_queued_follow_up_messages());
+    server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -5708,6 +5841,7 @@ async fn make_test_app() -> App {
         pending_thread_titles: HashSet::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
+        pending_server_profiles: HashMap::new(),
         agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
@@ -5799,6 +5933,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             pending_thread_titles: HashSet::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            pending_server_profiles: HashMap::new(),
             agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
@@ -6764,6 +6899,16 @@ async fn feedback_submission_for_inactive_thread_replays_into_origin_thread() {
         cell.contains("• Feedback uploaded. Please open an issue using the following URL:")
             && cell.contains("uploaded-thread")
     }));
+}
+
+fn next_history_message(events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
+    let cell = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .expect("history message");
+    lines_to_single_string(&cell.display_lines(/*width*/ 80))
 }
 
 fn next_user_turn_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
@@ -7767,7 +7912,16 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
     )
     .expect("materialized rollout should be created");
     let source_thread_id = ThreadId::from_string(&source_thread_id)?;
-    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+    std::fs::write(
+        config.codex_home.join("config.toml"),
+        "default_permissions = \":workspace\"\n[permissions.server-only]\nextends = \":read-only\"\n",
+    )?;
+    let server_config = ConfigBuilder::default()
+        .codex_home(config.codex_home.to_path_buf())
+        .build()
+        .await?;
+    let mut app_server =
+        Box::pin(crate::start_embedded_app_server_for_picker(&server_config)).await?;
     let started = app_server
         .resume_thread(
             &crate::local_settings::LocalSettings::from(&config),
@@ -7778,8 +7932,50 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         .await?;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
+    app.select_permission_profile(
+        &mut app_server,
+        PermissionProfileSelection {
+            profile_id: "server-only".into(),
+            approval_policy: None,
+            approvals_reviewer: None,
+            display_label: "server-only".into(),
+        },
+    )
+    .await;
     while app_event_rx.try_recv().is_ok() {}
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::ForkSessionForPromptEdit {
+            thread_id: source_thread_id,
+            nth_user_message: 0,
+            prompt: crate::chatwidget::UserMessage::from("first prompt"),
+        },
+    ))
+    .await?;
+    assert_eq!(app.chat_widget.thread_id(), Some(source_thread_id));
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "first prompt");
+    insta::assert_snapshot!(
+        next_history_message(&mut app_event_rx),
+        @"■ Wait for permissions to update before editing this prompt."
+    );
+    let settings = next_thread_settings_updated(&mut app_server, source_thread_id).await;
+    app.enqueue_thread_notification(
+        source_thread_id,
+        ServerNotification::ThreadSettingsUpdated(settings),
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    let local_only_root = tempdir()?;
+    let local_only_root_path = local_only_root.path().abs();
+    app.harness_overrides
+        .additional_writable_roots
+        .push(local_only_root.path().to_path_buf());
+    app.refresh_in_memory_config_from_disk().await?;
+    assert!(app.config.workspace_roots.contains(&local_only_root_path));
 
     let control = Box::pin(app.handle_event(
         &mut tui,
@@ -7798,6 +7994,19 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         .thread_id()
         .expect("first prompt edit should start a fresh thread");
     assert_ne!(fresh_thread_id, source_thread_id);
+    let active = app
+        .chat_widget
+        .config_ref()
+        .permissions
+        .active_permission_profile()
+        .unwrap();
+    assert_eq!(active.id, "server-only");
+    let session = app
+        .primary_session_configured
+        .as_ref()
+        .expect("new session");
+    let roots = &session.runtime_workspace_roots;
+    assert!(!roots.contains(&local_only_root_path));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "first prompt");
     let history = std::iter::from_fn(|| app_event_rx.try_recv().ok())
         .filter_map(|event| match event {
@@ -8400,6 +8609,28 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
             .expect("primary thread should be registered");
 
         let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+        let previous_model = app.chat_widget.current_model().to_string();
+        app.pending_server_profiles.insert(
+            thread_id,
+            PermissionProfileSelection {
+                profile_id: "server-only".into(),
+                approval_policy: None,
+                approvals_reviewer: None,
+                display_label: "server-only".into(),
+            },
+        );
+        app.handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::ApplyAdvancedReasoning {
+                model: "gpt-5.4".to_string(),
+                effort: ReasoningEffortConfig::High,
+            },
+        )
+        .await
+        .expect("pending permission selection should block the cyber model");
+        assert_eq!(app.chat_widget.current_model(), previous_model);
+        app.pending_server_profiles.remove(&thread_id);
         app.handle_event(
             &mut tui,
             &mut app_server,
@@ -8408,6 +8639,7 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
         .await
         .expect("model selection should succeed");
 
+        assert!(app.pending_server_profiles.contains_key(&thread_id));
         let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
         assert_eq!(
             notification.thread_settings.approval_policy,
@@ -8421,10 +8653,18 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
             notification
                 .thread_settings
                 .active_permission_profile
+                .as_ref()
                 .expect("active permission profile")
                 .id,
             codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE
         );
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ThreadSettingsUpdated(notification),
+        )
+        .await
+        .expect("settings notification should apply");
+        assert!(!app.pending_server_profiles.contains_key(&thread_id));
     })
     .await;
 }

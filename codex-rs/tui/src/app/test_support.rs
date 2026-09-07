@@ -34,6 +34,7 @@ pub(super) async fn make_test_app() -> App {
         cloud_config_bundle: CloudConfigBundleLoader::default(),
         runtime_approval_policy_override: None,
         runtime_permission_profile_override: None,
+        pending_server_profiles: HashMap::new(),
         file_search,
         transcript_cells: Vec::new(),
         last_rendered_history_tail: None,

@@ -22,6 +22,7 @@ impl App {
                 tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
             }
             self.abort_thread_event_listener(thread_id);
+            self.pending_server_profiles.remove(&thread_id);
         }
     }
 
@@ -754,11 +755,42 @@ impl App {
                 }
                 if should_start_turn {
                     let config = self.chat_widget.config_ref();
-                    let approvals_reviewer =
-                        approvals_reviewer.unwrap_or(config.approvals_reviewer);
+                    let selected_profile = self.pending_server_profiles.get(&thread_id);
+                    let selected_active = selected_profile
+                        .map(|profile| ActivePermissionProfile::new(profile.profile_id.clone()));
+                    let confirmed_active = (self.app_server_target.thread_params_mode()
+                        == crate::app_server_session::ThreadParamsMode::Remote)
+                        .then(|| config.permissions.active_permission_profile())
+                        .flatten();
+                    let (turn_approval_policy, turn_approvals_reviewer) =
+                        if let Some(profile) = selected_profile {
+                            (
+                                profile.approval_policy,
+                                profile.approvals_reviewer.map(Into::into),
+                            )
+                        } else if self.app_server_target.thread_params_mode()
+                            == crate::app_server_session::ThreadParamsMode::Remote
+                        {
+                            (
+                                Some(config.permissions.approval_policy.value().into()),
+                                Some(config.approvals_reviewer.into()),
+                            )
+                        } else {
+                            (
+                                Some(*approval_policy),
+                                Some(
+                                    approvals_reviewer
+                                        .unwrap_or(config.approvals_reviewer)
+                                        .into(),
+                                ),
+                            )
+                        };
                     let permissions_override = Self::turn_permissions_override_from_config(
                         config,
-                        active_permission_profile.as_ref(),
+                        selected_active
+                            .as_ref()
+                            .or(confirmed_active.as_ref())
+                            .or(active_permission_profile.as_ref()),
                         self.runtime_permission_profile_override
                             .as_ref()
                             .and_then(RuntimePermissionProfileOverride::turn_permission_profile),
@@ -769,8 +801,8 @@ impl App {
                             client_user_message_id.clone(),
                             items.to_vec(),
                             cwd.clone(),
-                            *approval_policy,
-                            approvals_reviewer,
+                            turn_approval_policy,
+                            turn_approvals_reviewer,
                             permissions_override,
                             config.permissions.user_visible_workspace_roots(),
                             model.to_string(),
@@ -1021,9 +1053,30 @@ impl App {
         {
             return Ok(());
         }
+        let mut permission_change_confirmed = false;
         if let ServerNotification::ThreadSettingsUpdated(notification) = &notification {
             self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
                 .await;
+            if self
+                .pending_server_profiles
+                .get(&thread_id)
+                .is_some_and(|selected| {
+                    notification
+                        .thread_settings
+                        .active_permission_profile
+                        .as_ref()
+                        .is_some_and(|active| active.id == selected.profile_id)
+                        && selected.approval_policy.is_none_or(|policy| {
+                            notification.thread_settings.approval_policy == policy
+                        })
+                        && selected.approvals_reviewer.is_none_or(|reviewer| {
+                            notification.thread_settings.approvals_reviewer.to_core() == reviewer
+                        })
+                })
+            {
+                self.pending_server_profiles.remove(&thread_id);
+                permission_change_confirmed = true;
+            }
         }
         let inferred_session = if let ServerNotification::ThreadStarted(started) = &notification
             && self.primary_session_configured.is_some()
@@ -1058,7 +1111,7 @@ impl App {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
-        let (notification, previous_pending_status, pending_status, turn_stopped) = {
+        let (mut notification, previous_pending_status, pending_status, turn_stopped) = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
                 && let Some(session) = inferred_session
@@ -1092,6 +1145,19 @@ impl App {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+        }
+
+        // Settings snapshots do not belong in the transcript queue: apply them in receive order.
+        if let Some(ServerNotification::ThreadSettingsUpdated(settings)) = notification.as_ref()
+            && self.active_thread_id == Some(thread_id)
+            && self.chat_widget.thread_id() == Some(thread_id)
+        {
+            self.chat_widget
+                .on_thread_settings_updated(settings.clone());
+            notification = None;
+        }
+        if permission_change_confirmed {
+            self.app_event_tx.send(AppEvent::SettingsSelectionSettled);
         }
 
         if let Some(notification) = notification {
@@ -1321,6 +1387,7 @@ impl App {
         self.config.approvals_reviewer = session.approvals_reviewer;
 
         let thread_id = session.thread_id;
+        self.pending_server_profiles.remove(&thread_id);
         if self.primary_thread_id != Some(thread_id) {
             self.recap.reset_for_new_thread(Instant::now());
         }
@@ -1426,9 +1493,9 @@ impl App {
         thread_id: ThreadId,
         is_replay_only: bool,
         snapshot: &mut ThreadEventSnapshot,
-    ) {
+    ) -> bool {
         if !self.should_refresh_snapshot_session(thread_id, is_replay_only, snapshot) {
-            return;
+            return true;
         }
 
         match app_server
@@ -1442,7 +1509,8 @@ impl App {
         {
             Ok(started) => {
                 self.apply_refreshed_snapshot_thread(thread_id, started, snapshot)
-                    .await
+                    .await;
+                true
             }
             Err(err) => {
                 tracing::warn!(
@@ -1450,6 +1518,7 @@ impl App {
                     error = %err,
                     "failed to refresh inferred thread session before replay"
                 );
+                false
             }
         }
     }
@@ -1463,7 +1532,13 @@ impl App {
         !is_replay_only
             && !self.side_threads.contains_key(&thread_id)
             && snapshot.session.as_ref().is_none_or(|session| {
-                session.model.trim().is_empty() || session.rollout_path.is_none()
+                session.model.trim().is_empty()
+                    || session.rollout_path.is_none()
+                    || (self.primary_thread_id != Some(thread_id)
+                        && session
+                            .active_permission_profile
+                            .as_ref()
+                            .is_some_and(|profile| !profile.id.starts_with(':')))
             })
     }
 
