@@ -28,7 +28,6 @@ use ratatui::prelude::*;
 use ratatui::style::Stylize;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use url::Url;
 
 use super::account::StatusAccountDisplay;
 use super::format::FieldFormatter;
@@ -203,7 +202,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     new_status_output_with_rate_limits_handle(
         config,
         config.model_provider.requires_openai_auth,
-        /*runtime_model_provider_base_url*/ None,
+        /*model_provider_id*/ None,
         /*remote_connection*/ None,
         account_display,
         token_info,
@@ -227,7 +226,7 @@ pub(crate) fn new_status_output_with_rate_limits(
 pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
     requires_openai_auth: bool,
-    runtime_model_provider_base_url: Option<&str>,
+    model_provider_id: Option<&str>,
     remote_connection: Option<&RemoteConnectionStatus>,
     account_display: Option<&StatusAccountDisplay>,
     token_info: Option<&TokenUsageInfo>,
@@ -248,7 +247,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     let card = Arc::new(StatusHistoryCell::new(
         config,
         requires_openai_auth,
-        runtime_model_provider_base_url,
+        model_provider_id,
         remote_connection,
         account_display,
         token_info,
@@ -280,7 +279,7 @@ impl StatusHistoryCell {
     fn new(
         config: &Config,
         requires_openai_auth: bool,
-        runtime_model_provider_base_url: Option<&str>,
+        model_provider_id: Option<&str>,
         remote_connection: Option<&RemoteConnectionStatus>,
         account_display: Option<&StatusAccountDisplay>,
         token_info: Option<&TokenUsageInfo>,
@@ -300,10 +299,12 @@ impl StatusHistoryCell {
         let approval_policy = AskForApproval::from(config.permissions.approval_policy.value());
         let permission_profile = config.permissions.effective_permission_profile();
         let workspace_roots = config.effective_workspace_roots();
+        let model_provider = model_provider_id
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
         let mut config_entries = vec![
             ("workdir", config.cwd.display().to_string()),
             ("model", model_name.to_string()),
-            ("provider", config.model_provider_id.clone()),
             (
                 "approval",
                 config.permissions.approval_policy.value().to_string(),
@@ -317,6 +318,9 @@ impl StatusHistoryCell {
                 ),
             ),
         ];
+        if let Some(provider_id) = &model_provider {
+            config_entries.insert(2, ("provider", provider_id.clone()));
+        }
         if config.model_provider.wire_api == WireApi::Responses {
             let effort_value = reasoning_effort_override
                 .unwrap_or_else(|| config.model_reasoning_effort.clone())
@@ -350,7 +354,6 @@ impl StatusHistoryCell {
             &approval,
             workspace_root_suffix.as_deref(),
         );
-        let model_provider = format_model_provider(config, runtime_model_provider_base_url);
         let show_chatgpt_usage_link = requires_openai_auth;
         let account = compose_account_display(account_display);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
@@ -953,40 +956,4 @@ impl HistoryCell for Arc<StatusHistoryCell> {
     ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         self.display_hyperlink_lines(width)
     }
-}
-
-fn format_model_provider(config: &Config, runtime_base_url: Option<&str>) -> Option<String> {
-    let provider = &config.model_provider;
-    let name = provider.name.trim();
-    let provider_name = if name.is_empty() {
-        config.model_provider_id.as_str()
-    } else {
-        name
-    };
-    let base_url = runtime_base_url.and_then(sanitize_base_url);
-    let is_default_openai = provider.is_openai() && base_url.is_none();
-    if is_default_openai {
-        return None;
-    }
-
-    Some(match base_url {
-        Some(base_url) => format!("{provider_name} - {base_url}"),
-        None => provider_name.to_string(),
-    })
-}
-
-fn sanitize_base_url(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let Ok(mut url) = Url::parse(trimmed) else {
-        return None;
-    };
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url.set_query(None);
-    url.set_fragment(None);
-    Some(url.to_string().trim_end_matches('/').to_string()).filter(|value| !value.is_empty())
 }

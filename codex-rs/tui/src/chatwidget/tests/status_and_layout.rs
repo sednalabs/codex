@@ -489,7 +489,6 @@ async fn configured_pet_load_is_deferred_until_after_construction() {
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        runtime_model_provider_base_url: None,
         initial_plan_type: None,
         model: Some(resolved_model),
         startup_tooltip_override: None,

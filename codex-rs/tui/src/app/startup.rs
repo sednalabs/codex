@@ -9,17 +9,6 @@ use crate::session_start::cancel_session_start;
 use crate::session_start::complete_session_start;
 use crate::unarchive_prompt::run_unarchive_prompt;
 
-async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -> Option<String> {
-    let provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
-    match provider.runtime_base_url().await {
-        Ok(base_url) => base_url,
-        Err(err) => {
-            tracing::warn!(%err, "failed to resolve runtime model provider base URL for status");
-            None
-        }
-    }
-}
-
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
     local_settings: crate::local_settings::LocalSettings,
@@ -353,19 +342,6 @@ impl App {
         let workspace_command_runner: WorkspaceCommandRunner = Arc::new(
             AppServerWorkspaceCommandRunner::new(app_server.request_handle()),
         );
-        let runtime_model_provider_started_at = Instant::now();
-        let runtime_model_provider_base_url = match startup_draft
-            .run_until(
-                tui,
-                resolve_runtime_model_provider_base_url(&config.model_provider),
-            )
-            .await
-        {
-            Ok(base_url) => base_url,
-            Err(err) => return shutdown_on_startup_error(app_server, err).await,
-        };
-        let runtime_model_provider_ms = runtime_model_provider_started_at.elapsed().as_millis();
-
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let wait_for_initial_session_configured =
             Self::should_wait_for_initial_session(&session_selection);
@@ -435,7 +411,6 @@ impl App {
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
-                    runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
                     initial_plan_type,
                     model: Some(model.clone()),
                     startup_tooltip_override,
@@ -550,7 +525,6 @@ impl App {
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
-                    runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
                     initial_plan_type,
                     model: config.model.clone(),
                     startup_tooltip_override: None,
@@ -648,7 +622,6 @@ impl App {
                     feedback: feedback.clone(),
                     is_first_run,
                     status_account_display: status_account_display.clone(),
-                    runtime_model_provider_base_url: runtime_model_provider_base_url.clone(),
                     initial_plan_type,
                     model: config.model.clone(),
                     startup_tooltip_override: None,
@@ -894,7 +867,6 @@ See the Codex keymap documentation for supported actions and examples."
         tracing::info!(
             duration_ms = %(startup_elapsed_before_app + startup_started_at.elapsed()).as_millis(),
             bootstrap_ms = %bootstrap_ms,
-            runtime_model_provider_ms = %runtime_model_provider_ms,
             thread_and_widget_ms = %thread_and_widget_ms,
             initial_session_ms = %initial_session_ms,
             event_stream_ms = %event_stream_started_at.elapsed().as_millis(),

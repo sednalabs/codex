@@ -147,8 +147,6 @@ use codex_config::types::WindowsToml;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
-use codex_model_provider::create_model_provider;
-use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
@@ -818,10 +816,6 @@ impl App {
             feedback: self.feedback.clone(),
             is_first_run: false,
             status_account_display: self.chat_widget.status_account_display().cloned(),
-            runtime_model_provider_base_url: self
-                .chat_widget
-                .runtime_model_provider_base_url()
-                .map(str::to_string),
             initial_plan_type: self.chat_widget.current_plan_type(),
             model: Some(self.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,

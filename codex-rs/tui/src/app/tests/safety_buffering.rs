@@ -4,6 +4,7 @@ use crate::app::session_lifecycle::ThreadAttachPresentation;
 use crate::chatwidget::UserMessage;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
