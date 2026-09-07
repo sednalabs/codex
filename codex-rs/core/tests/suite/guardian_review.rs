@@ -1568,9 +1568,10 @@ async fn guardian_timeout_rejects_tool_call_with_acting_model_instructions(
     impl codex_extension_api::ApprovalReviewContributor for TimedOutReviewContributor {
         fn decide<'a>(
             &'a self,
-            _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+            input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
         ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
         {
+            assert_eq!(input.tool_call_id, Some("exec-call-timed-out"));
             Box::pin(async {
                 Some(codex_extension_api::ApprovalDecision::Reviewed(
                     ReviewDecision::TimedOut,

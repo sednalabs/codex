@@ -74,6 +74,8 @@ pub trait SynchronousApprovalReviewer: Send + Sync {
 /// Inputs to Guardian's policy choice. Conversation and scores stay thread-owned.
 pub struct ApprovalDecisionInput<'a> {
     pub approval_id: &'a str,
+    /// Host tool invocation being approved, absent for approvals without a tool call.
+    pub tool_call_id: Option<&'a str>,
     pub action: &'a serde_json::Value,
     pub thread_id: ThreadId,
     pub thread_store: &'a ExtensionData,

@@ -183,7 +183,12 @@ async fn cached_evidence(
     let lag = progress
         .latest_tool_call
         .load(Ordering::Acquire)
-        .saturating_sub(latest_scored);
+        .saturating_sub(latest_scored)
+        .saturating_sub(
+            progress
+                .wrapper_lag
+                .discount(input.tool_call_id, latest_scored),
+        );
     if let Some(metrics) = metrics {
         metrics.histogram(
             TOOL_CALL_LAG_METRIC,

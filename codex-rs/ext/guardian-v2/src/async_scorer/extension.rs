@@ -64,6 +64,7 @@ use super::truncation::ClassificationTruncations;
 use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
 use super::trusted_tools::trusted_tool_context;
+use super::wrapper_lag::WrapperLag;
 
 enum ClassificationOutcome {
     Scored,
@@ -72,6 +73,7 @@ enum ClassificationOutcome {
 
 #[derive(Default)]
 pub(super) struct GuardianV2ScoreProgress {
+    pub(super) wrapper_lag: WrapperLag,
     pub(super) latest_tool_call: AtomicUsize,
     // Setup and reset calls must not consume the first JS execution allowance.
     pub(super) js_executions: AtomicUsize,
@@ -276,15 +278,18 @@ impl GuardianV2Extension {
             match policy.unscored_action {
                 UnscoredAction::Ignore => {}
                 UnscoredAction::AgeScore => {
-                    score_progress
+                    let index = score_progress
                         .latest_tool_call
-                        .fetch_add(/*val*/ 1, Ordering::Relaxed);
+                        .fetch_add(/*val*/ 1, Ordering::Relaxed)
+                        .saturating_add(/*rhs*/ 1);
+                    score_progress.wrapper_lag.record(&input, index);
                 }
                 UnscoredAction::InvalidateScore => {
                     let index = score_progress
                         .latest_tool_call
                         .fetch_add(/*val*/ 1, Ordering::Relaxed)
                         .saturating_add(/*rhs*/ 1);
+                    score_progress.wrapper_lag.record(&input, index);
                     score_progress
                         .latest_failed_tool_call
                         .fetch_max(index, Ordering::Release);
@@ -307,6 +312,7 @@ impl GuardianV2Extension {
             .latest_tool_call
             .fetch_add(/*val*/ 1, Ordering::Relaxed)
             .saturating_add(/*rhs*/ 1);
+        score_progress.wrapper_lag.record(&input, tool_call_index);
         let event_sink = Arc::clone(&self.event_sink);
         let thread_id = input.thread_store.level_id().to_owned();
         let turn_id = input.turn_id.to_owned();

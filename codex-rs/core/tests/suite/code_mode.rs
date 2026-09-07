@@ -2375,12 +2375,19 @@ async fn code_mode_wait_timeout_reconnects_on_next_exec() -> Result<()> {
 #[derive(Default)]
 struct ResponseIdObserver {
     response_ids: Mutex<Vec<(String, Option<String>)>>,
+    originating_items: Mutex<Vec<(String, Option<codex_protocol::ResponseItemId>)>>,
     wait_started: tokio::sync::Notify,
 }
 
 impl ToolLifecycleContributor for ResponseIdObserver {
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            if matches!(input.tool_name.name.as_str(), "exec" | "exec_command") {
+                self.originating_items.lock().unwrap().push((
+                    input.tool_name.name.clone(),
+                    input.originating_item_id.cloned(),
+                ));
+            }
             if matches!(input.tool_name.name.as_str(), "exec_command" | "wait") {
                 self.response_ids.lock().unwrap().push((
                     input.tool_name.name.clone(),
@@ -2550,6 +2557,20 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
         text_item(&third_items, /*index*/ 0),
     );
     assert_eq!(text_item(&third_items, /*index*/ 1), "phase 3");
+
+    // Resuming the cell changes the response id, but its nested calls retain
+    // the original exec item's identity for request-local freshness accounting.
+    let originating_items = observer.originating_items.lock().unwrap();
+    let wrapper_item = originating_items[0]
+        .1
+        .clone()
+        .expect("wrapper item identity");
+    assert!(originating_items.len() >= 3);
+    assert!(
+        originating_items
+            .iter()
+            .all(|(_, item)| item.as_ref() == Some(&wrapper_item))
+    );
 
     let observed = observer.response_ids.lock().unwrap();
     let mut nested_response_ids = observed

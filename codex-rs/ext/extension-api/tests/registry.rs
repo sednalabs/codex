@@ -205,6 +205,7 @@ async fn build_round_trips_every_contributor_category() {
     let thread_store = ExtensionData::new("thread");
     let input = codex_extension_api::ApprovalDecisionInput {
         approval_id: "approval-1",
+        tool_call_id: None,
         action: &serde_json::Value::Null,
         thread_id: codex_protocol::ThreadId::new(),
         thread_store: &thread_store,

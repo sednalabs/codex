@@ -270,6 +270,7 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
                 turn_id: "turn-1",
                 root_turn_id: None,
                 call_id,
+                originating_item_id: None,
                 tool_name: &tool_name,
                 mcp_tool: None,
                 payload: &payload,
@@ -543,6 +544,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-2",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -634,6 +636,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "ordinary-call",
+            originating_item_id: None,
             tool_name: &ordinary_tool,
             mcp_tool: None,
             payload: &payload,
@@ -946,6 +949,7 @@ async fn sample_configured_conversation_history_with_source(
             turn_id: "turn-1",
             root_turn_id: Some("root-turn"),
             call_id: "call-1",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -1080,6 +1084,7 @@ impl GuardianFailureFixture {
                 turn_id: "turn-1",
                 root_turn_id: None,
                 call_id: "call-1",
+                originating_item_id: None,
                 tool_name: &tool_name,
                 mcp_tool: None,
                 payload: &payload,
@@ -2248,6 +2253,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "protected.md",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -2505,6 +2511,7 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "missing.md",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -2997,6 +3004,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-1",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -3072,6 +3080,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-2",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -3249,6 +3258,113 @@ impl codex_extension_api::SynchronousApprovalReviewer for CacheMiss {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let fixture = GuardianFailureFixture::new().await?;
+    let store = fixture.test.codex.thread_extension_data();
+    let progress = store.get::<GuardianV2ScoreProgress>().unwrap();
+    let mut score = store.get::<SecurityRiskScore>().unwrap().as_ref().clone();
+    score.scores.insert("action_risk".to_owned(), 0.0);
+    store.insert(score);
+    // Hold the cached score fixed while advancing real tool-start metadata.
+    let start = |call_id: &str, origin: &ResponseItemId, source: ToolCallSource| {
+        let tool_name = match source {
+            ToolCallSource::Direct => ToolName::plain("exec"),
+            ToolCallSource::CodeMode { .. } => ToolName::namespaced("mcp__example", "read"),
+        };
+        let payload = match source {
+            ToolCallSource::Direct => ToolPayload::Custom {
+                input: String::new(),
+            },
+            ToolCallSource::CodeMode { .. } => ToolPayload::Function {
+                arguments: "{}".to_owned(),
+            },
+        };
+        let index = progress
+            .latest_tool_call
+            .fetch_add(/*val*/ 1, Ordering::Relaxed)
+            + 1;
+        progress.wrapper_lag.record(
+            &ToolStartInput {
+                session_store: &fixture.session_store,
+                thread_store: store,
+                turn_store: &fixture.session_store,
+                turn_id: "turn",
+                root_turn_id: None,
+                call_id,
+                originating_item_id: Some(origin),
+                tool_name: &tool_name,
+                mcp_tool: None,
+                payload: &payload,
+                conversation_history: Arc::new(TestConversationHistory(Vec::new())),
+                source,
+            },
+            index,
+        );
+        index
+    };
+    let approve = async |call_id: &str| {
+        cached_approval(
+            &fixture.registry,
+            store,
+            &json!({"tool": "mcp_tool_call", "server": "example", "id": call_id}).to_string(),
+            /*metrics*/ None,
+        )
+        .await
+    };
+    let nested = ToolCallSource::CodeMode {
+        cell_id: "cell".to_owned(),
+        runtime_tool_call_id: "nested".to_owned(),
+    };
+    let origin = ResponseItemId::from_server("wrapper".to_owned());
+    let wrapper = start("wrapper", &origin, ToolCallSource::Direct);
+    for (call_id, expected) in [
+        ("first", Some(ReviewDecision::Approved)),
+        ("second", Some(ReviewDecision::Approved)),
+        ("third", None),
+    ] {
+        start(call_id, &origin, nested.clone());
+        assert_eq!(approve(call_id).await, expected);
+    }
+    // A score covering the wrapper must not receive another discount.
+    progress
+        .latest_scored_tool_call
+        .store(wrapper, Ordering::Release);
+    assert_eq!(approve("third").await, None);
+    progress
+        .latest_scored_tool_call
+        .store(wrapper + 3, Ordering::Release);
+    let output = start("output-only", &origin, ToolCallSource::Direct);
+    let other = ResponseItemId::from_server("other-wrapper".to_owned());
+    start("other-wrapper", &other, ToolCallSource::Direct);
+    start("other-first", &other, nested.clone());
+    assert_eq!(approve("other-first").await, Some(ReviewDecision::Approved));
+    assert_eq!(approve("unknown").await, None);
+    start("other-second", &other, nested.clone());
+    assert_eq!(approve("other-second").await, None);
+    // Covering a different wrapper still leaves this call's parent in its lag.
+    progress
+        .latest_scored_tool_call
+        .store(output, Ordering::Release);
+    assert_eq!(
+        approve("other-second").await,
+        Some(ReviewDecision::Approved)
+    );
+    // Evicted provenance falls back to the full lag.
+    for _ in 0..300 {
+        start("output-only", &origin, ToolCallSource::Direct);
+    }
+    start("late-child", &other, nested);
+    assert_eq!(
+        progress
+            .wrapper_lag
+            .discount(Some("late-child"), /*latest_scored*/ 0),
+        0
+    );
+    Ok(())
+}
+
 /// Exercises decision routing; a fresh review is observed as a cache miss.
 async fn cached_approval(
     registry: &codex_extension_api::ExtensionRegistry<Config>,
@@ -3275,6 +3391,7 @@ async fn cached_approval(
     };
     let input = codex_extension_api::ApprovalDecisionInput {
         approval_id: "cache-probe",
+        tool_call_id: action.get("id").and_then(serde_json::Value::as_str),
         action: &action,
         thread_id: codex_protocol::ThreadId::from_string(store.level_id()).unwrap(),
         thread_store: store,

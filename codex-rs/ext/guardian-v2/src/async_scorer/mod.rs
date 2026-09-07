@@ -12,6 +12,7 @@ mod transcript;
 mod truncation;
 mod trusted_skills;
 mod trusted_tools;
+mod wrapper_lag;
 
 pub(crate) use config::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
 pub(crate) use config::GuardianV2Config;
