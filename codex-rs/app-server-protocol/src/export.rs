@@ -25,7 +25,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_history::RolloutLine;
 use schemars::schema_for;
-use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1571,8 +1570,11 @@ where
     write_json_schema_with_return::<T>(out_dir, name)
 }
 
-fn write_pretty_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
-    let json = serde_json::to_vec_pretty(value)
+fn write_pretty_json(path: PathBuf, value: &Value) -> Result<()> {
+    let mut value = value.clone();
+    // Keep Cargo and Bazel output identical without changing meaningful array order.
+    value.sort_all_objects();
+    let json = serde_json::to_vec_pretty(&value)
         .with_context(|| format!("Failed to serialize JSON schema to {}", path.display()))?;
     fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
