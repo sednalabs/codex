@@ -73,6 +73,8 @@ use super::wrapper_lag::WrapperLag;
 use codex_core::context::GuardianReviewEvidenceFragment;
 use codex_guardian_context::PreviousReviews;
 use codex_guardian_context::ReviewEvidence;
+use codex_guardian_context::TranscriptImageInput;
+use codex_guardian_context::TranscriptImages;
 use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
@@ -479,9 +481,6 @@ impl GuardianV2Extension {
         } else {
             Vec::new()
         };
-        let rendered_images = guardian_config
-            .transcript
-            .images(input.conversation_history.review_items(), node_repl_images);
         // Capture root evidence before background metadata resolution or model I/O.
         // Later root changes invalidate this sample through its captured authorization version.
         let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
@@ -581,6 +580,14 @@ impl GuardianV2Extension {
                         previous_reviews: Some(&reviews),
                         trusted_tool: trusted_tool_context.as_ref(),
                         trusted_skill_paths: &trusted_skill_paths,
+                        images: Some(TranscriptImageInput {
+                            enabled: guardian_config.transcript.include_images,
+                            include_tool_outputs: guardian_config
+                                .transcript
+                                .sources
+                                .contains(&super::transcript::TranscriptSource::ToolOutputs),
+                            node_repl_images: &node_repl_images,
+                        }),
                     })
                 });
             let transcript = match transcript {
@@ -602,19 +609,16 @@ impl GuardianV2Extension {
                 }
             };
             drop(history);
+            drop(node_repl_images);
             truncations.extend(transcript.truncations);
-            truncations.record(
-                "transcript_image",
-                rendered_images.omitted_bytes,
-                /*retained_bytes*/ 0,
-            );
-            let images = rendered_images.images;
             let mut classification_input = Vec::new();
             let mut trusted_review_evidence = None;
             let mut trusted_tool_context = None;
             let mut trusted_skills = None;
+            let mut rendered_images = TranscriptImages::default();
             for section in transcript.sections {
                 match section {
+                    ContextSection::TranscriptImages(images) => rendered_images = images,
                     ContextSection::TrustedSkills(skills) => trusted_skills = Some(skills),
                     ContextSection::TrustedTool(tool) => trusted_tool_context = Some(tool),
                     ContextSection::PreviousReviews(reviews) => {
@@ -636,6 +640,12 @@ impl GuardianV2Extension {
                     }
                 }
             }
+            truncations.record(
+                "transcript_image",
+                rendered_images.omitted_bytes,
+                /*retained_bytes*/ 0,
+            );
+            let images = rendered_images.images;
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;

@@ -3,6 +3,7 @@
 use crate::ConversationTranscriptEntry;
 use crate::PlannedAction;
 use crate::PreviousReviews;
+use crate::TranscriptImages;
 use crate::TrustedSkills;
 use crate::TrustedTool;
 
@@ -23,5 +24,6 @@ pub enum ContextSection<T = ConversationTranscriptEntry> {
     PreviousReviews(PreviousReviews),
     TrustedTool(TrustedTool),
     TrustedSkills(TrustedSkills),
+    TranscriptImages(TranscriptImages),
     PermissionContext { items: Vec<String> },
 }

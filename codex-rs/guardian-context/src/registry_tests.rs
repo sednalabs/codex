@@ -93,6 +93,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
+        images: None,
     });
     let async_sections = registry.collect(&SectionInput {
         target: ContextTarget::Async,
@@ -105,6 +106,7 @@ fn registry_collects_target_specific_sections_in_registration_order() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
+        images: None,
     });
 
     assert_eq!(
@@ -168,6 +170,7 @@ fn registry_skips_optional_sections_and_stops_on_missing_required_evidence() {
                 previous_reviews: None,
                 trusted_tool: None,
                 trusted_skill_paths: &[],
+                images: None,
             }),
             Err(error.clone())
         );
@@ -232,6 +235,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                 previous_reviews: Some(&reviews),
                 trusted_tool: Some(&tool),
                 trusted_skill_paths: &["debug-secret/SKILL.md".into()],
+                images: None,
             })
             .unwrap();
         assert!(!format!("{context:?}").contains("debug-secret"));
@@ -288,6 +292,7 @@ fn reused_registry_preserves_section_identity_and_source_roles() {
                     previous_reviews: None,
                     trusted_tool: None,
                     trusted_skill_paths: &[],
+                    images: None,
                 })
                 .unwrap(),
             vec![ContextSection::ConversationTranscript { items: Vec::new() }]

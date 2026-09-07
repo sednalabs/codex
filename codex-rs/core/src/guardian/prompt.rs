@@ -239,6 +239,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     push_text(headings.intro.to_string());
     let mut action_items = Vec::new();
     let mut permission_items = Vec::new();
+    let mut image_items = Vec::new();
     for section in sections {
         match section {
             ContextSection::RootConversation { items }
@@ -252,6 +253,14 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             | ContextSection::TrustedTool(_)
             | ContextSection::TrustedSkills(_) => {
                 unreachable!("trusted review and tool sections are async-only")
+            }
+            ContextSection::TranscriptImages(images) => {
+                image_items.extend(images.images.into_iter().filter_map(|image| match image {
+                    codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
+                        Some(UserInput::Image { image_url, detail })
+                    }
+                    _ => None,
+                }));
             }
             ContextSection::ConversationTranscript { .. } => {}
             ContextSection::PermissionContext { items } => permission_items = items,
@@ -276,6 +285,7 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     for text in permission_items {
         push_text(text);
     }
+    items.extend(image_items);
     let mut node_repl_evidence_sequence = reviewed_node_repl_evidence_sequence;
     if node_repl_transcripts_enabled
         && let Some(fragment) = session
@@ -488,6 +498,7 @@ pub(super) fn collect_guardian_context(
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
+        images: None,
     })
 }
 

@@ -50,7 +50,10 @@ mod action;
 mod authorization;
 mod entry;
 mod history;
+mod images;
 mod permissions;
+pub use images::TranscriptImageInput;
+pub use images::TranscriptImages;
 mod trusted_skills;
 mod trusted_tool;
 pub use trusted_skills::TrustedSkills;
@@ -122,6 +125,8 @@ pub struct SectionInput<'a> {
     pub trusted_tool: Option<&'a TrustedTool>,
     /// Current-turn and delegated skill paths verified and bounded by the host.
     pub trusted_skill_paths: &'a [String],
+    /// Optional consumer image policy; no history images are added implicitly.
+    pub images: Option<TranscriptImageInput<'a>>,
 }
 
 /// Supplies repeatable, zero-copy access to a host-owned conversation snapshot.
@@ -216,6 +221,7 @@ pub fn default_registry() -> &'static SectionRegistry {
         registry.register(RetainedUserInstructionsSection);
         registry.register(TrustedUserAnswersSection);
         registry.register(ConversationTranscriptSection);
+        registry.register(images::TranscriptImagesSection);
         registry.register(permissions::PermissionContextSection);
         registry.register(action::PlannedActionSection);
         registry
