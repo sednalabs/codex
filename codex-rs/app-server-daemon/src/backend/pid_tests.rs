@@ -226,6 +226,41 @@ async fn stop_reaps_untracked_app_server_child() {
     assert!(!pid_file.exists());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn exited_unreaped_updater_is_reaped() {
+    let temp = TempDir::new().expect("temp dir");
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn updater shim");
+    let record = PidRecord {
+        pid: child.id(),
+        process_start_time: read_process_start_time(child.id())
+            .await
+            .expect("start time"),
+    };
+    let backend =
+        PidBackend::new_update_loop(temp.path().join("codex"), temp.path().join("updater.pid"));
+    child.kill().expect("terminate updater shim");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let result = loop {
+        let result = backend.record_is_active(&record).await;
+        if matches!(&result, Ok(false)) || tokio::time::Instant::now() >= deadline {
+            break result;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(!result.expect("check zombie updater"));
+    assert_eq!(
+        child
+            .wait()
+            .expect_err("updater shim was already reaped")
+            .raw_os_error(),
+        Some(libc::ECHILD)
+    );
+}
+
 #[test]
 fn update_loop_uses_hidden_app_server_subcommand() {
     let backend = PidBackend {
