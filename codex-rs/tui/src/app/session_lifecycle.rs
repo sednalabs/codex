@@ -1146,6 +1146,11 @@ impl App {
             Ok(config) => config,
             Err(control) => return Ok(control),
         };
+        if self.reject_remote_resume_permission_override(&resume_config) {
+            return Ok(AppRunControl::Continue);
+        }
+        let baseline_approval = resume_config.permissions.approval_policy.value();
+        let baseline_permissions = RuntimePermissionProfileOverride::from_config(&resume_config);
         self.apply_runtime_policy_overrides(&mut resume_config, RuntimePolicyOverrideScope::All);
 
         let summary = session_summary(
@@ -1228,6 +1233,15 @@ impl App {
                     self.ensure_thread_channel(resumed_thread_id)
                         .mark_external_writer();
                     self.chat_widget.show_external_writer_thread();
+                }
+                if self.app_server_target.uses_remote_workspace() {
+                    let config = self.chat_widget.config_ref();
+                    let approval = config.permissions.approval_policy.value();
+                    self.runtime_approval_policy_override = (approval != baseline_approval)
+                        .then_some(RuntimeApprovalPolicyOverride::Restored(approval.into()));
+                    self.runtime_permission_profile_override = (!baseline_permissions
+                        .matches_config(config))
+                    .then(|| RuntimePermissionProfileOverride::from_restored_config(config));
                 }
                 self.backfill_loaded_subagent_threads(app_server).await;
                 if !read_only {

@@ -2897,6 +2897,91 @@ async fn reset_memories_clears_local_memory_directories() -> Result<()> {
 }
 
 #[tokio::test]
+async fn resume_rejects_selected_config_profile_permission_definitions() -> Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n",
+    )?;
+    let selected = home.path().join("work.config.toml");
+    std::fs::write(
+        &selected,
+        "default_permissions = \":workspace\"\n[permissions.unused]\nextends = \":read-only\"\n",
+    )?;
+    let mut loader = codex_config::LoaderOverrides::without_managed_config_for_tests();
+    loader.user_config_path = Some(selected.abs());
+    loader.user_config_profile = Some("work".parse()?);
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(loader)
+        .build()
+        .await?;
+    assert!(config_persistence::has_explicit_resume_permission_override(
+        &config,
+        &ConfigOverrides::default()
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
+    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n",
+    )?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    let mut server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let selected = home.path().join("work.config.toml");
+    std::fs::write(
+        &selected,
+        "[permissions.unused]\nextends = \":read-only\"\n",
+    )?;
+    app.loader_overrides.user_config_path = Some(selected.abs());
+    app.loader_overrides.user_config_profile = Some("work".parse()?);
+    assert!(
+        !config_persistence::has_explicit_resume_permission_override(
+            &app.config,
+            &app.harness_overrides
+        )
+    );
+    let refreshed = app
+        .rebuild_config_for_cwd(app.config.cwd.to_path_buf())
+        .await?;
+    assert!(config_persistence::has_explicit_resume_permission_override(
+        &refreshed,
+        &app.harness_overrides
+    ));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.resume_target_session(
+        &mut tui,
+        &mut server,
+        SessionTarget {
+            thread_id: ThreadId::new(),
+            path: None,
+            history_mode: None,
+        },
+    )
+    .await?;
+    assert_eq!(app.active_thread_id, None);
+    let cell = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => Some(cell),
+            _ => None,
+        })
+        .expect("permission override error");
+    insta::assert_snapshot!(
+        lines_to_single_string(&cell.display_lines(/*width*/ 80)),
+        @"■ Permission overrides are not supported when resuming a remote task."
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn apply_permission_profile_selection_preserves_loader_overrides() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;
@@ -7169,7 +7254,25 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config))
         .await?
         .with_remote_cwd_override(Some(remote_cwd.clone()));
+    app_server
+        .resume_thread(
+            &crate::local_settings::LocalSettings::from(&app.config),
+            app.config.clone(),
+            ThreadId::from_string(&thread_id)?,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.runtime_approval_policy_override = Some(RuntimeApprovalPolicyOverride::Restored(
+        AskForApproval::Never,
+    ));
+    let mut prior_config = app.config.clone();
+    prior_config
+        .permissions
+        .set_permission_profile(PermissionProfile::read_only())?;
+    app.runtime_permission_profile_override = Some(
+        RuntimePermissionProfileOverride::from_restored_config(&prior_config),
+    );
 
     let control = app
         .resume_target_session(
@@ -7190,6 +7293,8 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
         &local_cwd,
     ));
     assert_eq!(app.config.workspace_roots, local_workspace_roots);
+    assert_eq!(app.runtime_approval_policy_override, None);
+    assert!(app.runtime_permission_profile_override.is_none());
     app_server.shutdown().await?;
     Ok(())
 }

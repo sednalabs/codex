@@ -1,4 +1,6 @@
+use super::super::ForkPermissionMode;
 use super::super::ResumeModelSettings;
+use super::super::ThreadParamsMode;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use app_test_support::create_fake_paginated_rollout;
@@ -17,6 +19,159 @@ async fn build_config(temp_dir: &TempDir) -> Config {
         .build()
         .await
         .expect("config should build")
+}
+
+#[tokio::test]
+async fn remote_resume_restores_saved_server_profile_without_permission_overrides() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        "default_permissions = \":workspace\"\n[permissions.server-only]\nextends = \":read-only\"\n",
+    )?;
+    let config = build_config(&home).await;
+    let client_config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .cli_overrides(vec![(
+            "default_permissions".to_string(),
+            ":workspace".into(),
+        )])
+        .harness_overrides(crate::legacy_core::config::ConfigOverrides {
+            default_permissions: Some(":read-only".into()),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+    let thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            home.path(),
+            "2025-01-05T12-00-00",
+            "2025-01-05T12:00:00Z",
+            "Saved user message",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create source rollout"),
+    )?;
+    let mut server = crate::start_embedded_app_server_for_picker(&config).await?;
+    server.thread_params_mode = ThreadParamsMode::Remote;
+    let local_settings = crate::local_settings::LocalSettings::from(&client_config);
+    let initial = server
+        .resume_thread(
+            &local_settings,
+            client_config.clone(),
+            thread_id,
+            ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+    assert_eq!(
+        initial
+            .session
+            .active_permission_profile
+            .map(|profile| profile.id),
+        Some(":workspace".to_string())
+    );
+    server
+        .thread_settings_update(codex_app_server_protocol::ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            permissions: Some("server-only".into()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            approvals_reviewer: Some(codex_app_server_protocol::ApprovalsReviewer::AutoReview),
+            ..Default::default()
+        })
+        .await?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(codex_app_server_client::AppServerEvent::ServerNotification(notification)) =
+                server.next_event().await
+                && let codex_app_server_protocol::ServerNotification::ThreadSettingsUpdated(
+                    settings,
+                ) = *notification
+                && settings.thread_id == thread_id.to_string()
+                && settings
+                    .thread_settings
+                    .active_permission_profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.id == "server-only")
+            {
+                break;
+            }
+        }
+    })
+    .await?;
+    server.shutdown().await?;
+
+    let mut server = crate::start_embedded_app_server_for_picker(&config).await?;
+    server.thread_params_mode = ThreadParamsMode::Remote;
+    let resumed = server
+        .resume_thread(
+            &local_settings,
+            client_config.clone(),
+            thread_id,
+            ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+    assert_eq!(
+        resumed
+            .session
+            .active_permission_profile
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some("server-only")
+    );
+    assert_eq!(
+        resumed.session.approval_policy,
+        codex_app_server_protocol::AskForApproval::Never
+    );
+    assert_eq!(
+        resumed.session.approvals_reviewer,
+        codex_protocol::config_types::ApprovalsReviewer::AutoReview
+    );
+    let forked = server
+        .fork_thread(&local_settings, client_config, thread_id)
+        .await?;
+    assert_eq!(
+        forked
+            .session
+            .active_permission_profile
+            .as_ref()
+            .map(|profile| profile.id.as_str()),
+        Some("server-only")
+    );
+    assert_eq!(
+        forked.session.approval_policy,
+        codex_app_server_protocol::AskForApproval::Never
+    );
+    assert_eq!(
+        forked.session.approvals_reviewer,
+        codex_protocol::config_types::ApprovalsReviewer::AutoReview
+    );
+    let explicit_config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .harness_overrides(crate::legacy_core::config::ConfigOverrides {
+            sandbox_mode: Some(codex_protocol::config_types::SandboxMode::ReadOnly),
+            approval_policy: Some(codex_protocol::protocol::AskForApproval::OnRequest),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+    let explicit_fork = server
+        .fork_thread_with_permission_mode(
+            &local_settings,
+            explicit_config,
+            thread_id,
+            ForkPermissionMode::OverrideFromCurrentConfig,
+        )
+        .await?;
+    assert_eq!(
+        explicit_fork.session.approval_policy,
+        codex_app_server_protocol::AskForApproval::OnRequest
+    );
+    assert_eq!(
+        explicit_fork.session.permission_profile,
+        codex_protocol::models::PermissionProfile::read_only()
+    );
+    server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]

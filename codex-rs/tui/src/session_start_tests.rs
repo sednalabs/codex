@@ -23,7 +23,7 @@ async fn start_session(
 async fn archived_session_requires_confirmation_before_resume_or_fork() -> Result<()> {
     for action in [
         SessionStartAction::Resume(ResumeModelSettings::RestoreFromThread),
-        SessionStartAction::Fork,
+        SessionStartAction::Fork(crate::app_server_session::ForkPermissionMode::InheritSaved),
     ] {
         let codex_home = TempDir::new()?;
         let config = ConfigBuilder::default()
@@ -79,7 +79,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
             SessionStartAction::Resume(_) => {
                 assert_eq!(started.session.thread_id, target.thread_id)
             }
-            SessionStartAction::Fork => {
+            SessionStartAction::Fork(_) => {
                 assert_ne!(started.session.thread_id, target.thread_id);
                 assert_eq!(
                     app_server

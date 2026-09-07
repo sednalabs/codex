@@ -52,6 +52,39 @@ pub(super) fn resume_model_settings_for_overrides(
     }
 }
 
+pub(super) fn has_explicit_resume_permission_override(
+    config: &Config,
+    overrides: &ConfigOverrides,
+) -> bool {
+    overrides.approval_policy.is_some()
+        || overrides.approvals_reviewer.is_some()
+        || overrides.sandbox_mode.is_some()
+        || overrides.permission_profile.is_some()
+        || overrides.default_permissions.is_some()
+        || !overrides.additional_writable_roots.is_empty()
+        || overrides.workspace_roots.is_some()
+        || config.config_layer_stack.layers_high_to_low().any(|layer| {
+            matches!(
+                &layer.name,
+                ConfigLayerSource::SessionFlags
+                    | ConfigLayerSource::User {
+                        profile: Some(_),
+                        ..
+                    }
+            ) && [
+                "approval_policy",
+                "approvals_reviewer",
+                "sandbox_mode",
+                "default_permissions",
+                "permissions",
+                "network",
+                "sandbox_workspace_write",
+            ]
+            .iter()
+            .any(|key| layer.config.get(*key).is_some())
+        })
+}
+
 impl App {
     pub(super) async fn rebuild_config_for_cwd(&self, cwd: PathBuf) -> Result<Config> {
         let mut overrides = self.harness_overrides.clone();
@@ -879,6 +912,33 @@ impl App {
 
     pub(super) fn resume_model_settings(&self) -> crate::app_server_session::ResumeModelSettings {
         resume_model_settings_for_overrides(&self.config, &self.harness_overrides)
+    }
+
+    pub(super) fn reject_remote_resume_permission_override(&mut self, config: &Config) -> bool {
+        if self.app_server_target.thread_params_mode()
+            != crate::app_server_session::ThreadParamsMode::Remote
+        {
+            return false;
+        }
+        let explicitly_selected =
+            has_explicit_resume_permission_override(config, &self.harness_overrides)
+                || matches!(
+                    self.runtime_approval_policy_override,
+                    Some(RuntimeApprovalPolicyOverride::Explicit(_))
+                )
+                || self
+                    .runtime_permission_profile_override
+                    .as_ref()
+                    .is_some_and(|profile| {
+                        profile.turn_override == RuntimePermissionProfileTurnOverride::LegacySandbox
+                    });
+        if explicitly_selected {
+            self.chat_widget.add_error_message(
+                "Permission overrides are not supported when resuming a remote task.".into(),
+            );
+            return true;
+        }
+        false
     }
 
     pub(super) fn on_update_personality(&mut self, personality: Personality) {

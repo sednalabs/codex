@@ -432,6 +432,21 @@ impl App {
                 (chat_widget, None)
             }
             SessionSelection::Resume(target_session) => {
+                if app_server_target.thread_params_mode()
+                    == crate::app_server_session::ThreadParamsMode::Remote
+                    && config_persistence::has_explicit_resume_permission_override(
+                        &config,
+                        &harness_overrides,
+                    )
+                {
+                    return shutdown_on_startup_error(
+                        app_server,
+                        color_eyre::eyre::eyre!(
+                            "Permission overrides are not supported when resuming a remote task."
+                        ),
+                    )
+                    .await;
+                }
                 if let Some(history_mode) = target_session.history_mode {
                     app_server.remember_thread_history_mode(target_session.thread_id, history_mode);
                 }
@@ -528,6 +543,28 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(resumed))
             }
             SessionSelection::Fork(target_session) => {
+                let explicit_permission_override =
+                    config_persistence::has_explicit_resume_permission_override(
+                        &config,
+                        &harness_overrides,
+                    );
+                if explicit_permission_override
+                    && app_server_target.thread_params_mode()
+                        == crate::app_server_session::ThreadParamsMode::Remote
+                {
+                    return shutdown_on_startup_error(
+                        app_server,
+                        color_eyre::eyre::eyre!(
+                            "Permission overrides are not supported when forking a remote task."
+                        ),
+                    )
+                    .await;
+                }
+                let permission_mode = if explicit_permission_override {
+                    crate::app_server_session::ForkPermissionMode::OverrideFromCurrentConfig
+                } else {
+                    crate::app_server_session::ForkPermissionMode::InheritSaved
+                };
                 session_telemetry.counter(
                     "codex.thread.fork",
                     /*inc*/ 1,
@@ -536,10 +573,11 @@ impl App {
                 let forked = match startup_draft
                     .run_until(
                         tui,
-                        app_server.fork_thread(
+                        app_server.fork_thread_with_permission_mode(
                             &local_settings,
                             config.clone(),
                             target_session.thread_id,
+                            permission_mode,
                         ),
                     )
                     .await
@@ -547,7 +585,7 @@ impl App {
                     Ok(forked) => forked,
                     Err(err) => return shutdown_on_startup_error(app_server, err).await,
                 };
-                let action = SessionStartAction::Fork;
+                let action = SessionStartAction::Fork(permission_mode);
                 let Some(forked) = complete_session_start(
                     &mut app_server,
                     &config,

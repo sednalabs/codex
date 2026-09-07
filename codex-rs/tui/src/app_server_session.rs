@@ -170,6 +170,12 @@ pub(crate) enum ForkGoalContinuation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ForkPermissionMode {
+    InheritSaved,
+    OverrideFromCurrentConfig,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ForkPresentation {
     Regular,
     SideConversation,
@@ -830,13 +836,31 @@ impl AppServerSession {
         config: Config,
         thread_id: ThreadId,
     ) -> Result<AppServerStartedThread> {
-        self.fork_thread_at(
+        self.fork_thread_with_permission_mode(
+            local_settings,
+            config,
+            thread_id,
+            ForkPermissionMode::InheritSaved,
+        )
+        .await
+    }
+
+    pub(crate) async fn fork_thread_with_permission_mode(
+        &mut self,
+        local_settings: &LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        permission_mode: ForkPermissionMode,
+    ) -> Result<AppServerStartedThread> {
+        self.fork_thread_at_with_presentation(
             local_settings,
             config,
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
+            ForkPresentation::Regular,
+            permission_mode,
         )
         .await
     }
@@ -858,6 +882,7 @@ impl AppServerSession {
             before_turn_id,
             goal_continuation,
             ForkPresentation::Regular,
+            ForkPermissionMode::InheritSaved,
         )
         .await
     }
@@ -876,6 +901,7 @@ impl AppServerSession {
             /*before_turn_id*/ None,
             ForkGoalContinuation::StartIfIdle,
             ForkPresentation::SideConversation,
+            ForkPermissionMode::InheritSaved,
         )
         .await
     }
@@ -893,6 +919,7 @@ impl AppServerSession {
         before_turn_id: Option<String>,
         goal_continuation: ForkGoalContinuation,
         presentation: ForkPresentation,
+        permission_mode: ForkPermissionMode,
     ) -> Result<AppServerStartedThread> {
         let fork_parent = match presentation {
             ForkPresentation::Regular => self
@@ -920,6 +947,15 @@ impl AppServerSession {
                 self.remote_cwd_override.as_deref(),
             )
         };
+        if self.thread_params_mode() == ThreadParamsMode::Remote
+            && permission_mode == ForkPermissionMode::InheritSaved
+        {
+            params.approval_policy = None;
+            params.approvals_reviewer = None;
+            params.sandbox = None;
+            params.permissions = None;
+            remove_permission_config_overrides(&mut params.config);
+        }
         self.thread_tool_transport()
             .configure_mcp(&mut params.config);
         let response: ThreadForkResponse = match self
@@ -1816,6 +1852,22 @@ fn config_request_overrides_from_config(
     Some(overrides)
 }
 
+fn remove_permission_config_overrides(config: &mut Option<HashMap<String, serde_json::Value>>) {
+    if let Some(overrides) = config.as_mut() {
+        for key in [
+            "default_permissions",
+            "permissions",
+            "network",
+            "sandbox_workspace_write",
+        ] {
+            overrides.remove(key);
+        }
+    }
+    if config.as_ref().is_some_and(HashMap::is_empty) {
+        *config = None;
+    }
+}
+
 fn service_tier_override_from_config(config: &Config) -> Option<Option<String>> {
     let local_settings = LocalSettings::from(config);
     config.service_tier.clone().map(Some).or_else(|| {
@@ -2001,7 +2053,7 @@ fn thread_resume_params_from_config(
             (None, None)
         }
     };
-    ThreadResumeParams {
+    let mut params = ThreadResumeParams {
         thread_id: thread_id.to_string(),
         model,
         model_provider,
@@ -2017,7 +2069,16 @@ fn thread_resume_params_from_config(
             &config, /*control_instructions*/ None,
         ),
         ..ThreadResumeParams::default()
+    };
+    if thread_params_mode == ThreadParamsMode::Remote {
+        // Resuming restores the server's saved permission settings, including named profiles.
+        params.approval_policy = None;
+        params.approvals_reviewer = None;
+        params.sandbox = None;
+        params.permissions = None;
+        remove_permission_config_overrides(&mut params.config);
     }
+    params
 }
 
 fn thread_fork_params_from_config(
@@ -3052,7 +3113,9 @@ mod tests {
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
         assert_eq!(start.sandbox, expected_sandbox);
-        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, None);
+        assert_eq!(resume.approval_policy, None);
+        assert_eq!(resume.approvals_reviewer, None);
         assert_eq!(fork.sandbox, expected_sandbox);
         assert_eq!(start.permissions, None);
         assert_eq!(resume.permissions, None);
@@ -3062,7 +3125,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_resume_params_keep_local_roots_with_cross_platform_cwd_override() {
+    async fn remote_resume_params_keep_cwd_without_overriding_saved_permissions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = build_config(&temp_dir).await;
         let expected_workspace_roots = config.workspace_roots.clone();
@@ -3192,7 +3255,7 @@ mod tests {
         assert_eq!(resume.model_provider, None);
         assert_eq!(fork.model_provider, None);
         assert_eq!(start.sandbox, expected_sandbox);
-        assert_eq!(resume.sandbox, expected_sandbox);
+        assert_eq!(resume.sandbox, None);
         assert_eq!(fork.sandbox, expected_sandbox);
         assert_eq!(start.permissions, None);
         assert_eq!(resume.permissions, None);
