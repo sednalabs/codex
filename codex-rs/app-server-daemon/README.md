@@ -32,6 +32,7 @@ initialize the connection, the TUI starts an embedded server instead. Explicit
 ```sh
 codex app-server daemon start
 codex app-server daemon restart
+codex app-server daemon update
 codex app-server daemon enable-remote-control
 codex app-server daemon disable-remote-control
 codex app-server daemon stop
@@ -53,7 +54,17 @@ default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
 ```
 
 Positive minute intervals have no configured cap. `daemon restart` applies the
-enabled state; the next updater wait reads a new interval. `codex update` is unaffected.
+enabled state; the next updater wait reads a new interval. The preference does
+not affect an explicit `codex update` command or `daemon update`.
+
+`daemon update` checks the latest stable release once, even with automatic
+updates disabled. It requires a Codex installer-owned latest-channel standalone
+install. JSON reports `updated`, `noUpdate`, or `unsupported`, with installed
+and running versions. The updater owns scheduled and manual installs. A manual
+update restarts a running managed daemon, so active or queued work may be
+interrupted.
+Accepted updates continue if the CLI exits. Installer errors return nonzero.
+The updater uses saved network settings; CLI `-c` overrides do not reach it.
 
 ## Bootstrap flow
 

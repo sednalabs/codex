@@ -787,6 +787,9 @@ enum AppServerDaemonSubcommand {
     /// Restart the local app server daemon.
     Restart,
 
+    /// Update the standalone installation and restart the managed daemon (may interrupt work).
+    Update,
+
     /// Enable remote control for future starts and a currently running managed daemon.
     EnableRemoteControl,
 
@@ -1377,6 +1380,10 @@ async fn cli_main(
                     }
                     AppServerDaemonSubcommand::Restart => {
                         print_app_server_daemon_output(AppServerLifecycleCommand::Restart).await?;
+                    }
+                    AppServerDaemonSubcommand::Update => {
+                        let output = codex_app_server_daemon::update().await?;
+                        println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::EnableRemoteControl => {
                         print_app_server_remote_control_output(AppServerRemoteControlMode::Enabled)
@@ -2616,6 +2623,7 @@ fn app_server_subcommand_name(subcommand: Option<&AppServerSubcommand>) -> &'sta
             AppServerDaemonSubcommand::Bootstrap(_) => "app-server daemon bootstrap",
             AppServerDaemonSubcommand::Start => "app-server daemon start",
             AppServerDaemonSubcommand::Restart => "app-server daemon restart",
+            AppServerDaemonSubcommand::Update => "app-server daemon update",
             AppServerDaemonSubcommand::EnableRemoteControl => {
                 "app-server daemon enable-remote-control"
             }

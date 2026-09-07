@@ -168,6 +168,18 @@ fn managed_start_keeps_updater_on_marker_mismatch_but_stops_it_for_pin() -> Resu
     std::fs::write(&marker, "0.1.0-other-target")?;
     assert_eq!(daemon.lifecycle("start")?["status"], "alreadyRunning");
     assert_eq!(daemon.pid("app-server-updater.pid")?, updater_pid);
+    assert_eq!(daemon.lifecycle("update")?["status"], "unsupported");
+    std::thread::sleep(Duration::from_millis(250));
+    let updater_state = Command::new("/bin/ps")
+        .args(["-p", &updater_pid.to_string(), "-o", "stat="])
+        .output()?;
+    ensure!(
+        updater_state.status.success()
+            && !String::from_utf8_lossy(&updater_state.stdout)
+                .trim()
+                .starts_with('Z'),
+        "updater exited during the latest marker transition"
+    );
 
     std::fs::remove_file(marker)?;
 
@@ -242,6 +254,7 @@ fn unmanaged_app_server_does_not_launch_updater() -> Result<()> {
     let output = daemon.lifecycle("start")?;
     assert_eq!(output["status"], "alreadyRunning");
     assert_eq!(output["backend"], Value::Null);
+    assert_eq!(daemon.lifecycle("update")?["status"], "unsupported");
     assert!(
         !daemon
             .home
@@ -249,5 +262,21 @@ fn unmanaged_app_server_does_not_launch_updater() -> Result<()> {
             .join("app-server-daemon/app-server-updater.pid")
             .exists()
     );
+    Ok(())
+}
+
+#[test]
+fn manual_update_rejects_an_unowned_installation() -> Result<()> {
+    let daemon = TestDaemon::new()?;
+    std::fs::remove_file(
+        daemon
+            .home
+            .path()
+            .join("packages/standalone/auto-update-version"),
+    )?;
+
+    assert_eq!(daemon.lifecycle("update")?["status"], "unsupported");
+    assert!(daemon.pid("app-server.pid").is_err());
+    assert!(daemon.pid("app-server-updater.pid").is_err());
     Ok(())
 }

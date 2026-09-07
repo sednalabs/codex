@@ -105,6 +105,24 @@ pub struct BootstrapOutput {
     pub app_server_version: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateStatus {
+    Updated,
+    NoUpdate,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateOutput {
+    pub status: UpdateStatus,
+    pub managed_codex_path: PathBuf,
+    pub installed_version: Option<String>,
+    pub running_version: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum RemoteControlStartOutput {
@@ -174,14 +192,8 @@ pub(crate) enum RestartIfRunningOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartMode {
     IfVersionChanged,
+    IfBinaryOrVersionChanged,
     Always,
-}
-
-#[cfg(any(unix, windows))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdaterRefreshMode {
-    None,
-    ReexecIfManagedBinaryChanged,
 }
 
 #[cfg(any(unix, windows))]
@@ -252,6 +264,13 @@ pub async fn run_pid_update_loop(
     #[cfg(windows)]
     backend::windows::ensure_not_elevated()?;
     update_loop::run(http_client_factory).await
+}
+
+pub async fn update() -> Result<UpdateOutput> {
+    ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
+    update_loop::request_manual_update(&Daemon::from_environment()?).await
 }
 
 #[cfg(any(unix, windows))]
@@ -388,7 +407,6 @@ impl Daemon {
     pub(crate) async fn try_restart_if_running(
         &self,
         mode: RestartMode,
-        updater_refresh_mode: UpdaterRefreshMode,
         managed_codex_bin: &Path,
     ) -> Result<RestartIfRunningOutcome> {
         let operation_lock = self.open_operation_lock_file().await?;
@@ -407,7 +425,7 @@ impl Daemon {
             // this lock or probes the running server. Never restart from a
             // release that is no longer the selected latest-channel binary.
             if !self.is_stable_standalone_release()?
-                || managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+                || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
                     .await
                     .ok()
                     .as_deref()
@@ -415,6 +433,18 @@ impl Daemon {
             {
                 return Ok(RestartIfRunningOutcome::AlreadyCurrent);
             }
+            let mode = if mode == RestartMode::IfBinaryOrVersionChanged {
+                let managed_identity =
+                    managed_install::executable_identity(managed_codex_bin).await?;
+                if backend.running_executable_identity().await?.as_ref() == Some(&managed_identity)
+                {
+                    RestartMode::IfVersionChanged
+                } else {
+                    RestartMode::Always
+                }
+            } else {
+                mode
+            };
             match restart_decision(mode, info.as_ref(), managed_version.as_deref()) {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
@@ -422,7 +452,9 @@ impl Daemon {
                     #[cfg(windows)]
                     backend::windows::ensure_detached_launch(managed_codex_bin)?;
                     backend.stop().await?;
-                    let _ = self.start_managed_backend(&settings).await?;
+                    let _ = self
+                        .start_managed_backend_with_bin(&settings, managed_codex_bin)
+                        .await?;
                     self.wait_until_ready().await?;
                     RestartIfRunningOutcome::Restarted
                 }
@@ -436,7 +468,7 @@ impl Daemon {
         };
 
         if !self.is_stable_standalone_release()?
-            || managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
+            || managed_install::resolved_managed_codex_bin(&self.current_managed_codex_bin()?)
                 .await
                 .ok()
                 .as_deref()
@@ -444,19 +476,6 @@ impl Daemon {
         {
             return Ok(RestartIfRunningOutcome::AlreadyCurrent);
         }
-        #[cfg(unix)]
-        if should_reexec_updater(updater_refresh_mode, outcome) {
-            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
-        }
-        #[cfg(windows)]
-        if should_reexec_updater(updater_refresh_mode, outcome) {
-            backend::pid_update_loop_backend(
-                self.backend_paths_with_bin(&settings, managed_codex_bin),
-            )
-            .replace_current_updater()
-            .await?;
-        }
-
         Ok(outcome)
     }
 
@@ -767,8 +786,18 @@ impl Daemon {
             .context("daemon settings path has no Codex home")?;
         Ok(managed_install::is_stable_standalone_release(
             codex_home,
-            &self.managed_codex_bin,
+            &self.current_managed_codex_bin()?,
         ))
+    }
+
+    fn current_managed_codex_bin(&self) -> Result<PathBuf> {
+        // An installer can move a legacy binary into bin/ while this updater runs.
+        let home = self
+            .settings_file
+            .parent()
+            .and_then(Path::parent)
+            .context("daemon settings path has no Codex home")?;
+        Ok(managed_install::managed_codex_bin(home))
     }
 
     fn has_latest_selection_marker(&self) -> bool {
@@ -839,6 +868,11 @@ impl Daemon {
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
         }
+    }
+
+    fn manual_update_socket_path(&self) -> PathBuf {
+        self.update_pid_file
+            .with_file_name("app-server-updater.sock")
     }
 
     async fn load_settings(&self) -> Result<DaemonSettings> {
@@ -948,6 +982,9 @@ fn restart_decision(
     managed_version: Option<&str>,
 ) -> RestartDecision {
     match (mode, info, managed_version) {
+        (RestartMode::IfBinaryOrVersionChanged, _, _) => {
+            unreachable!("binary comparison is resolved before restart decision")
+        }
         (RestartMode::IfVersionChanged, None, _) => RestartDecision::NotReady,
         (RestartMode::IfVersionChanged, Some(info), Some(managed_version))
             if info.app_server_version == managed_version =>
@@ -956,15 +993,6 @@ fn restart_decision(
         }
         _ => RestartDecision::Restart,
     }
-}
-
-#[cfg(any(unix, windows))]
-fn should_reexec_updater(
-    updater_refresh_mode: UpdaterRefreshMode,
-    outcome: RestartIfRunningOutcome,
-) -> bool {
-    updater_refresh_mode == UpdaterRefreshMode::ReexecIfManagedBinaryChanged
-        && outcome == RestartIfRunningOutcome::Restarted
 }
 
 #[cfg(unix)]
@@ -1002,11 +1030,8 @@ mod tests {
     use super::RemoteControlStartOutput;
     use super::RemoteControlStatus;
     use super::RestartDecision;
-    use super::RestartIfRunningOutcome;
     use super::RestartMode;
-    use super::UpdaterRefreshMode;
     use super::restart_decision;
-    use super::should_reexec_updater;
     use crate::client::ProbeInfo;
     #[cfg(unix)]
     use crate::settings::DaemonSettings;
@@ -1016,38 +1041,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RemoteControlStatus::AlreadyEnabled).expect("serialize"),
             "\"alreadyEnabled\""
-        );
-    }
-
-    #[test]
-    fn updater_reexec_waits_for_validated_restart() {
-        assert_eq!(
-            [
-                RestartIfRunningOutcome::Busy,
-                RestartIfRunningOutcome::NotReady,
-                RestartIfRunningOutcome::AlreadyCurrent,
-                RestartIfRunningOutcome::NotRunning,
-                RestartIfRunningOutcome::Restarted,
-            ]
-            .map(|outcome| {
-                should_reexec_updater(UpdaterRefreshMode::ReexecIfManagedBinaryChanged, outcome)
-            }),
-            [false, false, false, false, true]
-        );
-    }
-
-    #[test]
-    fn unchanged_updater_never_reexecs() {
-        assert_eq!(
-            [
-                RestartIfRunningOutcome::Busy,
-                RestartIfRunningOutcome::NotReady,
-                RestartIfRunningOutcome::AlreadyCurrent,
-                RestartIfRunningOutcome::NotRunning,
-                RestartIfRunningOutcome::Restarted,
-            ]
-            .map(|outcome| should_reexec_updater(UpdaterRefreshMode::None, outcome)),
-            [false, false, false, false, false]
         );
     }
 

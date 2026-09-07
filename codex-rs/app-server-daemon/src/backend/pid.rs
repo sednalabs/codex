@@ -78,8 +78,6 @@ enum PidCommandKind {
 }
 
 impl PidBackend {
-    // Used by the stacked manual-update command to compare the running image.
-    #[allow(dead_code)]
     pub(crate) async fn running_executable_identity(&self) -> Result<Option<ExecutableIdentity>> {
         match self.read_pid_file_state().await? {
             PidFileState::Running(record) if self.record_is_active(&record).await? => {
