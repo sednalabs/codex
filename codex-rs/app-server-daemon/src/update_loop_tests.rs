@@ -87,6 +87,42 @@ fn post_install_release_must_be_strictly_newer_before_restart_or_reexec() {
     );
 }
 
+#[test]
+fn post_install_ineligible_release_still_reconciles_running_processes() {
+    assert!(!post_install_release_is_strictly_newer(
+        "1.2.3-sedna.1",
+        "not-a-sedna-release"
+    ));
+    assert_eq!(
+        update_modes_for_identities(
+            &executable_identity_from_bytes(b"updater-a"),
+            &executable_identity_from_bytes(b"current-b"),
+        ),
+        (
+            RestartMode::Always,
+            UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
+        )
+    );
+}
+
+#[test]
+fn post_install_non_newer_release_still_reconciles_before_reporting_failure() {
+    assert!(!post_install_release_is_strictly_newer(
+        "1.2.3-sedna.1",
+        "1.2.3-sedna.1"
+    ));
+    assert_eq!(
+        update_modes_for_identities(
+            &executable_identity_from_bytes(b"updater-a"),
+            &executable_identity_from_bytes(b"current-b"),
+        ),
+        (
+            RestartMode::Always,
+            UpdaterRefreshMode::ReexecIfManagedBinaryChanged,
+        )
+    );
+}
+
 #[tokio::test]
 async fn sedna_installer_fetch_uses_exact_url_and_preserves_bytes() {
     let script = b"#!/bin/bash\nprintf 'sedna update bytes'\n".to_vec();

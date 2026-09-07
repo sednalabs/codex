@@ -137,12 +137,23 @@ async fn update_once(
 
     let managed_release = resolved_managed_standalone_release(&daemon.managed_codex_bin).await?;
     let Some(installed_release) = managed_release.sedna_auto_update else {
+        let settings = daemon.load_settings().await?;
+        daemon
+            .reconcile_updater(&settings, &managed_release)
+            .await?;
         return Err(anyhow::anyhow!(
             "managed release is no longer eligible for automatic updates after installation"
         ));
     };
     if !post_install_release_is_strictly_newer(&installed_from_version, &installed_release.version)
     {
+        reconcile_running_processes_to_managed_release(
+            &daemon,
+            running_updater_identity,
+            &managed_release.executable,
+            terminate,
+        )
+        .await?;
         return Err(anyhow::anyhow!(
             "managed release after installation was not strictly newer than the release selected for update"
         ));
