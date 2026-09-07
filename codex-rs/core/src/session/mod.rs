@@ -1,3 +1,4 @@
+use crate::context::GuardianContextMode;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -3777,7 +3778,7 @@ impl Session {
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
-        if self.enabled(Feature::GuardianThreadContext)
+        if self.guardian_context_mode == GuardianContextMode::ThreadOwned
             && let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
                 matches!(
                     envelope.item,

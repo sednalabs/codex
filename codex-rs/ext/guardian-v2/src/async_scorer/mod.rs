@@ -5,6 +5,7 @@ mod config;
 mod coverage;
 mod extension;
 mod metrics;
+mod parent_compaction;
 mod review_evidence;
 mod sampler;
 mod transcript;

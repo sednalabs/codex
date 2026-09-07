@@ -12,6 +12,7 @@ use crate::config::ConfigOverrides;
 use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::context::DeveloperInstructions;
+use crate::context::GuardianContextMode;
 use crate::context::TurnAborted;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::ThreadEnvironments;
@@ -6620,6 +6621,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        guardian_context_mode: GuardianContextMode::from_features(&config.features),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
@@ -8784,9 +8786,9 @@ where
     );
 
     let mut state = SessionState::new(session_configuration.clone());
-    if config.features.enabled(Feature::GuardianThreadContext) {
-        state.history.enable_user_message_retention();
-    }
+    state.history = ContextManager::with_guardian_context_mode(GuardianContextMode::from_features(
+        &config.features,
+    ));
     let (environment_manager, resolved_turn_environments) =
         resolved_environments_for_configuration(&session_configuration, &default_environments)
             .await;
@@ -8925,6 +8927,7 @@ where
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
+        guardian_context_mode: GuardianContextMode::from_features(&config.features),
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::context_manager::ContextManager;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::openai_models::AutoReviewMessages;
@@ -54,6 +55,7 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
         &params.spawn_config,
         parent.user_instructions().await,
         params.parent_history.history_version(),
+        parent.guardian_context_mode,
     )
     .with_environments(params.parent_context.environments())
     .with_node_repl_policy_eligibility(
@@ -146,6 +148,7 @@ async fn test_review_session() -> (
         session.get_config().await.as_ref(),
         session.user_instructions().await,
         session.clone_history().await.history_version(),
+        GuardianContextMode::Legacy,
     );
 
     (
@@ -298,6 +301,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
         &cached_spawn_config,
         /*user_instructions*/ None,
         /*parent_history_version*/ 0,
+        GuardianContextMode::Legacy,
     );
 
     let mut changed_parent_config = parent_config;
@@ -315,6 +319,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
         &next_spawn_config,
         /*user_instructions*/ None,
         /*parent_history_version*/ 0,
+        GuardianContextMode::Legacy,
     );
 
     assert_eq!(
@@ -328,6 +333,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
             &cached_spawn_config,
             /*user_instructions*/ None,
             /*parent_history_version*/ 0,
+            GuardianContextMode::Legacy,
         )
     );
 
@@ -337,6 +343,7 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
             &cached_spawn_config,
             /*user_instructions*/ None,
             /*parent_history_version*/ 1,
+            GuardianContextMode::Legacy,
         )
     );
     assert_ne!(
@@ -372,11 +379,13 @@ async fn guardian_review_session_config_change_invalidates_cached_session() {
             &compaction_enabled_config,
             /*user_instructions*/ None,
             /*parent_history_version*/ 0,
+            GuardianContextMode::Legacy,
         ),
         GuardianReviewSessionReuseKey::from_spawn_config(
             &compaction_enabled_config,
             /*user_instructions*/ None,
             /*parent_history_version*/ 1,
+            GuardianContextMode::Legacy,
         )
     );
 }
@@ -393,6 +402,8 @@ async fn encrypted_parent_compaction_requires_original_item_id(thread_context_en
     features
         .set_enabled(Feature::GuardianThreadContext, thread_context_enabled)
         .expect("context mode");
+    let policy =
+        ReviewContextPolicy::for_context(GuardianContextMode::from_features(&features), &features);
     let item = ResponseItem::Compaction {
         id: Some(codex_protocol::ResponseItemId::from_server(
             "cmp_guardian_parent_summary".to_string(),
@@ -410,7 +421,8 @@ async fn encrypted_parent_compaction_requires_original_item_id(thread_context_en
         }),
     }]);
     assert_eq!(
-        encrypted_parent_compaction(&history, &features, Some("compatible"))
+        policy
+            .parent_compaction(&history, Some("compatible"))
             .expect("valid checkpoint"),
         Some(item)
     );
@@ -425,7 +437,7 @@ async fn encrypted_parent_compaction_requires_original_item_id(thread_context_en
         .into(),
     );
     history.replace_annotated(items);
-    let result = encrypted_parent_compaction(&history, &features, Some("compatible"));
+    let result = policy.parent_compaction(&history, Some("compatible"));
     if thread_context_enabled {
         assert!(result.is_err());
     } else {
@@ -484,6 +496,7 @@ async fn guardian_review_session_compact_scope_change_invalidates_cached_session
         &cached_spawn_config,
         /*user_instructions*/ None,
         /*parent_history_version*/ 0,
+        GuardianContextMode::Legacy,
     );
 
     let mut changed_parent_config = parent_config;
@@ -501,6 +514,7 @@ async fn guardian_review_session_compact_scope_change_invalidates_cached_session
         &next_spawn_config,
         /*user_instructions*/ None,
         /*parent_history_version*/ 0,
+        GuardianContextMode::Legacy,
     );
 
     assert_ne!(cached_reuse_key, next_reuse_key);
@@ -897,6 +911,7 @@ async fn run_review_removes_trunk_when_event_stream_is_broken() {
             .clone_history()
             .await
             .history_version(),
+        GuardianContextMode::Legacy,
     )
     .with_environments(params.parent_context.environments())
     .with_node_repl_policy(&params.node_repl_policy);

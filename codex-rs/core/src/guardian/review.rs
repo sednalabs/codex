@@ -1,3 +1,4 @@
+use crate::context::GuardianContextMode;
 use codex_analytics::GuardianApprovalRequestSource;
 use codex_analytics::GuardianReviewAnalyticsResult;
 use codex_analytics::GuardianReviewDecision;
@@ -627,7 +628,7 @@ pub(super) async fn run_synchronous_review(
             },
         ))
         .await;
-    if session.enabled(Feature::GuardianThreadContext)
+    if session.guardian_context_mode == GuardianContextMode::ThreadOwned
         && matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
         && (root_authorization_version
             != session

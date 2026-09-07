@@ -12,10 +12,10 @@ use codex_analytics::GuardianV2Event;
 use codex_analytics::GuardianV2EventKind;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::context::GuardianContextMode;
 use codex_core::context::GuardianReviewEvidence;
 use codex_core::context::NodeReplReviewEvidence;
 use codex_extension_api::ApprovalReviewContributor;
-use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
@@ -23,7 +23,6 @@ use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::GuardianV2Enabled;
-use codex_extension_api::ResponseItem;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::ThreadLifecycleContributor;
@@ -45,7 +44,6 @@ use codex_protocol::openai_models::GuardianReviewMode;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ReviewDecision;
-use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::has_full_access;
 use codex_protocol::security_risk::SecurityRiskScore;
 
@@ -61,6 +59,8 @@ use super::metrics::record_classification;
 use super::metrics::record_classification_risk;
 use super::metrics::record_fast_decision;
 use super::metrics::sampler_failure_reason;
+use super::parent_compaction::ParentCompactionError;
+use super::parent_compaction::select_parent_compaction;
 use super::review_evidence::render_review_evidence;
 use super::sampler::LunaSampler;
 use super::sampler::LunaSamplerConfig;
@@ -263,7 +263,7 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                 return None;
             }
             let guardian_evidence = thread_store.get_or_init(GuardianReviewEvidence::default);
-            let thread_context_enabled = guardian_evidence.uses_thread_owned_context();
+            let context_mode = guardian_evidence.context_mode();
             let mut initial_cua_call = false;
             if scope == Some(GuardianScope::ComputerUse) && policy.initial_cua_call {
                 // Thread-owned context checks checkpoint compatibility before the first CUA allowance.
@@ -278,7 +278,7 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                         .js_executions
                         .load(Ordering::Acquire)
                         == 1;
-                if initial_cua_call && !thread_context_enabled {
+                if initial_cua_call && context_mode == GuardianContextMode::Legacy {
                     record_fast_decision(
                         extension_metrics.as_deref(),
                         "approved",
@@ -323,14 +323,16 @@ impl ApprovalReviewContributor for GuardianV2Extension {
                 return None;
             };
             let history = thread.conversation_history_snapshot().await;
-            if thread_context_enabled {
+            if context_mode == GuardianContextMode::ThreadOwned {
                 let sampler = thread_store.get::<LunaSampler>()?;
-                if requires_sync_for_compaction(&guardian_config, history.as_ref(), &sampler)
-                    || encrypted_parent_compaction(
-                        history.items(),
-                        guardian_config.max_parent_compaction_tokens,
-                    )
-                    .is_err()
+                if select_parent_compaction(
+                    context_mode,
+                    &guardian_config,
+                    history.as_ref(),
+                    &sampler,
+                    /*legacy_model_hash*/ None,
+                )
+                .is_err()
                 {
                     thread_store.insert(StrictReviewReason::IncompatibleCompaction);
                     record_fast_decision(
@@ -608,64 +610,38 @@ impl GuardianV2Extension {
         let guardian_evidence = input
             .thread_store
             .get_or_init(GuardianReviewEvidence::default);
-        let thread_context_enabled = guardian_evidence.uses_thread_owned_context();
-        if thread_context_enabled
-            && requires_sync_for_compaction(
-                &guardian_config,
-                input.conversation_history.as_ref(),
-                &sampler,
-            )
-        {
-            score_progress
-                .latest_failed_tool_call
-                .fetch_max(tool_call_index, Ordering::Release);
-            Self::record_fail_closed_score(input.thread_store, sampled_at);
-            record_classification(
-                metrics.as_deref(),
-                classification_started_at.elapsed(),
-                "skipped",
-                /*failure_reason*/ None,
-            );
-            return;
-        }
-        let parent_compaction_hash = if thread_context_enabled {
-            input
-                .conversation_history
-                .latest_compaction_model_hash()
-                .map(str::to_owned)
-        } else {
+        let context_mode = guardian_evidence.context_mode();
+        let selected_compaction = match select_parent_compaction(
+            context_mode,
+            &guardian_config,
+            input.conversation_history.as_ref(),
+            &sampler,
             parent_model
                 .as_ref()
-                .and_then(|model| model.comp_hash.clone())
-        };
-        let parent_compaction = if guardian_config.reuse_parent_compaction {
-            match encrypted_parent_compaction(
-                input.conversation_history.items(),
-                guardian_config.max_parent_compaction_tokens,
-            ) {
-                Ok(compaction) => compaction,
-                Err(ParentCompactionError::Unusable) if !thread_context_enabled => None,
-                Err(_) => {
-                    Self::record_fail_closed_score(input.thread_store, sampled_at);
-                    record_classification(
-                        metrics.as_deref(),
-                        classification_started_at.elapsed(),
-                        "failure",
-                        Some("parent_compaction_error"),
-                    );
-                    return;
-                }
+                .and_then(|model| model.comp_hash.as_deref()),
+        ) {
+            Ok(compaction) => compaction,
+            Err(error) => {
+                let (outcome, failure_reason) = if error == ParentCompactionError::RequiresSync {
+                    score_progress
+                        .latest_failed_tool_call
+                        .fetch_max(tool_call_index, Ordering::Release);
+                    ("skipped", None)
+                } else {
+                    ("failure", Some("parent_compaction_error"))
+                };
+                Self::record_fail_closed_score(input.thread_store, sampled_at);
+                record_classification(
+                    metrics.as_deref(),
+                    classification_started_at.elapsed(),
+                    outcome,
+                    failure_reason,
+                );
+                return;
             }
-        } else {
-            None
         };
-        // Legacy requests may omit an incompatible checkpoint because their raw
-        // review transcript is still retained. The sampler rejects supplied
-        // incompatible checkpoints, so preserve that legacy omission here.
-        let parent_compaction = parent_compaction.filter(|_| {
-            thread_context_enabled
-                || sampler.supports_parent_compaction(parent_compaction_hash.as_deref())
-        });
+        let parent_compaction = selected_compaction.item;
+        let parent_compaction_hash = selected_compaction.model_hash;
         let call_id = input.call_id.to_owned();
         let mcp_tool = input.mcp_tool.cloned();
         let action = GuardianAction {
@@ -697,7 +673,7 @@ impl GuardianV2Extension {
             .images(input.conversation_history.review_items(), node_repl_images);
         // Capture root evidence before background metadata resolution or model I/O.
         // Later root changes invalidate this sample through its captured authorization version.
-        let root_snapshot = if thread_context_enabled {
+        let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
             thread.guardian_root_snapshot().await
         } else {
             None
@@ -712,7 +688,7 @@ impl GuardianV2Extension {
                 }
                 None => None,
             };
-            let root_snapshot = if thread_context_enabled {
+            let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
                 root_snapshot
             } else {
                 thread.guardian_root_snapshot().await
@@ -984,71 +960,6 @@ impl GuardianV2Extension {
             }
         });
     }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(super) enum ParentCompactionError {
-    Serialization,
-    Oversized,
-    Unusable,
-}
-
-// Sampling and fast approval must apply the same checkpoint eligibility policy.
-pub(super) fn requires_sync_for_compaction(
-    config: &GuardianV2Config,
-    history: &dyn ConversationHistorySnapshot,
-    sampler: &LunaSampler,
-) -> bool {
-    history.items().any(|item| {
-        matches!(
-            item,
-            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-        )
-    }) && (!config.reuse_parent_compaction
-        || !sampler.supports_parent_compaction(history.latest_compaction_model_hash()))
-}
-
-// An unusable latest compaction must never fall back to an older one. Missing
-// encrypted content is rejected here; only legacy callers may omit that checkpoint.
-pub(super) fn encrypted_parent_compaction<'a>(
-    items: impl Iterator<Item = &'a ResponseItem>,
-    max_parent_compaction_tokens: usize,
-) -> Result<Option<ResponseItem>, ParentCompactionError> {
-    let max_compaction_bytes = TruncationPolicy::Tokens(max_parent_compaction_tokens).byte_budget();
-    let Some(item) = items
-        .filter(|item| {
-            matches!(
-                item,
-                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-            )
-        })
-        .last()
-    else {
-        return Ok(None);
-    };
-
-    let encrypted_content = match item {
-        ResponseItem::Compaction {
-            id: Some(_),
-            encrypted_content,
-            ..
-        }
-        | ResponseItem::ContextCompaction {
-            id: Some(_),
-            encrypted_content: Some(encrypted_content),
-            ..
-        } => encrypted_content,
-        _ => return Err(ParentCompactionError::Unusable),
-    };
-    if encrypted_content.is_empty() {
-        return Err(ParentCompactionError::Unusable);
-    }
-    let serialized = serde_json::to_vec(item).map_err(|_| ParentCompactionError::Serialization)?;
-    if serialized.len() > max_compaction_bytes {
-        return Err(ParentCompactionError::Oversized);
-    }
-
-    Ok(Some(item.clone()))
 }
 
 /// Installs feature-gated Guardian V2 tool classification for each thread.

@@ -8,6 +8,7 @@ use super::AgentControl;
 use crate::codex_thread::GuardianRootMessage;
 use crate::codex_thread::GuardianRootSnapshot;
 use crate::compact::is_summary_message;
+use crate::context::GuardianContextMode;
 use crate::context::GuardianReviewEvidence;
 use crate::context::is_contextual_user_fragment;
 use crate::event_mapping::parse_turn_item;
@@ -48,7 +49,9 @@ impl AgentControl {
             .thread_extension_data
             .get_or_init(GuardianReviewEvidence::default);
         let mut latest_user_turn_id = None;
-        let (messages, authorization_version) = if root_evidence.uses_thread_owned_context() {
+        let (messages, authorization_version) = if root_evidence.context_mode()
+            == GuardianContextMode::ThreadOwned
+        {
             let mut missing_root_instructions = false;
             let mut messages = history
                 .retained_context()
