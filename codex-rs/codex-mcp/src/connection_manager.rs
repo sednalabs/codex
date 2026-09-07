@@ -548,6 +548,15 @@ impl McpConnectionSet {
                 runtime_auth_provider,
                 client_elicitation_capability.clone(),
                 client_mcp_extensions.clone(),
+                auth_manager
+                    .as_ref()
+                    .filter(|_| {
+                        matches!(
+                            &configured_config.transport,
+                            McpServerTransportConfig::Stdio { .. }
+                        )
+                    })
+                    .map(|manager| manager.auth_change_state_receiver()),
                 protocol_mode,
                 catalog_item_limit,
             );

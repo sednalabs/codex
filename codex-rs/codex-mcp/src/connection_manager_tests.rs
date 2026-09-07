@@ -451,6 +451,7 @@ async fn legacy_tool_catalog_does_not_follow_pagination_cursor() -> anyhow::Resu
 
 async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
     ManagedClient {
+        _auth_change_notifications: None,
         client: Arc::new(
             RmcpClient::new_in_process_client(Arc::new(TestInProcessTransportFactory))
                 .await
@@ -754,6 +755,7 @@ pub(crate) async fn create_test_manager_with_ready_apps_client(
         .await?;
 
     let managed_client = ManagedClient {
+        _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Codex Apps"),
         tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool])),
@@ -5078,6 +5080,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
     )
     .await?;
     let managed_client = ManagedClient {
+        _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Mutable tools"),
         tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools)),
