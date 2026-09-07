@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::ResponseItemEnvelope;
+
 const MAX_FAMILY_RECORDS: usize = 8;
 const MAX_RECORD_BYTES: usize = 16_384;
 const MAX_FAMILY_BYTES: usize = 65_536;
@@ -54,7 +56,7 @@ struct Ordered<T> {
     value: T,
 }
 
-/// Borrowed host evidence in original arrival order, across retained families.
+/// Borrowed host evidence across retained families.
 pub enum RetainedContextEntry<'a> {
     UserMessage(&'a RetainedUserMessage),
     VerifiedAnswer(&'a VerifiedAnswer),
@@ -176,11 +178,17 @@ impl RetainedContext {
     }
 
     pub fn user_messages_complete(&self) -> bool {
-        !self.user_messages_incomplete
+        !self.has_missing_user_messages()
             && self
                 .user_messages
                 .iter()
                 .all(|message| message.value.complete)
+    }
+
+    /// Whether instruction records were lost or omitted by legacy capture.
+    /// Bounded excerpts keep their source record and do not set this marker.
+    pub fn has_missing_user_messages(&self) -> bool {
+        self.user_messages_incomplete
     }
 
     /// A skipped instruction leaves a gap that later checkpoints must preserve.
@@ -188,7 +196,11 @@ impl RetainedContext {
         self.user_messages_incomplete = true;
     }
 
-    pub fn ordered_entries(&self) -> impl DoubleEndedIterator<Item = RetainedContextEntry<'_>> {
+    /// Returns retained evidence with its persisted order, shared across both families.
+    /// Explicit acceptance order survives delayed recording; legacy records use recording order.
+    pub fn ordered_entries(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (u64, RetainedContextEntry<'_>)> {
         let mut entries = self
             .verified_answers
             .iter()
@@ -205,7 +217,7 @@ impl RetainedContext {
             )
             .collect::<Vec<_>>();
         entries.sort_by_key(|(order, _)| *order);
-        entries.into_iter().map(|(_, entry)| entry)
+        entries.into_iter()
     }
 
     /// Records a delivered user item with its acceptance order. Legacy items without
@@ -285,7 +297,8 @@ impl RetainedContext {
 
     /// Restoring a saved thread must not bypass the live storage limits.
     /// A missing checkpoint cannot establish complete historical user instructions.
-    pub fn restore(&mut self, checkpoint: Option<&Self>) {
+    /// Surviving local input metadata also advances the counter when its retained record is missing.
+    pub fn restore(&mut self, checkpoint: Option<&Self>, surviving_items: &[ResponseItemEnvelope]) {
         *self = checkpoint.cloned().unwrap_or_else(|| Self {
             user_messages_incomplete: true,
             ..Self::default()
@@ -303,6 +316,14 @@ impl RetainedContext {
         for entry in &mut self.user_messages {
             entry.value.bound();
             self.next_order = self.next_order.max(entry.order.saturating_add(1));
+        }
+        for order in surviving_items
+            .iter()
+            .filter_map(|item| item.metadata.as_ref())
+            .filter(|metadata| !metadata.inherited_user_message)
+            .filter_map(|metadata| metadata.user_input_order)
+        {
+            self.next_order = self.next_order.max(order.saturating_add(1));
         }
         bound_family(
             &mut self.verified_answers,

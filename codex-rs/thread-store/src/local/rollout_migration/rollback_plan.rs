@@ -417,7 +417,7 @@ impl RollbackPlanner {
                     if source.acceptance_order.is_some()
                         || context
                             .ordered_entries()
-                            .any(|entry| matches!(entry, RetainedContextEntry::UserMessage(_)))
+                            .any(|(_, entry)| matches!(entry, RetainedContextEntry::UserMessage(_)))
                     {
                         context.rollback(
                             &removed_turns,

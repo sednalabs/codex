@@ -1085,7 +1085,7 @@ async fn forked_parent_instructions_do_not_become_local_authorization(
     assert_eq!(
         expected.as_ref().map(|context| context
             .ordered_entries()
-            .map(|entry| match entry {
+            .map(|(_, entry)| match entry {
                 codex_history::RetainedContextEntry::UserMessage(message) => message.text.as_str(),
                 codex_history::RetainedContextEntry::VerifiedAnswer(_) =>
                     panic!("unexpected answer"),

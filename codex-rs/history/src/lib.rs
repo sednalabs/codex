@@ -166,8 +166,10 @@ impl JsonSchema for RolloutItem {
 }
 
 mod guardian_history;
+mod reconciled_retained_context;
 mod retained_context;
 
+pub use reconciled_retained_context::ReconciledRetainedContext;
 pub use retained_context::RetainedContext;
 pub use retained_context::RetainedContextEntry;
 pub use retained_context::RetainedContextEvent;

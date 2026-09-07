@@ -214,7 +214,7 @@ impl ContextManager {
     }
 
     pub(crate) fn restore_retained_context(&mut self, checkpoint: Option<&RetainedContext>) {
-        Arc::make_mut(&mut self.retained_context).restore(checkpoint);
+        Arc::make_mut(&mut self.retained_context).restore(checkpoint, &self.items);
     }
 
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
