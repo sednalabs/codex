@@ -264,6 +264,7 @@ impl App {
                         .as_ref()
                         .and_then(|session| session.rollout_path.clone()),
                     thread_id,
+                    cwd: None,
                     history_mode: None,
                 };
                 let _ = self.resume_target_session(tui, app_server, target).await;

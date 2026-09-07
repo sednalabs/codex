@@ -120,6 +120,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
         crate::resume_picker::SessionTarget {
             path,
             thread_id,
+            cwd: None,
             history_mode: None,
         },
     )
@@ -3844,6 +3845,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         crate::resume_picker::SessionTarget {
                             path: Some(root_rollout_path),
                             thread_id: root_thread_id,
+                            cwd: None,
                             history_mode: None,
                         },
                     )

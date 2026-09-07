@@ -49,6 +49,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let target = SessionTarget {
             path: Some(archived_path.clone()),
             thread_id: ThreadId::from_string(&id)?,
+            cwd: None,
             history_mode: None,
         };
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
@@ -105,6 +106,7 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         let missing = SessionTarget {
             path: None,
             thread_id: ThreadId::new(),
+            cwd: None,
             history_mode: None,
         };
         let error = start_session(&mut app_server, &config, &missing, action, async || {
@@ -131,6 +133,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
         thread_id,
+        cwd: None,
         history_mode: None,
     };
     let expected = format!(

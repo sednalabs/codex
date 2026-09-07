@@ -19,7 +19,6 @@ use crate::legacy_core::config::Config;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::markdown_render::render_streaming_markdown_lines_with_width_and_cwd as render_assistant;
 use crate::pager_overlay::Overlay;
-use crate::session_resume::resolve_session_thread_id;
 use crate::status::format_directory_display;
 use crate::style::footer_hint_key_style;
 use crate::style::footer_hint_label_style;
@@ -107,6 +106,8 @@ const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 pub struct SessionTarget {
     pub path: Option<PathBuf>,
     pub thread_id: ThreadId,
+    /// Working directory reported by `thread/list` or `thread/read` at selection time.
+    pub cwd: Option<PathBuf>,
     /// History mode observed during selection, if the server provided one.
     pub history_mode: Option<ThreadHistoryMode>,
 }
@@ -780,6 +781,7 @@ fn spawn_app_server_page_loader(
                         .map(|response| SessionTarget {
                             path: response.thread.path,
                             thread_id,
+                            cwd: Some(response.thread.cwd.to_path_buf()),
                             history_mode: Some(response.thread.history_mode),
                         })
                         .map_err(std::io::Error::other);
@@ -1280,17 +1282,7 @@ impl PickerState {
             _ if self.list_keymap.accept.is_pressed(key) => {
                 if let Some(row) = self.filtered_rows.get(self.selected) {
                     let path = row.path.clone();
-                    let thread_id = match row.thread_id {
-                        Some(thread_id) => Some(thread_id),
-                        None => match path.as_ref() {
-                            Some(path) => {
-                                resolve_session_thread_id(path.as_path(), /*id_str_if_uuid*/ None)
-                                    .await
-                            }
-                            None => None,
-                        },
-                    };
-                    if let Some(thread_id) = thread_id {
+                    if let Some(thread_id) = row.thread_id {
                         if self.status == SessionStatus::Archived {
                             self.request_unarchive(thread_id);
                             return Ok(None);
@@ -1298,6 +1290,7 @@ impl PickerState {
                         return Ok(Some(self.action.selection(SessionTarget {
                             path,
                             thread_id,
+                            cwd: row.cwd.clone(),
                             history_mode: self.thread_history_modes.get(&thread_id).copied(),
                         })));
                     }
@@ -4033,6 +4026,7 @@ mod tests {
             "indexed metadata",
         );
         row.thread_id = Some(thread_id);
+        row.cwd = Some(PathBuf::from("/tmp/saved-cwd"));
         let mut listed_page = ok_page(vec![row], /*next_cursor*/ None)
             .expect("indexed thread page should be available");
         listed_page
@@ -4048,9 +4042,10 @@ mod tests {
             selection,
             Some(SessionSelection::Resume(SessionTarget {
                 thread_id: selected_thread_id,
+                cwd: Some(cwd),
                 history_mode: Some(ThreadHistoryMode::Legacy),
                 ..
-            })) if selected_thread_id == thread_id
+            })) if selected_thread_id == thread_id && cwd == Path::new("/tmp/saved-cwd")
         ));
     }
 
@@ -6520,6 +6515,7 @@ session_picker_view = "dense"
             Some(SessionSelection::Resume(SessionTarget {
                 path: None,
                 thread_id: selected_thread_id,
+                cwd: None,
                 history_mode: None,
             })) => assert_eq!(selected_thread_id, thread_id),
             other => panic!("unexpected selection: {other:?}"),

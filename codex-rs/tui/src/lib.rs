@@ -16,6 +16,7 @@ use crate::legacy_core::config::resolve_profile_v2_config_path;
 use crate::session_resume::ResolveCwdOutcome;
 use crate::session_resume::ResumeCwdContext;
 use crate::session_resume::effective_resume_cwd_mode;
+use crate::session_resume::read_session_cwd;
 use crate::session_resume::resolve_cwd_for_resume_or_fork;
 pub use crate::startup_error::LocalStateDbStartupError;
 use additional_dirs::add_dir_warning_message;
@@ -659,6 +660,7 @@ fn session_target_from_app_server_thread(
         Ok(thread_id) => Some(resume_picker::SessionTarget {
             path: thread.path,
             thread_id,
+            cwd: Some(thread.cwd.to_path_buf()),
             history_mode: Some(thread.history_mode),
         }),
         Err(err) => {
@@ -842,7 +844,7 @@ fn uses_remote_workspace_or_environment(
 async fn resolve_startup_resume_or_fork_cwd(
     tui: &mut Tui,
     config: &Config,
-    state_db: Option<&codex_state::StateRuntime>,
+    app_server: Option<&mut AppServerSession>,
     session_selection: &resume_picker::SessionSelection,
     cwd_override: Option<&Path>,
     uses_remote_workspace: bool,
@@ -873,11 +875,19 @@ async fn resolve_startup_resume_or_fork_cwd(
         return Ok(ResolveCwdOutcome::Continue(Some(config.cwd.to_path_buf())));
     }
 
+    let history_cwd = if matches!(resume_cwd_mode, Some(ResumeCwdMode::Current)) {
+        None
+    } else if let Some(cwd) = &target_session.cwd {
+        Some(cwd.clone())
+    } else if let Some(app_server) = app_server {
+        read_session_cwd(app_server, target_session.thread_id).await
+    } else {
+        None
+    };
     resolve_cwd_for_resume_or_fork(
         tui,
         config,
-        state_db,
-        target_session,
+        history_cwd,
         action,
         ResumeCwdContext {
             current_cwd: config.cwd.as_path(),
@@ -1562,7 +1572,7 @@ async fn run_ratatui_app(
     let fallback_cwd = match resolve_startup_resume_or_fork_cwd(
         &mut tui,
         &config,
-        state_db.as_deref(),
+        app_server.as_mut(),
         &session_selection,
         cli.cwd.as_deref(),
         uses_remote_workspace,
@@ -2468,6 +2478,7 @@ requires_openai_auth = {requires_openai_auth}
             let target_session = resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id,
+                cwd: Some(session_cwd.clone()),
                 history_mode: None,
             };
             let session_selection = match action {
@@ -2479,7 +2490,7 @@ requires_openai_auth = {requires_openai_auth}
             let fallback_cwd = match resolve_startup_resume_or_fork_cwd(
                 &mut tui,
                 &config,
-                state_db.as_deref(),
+                /*app_server*/ None,
                 &session_selection,
                 cwd_override,
                 /*uses_remote_workspace*/ false,
@@ -2564,10 +2575,11 @@ requires_openai_auth = {requires_openai_auth}
         let error = resolve_startup_resume_or_fork_cwd(
             &mut tui,
             &config,
-            /*state_db*/ None,
+            /*app_server*/ None,
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             }),
             /*cwd_override*/ None,
@@ -2584,10 +2596,11 @@ requires_openai_auth = {requires_openai_auth}
         let explicit = resolve_startup_resume_or_fork_cwd(
             &mut tui,
             &config,
-            /*state_db*/ None,
+            /*app_server*/ None,
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             }),
             Some(Path::new("/remote-only/project")),
@@ -2618,10 +2631,11 @@ requires_openai_auth = {requires_openai_auth}
         let error = resolve_startup_resume_or_fork_cwd(
             &mut tui,
             &config,
-            /*state_db*/ None,
+            /*app_server*/ None,
             &resume_picker::SessionSelection::Resume(resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             }),
             /*cwd_override*/ None,
@@ -2664,6 +2678,7 @@ requires_openai_auth = {requires_openai_auth}
         let target = crate::resume_picker::SessionTarget {
             path: None,
             thread_id,
+            cwd: None,
             history_mode: None,
         };
 

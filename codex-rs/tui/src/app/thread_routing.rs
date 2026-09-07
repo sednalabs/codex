@@ -8,7 +8,6 @@ use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
 use crate::app_event::ThreadTitleDestination;
 use crate::chatwidget::ThreadInputStateRestoreMode;
-use crate::session_resume::read_session_model;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
@@ -1252,10 +1251,8 @@ impl App {
         session
             .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
-        if let Some(model) =
-            read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
-        {
-            session.model = model;
+        if let Some(model) = &notification.thread.model {
+            session.model = model.clone();
         } else if rollout_path.is_some() {
             session.model.clear();
         }

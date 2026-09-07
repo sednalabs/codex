@@ -369,6 +369,7 @@ impl App {
                 let target_session = SessionTarget {
                     path: target_thread.path.clone(),
                     thread_id: root_thread_id,
+                    cwd: Some(target_thread.cwd.to_path_buf()),
                     history_mode: Some(target_thread.history_mode),
                 };
                 match self

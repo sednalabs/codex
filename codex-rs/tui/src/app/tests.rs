@@ -4354,18 +4354,6 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     );
 
     let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
-    let rollout = serde_json::json!({
-        "timestamp": "t0",
-        "type": "turn_context",
-        "payload": {
-            "cwd": test_path_buf("/tmp/agent"),
-            "model": "gpt-agent",
-        },
-    });
-    std::fs::write(
-        &rollout_path,
-        format!("{}\n", serde_json::to_string(&rollout)?),
-    )?;
     app.enqueue_thread_notification(
         agent_thread_id,
         ServerNotification::ThreadStarted(ThreadStartedNotification {
@@ -4385,7 +4373,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 daybreak_enabled: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
-                model: None,
+                model: Some("gpt-agent".to_string()),
                 reasoning_effort: None,
                 created_at: 1,
                 updated_at: 2,
@@ -4560,7 +4548,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         daybreak_enabled: None,
         history_mode: Default::default(),
         model_provider: "read-provider".to_string(),
-        model: None,
+        model: Some("server-reported-model".to_string()),
         reasoning_effort: None,
         created_at: 1,
         updated_at: 2,
@@ -4584,6 +4572,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         .await;
 
     assert_eq!(session.thread_id, read_thread_id);
+    assert_eq!(session.model, "server-reported-model");
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
     assert_eq!(
         session.runtime_workspace_roots,
@@ -4600,6 +4589,17 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         "thread/read does not return fresh server permissions; the fallback profile must use the \
          active widget permissions rather than reusing the cached primary session profile"
     );
+
+    app.enqueue_primary_thread_session(session, Vec::new())
+        .await
+        .expect("switch to read thread");
+    let header =
+        lines_to_single_string(&app.clear_ui_header_lines_with_version(/*width*/ 80, "<VERSION>"));
+    let model_line = header
+        .lines()
+        .find(|line| line.contains("model:"))
+        .expect("rendered model line");
+    assert_app_snapshot!("thread_read_model_after_switch", model_line);
 }
 
 #[test]
@@ -7263,6 +7263,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7306,6 +7307,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7344,6 +7346,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7425,6 +7428,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id: ThreadId::from_string(&thread_id)?,
+                cwd: None,
                 history_mode: None,
             },
         )
@@ -7566,6 +7570,7 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
                     thread_id,
+                    cwd: None,
                     history_mode: None,
                 },
             )
@@ -7671,6 +7676,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
             thread_id: ThreadId::from_string(&thread_id)?,
+            cwd: None,
             history_mode: None,
         });
     }

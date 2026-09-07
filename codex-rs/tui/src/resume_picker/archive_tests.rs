@@ -258,6 +258,7 @@ async fn archived_session_restore_resumes_after_completion() {
         Ok(SessionTarget {
             path: None,
             thread_id,
+            cwd: None,
             history_mode: None,
         }),
     );
@@ -267,6 +268,7 @@ async fn archived_session_restore_resumes_after_completion() {
         Some(SessionSelection::Resume(SessionTarget {
             path: None,
             thread_id: resumed_thread_id,
+            cwd: None,
             history_mode: None,
         })) if resumed_thread_id == thread_id
     ));
