@@ -5644,8 +5644,12 @@ async fn session_configuration_apply_permission_profile_accepts_direct_write_roo
     );
 }
 
+#[test_case::test_case(false; "ordinary_proxy")]
+#[test_case::test_case(true; "credential_broker")]
 #[tokio::test]
-async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Result<()> {
+async fn active_profile_update_rebuilds_network_proxy_config(
+    credential_broker: bool,
+) -> std::io::Result<()> {
     let codex_home = tempfile::tempdir().expect("create codex home");
     let cwd = tempfile::tempdir().expect("create cwd");
     let permissions = PermissionsToml {
@@ -5690,7 +5694,14 @@ async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Resul
         ]),
     };
     let base_config = ConfigToml {
-        features: Some(toml::from_str("network_proxy = true").expect("valid features")),
+        features: Some(
+            toml::from_str(if credential_broker {
+                "network_proxy = { enabled = true, credential_broker = true }"
+            } else {
+                "network_proxy = true"
+            })
+            .expect("valid features"),
+        ),
         default_permissions: Some("locked-down".to_string()),
         permissions: Some(permissions),
         ..Default::default()
@@ -5752,6 +5763,7 @@ async fn active_profile_update_rebuilds_network_proxy_config() -> std::io::Resul
         .expect("selected profile proxy should become the session proxy config");
     assert_eq!(network.proxy_host_and_port(), "127.0.0.1:43128");
     assert!(!network.socks_enabled());
+    assert_eq!(network.credential_broker_enabled(), credential_broker);
     Ok(())
 }
 

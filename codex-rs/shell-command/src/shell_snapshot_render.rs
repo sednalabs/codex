@@ -57,6 +57,9 @@ impl Value {
 
 pub(super) fn render(state: &str, aliases: &str, exports: &[Export<'_>]) -> Option<String> {
     let mut output = format!("{state}{aliases}");
+    if !exports.is_empty() {
+        output.push_str("# exports (native declarations)\n");
+    }
     for export in exports {
         match export {
             Export::Captured(source) => output.push_str(source),

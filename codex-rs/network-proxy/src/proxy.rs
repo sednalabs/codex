@@ -1128,6 +1128,17 @@ impl NetworkProxy {
         self.state.restore_child_credentials(env, command);
     }
 
+    /// Restores real credentials and removes brokerage markers for a child that cannot safely
+    /// consume brokered credentials while remaining on the managed network.
+    pub fn restore_and_disable_brokered_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        command: &mut [String],
+    ) {
+        self.state
+            .restore_and_disable_child_credentials(env, command);
+    }
+
     /// Replaces allowed credentials and removes credentials excluded from the environment.
     pub fn virtualize_brokered_text(
         &self,

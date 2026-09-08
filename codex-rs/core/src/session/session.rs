@@ -14,6 +14,7 @@ use crate::hook_mcp_executor::CoreHookMcpExecutor;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::shell_snapshot::ShellSnapshot;
+use crate::shell_snapshot::SnapshotCredentialBrokerState;
 use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
@@ -1091,13 +1092,10 @@ impl Session {
                     }),
                 });
             }
+            let effective_config = config.config_layer_stack.effective_config();
             let config_path = config.codex_home.join(CONFIG_TOML_FILE);
             if let Some(event) = unstable_features_warning_event(
-                config
-                    .config_layer_stack
-                    .effective_config()
-                    .get("features")
-                    .and_then(TomlValue::as_table),
+                effective_config.get("features").and_then(TomlValue::as_table),
                 config.suppress_unstable_features_warning,
                 &config.features,
                 &config_path.display().to_string(),
@@ -1217,7 +1215,27 @@ impl Session {
             } else {
                 shell::default_user_shell()
             };
-            let use_executor_shell_snapshots = config.features.enabled(Feature::ShellSnapshotV2)
+            let credential_broker_available = config.features.enabled(Feature::NetworkProxy)
+                && config
+                    .config_layer_stack
+                    .requirements()
+                    .network
+                    .as_ref()
+                    .is_none_or(|network| network.value.enabled != Some(false));
+            let credential_broker_configured = credential_broker_available
+                && effective_config
+                    .get("features")
+                    .and_then(|features| features.get("network_proxy"))
+                    .and_then(|network_proxy| network_proxy.get("credential_broker"))
+                    .and_then(TomlValue::as_bool)
+                    .unwrap_or(false);
+            let credential_broker_active = credential_broker_configured
+                && config
+                    .permissions
+                    .network
+                    .as_ref()
+                    .is_some_and(crate::config::NetworkProxySpec::credential_broker_enabled);
+            let prefer_executor_shell_snapshots = config.features.enabled(Feature::ShellSnapshotV2)
                 && config.features.enabled(Feature::ShellTool)
                 && config.features.enabled(Feature::UnifiedExec)
                 && matches!(
@@ -1229,14 +1247,26 @@ impl Session {
                     ),
                     codex_tools::UnifiedExecShellMode::Direct
                 );
+            let use_executor_shell_snapshots =
+                prefer_executor_shell_snapshots && !credential_broker_active;
             let shell_snapshot = if config.features.enabled(Feature::ShellSnapshot)
-                && !use_executor_shell_snapshots
+                && (!use_executor_shell_snapshots || credential_broker_available)
             {
+                let snapshot_credential_broker = credential_broker_available.then(|| {
+                    let state = if credential_broker_active {
+                        SnapshotCredentialBrokerState::Starting
+                    } else {
+                        SnapshotCredentialBrokerState::Inactive
+                    };
+                    watch::channel(state).0
+                });
                 ShellSnapshot::new(
                     config.codex_home.clone(),
                     thread_id,
                     session_telemetry.clone(),
                     state_db_ctx.clone(),
+                    snapshot_credential_broker,
+                    prefer_executor_shell_snapshots,
                 )
             } else {
                 ShellSnapshot::disabled()
@@ -1355,6 +1385,17 @@ impl Session {
                 } else {
                     (None, None)
                 };
+            if let Some(network_proxy) = network_proxy.as_ref()
+                && config
+                    .permissions
+                    .network
+                    .as_ref()
+                    .is_some_and(crate::config::NetworkProxySpec::credential_broker_enabled)
+            {
+                turn_environments.set_snapshot_credential_broker(
+                    SnapshotCredentialBrokerState::Ready(network_proxy.proxy()),
+                );
+            }
 
             // Hooks and extensions share one stable thread-owned MCP runtime handle.
             let mcp_runtime = Arc::new(McpRuntime::empty(

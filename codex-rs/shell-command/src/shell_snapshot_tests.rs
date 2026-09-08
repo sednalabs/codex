@@ -553,7 +553,7 @@ fn brokered_snapshot_alias_values_follow_allowed_credential_overrides() {
         );
         let expected = match expected {
             Some((value, assignment)) => (
-                format!("# Snapshot file\n{assignment}\n"),
+                format!("# Snapshot file\n# exports (native declarations)\n{assignment}\n"),
                 HashMap::from([("AUTH_HEADER".to_string(), value)]),
                 Vec::new(),
             ),
