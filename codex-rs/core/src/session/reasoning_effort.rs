@@ -1,11 +1,12 @@
-//! Gated reasoning-effort updates appended after accepted input.
+//! Cache-preserving effort updates and the original sampling request effort.
 //!
-//! Only trusted harness items establish an effort. Updates append to surviving
-//! history without replacing the request-level reasoning effort.
+//! Only trusted harness items establish overrides. Replay invalidates the runtime
+//! pin so the next send re-establishes the currently selected effort.
 
 use super::session::Session;
 use super::step_context::StepContext;
 use super::step_settings::ResolvedStepSettings;
+use crate::state::ReasoningEffortPin;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -43,7 +44,10 @@ impl Session {
                             _ => None,
                         }
                     });
-            established_effort == Some(&effort)
+            state
+                .reasoning_effort_pin
+                .get(&settings.model_info.slug)
+                .is_some_and(|pinned| established_effort.unwrap_or(&pinned) == &effort)
         };
         if should_skip {
             return;
@@ -62,6 +66,28 @@ impl Session {
             }],
         )
         .await;
+    }
+
+    /// Reuses the original request effort while updates carry the selected effort.
+    pub(crate) async fn reasoning_effort_for_request(
+        &self,
+        settings: &ResolvedStepSettings,
+    ) -> Option<ReasoningEffort> {
+        let selected_effort = settings.reasoning_effort().cloned();
+        if !self.enabled(Feature::ReasoningEffortOverride) {
+            return selected_effort;
+        }
+        let effort = self.effort_for_configuration_update(settings).await;
+        let mut state = self.state.lock().await;
+        let Some(effort) = effort else {
+            state.reasoning_effort_pin = ReasoningEffortPin::Unset;
+            return selected_effort;
+        };
+        Some(
+            state
+                .reasoning_effort_pin
+                .pin(&settings.model_info.slug, effort),
+        )
     }
 
     async fn effort_for_configuration_update(

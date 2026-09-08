@@ -299,6 +299,7 @@ use crate::state::AcceptedUserInputResponse;
 use crate::state::AutoCompactWindowIds;
 use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
+use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
 use crate::state::SessionState;
 #[cfg(test)]
@@ -1605,6 +1606,8 @@ impl Session {
             state
                 .history
                 .restore_review_context(Some(&retained_context), guardian_history.as_ref());
+            // The next send supplies the selected effort. Refresh its trusted override too.
+            state.reasoning_effort_pin = ReasoningEffortPin::Unset;
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
