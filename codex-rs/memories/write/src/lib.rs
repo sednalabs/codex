@@ -11,6 +11,7 @@ mod metrics;
 mod phase1;
 mod phase2;
 mod prompts;
+mod rollout_input;
 mod runtime;
 mod start;
 mod storage;

@@ -3,12 +3,14 @@ use crate::metrics::MEMORY_PHASE_ONE_E2E_MS;
 use crate::metrics::MEMORY_PHASE_ONE_JOBS;
 use crate::metrics::MEMORY_PHASE_ONE_OUTPUT;
 use crate::metrics::MEMORY_PHASE_ONE_TOKEN_USAGE;
+use crate::rollout_input::sanitize_response_item_for_memories;
 use crate::runtime::MemoryStartupContext;
 use crate::runtime::StageOneRequestContext;
 use codex_config::types::MemoriesConfig;
 use codex_core::Prompt;
 use codex_core::RolloutRecorder;
 use codex_core::config::Config;
+use codex_protocol::MemoryVersion;
 use codex_protocol::ResponseItemId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
@@ -17,7 +19,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout::INTERACTIVE_SESSION_SOURCES;
 use codex_rollout::RolloutItem;
-use codex_rollout::should_persist_response_item_for_memories;
 use codex_secrets::redact_secrets;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -287,7 +288,13 @@ mod job {
         stage_one_context: &StageOneRequestContext,
     ) -> anyhow::Result<(StageOneOutput, Option<TokenUsage>)> {
         let (rollout_items, _, _) = RolloutRecorder::load_rollout_items(rollout_path).await?;
-        let rollout_contents = serialize_filtered_rollout_response_items(&rollout_items)?;
+        let rollout_contents = match config.memories.version {
+            MemoryVersion::V1 => serialize_filtered_rollout_response_items(&rollout_items)?,
+            MemoryVersion::V2 => crate::rollout_input::serialize_tiered_input(
+                &rollout_items,
+                crate::prompts::rollout_token_limit(&stage_one_context.model_info),
+            )?,
+        };
 
         let mut prompt = Prompt::default();
         prompt.input = vec![ResponseItem::Message {
@@ -426,104 +433,9 @@ mod job {
         Ok(redact_secrets(serialized))
     }
 
-    fn sanitize_response_item_for_memories(item: &ResponseItem) -> Option<ResponseItem> {
-        let ResponseItem::Message {
-            id,
-            role,
-            content,
-            phase,
-            internal_chat_message_metadata_passthrough: metadata,
-        } = item
-        else {
-            return should_persist_response_item_for_memories(item).then(|| item.clone());
-        };
-
-        if role == "developer" {
-            return None;
-        }
-
-        if role != "user" {
-            return Some(item.clone());
-        }
-
-        let content = content
-            .iter()
-            .filter(|content_item| !is_memory_excluded_contextual_user_fragment(content_item))
-            .cloned()
-            .collect::<Vec<_>>();
-        if content.is_empty() {
-            return None;
-        }
-
-        Some(ResponseItem::Message {
-            id: id.clone(),
-            role: role.clone(),
-            content,
-            phase: phase.clone(),
-            internal_chat_message_metadata_passthrough: metadata.clone(),
-        })
-    }
-
-    fn is_memory_excluded_contextual_user_fragment(content_item: &ContentItem) -> bool {
-        let ContentItem::InputText { text } = content_item else {
-            return false;
-        };
-
-        matches_marked_fragment(text, "# AGENTS.md instructions", "</INSTRUCTIONS>")
-            || matches_marked_fragment(text, "<skill>", "</skill>")
-    }
-
-    fn matches_marked_fragment(text: &str, start_marker: &str, end_marker: &str) -> bool {
-        let trimmed = text.trim_start();
-        let starts_with_marker = trimmed
-            .get(..start_marker.len())
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(start_marker));
-        let trimmed = trimmed.trim_end();
-        let ends_with_marker = trimmed
-            .get(trimmed.len().saturating_sub(end_marker.len())..)
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(end_marker));
-        starts_with_marker && ends_with_marker
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        #[test]
-        fn classifies_memory_excluded_fragments() {
-            let cases = [
-                (
-                    "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
-                    true,
-                ),
-                (
-                    "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",
-                    true,
-                ),
-                (
-                    "<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>",
-                    true,
-                ),
-                (
-                    "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>",
-                    false,
-                ),
-                (
-                    "<subagent_notification>{\"agent_id\":\"a\",\"status\":\"completed\"}</subagent_notification>",
-                    false,
-                ),
-            ];
-
-            for (text, expected) in cases {
-                assert_eq!(
-                    is_memory_excluded_contextual_user_fragment(&ContentItem::InputText {
-                        text: text.to_string(),
-                    }),
-                    expected,
-                    "{text}",
-                );
-            }
-        }
 
         #[test]
         fn output_schema_requires_rollout_slug_and_keeps_it_nullable() {

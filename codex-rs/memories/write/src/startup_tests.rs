@@ -1248,3 +1248,18 @@ async fn shutdown_test_codex(test: &TestCodex) -> anyhow::Result<()> {
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
     Ok(())
 }
+
+#[tokio::test]
+async fn memories_startup_phase1_v2_uses_tiered_input() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let mut memories = startup_test_memories_config();
+    memories.version = codex_protocol::MemoryVersion::V2;
+    let request = run_memory_phase_one_model_request_test(&server, home, memories).await?;
+    assert!(
+        request.body_json()["input"]
+            .to_string()
+            .contains("[human user]")
+    );
+    Ok(())
+}
