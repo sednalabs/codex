@@ -1233,6 +1233,7 @@ impl ChatWidget {
             self.realtime_conversation.transcript_role = Some(role);
         }
         self.realtime_conversation.transcript.push_str(&delta);
+        let mut discarded_prefix_bytes = 0;
         if self.realtime_conversation.transcript.len() > MAX_TRANSCRIPT_BYTES {
             let mut start = self.realtime_conversation.transcript.len() - MAX_TRANSCRIPT_BYTES;
             while !self
@@ -1243,6 +1244,7 @@ impl ChatWidget {
                 start += 1;
             }
             self.realtime_conversation.transcript.drain(..start);
+            discarded_prefix_bytes = start;
         }
         let role = self
             .realtime_conversation
@@ -1254,13 +1256,12 @@ impl ChatWidget {
             .live_transcript_cell
             .as_deref()
             .and_then(|cell| cell.as_any().downcast_ref::<SplitFlapTranscriptCell>());
-        let cell =
-            self.realtime_transcript_history_cell(role, &self.realtime_conversation.transcript);
         let live_cell = SplitFlapTranscriptCell::new(
-            cell,
+            |text| self.realtime_transcript_history_cell(role, text),
             role,
             &self.realtime_conversation.transcript,
             previous,
+            discarded_prefix_bytes,
             MotionMode::from_animations_enabled(self.config.animations),
             self.frame_requester.clone(),
         );

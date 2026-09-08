@@ -50,14 +50,16 @@ pub(super) struct SplitFlapTranscriptCell {
 
 impl SplitFlapTranscriptCell {
     pub(super) fn new(
-        inner: Box<dyn HistoryCell>,
+        render: impl Fn(&str) -> Box<dyn HistoryCell>,
         role: &str,
         target: &str,
         previous: Option<&Self>,
+        discarded_prefix_bytes: usize,
         motion_mode: MotionMode,
         frame_requester: FrameRequester,
     ) -> Self {
         let now = Instant::now();
+        let inner = render(target);
         let visible_target = visible_glyphs(inner.as_ref());
         let mut flap_sample = visible_target
             .bytes()
@@ -69,13 +71,28 @@ impl SplitFlapTranscriptCell {
             flap_sample.extend(visible_target.bytes().rev().take(FLAP_SAMPLE_WINDOW));
         }
         flap_sample.reverse();
-        let previous = previous.filter(|cell| {
-            cell.role == role
-                && target.starts_with(&cell.target)
-                && visible_target.starts_with(&cell.visible_target)
+        let previous = previous.and_then(|cell| {
+            let retained = cell.target.get(discarded_prefix_bytes..)?;
+            if cell.role != role || retained.is_empty() || !target.starts_with(retained) {
+                return None;
+            }
+            // Render the actual retained text: byte offsets are not tile offsets, and
+            // matching text alone could confuse repeated old words with new arrivals.
+            let retained_glyphs = if discarded_prefix_bytes == 0 {
+                cell.visible_target.clone()
+            } else {
+                visible_glyphs(render(retained).as_ref())
+            };
+            let discarded_tiles = cell
+                .visible_target
+                .len()
+                .checked_sub(retained_glyphs.len())?;
+            (cell.visible_target[discarded_tiles..] == retained_glyphs
+                && visible_target.starts_with(&retained_glyphs))
+            .then_some((cell, discarded_tiles))
         });
         let mut tile_arrivals = previous
-            .map(|cell| cell.tile_arrivals.clone())
+            .map(|(cell, discarded_tiles)| cell.tile_arrivals[discarded_tiles..].to_vec())
             .unwrap_or_default();
         let existing_tiles = tile_arrivals.len();
         for index in existing_tiles..visible_target.len() {
@@ -98,7 +115,9 @@ impl SplitFlapTranscriptCell {
             flap_sample,
             tile_arrivals,
             started_at: now,
-            phase_started_at: previous.map(|cell| cell.phase_started_at).unwrap_or(now),
+            phase_started_at: previous
+                .map(|(cell, _)| cell.phase_started_at)
+                .unwrap_or(now),
             motion_mode,
             frame_requester,
         };
