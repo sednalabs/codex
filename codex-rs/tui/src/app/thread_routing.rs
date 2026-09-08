@@ -482,9 +482,11 @@ impl App {
                 self.chat_widget
                     .restore_undelivered_realtime_speech(*delivery_id);
             }
-            if let AppCommand::RealtimeConversationStart { thread_id, .. } = &op
+            if let AppCommand::RealtimeConversationStart { thread_id, .. }
+            | AppCommand::RealtimeConversationStop { thread_id } = &op
                 && self.chat_widget.thread_id() == Some(*thread_id)
             {
+                self.chat_widget.record_realtime_failure();
                 self.chat_widget.reset_realtime_conversation();
             }
             self.chat_widget
@@ -506,9 +508,11 @@ impl App {
                 self.chat_widget
                     .restore_undelivered_realtime_speech(*delivery_id);
             }
-            if let AppCommand::RealtimeConversationStart { thread_id, .. } = &op
+            if let AppCommand::RealtimeConversationStart { thread_id, .. }
+            | AppCommand::RealtimeConversationStop { thread_id } = &op
                 && self.chat_widget.thread_id() == Some(*thread_id)
             {
+                self.chat_widget.record_realtime_failure();
                 self.chat_widget.reset_realtime_conversation();
             }
             self.chat_widget.add_error_message(

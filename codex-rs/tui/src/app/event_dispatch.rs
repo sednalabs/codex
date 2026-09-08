@@ -849,6 +849,7 @@ impl App {
                         let message = format!("Voice conversation failed: {err:#}");
                         if is_realtime_stop {
                             if self.chat_widget.thread_id() == realtime_stop_thread_id {
+                                self.chat_widget.record_realtime_failure();
                                 self.chat_widget.reset_realtime_conversation();
                                 self.chat_widget.add_error_message(message);
                             }
