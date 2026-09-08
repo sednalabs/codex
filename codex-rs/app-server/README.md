@@ -1,3 +1,27 @@
+# User verification cancellation (experimental)
+
+Local UI clients can cancel a native user-verification RPC by sending
+`userVerification/cancel` with `{requestId}` and the `experimentalApi` opt-in.
+The result is an empty acknowledgment (`{}`). This API does not enable desktop
+verification capability advertisement.
+
+`requestId` is the original status, enroll, delete, or verify RPC's string or
+integer ID on the same connection, not the server elicitation ID. Use fresh IDs
+for each operation and a distinct ID for the cancel RPC. Unknown, finished,
+unrelated, and other-connection requests are no-ops.
+
+The acknowledgment confirms the cancellation signal without waiting for the OS
+prompt to close. The original RPC completes independently, with
+`cancelled/interrupted` when cancellation prevents completion. Cancellation
+cannot roll back completed effects. It remains effective while a proof waits for
+outbound queue capacity, but cannot retract a response already enqueued.
+
+Canceling or resolving an elicitation does not itself stop a separate
+`userVerification/verify` RPC. Clients must cancel that RPC separately and discard
+late proofs after the approval is canceled or resolved. Only one native worker
+runs per app-server; if an OS call remains active after cancellation or timeout,
+subsequent local operations return `failed/providerError` until that worker exits.
+
 # Thread removal
 
 `thread/archive` and `thread/delete` reject attempts to remove a live internal

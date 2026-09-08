@@ -70,6 +70,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::UserVerificationCancelResponse;
 use codex_app_server_protocol::experimental_required_message;
 use codex_arg0::Arg0DispatchPaths;
 use codex_code_mode::CodeModeSessionProvider;
@@ -631,7 +632,12 @@ impl MessageProcessor {
             traceparent: trace.traceparent.clone(),
             tracestate: trace.tracestate.clone(),
         });
-        let request_context = RequestContext::new(request_id.clone(), request_span, request_trace);
+        let request_context = RequestContext::new(
+            request_id.clone(),
+            request_method,
+            request_span,
+            request_trace,
+        );
         Self::run_request_with_context(
             Arc::clone(&self.outgoing),
             request_context.clone(),
@@ -680,8 +686,12 @@ impl MessageProcessor {
         };
         let request_span =
             crate::app_server_tracing::typed_request_span(&request, connection_id, &session);
-        let mut request_context =
-            RequestContext::new(request_id.clone(), request_span, /*parent_trace*/ None);
+        let mut request_context = RequestContext::new(
+            request_id.clone(),
+            request.method_name(),
+            request_span,
+            /*parent_trace*/ None,
+        );
         request_context.cancellation = cancellation;
         tracing::trace!(
             ?connection_id,
@@ -994,6 +1004,15 @@ impl MessageProcessor {
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
+            }
+            ClientRequest::UserVerificationCancel { params, .. } => {
+                self.outgoing
+                    .cancel_user_verification_request(&ConnectionRequestId {
+                        connection_id,
+                        request_id: params.request_id,
+                    })
+                    .await;
+                Ok(Some(UserVerificationCancelResponse {}.into()))
             }
             request @ (ClientRequest::UserVerificationStatus { .. }
             | ClientRequest::UserVerificationEnroll { .. }
