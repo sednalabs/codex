@@ -1,6 +1,9 @@
 //! Regression coverage for thread-owned voice sessions and transcript/handoff safety.
 //! Synthetic events preserve typed turns and reject stale session generations.
 
+#[path = "realtime/recording_controls_tests.rs"]
+mod recording_controls_tests;
+
 use super::RealtimeConversationPhase;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;

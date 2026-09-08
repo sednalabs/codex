@@ -1,12 +1,16 @@
 //! TUI orchestration for an app-server-signaled, locally owned WebRTC voice session.
 //! Completed captions and both speakers' partials stay bounded across widget replacement.
 
+mod recording_controls;
+
 use super::ChatWidget;
 use super::HistoryCell;
 use super::PARENT_OWNED_INPUT_MESSAGE;
+use super::realtime_split_flap::VoiceAmplitudeHistory;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::history_cell;
+use crate::key_hint;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
@@ -15,6 +19,9 @@ use codex_protocol::models::MessagePhase;
 use codex_realtime_webrtc::RealtimeWebrtcSession;
 use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 use codex_realtime_webrtc::StartedRealtimeWebrtcSession;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
 use futures::future::AbortHandle;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -42,8 +49,11 @@ const MAX_SPEAKABLE_FINAL_TOKENS: usize = 990;
 const AUDIO_METER_SEGMENTS: usize = 5;
 const AUDIO_METER_NOISE_FLOOR: u16 = 512;
 const AUDIO_METER_FULL_SCALE: u16 = 8192;
+const MAX_REALTIME_AUDIO_METER_FRAMES: usize = 24;
 const MICROPHONE_METER_INTERVAL: Duration = Duration::from_millis(100);
 const SPEAKER_ACTIVITY_HOLD: Duration = Duration::from_millis(500);
+const INTERRUPTION_ACKNOWLEDGMENT: Duration = Duration::from_millis(400);
+const REALTIME_MICROPHONE_SHORTCUT: key_hint::KeyBinding = key_hint::ctrl(KeyCode::Char('x'));
 static NEXT_REALTIME_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_REALTIME_SPEECH_DELIVERY_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -128,7 +138,11 @@ pub(super) struct RealtimeConversationUiState {
     microphone_muted: bool,
     microphone_level: usize,
     speaker_level: usize,
+    microphone_history: VoiceAmplitudeHistory,
+    speaker_history: VoiceAmplitudeHistory,
+    audio_meter_history: VecDeque<(VoiceAmplitudeHistory, VoiceAmplitudeHistory)>,
     speaker_active_until: Option<Instant>,
+    interruption_acknowledged_until: Option<Instant>,
     speaker_suppression_generation: Option<u64>,
     transcript_role: Option<String>,
     transcript: String,
@@ -301,6 +315,7 @@ impl ChatWidget {
         if let Some(handle) = self.realtime_conversation.handle.take() {
             handle.close();
             self.realtime_conversation.phase = RealtimeConversationPhase::Stopping;
+            self.refresh_terminal_title();
             self.set_footer_hint_override(/*items*/ None);
             let Some(thread_id) = self.realtime_conversation.thread_id else {
                 self.reset_realtime_conversation();
@@ -315,23 +330,6 @@ impl ChatWidget {
             }
         }
         self.request_redraw();
-    }
-
-    pub(super) fn toggle_realtime_microphone(&mut self) {
-        let muted = !self.realtime_conversation.microphone_muted;
-        if let Some(handle) = self.realtime_conversation.handle.as_ref() {
-            if let Err(error) = handle.set_microphone_muted(muted) {
-                self.on_realtime_error(format!("Failed to update microphone: {error}"));
-                return;
-            }
-        } else if self.realtime_conversation.phase != RealtimeConversationPhase::Starting {
-            self.add_error_message("Start voice mode before muting the microphone.".to_string());
-            return;
-        }
-
-        self.realtime_conversation.microphone_muted = muted;
-        self.realtime_conversation.microphone_level = 0;
-        self.update_realtime_footer();
     }
 
     pub(crate) fn on_realtime_webrtc_offer_created(
@@ -365,6 +363,8 @@ impl ChatWidget {
             return;
         }
         self.realtime_conversation.handle = Some(offer.handle);
+        self.update_realtime_footer();
+        self.refresh_terminal_title();
         self.frame_requester
             .schedule_frame_in(MICROPHONE_METER_INTERVAL);
         if !self.submit_op(AppCommand::RealtimeConversationStart {
@@ -425,6 +425,7 @@ impl ChatWidget {
                 }
                 self.realtime_conversation.phase = RealtimeConversationPhase::Stopping;
                 self.realtime_conversation.startup_retry = StartupRetry::WaitingForStop;
+                self.refresh_terminal_title();
                 if !self.submit_op(AppCommand::RealtimeConversationStop { thread_id }) {
                     self.reset_realtime_conversation();
                 } else {
@@ -533,37 +534,6 @@ impl ChatWidget {
             if let RealtimeAgentItemOrigin::Delegated { may_speak, .. } = origin {
                 *may_speak = false;
             }
-        }
-    }
-
-    fn release_realtime_speaker(&mut self) {
-        self.realtime_conversation.speaker_suppression_generation = None;
-        if let Some(handle) = self.realtime_conversation.handle.as_ref() {
-            handle.set_speaker_suppressed(/*suppressed*/ false);
-        }
-    }
-
-    fn suppress_realtime_speaker(&mut self) {
-        self.realtime_conversation.speaker_suppression_generation =
-            Some(self.realtime_conversation.input_generation);
-        if let Some(handle) = self.realtime_conversation.handle.as_ref() {
-            handle.set_speaker_suppressed(/*suppressed*/ true);
-        }
-        self.realtime_conversation.speaker_level = 0;
-        self.realtime_conversation.speaker_active_until = None;
-        self.update_realtime_footer();
-    }
-
-    fn resume_realtime_speaker_for(&mut self, role: &str, text: &str) {
-        if role == "assistant"
-            && !text.trim().is_empty()
-            && self.realtime_conversation.assistant_transcript_generation
-                == Some(self.realtime_conversation.input_generation)
-            && self.realtime_conversation.latest_input_was_voice
-            && self.realtime_conversation.speaker_suppression_generation
-                == Some(self.realtime_conversation.input_generation)
-        {
-            self.release_realtime_speaker();
         }
     }
 
@@ -1193,12 +1163,24 @@ impl ChatWidget {
                 .transcript_input_generation
                 .is_none()
         {
+            let interrupted = self.realtime_conversation.phase == RealtimeConversationPhase::Active
+                && !self.realtime_conversation.microphone_muted
+                && !delta.trim().is_empty()
+                && (self.realtime_conversation.speaker_level > 0
+                    || self
+                        .realtime_conversation
+                        .speaker_active_until
+                        .is_some_and(|deadline| deadline > Instant::now()));
             self.realtime_conversation.input_generation = self
                 .realtime_conversation
                 .input_generation
                 .wrapping_add(/*rhs*/ 1);
             self.realtime_conversation.transcript_input_generation =
                 Some(self.realtime_conversation.input_generation);
+            if interrupted && self.config.animations {
+                self.realtime_conversation.interruption_acknowledged_until =
+                    Some(Instant::now() + INTERRUPTION_ACKNOWLEDGMENT);
+            }
             self.suppress_realtime_speaker();
         }
         if active
@@ -1593,6 +1575,9 @@ impl ChatWidget {
     }
 
     pub(crate) fn reset_realtime_conversation(&mut self) -> Option<ThreadId> {
+        let should_refresh_terminal_title = self.realtime_conversation.phase
+            != RealtimeConversationPhase::Inactive
+            && self.last_terminal_title.is_some();
         self.restore_all_undelivered_realtime_speech();
         // A delegated item is hidden until the turn completes so it can be spoken.
         // If voice ends first, let the later turn completion render it normally.
@@ -1684,102 +1669,9 @@ impl ChatWidget {
         }
         self.set_footer_hint_override(/*items*/ None);
         self.flush_realtime_transcript_history();
+        if should_refresh_terminal_title {
+            self.refresh_terminal_title();
+        }
         backend_thread_id
     }
-
-    pub(super) fn refresh_realtime_microphone_level(&mut self) {
-        if !matches!(
-            self.realtime_conversation.phase,
-            RealtimeConversationPhase::Starting | RealtimeConversationPhase::Active
-        ) {
-            return;
-        }
-        let Some(handle) = self.realtime_conversation.handle.as_ref() else {
-            return;
-        };
-        if let Some(error) = handle.take_error() {
-            self.on_realtime_error(format!("Voice conversation failed: {error}"));
-            return;
-        }
-        if self.realtime_conversation.phase == RealtimeConversationPhase::Starting {
-            self.frame_requester
-                .schedule_frame_in(MICROPHONE_METER_INTERVAL);
-            return;
-        }
-        let microphone_level = if self.realtime_conversation.microphone_muted {
-            0
-        } else {
-            audio_meter_level(handle.take_microphone_peak())
-        };
-        let speaker_level = audio_meter_level(handle.take_speaker_peak());
-        let mut changed = self.realtime_conversation.microphone_level != microphone_level
-            || self.realtime_conversation.speaker_level != speaker_level;
-        if speaker_level > 0 {
-            self.realtime_conversation.speaker_active_until =
-                Some(Instant::now() + SPEAKER_ACTIVITY_HOLD);
-        } else {
-            changed |= self
-                .realtime_conversation
-                .speaker_active_until
-                .take_if(|deadline| *deadline <= Instant::now())
-                .is_some();
-        }
-        self.realtime_conversation.microphone_level = microphone_level;
-        self.realtime_conversation.speaker_level = speaker_level;
-        if changed {
-            self.update_realtime_footer();
-        }
-        self.frame_requester
-            .schedule_frame_in(MICROPHONE_METER_INTERVAL);
-    }
-
-    fn update_realtime_footer(&mut self) {
-        let status = if self.realtime_conversation.phase == RealtimeConversationPhase::Starting {
-            "◌ connecting"
-        } else if self.realtime_conversation.microphone_muted {
-            "◌ muted"
-        } else if self.realtime_conversation.speaker_level > 0
-            || self
-                .realtime_conversation
-                .speaker_active_until
-                .is_some_and(|deadline| deadline > Instant::now())
-        {
-            "● speaking"
-        } else {
-            "● listening"
-        };
-        let mut hints = vec![
-            ("voice".to_string(), status.to_string()),
-            ("/voice".to_string(), "stop".to_string()),
-        ];
-        if self.realtime_conversation.phase == RealtimeConversationPhase::Active {
-            let microphone = if self.realtime_conversation.microphone_muted {
-                "off".to_string()
-            } else {
-                audio_meter_bar(self.realtime_conversation.microphone_level)
-            };
-            let speaker = audio_meter_bar(self.realtime_conversation.speaker_level);
-            hints.push(("mic".to_string(), format!("{microphone}  codex {speaker}")));
-        }
-        hints.push(("/voice".to_string(), "mute".to_string()));
-        self.set_footer_hint_override(Some(hints));
-    }
-}
-
-fn audio_meter_level(peak: u16) -> usize {
-    usize::from(peak.saturating_sub(AUDIO_METER_NOISE_FLOOR))
-        .saturating_mul(AUDIO_METER_SEGMENTS)
-        .div_ceil(usize::from(
-            AUDIO_METER_FULL_SCALE - AUDIO_METER_NOISE_FLOOR,
-        ))
-        .min(AUDIO_METER_SEGMENTS)
-}
-
-fn audio_meter_bar(level: usize) -> String {
-    let level = level.min(AUDIO_METER_SEGMENTS);
-    format!(
-        "{}{}",
-        "█".repeat(level),
-        "░".repeat(AUDIO_METER_SEGMENTS - level)
-    )
 }
