@@ -2983,6 +2983,14 @@ impl App {
             AppEvent::ManageSkillsClosed => {
                 self.chat_widget.handle_manage_skills_closed();
             }
+            AppEvent::FullScreenUserVerificationRequest(request) => {
+                let _ = tui.enter_alt_screen();
+                self.overlay = Some(Overlay::new_static_with_renderables(
+                    vec![crate::bottom_pane::user_verification::prompt_header(&request)],
+                    "U S E R  V E R I F I C A T I O N".to_string(),
+                    self.keymap.pager.clone(),
+                ));
+            }
             AppEvent::FullScreenApprovalRequest(request) => match request {
                 ApprovalRequest::ApplyPatch(request) => {
                     let _ = tui.enter_alt_screen();

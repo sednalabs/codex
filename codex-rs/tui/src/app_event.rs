@@ -1373,6 +1373,11 @@ pub(crate) enum AppEvent {
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
 
+    /// Inspect the complete verification request without deciding it.
+    FullScreenUserVerificationRequest(
+        crate::bottom_pane::user_verification::UserVerificationRequest,
+    ),
+
     /// Open the feedback note entry overlay after the user selects a category.
     OpenFeedbackNote {
         category: FeedbackCategory,

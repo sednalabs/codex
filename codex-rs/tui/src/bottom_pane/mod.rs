@@ -77,6 +77,8 @@ mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
 mod title_setup;
+#[allow(dead_code)] // Connected by the following verification UI integration.
+pub(crate) mod user_verification;
 mod voice_strip;
 pub(crate) use action_required_title::ACTION_REQUIRED_PREVIEW_PREFIX;
 pub(crate) use action_required_title::build_action_required_title_text;
