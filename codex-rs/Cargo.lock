@@ -3893,6 +3893,7 @@ dependencies = [
  "codex-extension-api",
  "codex-features",
  "codex-otel",
+ "codex-protocol",
  "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",

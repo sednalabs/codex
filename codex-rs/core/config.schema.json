@@ -2128,9 +2128,24 @@
         "use_memories": {
           "description": "When `false`, skip injecting memory usage instructions into developer prompts.",
           "type": "boolean"
+        },
+        "version": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MemoryVersion"
+            }
+          ],
+          "description": "Selects the memory pipeline; v1 remains the default."
         }
       },
       "type": "object"
+    },
+    "MemoryVersion": {
+      "enum": [
+        "v1",
+        "v2"
+      ],
+      "type": "string"
     },
     "ModelAvailabilityNuxConfig": {
       "additionalProperties": {

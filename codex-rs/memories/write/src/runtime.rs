@@ -22,6 +22,7 @@ use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
+use codex_protocol::MemoryVersion;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
@@ -33,7 +34,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::InferenceTraceContext;
-use codex_state::StateRuntime;
+use codex_state::MemoryStore;
 use codex_terminal_detection::user_agent;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -68,6 +69,7 @@ impl StageOneRequestContext {
 }
 
 pub(crate) struct MemoryStartupContext {
+    version: MemoryVersion,
     thread_id: ThreadId,
     thread: Arc<CodexThread>,
     thread_manager: Arc<ThreadManager>,
@@ -173,6 +175,7 @@ impl MemoryStartupContext {
         );
 
         Self {
+            version: config.memories.version,
             thread_id,
             thread,
             thread_manager,
@@ -186,8 +189,19 @@ impl MemoryStartupContext {
         self.thread_id
     }
 
-    pub(crate) fn state_db(&self) -> Option<Arc<StateRuntime>> {
-        self.thread.state_db()
+    pub(crate) async fn memory_store(&self) -> Option<MemoryStore> {
+        match self
+            .thread
+            .state_db()?
+            .memories_for_version(self.version)
+            .await
+        {
+            Ok(store) => Some(store),
+            Err(err) => {
+                tracing::warn!("failed opening memory store: {err}");
+                None
+            }
+        }
     }
 
     pub(crate) fn provider(&self) -> &dyn ModelProvider {

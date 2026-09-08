@@ -87,7 +87,6 @@ use codex_mcp::McpPluginAttribution;
 use codex_mcp::McpProtocolMode;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::ResolvedMcpCatalog;
-use codex_memories_read::memory_root;
 use codex_model_provider::ProviderCapabilities;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -3428,7 +3427,7 @@ impl Config {
         }
 
         let memories_config: MemoriesConfig = cfg.memories.clone().unwrap_or_default().into();
-        let memories_root = memory_root(&codex_home);
+        let memories_root = codex_home.join(memories_config.version.directory_name());
 
         let profiles_are_active = effective_permission_selection.profiles_are_active(
             default_permissions_override.as_deref(),

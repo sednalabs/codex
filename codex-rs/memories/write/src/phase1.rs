@@ -110,10 +110,9 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
 
 /// Prune old un-used "dead" raw memories.
 pub async fn prune(context: &MemoryStartupContext, config: &Config) {
-    if let Some(db) = context.state_db() {
+    if let Some(db) = context.memory_store().await {
         let max_unused_days = config.memories.max_unused_days;
         match db
-            .memories()
             .prune_stage1_outputs_for_retention(max_unused_days, crate::stage_one::PRUNE_BATCH_SIZE)
             .await
         {
@@ -151,7 +150,7 @@ async fn claim_startup_jobs(
     context: &MemoryStartupContext,
     memories_config: &MemoriesConfig,
 ) -> Option<Vec<codex_state::Stage1JobClaim>> {
-    let Some(state_db) = context.state_db() else {
+    let Some(state_db) = context.memory_store().await else {
         // This should not happen.
         warn!("state db unavailable while claiming phase-1 startup jobs; skipping");
         return None;
@@ -163,7 +162,6 @@ async fn claim_startup_jobs(
         .collect::<Vec<_>>();
 
     match state_db
-        .memories()
         .claim_stage1_jobs_for_startup(
             context.thread_id(),
             codex_state::Stage1StartupClaimParams {
@@ -335,9 +333,8 @@ mod job {
             reason: &str,
         ) {
             tracing::warn!("Phase 1 job failed for thread {thread_id}: {reason}");
-            if let Some(state_db) = context.state_db() {
+            if let Some(state_db) = context.memory_store().await {
                 let _ = state_db
-                    .memories()
                     .mark_stage1_job_failed(
                         thread_id,
                         ownership_token,
@@ -353,12 +350,11 @@ mod job {
             thread_id: codex_protocol::ThreadId,
             ownership_token: &str,
         ) -> JobOutcome {
-            let Some(state_db) = context.state_db() else {
+            let Some(state_db) = context.memory_store().await else {
                 return JobOutcome::Failed;
             };
 
             if state_db
-                .memories()
                 .mark_stage1_job_succeeded_no_output(thread_id, ownership_token)
                 .await
                 .unwrap_or(false)
@@ -378,12 +374,11 @@ mod job {
             rollout_summary: &str,
             rollout_slug: Option<&str>,
         ) -> JobOutcome {
-            let Some(state_db) = context.state_db() else {
+            let Some(state_db) = context.memory_store().await else {
                 return JobOutcome::Failed;
             };
 
             if state_db
-                .memories()
                 .mark_stage1_job_succeeded(
                     thread_id,
                     ownership_token,

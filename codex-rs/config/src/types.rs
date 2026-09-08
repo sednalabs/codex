@@ -286,10 +286,14 @@ pub struct ToolSuggestConfig {
     pub disabled_tools: Vec<ToolSuggestDisabledTool>,
 }
 
+pub use codex_protocol::MemoryVersion;
+
 /// Memories settings loaded from config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MemoriesToml {
+    /// Selects the memory pipeline; v1 remains the default.
+    pub version: Option<MemoryVersion>,
     /// When `true`, external context sources mark the thread `memory_mode` as `"polluted"`.
     #[serde(alias = "no_memories_if_mcp_or_web_search")]
     pub disable_on_external_context: Option<bool>,
@@ -323,6 +327,7 @@ pub struct MemoriesToml {
 /// Effective memories settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemoriesConfig {
+    pub version: MemoryVersion,
     pub disable_on_external_context: bool,
     pub generate_memories: bool,
     pub use_memories: bool,
@@ -340,6 +345,7 @@ pub struct MemoriesConfig {
 impl Default for MemoriesConfig {
     fn default() -> Self {
         Self {
+            version: MemoryVersion::V1,
             disable_on_external_context: false,
             generate_memories: true,
             use_memories: true,
@@ -360,6 +366,7 @@ impl From<MemoriesToml> for MemoriesConfig {
     fn from(toml: MemoriesToml) -> Self {
         let defaults = Self::default();
         Self {
+            version: toml.version.unwrap_or(defaults.version),
             disable_on_external_context: toml
                 .disable_on_external_context
                 .unwrap_or(defaults.disable_on_external_context),

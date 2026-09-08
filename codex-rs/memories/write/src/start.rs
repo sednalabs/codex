@@ -1,7 +1,6 @@
 use crate::ensure_layout;
 use crate::extensions::seed_extension_instructions;
 use crate::guard;
-use crate::memory_root;
 use crate::metrics::MEMORY_STARTUP;
 use crate::phase1;
 use crate::phase2;
@@ -46,13 +45,14 @@ pub fn start_memories_startup_task(
         source.clone(),
     ));
 
-    if context.state_db().is_none() {
-        warn!("state db unavailable for memories startup pipeline; skipping");
-        return;
-    }
-
     tokio::spawn(async move {
-        let root = memory_root(&config.codex_home);
+        if context.memory_store().await.is_none() {
+            warn!("state db unavailable for memories startup pipeline; skipping");
+            return;
+        }
+        let root = config
+            .codex_home
+            .join(config.memories.version.directory_name());
         if let Err(err) = ensure_layout(&root).await {
             warn!("failed preparing memories root: {err}");
             return;

@@ -1866,13 +1866,9 @@ impl ThreadRequestProcessor {
             .clone()
             .ok_or_else(|| internal_error("sqlite state db unavailable for memory reset"))?;
 
-        state_db
-            .memories()
-            .clear_memory_data()
-            .await
-            .map_err(|err| {
-                internal_error(format!("failed to clear memory rows in memories db: {err}"))
-            })?;
+        state_db.clear_all_memory_data().await.map_err(|err| {
+            internal_error(format!("failed to clear memory rows in memories db: {err}"))
+        })?;
 
         clear_memory_roots_contents(&self.config.codex_home)
             .await
