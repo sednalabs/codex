@@ -226,6 +226,10 @@ impl App {
         } else {
             self.chat_widget.set_raw_output_mode(enabled);
         }
+        if self.overlay.is_some() {
+            self.schedule_immediate_resize_reflow(tui);
+            return;
+        }
         let terminal_width = tui.terminal.last_known_screen_size.into();
         if let Err(err) = self.reflow_transcript_now(tui, terminal_width) {
             tracing::warn!(error = %err, "failed to reflow transcript after raw output mode toggle");

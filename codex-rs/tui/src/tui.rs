@@ -837,7 +837,7 @@ impl Tui {
     /// Enter alternate screen and expand the viewport to full terminal size, saving the current
     /// inline viewport for restoration when leaving.
     pub fn enter_alt_screen(&mut self) -> Result<()> {
-        if !self.alt_screen_enabled {
+        if !self.alt_screen_enabled || self.is_alt_screen_active() {
             return Ok(());
         }
         let _ = execute!(self.terminal.backend_mut(), EnterAlternateScreen);
