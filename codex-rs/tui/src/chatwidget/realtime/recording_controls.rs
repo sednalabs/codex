@@ -123,12 +123,33 @@ impl ChatWidget {
                 .schedule_frame_in(MICROPHONE_METER_INTERVAL);
             return;
         }
+        let handle = handle.clone();
+        self.refresh_realtime_audio_meters(Instant::now(), || {
+            (handle.take_microphone_peak(), handle.take_speaker_peak())
+        });
+    }
+
+    pub(super) fn refresh_realtime_audio_meters(
+        &mut self,
+        now: Instant,
+        take_peaks: impl FnOnce() -> (u16, u16),
+    ) {
+        // Redraws are not sampling ticks: updating the footer itself requests a redraw.
+        // Leave the peaks untouched until a full sampling interval has elapsed.
+        if let Some(next_sample_at) = self.realtime_conversation.next_audio_meter_sample_at
+            && now < next_sample_at
+        {
+            self.frame_requester.schedule_frame_in(next_sample_at - now);
+            return;
+        }
+        self.realtime_conversation.next_audio_meter_sample_at =
+            Some(now + MICROPHONE_METER_INTERVAL);
+        let (microphone_peak, speaker_peak) = take_peaks();
         let microphone_peak = if self.realtime_conversation.microphone_muted {
             0
         } else {
-            handle.take_microphone_peak()
+            microphone_peak
         };
-        let speaker_peak = handle.take_speaker_peak();
         let microphone_level = audio_meter_level(microphone_peak);
         let speaker_level = audio_meter_level(speaker_peak);
         let microphone_intensity = audio_meter_intensity(microphone_peak);
@@ -140,19 +161,18 @@ impl ChatWidget {
             || self.realtime_conversation.microphone_intensity != microphone_intensity
             || self.realtime_conversation.speaker_intensity != speaker_intensity;
         if speaker_level > 0 {
-            self.realtime_conversation.speaker_active_until =
-                Some(Instant::now() + SPEAKER_ACTIVITY_HOLD);
+            self.realtime_conversation.speaker_active_until = Some(now + SPEAKER_ACTIVITY_HOLD);
         } else {
             changed |= self
                 .realtime_conversation
                 .speaker_active_until
-                .take_if(|deadline| *deadline <= Instant::now())
+                .take_if(|deadline| *deadline <= now)
                 .is_some();
         }
         changed |= self
             .realtime_conversation
             .interruption_acknowledged_until
-            .take_if(|deadline| *deadline <= Instant::now())
+            .take_if(|deadline| *deadline <= now)
             .is_some();
         self.realtime_conversation.microphone_level = microphone_level;
         self.realtime_conversation.speaker_level = speaker_level;
@@ -169,6 +189,15 @@ impl ChatWidget {
             .audio_meter_history
             .iter()
             .any(|(microphone, speaker)| *microphone > 0 || *speaker > 0);
+        // Release a quiet channel instead of waiting for old peaks to scroll out.
+        for (microphone, speaker) in &mut self.realtime_conversation.audio_meter_history {
+            if microphone_intensity == 0 {
+                *microphone = 0;
+            }
+            if speaker_intensity == 0 {
+                *speaker = 0;
+            }
+        }
         if self.realtime_conversation.audio_meter_history.len() >= MAX_REALTIME_AUDIO_METER_FRAMES {
             self.realtime_conversation.audio_meter_history.pop_front();
         }

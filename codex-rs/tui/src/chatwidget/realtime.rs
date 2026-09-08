@@ -145,6 +145,7 @@ pub(super) struct RealtimeConversationUiState {
     microphone_history: VoiceAmplitudeHistory,
     speaker_history: VoiceAmplitudeHistory,
     audio_meter_history: VecDeque<(u8, u8)>,
+    next_audio_meter_sample_at: Option<Instant>,
     speaker_active_until: Option<Instant>,
     interruption_acknowledged_until: Option<Instant>,
     speaker_suppression_generation: Option<u64>,

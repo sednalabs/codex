@@ -208,6 +208,99 @@ async fn voice_preserves_the_normal_composer_prompt() {
 }
 
 #[tokio::test]
+async fn voice_meters_do_not_sample_again_on_early_redraws() {
+    let (mut chat, _sender, _events, _ops) = make_chatwidget_manual_with_sender().await;
+    activate_voice(&mut chat);
+    let now = std::time::Instant::now();
+    let peaks = std::cell::Cell::new((0, 0));
+    for elapsed_ms in [0, 100, 200, 300, 400, 500] {
+        let sample_at = now + std::time::Duration::from_millis(elapsed_ms);
+        peaks.set((8192, 4096));
+        chat.refresh_realtime_audio_meters(sample_at, || peaks.replace((0, 0)));
+        // Footer updates and transcript animation can redraw before more audio arrives.
+        let (frame_requester, mut frame_requests) = crate::tui::FrameRequester::test_channel();
+        chat.frame_requester = frame_requester;
+        let before_redraw = std::time::Instant::now();
+        chat.refresh_realtime_audio_meters(sample_at + std::time::Duration::from_millis(8), || {
+            peaks.replace((0, 0))
+        });
+        let after_redraw = std::time::Instant::now();
+        let remaining = std::time::Duration::from_millis(92);
+        let deadline = frame_requests
+            .try_recv()
+            .expect("early redraw re-arms sampling");
+        assert!((before_redraw + remaining..=after_redraw + remaining).contains(&deadline));
+        assert!(frame_requests.try_recv().is_err());
+    }
+    assert_eq!(
+        chat.realtime_conversation.audio_meter_history,
+        std::collections::VecDeque::from([(255, 119); 6])
+    );
+    let render_meter = |chat: &ChatWidget, width| {
+        render_bottom_popup(chat, width)
+            .lines()
+            .find(|line| line.contains("mic "))
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    let mut meters = [80, 30].map(|width| render_meter(&chat, width)).to_vec();
+
+    // An early redraw must also leave newly accumulated peaks for the next sample.
+    peaks.set((4096, 8192));
+    chat.refresh_realtime_audio_meters(now + std::time::Duration::from_millis(599), || {
+        peaks.replace((0, 0))
+    });
+    chat.refresh_realtime_audio_meters(now + std::time::Duration::from_millis(600), || {
+        peaks.replace((0, 0))
+    });
+    assert_eq!(
+        chat.realtime_conversation.audio_meter_history,
+        std::collections::VecDeque::from([
+            (255, 119),
+            (255, 119),
+            (255, 119),
+            (255, 119),
+            (255, 119),
+            (255, 119),
+            (119, 255)
+        ])
+    );
+    // Each channel settles on its first quiet sample, without clearing the other one.
+    for (elapsed_ms, peaks) in [(700, (0, 8192)), (800, (8192, 0))] {
+        chat.refresh_realtime_audio_meters(
+            now + std::time::Duration::from_millis(elapsed_ms),
+            || peaks,
+        );
+        meters.push(render_meter(&chat, /*width*/ 80));
+    }
+    insta::assert_snapshot!(meters.join("\n"));
+}
+
+#[tokio::test]
+async fn voice_meters_preserve_silence_and_restart_sampling_after_reset() {
+    let (mut chat, _sender, _events, _ops) = make_chatwidget_manual_with_sender().await;
+    activate_voice(&mut chat);
+    let now = std::time::Instant::now();
+    chat.refresh_realtime_audio_meters(now, || (8192, 4096));
+    // A delayed draw adds one real sample, not synthetic catch-up bars.
+    chat.refresh_realtime_audio_meters(now + std::time::Duration::from_secs(1), || (0, 0));
+    assert_eq!(
+        chat.realtime_conversation.audio_meter_history,
+        std::collections::VecDeque::from([(0, 0), (0, 0)])
+    );
+    chat.reset_realtime_conversation();
+    activate_voice(&mut chat);
+    chat.refresh_realtime_audio_meters(now + std::time::Duration::from_millis(1001), || {
+        (4096, 8192)
+    });
+    assert_eq!(
+        chat.realtime_conversation.audio_meter_history,
+        std::collections::VecDeque::from([(119, 255)])
+    );
+}
+
+#[tokio::test]
 async fn voice_footer_renders_the_main_conversation_states() {
     let (mut chat, _sender, _events, _ops) = make_chatwidget_manual_with_sender().await;
     activate_voice(&mut chat);
