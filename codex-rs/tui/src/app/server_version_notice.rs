@@ -3,6 +3,41 @@
 use super::*;
 
 impl App {
+    pub(super) fn refresh_server_version_overview_notice(&mut self, client_version: &str) {
+        if !self.local_settings.tui.show_server_version_notice {
+            self.pending_server_version_notice = None;
+            self.reconnect.seen_version_notice = None;
+        }
+        let server_version = self
+            .chat_widget
+            .remote_connection
+            .as_ref()
+            .and_then(|connection| connection.version.strip_prefix('v'))
+            .map(str::to_owned);
+        let _ = self.initialize_server_version_notice(client_version, server_version.as_deref());
+    }
+
+    pub(super) fn initialize_server_version_notice(
+        &mut self,
+        client_version: &str,
+        server_version: Option<&str>,
+    ) -> Option<String> {
+        let notice = if matches!(self.app_server_target, AppServerTarget::Embedded) {
+            None
+        } else {
+            crate::status::remote_connection::server_version_notice_for_tui(
+                &self.local_settings.tui,
+                client_version,
+                server_version,
+            )
+        };
+        self.update_server_version_overview_notice(
+            client_version,
+            notice.as_ref().and(server_version),
+        );
+        notice
+    }
+
     pub(super) fn update_server_version_overview_notice(
         &mut self,
         client_version: &str,

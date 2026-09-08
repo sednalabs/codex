@@ -262,6 +262,7 @@ impl App {
         let initial_server_version_notice =
             if !matches!(app_server_target, AppServerTarget::Embedded) {
                 crate::status::remote_connection::pending_server_version_notice(
+                    &local_settings.tui,
                     &app_server_target,
                     app_server.server_codex_home(),
                     CODEX_CLI_VERSION,
@@ -770,12 +771,14 @@ See the Codex keymap documentation for supported actions and examples."
         if !tui.is_terminal_focused() {
             app.recap.note_focus_lost(Instant::now());
         }
-        app.update_server_version_overview_notice(
-            CODEX_CLI_VERSION,
-            initial_server_version_notice
-                .as_ref()
-                .and(app_server.server_version()),
-        );
+        let _ =
+            app.initialize_server_version_notice(CODEX_CLI_VERSION, app_server.server_version());
+        if initial_server_version_notice.is_none() {
+            app.update_server_version_overview_notice(
+                CODEX_CLI_VERSION,
+                /*older_server*/ None,
+            );
+        }
         if start_in_agents_overview {
             app.open_agents_overview(&app_server);
         } else if !matches!(app.app_server_target, AppServerTarget::Embedded) {

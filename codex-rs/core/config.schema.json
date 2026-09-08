@@ -4119,6 +4119,11 @@
           "default": null,
           "description": "Preferred layout for resume/fork session picker results."
         },
+        "show_server_version_notice": {
+          "default": true,
+          "description": "Show an informational notice when the connected app server is an older stable release. Defaults to `true`; this does not control compatibility errors or version status.",
+          "type": "boolean"
+        },
         "show_tooltips": {
           "default": true,
           "description": "Show startup tooltips in the TUI welcome screen. Defaults to `true`.",

@@ -51,6 +51,18 @@ pub(crate) fn server_version_notice(client: &str, server: Option<&str>) -> Optio
     })
 }
 
+pub(crate) fn server_version_notice_for_tui(
+    settings: &codex_config::types::Tui,
+    client: &str,
+    server: Option<&str>,
+) -> Option<String> {
+    if settings.show_server_version_notice {
+        server_version_notice(client, server)
+    } else {
+        None
+    }
+}
+
 fn hash_identity_part(hasher: &mut Sha256, tag: &[u8], value: &[u8]) {
     hasher.update(tag);
     hasher.update((value.len() as u64).to_le_bytes());
@@ -123,13 +135,14 @@ pub(crate) fn server_version_notice_key(
 }
 
 pub(crate) fn pending_server_version_notice(
+    settings: &codex_config::types::Tui,
     target: &AppServerTarget,
     server_home: Option<&str>,
     client: &str,
     server: Option<&str>,
     last_shown: Option<&str>,
 ) -> Option<(ServerVersionNotice, String)> {
-    let message = server_version_notice(client, server)?;
+    let message = server_version_notice_for_tui(settings, client, server)?;
     let notice = ServerVersionNotice {
         message,
         offer_update: matches!(target, AppServerTarget::LocalDaemon { .. }),
@@ -210,8 +223,13 @@ mod tests {
             endpoint: endpoint.clone(),
         };
         let remote = AppServerTarget::Remote { endpoint };
+        let settings = codex_config::types::Tui {
+            show_server_version_notice: true,
+            ..Default::default()
+        };
         let notice = |target| {
             pending_server_version_notice(
+                &settings,
                 target,
                 /*server_home*/ None,
                 "0.153.0",

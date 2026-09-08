@@ -741,6 +741,11 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
+    /// Show an informational notice when the connected app server is an older stable release.
+    /// Defaults to `true`; this does not control compatibility errors or version status.
+    #[serde(default = "default_true")]
+    pub show_server_version_notice: bool,
+
     /// Generate automatic conversation recaps when the terminal is unfocused.
     /// Defaults to `true`. Disabling this leaves `/recap` available on demand.
     #[serde(default = "default_true")]

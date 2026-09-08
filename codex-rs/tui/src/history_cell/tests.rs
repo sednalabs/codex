@@ -46,7 +46,12 @@ fn connected_server_version_notice_snapshot() {
             .expect("absolute socket path"),
         },
     };
+    let settings = codex_config::types::Tui {
+        show_server_version_notice: true,
+        ..Default::default()
+    };
     let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
+        &settings,
         &target,
         /*server_home*/ None,
         "0.153.0",
@@ -68,7 +73,12 @@ fn local_daemon_version_notice_snapshot() {
             .expect("absolute socket path"),
         },
     };
+    let settings = codex_config::types::Tui {
+        show_server_version_notice: true,
+        ..Default::default()
+    };
     let (notice, _) = crate::status::remote_connection::pending_server_version_notice(
+        &settings,
         &target,
         /*server_home*/ None,
         "0.153.0",

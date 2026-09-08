@@ -11,17 +11,19 @@ use super::disconnect::serve_reconnect_requests;
 
 #[tokio::test]
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
-    for (recovered_queue, edit_offline, resume_error_code, deferred_notice) in [
-        (true, false, -32603, false),
-        (false, false, -32603, false),
-        (true, true, -32603, false),
-        (true, false, -32600, false),
-        (false, false, -32600, false),
-        (true, true, -32600, false),
-        (true, false, -32603, true),
+    for (recovered_queue, edit_offline, resume_error_code, deferred_notice, notice_enabled) in [
+        (true, false, -32603, false, false),
+        (true, false, -32603, false, true),
+        (false, false, -32603, false, false),
+        (true, true, -32603, false, false),
+        (true, false, -32600, false, false),
+        (false, false, -32600, false, false),
+        (true, true, -32600, false, false),
+        (true, false, -32603, true, true),
     ] {
         let pending_profile = !recovered_queue && resume_error_code == -32600;
         let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+        app.local_settings.tui.show_server_version_notice = notice_enabled;
         let id = ThreadId::new();
         let cwd = app.config.cwd.clone();
         app.config.model = Some("gpt-test".into());
@@ -76,18 +78,21 @@ async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = crate::resolve_remote_addr(&format!("ws://{}", listener.local_addr()?))?;
         app.app_server_target = AppServerTarget::Remote { endpoint };
-        let (notice, key) = crate::status::remote_connection::pending_server_version_notice(
-            &app.app_server_target,
-            /*server_home*/ None,
-            "2.1.0",
-            Some("2.0.0"),
-            /*last_shown*/ None,
-        )
-        .expect("older server should have a pending notice");
-        app.reconnect.seen_version_notice = Some(key);
-        if deferred_notice {
-            app.pending_server_version_notice = Some(notice);
-            app.update_server_version_overview_notice("2.1.0", Some("2.0.0"));
+        if notice_enabled {
+            let (notice, key) = crate::status::remote_connection::pending_server_version_notice(
+                &app.local_settings.tui,
+                &app.app_server_target,
+                /*server_home*/ None,
+                "2.1.0",
+                Some("2.0.0"),
+                /*last_shown*/ None,
+            )
+            .expect("older server should have a pending notice");
+            app.reconnect.seen_version_notice = Some(key);
+            if deferred_notice {
+                app.pending_server_version_notice = Some(notice);
+                app.update_server_version_overview_notice("2.1.0", Some("2.0.0"));
+            }
         }
         let thread = json!({
             "id": id, "sessionId": id, "preview": "only once", "ephemeral": false,

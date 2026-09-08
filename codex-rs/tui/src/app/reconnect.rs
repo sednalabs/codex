@@ -440,11 +440,14 @@ impl App {
             client_version,
             app_server.server_version(),
         );
-        if self.reconnect.seen_version_notice != connected_notice_key {
+        if !self.local_settings.tui.show_server_version_notice
+            || self.reconnect.seen_version_notice != connected_notice_key
+        {
             self.reconnect.seen_version_notice = None;
             self.update_server_version_overview_notice(client_version, /*older_server*/ None);
         }
         if let Some((notice, key)) = crate::status::remote_connection::pending_server_version_notice(
+            &self.local_settings.tui,
             &self.app_server_target,
             app_server.server_codex_home(),
             client_version,
