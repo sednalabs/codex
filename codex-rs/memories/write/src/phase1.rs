@@ -3,6 +3,8 @@ use crate::metrics::MEMORY_PHASE_ONE_E2E_MS;
 use crate::metrics::MEMORY_PHASE_ONE_JOBS;
 use crate::metrics::MEMORY_PHASE_ONE_OUTPUT;
 use crate::metrics::MEMORY_PHASE_ONE_TOKEN_USAGE;
+use crate::phase1_output::StageOneOutput;
+use crate::phase1_output::output_schema;
 use crate::rollout_input::sanitize_response_item_for_memories;
 use crate::runtime::MemoryStartupContext;
 use crate::runtime::StageOneRequestContext;
@@ -21,9 +23,6 @@ use codex_rollout::INTERACTIVE_SESSION_SOURCES;
 use codex_rollout::RolloutItem;
 use codex_secrets::redact_secrets;
 use futures::StreamExt;
-use serde::Deserialize;
-use serde_json::Value;
-use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -47,21 +46,6 @@ struct Stats {
     succeeded_no_output: usize,
     failed: usize,
     total_token_usage: Option<TokenUsage>,
-}
-
-/// Phase 1 model output payload.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StageOneOutput {
-    /// Detailed markdown raw memory for a single rollout.
-    #[serde(rename = "raw_memory")]
-    pub(crate) raw_memory: String,
-    /// Compact summary line used for routing and indexing.
-    #[serde(rename = "rollout_summary")]
-    pub(crate) rollout_summary: String,
-    /// Optional slug used to derive rollout summary artifact filenames.
-    #[serde(default, rename = "rollout_slug")]
-    pub(crate) rollout_slug: Option<String>,
 }
 
 /// Runs memory phase 1 in strict step order:
@@ -131,20 +115,6 @@ pub async fn prune(context: &MemoryStartupContext, config: &Config) {
             }
         }
     }
-}
-
-/// JSON schema used to constrain phase-1 model output.
-pub fn output_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "rollout_summary": { "type": "string" },
-            "rollout_slug": { "type": ["string", "null"] },
-            "raw_memory": { "type": "string" }
-        },
-        "required": ["rollout_summary", "rollout_slug", "raw_memory"],
-        "additionalProperties": false
-    })
 }
 
 async fn claim_startup_jobs(
@@ -236,6 +206,7 @@ mod job {
             config,
             &claimed_thread.rollout_path,
             &claimed_thread.cwd,
+            claimed_thread.git_branch.as_deref(),
             stage_one_context,
         )
         .await
@@ -256,7 +227,12 @@ mod job {
             }
         };
 
-        if stage_one_output.raw_memory.is_empty() || stage_one_output.rollout_summary.is_empty() {
+        if stage_one_output
+            .raw_memory
+            .as_ref()
+            .is_some_and(String::is_empty)
+            || stage_one_output.rollout_summary.is_empty()
+        {
             return JobResult {
                 outcome: result::no_output(context, claimed_thread.id, &claim.ownership_token)
                     .await,
@@ -270,7 +246,7 @@ mod job {
                 claimed_thread.id,
                 &claim.ownership_token,
                 claimed_thread.updated_at.timestamp(),
-                &stage_one_output.raw_memory,
+                stage_one_output.raw_memory.as_deref().unwrap_or_default(),
                 &stage_one_output.rollout_summary,
                 stage_one_output.rollout_slug.as_deref(),
             )
@@ -285,6 +261,7 @@ mod job {
         config: &Config,
         rollout_path: &Path,
         rollout_cwd: &Path,
+        rollout_git_branch: Option<&str>,
         stage_one_context: &StageOneRequestContext,
     ) -> anyhow::Result<(StageOneOutput, Option<TokenUsage>)> {
         let (rollout_items, _, _) = RolloutRecorder::load_rollout_items(rollout_path).await?;
@@ -296,36 +273,50 @@ mod job {
             )?,
         };
 
+        let input_text = match config.memories.version {
+            MemoryVersion::V1 => build_stage_one_input_message(
+                &stage_one_context.model_info,
+                rollout_path,
+                rollout_cwd,
+                &rollout_contents,
+            )?,
+            MemoryVersion::V2 => crate::prompts::build_stage_one_input_v2(
+                rollout_path,
+                rollout_cwd,
+                rollout_git_branch,
+                &rollout_contents,
+            )?,
+        };
+
         let mut prompt = Prompt::default();
-        prompt.input = vec![ResponseItem::Message {
-            id: Some(ResponseItemId::new("msg")),
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: build_stage_one_input_message(
-                    &stage_one_context.model_info,
-                    rollout_path,
-                    rollout_cwd,
-                    &rollout_contents,
-                )?,
+        prompt.input = match config.memories.version {
+            MemoryVersion::V1 => vec![ResponseItem::Message {
+                id: Some(ResponseItemId::new("msg")),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText { text: input_text }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }];
+            MemoryVersion::V2 => {
+                codex_core::context::MemoryContextFragment::extraction_messages(&input_text)
+            }
+        };
         prompt.base_instructions = BaseInstructions {
-            text: crate::stage_one::PROMPT.to_string(),
+            text: match config.memories.version {
+                MemoryVersion::V1 => crate::stage_one::PROMPT,
+                MemoryVersion::V2 => include_str!("../templates/memories/stage_one_system_v2.md"),
+            }
+            .to_string(),
             provenance: None,
         };
-        prompt.output_schema = Some(output_schema());
+        prompt.output_schema = Some(output_schema(config.memories.version));
         prompt.output_schema_strict = true;
 
         let (result, token_usage) = context
             .stream_stage_one_prompt(config, &prompt, stage_one_context)
             .await?;
 
-        let mut output: StageOneOutput = serde_json::from_str(&result)?;
-        output.raw_memory = redact_secrets(output.raw_memory);
-        output.rollout_summary = redact_secrets(output.rollout_summary);
-        output.rollout_slug = output.rollout_slug.map(redact_secrets);
+        let output = StageOneOutput::parse(&result, config.memories.version)?;
 
         Ok((output, token_usage))
     }
@@ -436,10 +427,11 @@ mod job {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use serde_json::Value;
 
         #[test]
         fn output_schema_requires_rollout_slug_and_keeps_it_nullable() {
-            let schema = output_schema();
+            let schema = output_schema(MemoryVersion::V1);
             let properties = schema
                 .get("properties")
                 .and_then(Value::as_object)

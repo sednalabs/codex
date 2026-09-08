@@ -19,6 +19,12 @@ static STAGE_ONE_INPUT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
         "memories/stage_one_input.md",
     )
 });
+static STAGE_ONE_INPUT_V2_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
+    parse_embedded_template(
+        include_str!("../templates/memories/stage_one_input_v2.md"),
+        "memories/stage_one_input_v2.md",
+    )
+});
 static MEMORY_EXTENSIONS_FOLDER_STRUCTURE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     parse_embedded_template(
         crate::prompt_blocks::EXTENSIONS_FOLDER_STRUCTURE,
@@ -127,6 +133,23 @@ pub fn build_stage_one_input_message(
         ("rollout_path", rollout_path.as_str()),
         ("rollout_cwd", rollout_cwd.as_str()),
         ("rollout_contents", truncated_rollout_contents.as_str()),
+    ])?)
+}
+
+pub(crate) fn build_stage_one_input_v2(
+    rollout_path: &Path,
+    rollout_cwd: &Path,
+    rollout_git_branch: Option<&str>,
+    rollout_contents: &str,
+) -> anyhow::Result<String> {
+    Ok(STAGE_ONE_INPUT_V2_TEMPLATE.render([
+        ("rollout_path", rollout_path.display().to_string().as_str()),
+        ("rollout_cwd", rollout_cwd.display().to_string().as_str()),
+        (
+            "rollout_git_branch",
+            rollout_git_branch.unwrap_or("unknown"),
+        ),
+        ("rollout_contents", rollout_contents),
     ])?)
 }
 

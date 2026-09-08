@@ -9,6 +9,7 @@ mod extensions;
 mod guard;
 mod metrics;
 mod phase1;
+mod phase1_output;
 mod phase2;
 mod prompts;
 mod rollout_input;

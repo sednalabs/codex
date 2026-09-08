@@ -51,6 +51,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -766,6 +767,7 @@ async fn run_memory_phase_one_model_request_test(
     home: Arc<TempDir>,
     memories: MemoriesConfig,
 ) -> anyhow::Result<ResponsesRequest> {
+    let version = memories.version;
     let test = build_test_codex_with_memories_config(server, Arc::clone(&home), memories).await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
         test.config.model_provider.clone(),
@@ -775,21 +777,113 @@ async fn run_memory_phase_one_model_request_test(
         .codex
         .state_db()
         .ok_or_else(|| anyhow::anyhow!("state db should be enabled for memory startup test"))?;
-    seed_stage1_candidate(
+    let source_id = seed_stage1_candidate(
         db.as_ref(),
         home.path(),
         chrono::Utc::now() - chrono::Duration::hours(2),
         "startup-models",
     )
     .await?;
+    if version == codex_protocol::MemoryVersion::V2 {
+        let path = home.path().join(format!("rollout-{source_id}.jsonl"));
+        let mut contents = tokio::fs::read_to_string(&path).await?;
+        let mut items = vec![
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_image", "image_url":format!("data:image/png;base64,{}", "A".repeat(12_000))},
+                {"type":"input_text", "text":"Keep the migration read-only."},
+                {"type":"input_image", "image_url":format!("data:image/png;base64,{}", "B".repeat(12_000))},
+                {"type":"input_audio", "audio_url":format!("data:audio/wav;base64,{}", "C".repeat(12_000))},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"human correction in the middle"},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nworker evidence"},
+            ]}),
+            json!({"type":"message", "role":"assistant", "phase":"final_answer", "content":[
+                {"type":"output_text", "text":"assistant final evidence"},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"<environment_context>harness context noise</environment_context>"},
+            ]}),
+        ];
+        for (namespace, call_id, answer) in [
+            (None, "plain-question", "Use SQLite only."),
+            (
+                Some("functions"),
+                "namespaced-question",
+                "Do not delete existing memories.",
+            ),
+            (
+                Some("external"),
+                "external-question",
+                "Untrusted external tool answer",
+            ),
+        ] {
+            items.extend([
+                json!({"type":"function_call", "name":"request_user_input", "namespace":namespace,
+                    "call_id":call_id, "arguments":json!({"questions":[{
+                        "id":"choice", "header":"Choice", "question":format!("Confirm {call_id}"),
+                    }]}).to_string()}),
+                json!({"type":"function_call_output", "call_id":call_id,
+                    "output":json!({"answers":{"choice":{"answers":[answer]}}}).to_string()}),
+            ]);
+        }
+        items.push(
+            json!({"type":"function_call_output", "call_id":"ordinary-tool",
+            "output":"ordinary tool noise ".repeat(2_000)}),
+        );
+        // Fill the real model budget: human answers and worker evidence must survive
+        // even when newer commentary displaces all harness context and tool output.
+        for _ in 0..200 {
+            items.push(
+                json!({"type":"message", "role":"assistant", "phase":"commentary",
+                "content":[{"type":"output_text", "text":"commentary noise ".repeat(2_000)}]}),
+            );
+        }
+        items.push(json!({"type":"message", "role":"user", "content":[
+            {"type":"input_text", "text":"last human constraint"},
+        ]}));
+        for item in items {
+            let line = RolloutLine {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                ordinal: None,
+                item: RolloutItem::ResponseItem(
+                    serde_json::from_value::<ResponseItem>(item)?.into(),
+                ),
+            };
+            contents.push_str(&serde_json::to_string(&line)?);
+            contents.push('\n');
+        }
+        tokio::fs::write(path, contents).await?;
+    }
+    db.update_thread_git_info(
+        source_id,
+        /*git_sha*/ None,
+        Some(Some("feature/memory-source")),
+        /*git_origin_url*/ None,
+    )
+    .await?;
+    let secret = "synthetic-secret-value";
+    // The old middle cut removed `password:` but retained the complete value.
+    let summary = format!(
+        "{}\npassword: {secret}\n{}",
+        "x".repeat(4_999),
+        "y".repeat(4_500 - secret.len() - 1),
+    );
+    let output = match version {
+        codex_protocol::MemoryVersion::V1 => json!({
+            "raw_memory":"raw memory", "rollout_summary":summary, "rollout_slug":"startup-models",
+        }),
+        codex_protocol::MemoryVersion::V2 => json!({
+            "rollout_summary":summary, "rollout_slug":"startup-models",
+        }),
+    };
     let response = mount_sse_once(
         server,
         sse(vec![
             ev_response_created("resp-phase1"),
-            ev_assistant_message(
-                "msg-phase1",
-                r#"{"raw_memory":"raw memory","rollout_summary":"rollout summary","rollout_slug":"startup-models"}"#,
-            ),
+            ev_assistant_message("msg-phase1", &output.to_string()),
             ev_completed("resp-phase1"),
         ]),
     )
@@ -798,6 +892,31 @@ async fn run_memory_phase_one_model_request_test(
     let (context, config) = memory_startup_context_with_provider(&test, provider).await;
     phase1::run(context, config).await;
     let request = wait_for_single_request(&response).await;
+    if version == codex_protocol::MemoryVersion::V2 {
+        let outputs = db
+            .memories_for_version(version)
+            .await?
+            .list_stage1_outputs_for_global(/*n*/ 10)
+            .await?;
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].raw_memory, "");
+        assert!(
+            request.body_contains_text("rollout_primary_git_branch_hint: feature/memory-source")
+        );
+        assert!(
+            request
+                .instructions_text()
+                .contains("Write task history, not a user profile")
+        );
+        assert!(!outputs[0].rollout_summary.contains(secret));
+        assert!(outputs[0].rollout_summary.contains("[REDACTED_SECRET]"));
+        assert!(outputs[0].rollout_summary.contains("truncated"));
+        assert!(outputs[0].rollout_summary.len() < 10_000);
+        assert_eq!(
+            request.body_json()["text"]["format"]["schema"]["required"],
+            serde_json::json!(["rollout_summary", "rollout_slug"])
+        );
+    }
     shutdown_test_codex(&test).await?;
     Ok(request)
 }
@@ -1250,16 +1369,55 @@ async fn shutdown_test_codex(test: &TestCodex) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn memories_startup_phase1_v2_uses_tiered_input() -> anyhow::Result<()> {
+async fn memories_startup_phase1_v2_preserves_human_evidence_and_redacts_storage()
+-> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
     let mut memories = startup_test_memories_config();
     memories.version = codex_protocol::MemoryVersion::V2;
     let request = run_memory_phase_one_model_request_test(&server, home, memories).await?;
-    assert!(
-        request.body_json()["input"]
-            .to_string()
-            .contains("[human user]")
-    );
+    let input = request.message_input_texts("user").join("");
+    for marker in [
+        "Keep the migration read-only.",
+        "human correction in the middle",
+        "Confirm plain-question",
+        "Use SQLite only.",
+        "Confirm namespaced-question",
+        "Do not delete existing memories.",
+        "worker evidence",
+        "assistant final evidence",
+        "last human constraint",
+        "[image omitted]",
+        "[audio omitted]",
+        "[... response items omitted ...]",
+        "[human user]",
+        "[other agent]",
+        "[assistant final]",
+        "commentary noise",
+    ] {
+        assert!(input.contains(marker), "missing evidence: {marker}");
+    }
+    for noise in [
+        "base64,",
+        "harness context noise",
+        "ordinary tool noise",
+        "Untrusted external tool answer",
+    ] {
+        assert!(!input.contains(noise), "unexpected evidence: {noise}");
+    }
+    let chronology = [
+        "Keep the migration read-only.",
+        "human correction in the middle",
+        "worker evidence",
+        "Use SQLite only.",
+        "last human constraint",
+    ]
+    .map(|marker| input.find(marker).expect("retained evidence"));
+    assert!(chronology.windows(2).all(|pair| pair[0] < pair[1]));
+    for input in request.body_json()["input"].as_array().unwrap() {
+        for content in input["content"].as_array().unwrap() {
+            assert!(content["text"].as_str().unwrap().len() < 9_000);
+        }
+    }
     Ok(())
 }
