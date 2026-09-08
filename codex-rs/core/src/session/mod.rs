@@ -224,6 +224,8 @@ mod environment;
 pub(crate) mod extension_metrics;
 mod handlers;
 mod inject;
+mod reasoning_effort;
+pub(crate) use reasoning_effort::RequestEffortUsage;
 mod input_queue;
 mod mcp;
 mod mcp_prewarm;
@@ -231,7 +233,6 @@ mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod realtime_history;
-mod reasoning_effort;
 mod retained_context;
 mod review;
 mod rollout_budget;
@@ -3831,6 +3832,7 @@ impl Session {
             );
             compacted_item.guardian_history = state.history.guardian_history_checkpoint();
             compacted_item.retained_context = Some(state.history.retained_context().clone());
+            state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
             if let Some(world_state) = world_state_baseline {
                 let snapshot = world_state.snapshot();
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_object()));

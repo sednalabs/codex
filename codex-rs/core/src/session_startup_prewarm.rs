@@ -15,6 +15,7 @@ use crate::client::ModelClientSession;
 use crate::guardian::routes_approval_to_guardian;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::INITIAL_SUBMIT_ID;
+use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::turn::build_prompt;
 use codex_features::Feature;
@@ -325,7 +326,7 @@ async fn schedule_startup_prewarm_inner(
             &step_context.settings.model_info,
             &step_context.session_telemetry,
             session
-                .reasoning_effort_for_request(&step_context.settings)
+                .reasoning_effort_for_request(&step_context.settings, RequestEffortUsage::Sampling)
                 .await,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),

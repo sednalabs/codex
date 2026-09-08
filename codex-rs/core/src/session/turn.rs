@@ -2313,8 +2313,11 @@ async fn try_run_sampling_request(
             prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
-            sess.reasoning_effort_for_request(&step_context.settings)
-                .await,
+            sess.reasoning_effort_for_request(
+                &step_context.settings,
+                super::RequestEffortUsage::Sampling,
+            )
+            .await,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),
             responses_metadata,

@@ -30,9 +30,11 @@ use codex_protocol::protocol::TurnContextItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use tokio_util::task::AbortOnDropHandle;
 
-/// Runtime request effort; startup and replay must re-establish the selected effort.
+/// Runtime request effort. A successful compaction can establish a fresh baseline, while
+/// startup and replay must explicitly re-establish the selected effort in surviving history.
 pub(crate) enum ReasoningEffortPin {
     Unset,
+    Compacted,
     Active {
         model: String,
         effort: ReasoningEffort,
@@ -46,7 +48,7 @@ impl ReasoningEffortPin {
                 model: pinned_model,
                 effort,
             } if pinned_model == model => Some(effort.clone()),
-            Self::Unset | Self::Active { .. } => None,
+            Self::Unset | Self::Compacted | Self::Active { .. } => None,
         }
     }
 
