@@ -526,6 +526,7 @@ async fn transcript_completion_waits_for_normal_agent_stream_consolidation() {
 #[tokio::test]
 async fn transcript_handoff_moves_deferred_repeats_and_partial_once() {
     let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
+    chat.config.animations = false;
     activate_voice(&mut chat);
     chat.on_agent_message_delta("ordinary stream".to_string());
     for _ in 0..super::super::MAX_PENDING_TRANSCRIPT_CELLS {
@@ -692,5 +693,36 @@ async fn completed_transcript_preserves_the_other_speakers_caption() {
             chat.realtime_conversation.transcript.as_str(),
         ),
         (Some("assistant"), "Still speaking")
+    );
+}
+
+#[tokio::test]
+async fn live_voice_split_flap_animates_without_changing_final_history() {
+    let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
+    chat.config.animations = true;
+    activate_voice(&mut chat);
+
+    chat.on_realtime_transcript_delta("assistant".to_string(), "gate 73".to_string());
+
+    let Some(cell) = chat.realtime_conversation.live_transcript_cell.as_ref() else {
+        panic!("live voice transcripts should have an animation cell");
+    };
+    assert_eq!(cell.raw_lines()[0].to_string(), "gate 73");
+    assert!(
+        chat.active_cell_transcript_key()
+            .is_some_and(|key| { key.animation_tick.is_some() })
+    );
+
+    chat.on_realtime_transcript_done("assistant".to_string(), "gate 73".to_string());
+
+    assert!(chat.active_cell_transcript_key().is_none());
+    let Ok(AppEvent::InsertHistoryCell(cell)) = events.try_recv() else {
+        panic!("a completed voice transcript should commit ordinary history");
+    };
+    assert!(cell.transcript_animation_tick().is_none());
+    assert!(
+        cell.display_lines(/*width*/ 80)
+            .iter()
+            .any(|line| { line.to_string().contains("gate 73") })
     );
 }

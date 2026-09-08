@@ -6,11 +6,13 @@ mod recording_controls;
 use super::ChatWidget;
 use super::HistoryCell;
 use super::PARENT_OWNED_INPUT_MESSAGE;
+use super::realtime_split_flap::SplitFlapTranscriptCell;
 use super::realtime_split_flap::VoiceAmplitudeHistory;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::history_cell;
 use crate::key_hint;
+use crate::motion::MotionMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
@@ -1244,9 +1246,22 @@ impl ChatWidget {
             .transcript_role
             .as_deref()
             .unwrap_or("");
-        self.realtime_conversation.live_transcript_cell = Some(
-            self.realtime_transcript_history_cell(role, &self.realtime_conversation.transcript),
+        let previous = self
+            .realtime_conversation
+            .live_transcript_cell
+            .as_deref()
+            .and_then(|cell| cell.as_any().downcast_ref::<SplitFlapTranscriptCell>());
+        let cell =
+            self.realtime_transcript_history_cell(role, &self.realtime_conversation.transcript);
+        let live_cell = SplitFlapTranscriptCell::new(
+            cell,
+            role,
+            &self.realtime_conversation.transcript,
+            previous,
+            MotionMode::from_animations_enabled(self.config.animations),
+            self.frame_requester.clone(),
         );
+        self.realtime_conversation.live_transcript_cell = Some(Box::new(live_cell));
         self.bump_active_cell_revision();
         self.request_redraw();
     }
