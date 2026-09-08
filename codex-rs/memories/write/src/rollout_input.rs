@@ -1,7 +1,10 @@
 //! Selects v2 extraction evidence by provenance, then restores chronological order.
 //! Human replies retain their questions; message media is replaced with placeholders.
 //! Budgets use the same token estimate as the rest of the memory pipeline.
+//! Extraction chunks preserve selected evidence in order within bounded messages.
 
+use codex_core::context::ContextualUserFragment;
+use codex_core::context::MemoryContextFragment;
 use codex_protocol::ToolName;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
@@ -239,6 +242,19 @@ pub(crate) fn serialize_tiered_input(
         return Ok(String::new());
     }
     Ok(rendered)
+}
+
+/// Splits already-budgeted extraction input without dropping evidence.
+pub(crate) fn extraction_messages(mut text: &str) -> Vec<ResponseItem> {
+    let mut messages = Vec::new();
+    while !text.is_empty() {
+        let end = text.floor_char_boundary(text.len().min(8_900));
+        messages.push(ContextualUserFragment::into(
+            MemoryContextFragment::ExtractionEvidence(text[..end].to_string()),
+        ));
+        text = &text[end..];
+    }
+    messages
 }
 
 pub(crate) fn sanitize_response_item_for_memories(item: &ResponseItem) -> Option<ResponseItem> {

@@ -1,8 +1,7 @@
-//! Typed, bounded v2 memory context. Extraction chunks preserve selected evidence in order.
+//! Typed, bounded v2 memory context.
 
 use super::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
-use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 
@@ -10,21 +9,6 @@ use codex_utils_output_truncation::truncate_text;
 pub enum MemoryContextFragment {
     ReadInstructions(String),
     ExtractionEvidence(String),
-}
-
-impl MemoryContextFragment {
-    /// Splits already-budgeted extraction input without dropping evidence.
-    pub fn extraction_messages(mut text: &str) -> Vec<ResponseItem> {
-        let mut messages = Vec::new();
-        while !text.is_empty() {
-            let end = text.floor_char_boundary(text.len().min(8_900));
-            messages.push(ContextualUserFragment::into(Self::ExtractionEvidence(
-                text[..end].to_string(),
-            )));
-            text = &text[end..];
-        }
-        messages
-    }
 }
 
 impl ContextualUserFragment for MemoryContextFragment {
@@ -57,7 +41,3 @@ impl ContextualUserFragment for MemoryContextFragment {
         truncate_text(text, TruncationPolicy::Bytes(8_900))
     }
 }
-
-#[cfg(test)]
-#[path = "memory_tests.rs"]
-mod tests;

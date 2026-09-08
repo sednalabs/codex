@@ -297,9 +297,7 @@ mod job {
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             }],
-            MemoryVersion::V2 => {
-                codex_core::context::MemoryContextFragment::extraction_messages(&input_text)
-            }
+            MemoryVersion::V2 => crate::rollout_input::extraction_messages(&input_text),
         };
         prompt.base_instructions = BaseInstructions {
             text: match config.memories.version {
