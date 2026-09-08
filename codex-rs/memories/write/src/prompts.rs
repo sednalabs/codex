@@ -1,4 +1,5 @@
 use crate::memory_extensions_root;
+use codex_protocol::MemoryVersion;
 use codex_protocol::openai_models::ModelInfo;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
@@ -11,6 +12,12 @@ static CONSOLIDATION_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     parse_embedded_template(
         include_str!("../templates/memories/consolidation.md"),
         "memories/consolidation.md",
+    )
+});
+static CONSOLIDATION_V2_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
+    parse_embedded_template(
+        include_str!("../templates/memories/consolidation_v2.md"),
+        "memories/consolidation_v2.md",
     )
 });
 static STAGE_ONE_INPUT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
@@ -47,6 +54,13 @@ fn parse_embedded_template(source: &'static str, template_name: &str) -> Templat
 
 /// Builds the consolidation subagent prompt for a specific memory root.
 pub fn build_consolidation_prompt(memory_root: &Path) -> String {
+    build_consolidation_prompt_for_version(memory_root, MemoryVersion::V1)
+}
+
+pub(crate) fn build_consolidation_prompt_for_version(
+    memory_root: &Path,
+    version: MemoryVersion,
+) -> String {
     let memory_extensions_root = memory_extensions_root(memory_root);
     let memory_extensions_exist = memory_extensions_root.is_dir();
     let memory_root = memory_root.display().to_string();
@@ -68,8 +82,11 @@ pub fn build_consolidation_prompt(memory_root: &Path) -> String {
     } else {
         String::new()
     };
-    CONSOLIDATION_PROMPT_TEMPLATE
-        .render([
+    let template = match version {
+        MemoryVersion::V1 => &CONSOLIDATION_PROMPT_TEMPLATE,
+        MemoryVersion::V2 => &CONSOLIDATION_V2_TEMPLATE,
+    };
+    template.render([
             ("memory_root", memory_root.as_str()),
             (
                 "memory_extensions_folder_structure",

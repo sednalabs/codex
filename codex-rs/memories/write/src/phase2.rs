@@ -1,8 +1,8 @@
-use crate::build_consolidation_prompt;
 use crate::metrics::MEMORY_PHASE_TWO_E2E_MS;
 use crate::metrics::MEMORY_PHASE_TWO_INPUT;
 use crate::metrics::MEMORY_PHASE_TWO_JOBS;
 use crate::metrics::MEMORY_PHASE_TWO_TOKEN_USAGE;
+use crate::prompts::build_consolidation_prompt_for_version;
 use crate::prune_old_extension_resources;
 use crate::rebuild_raw_memories_file_from_memories;
 use crate::runtime::MemoryStartupContext;
@@ -12,12 +12,13 @@ use crate::workspace::memory_workspace_diff;
 use crate::workspace::prepare_memory_workspace;
 use crate::workspace::remove_memory_symlinks;
 use crate::workspace::reset_memory_workspace_baseline;
-use crate::workspace::validate_consolidation_artifacts;
+use crate::workspace::validate_consolidation_artifacts_for_version;
 use crate::workspace::write_workspace_diff;
 use codex_config::Constrained;
 use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider::ModelProvider;
+use codex_protocol::MemoryVersion;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AgentStatus;
@@ -106,7 +107,7 @@ pub async fn run(
     let new_watermark = get_watermark(claim.watermark, &raw_memories);
 
     // 5. Sync the current inputs into the memory workspace.
-    if let Err(err) = sync_phase2_workspace_inputs(&root, &raw_memories).await {
+    if let Err(err) = sync_phase2_workspace_inputs(&root, &raw_memories, &config).await {
         tracing::error!("failed syncing phase2 workspace inputs: {err}");
         job::failed(
             context.as_ref(),
@@ -127,7 +128,11 @@ pub async fn run(
             return;
         }
     };
-    if !workspace_diff.has_changes() && validate_consolidation_artifacts(&root).await.is_ok() {
+    if !workspace_diff.has_changes()
+        && validate_consolidation_artifacts_for_version(&root, config.memories.version)
+            .await
+            .is_ok()
+    {
         tracing::error!("Phase 2 no changes");
         // We check only after sync of the file system.
         job::succeed(
@@ -150,7 +155,7 @@ pub async fn run(
     }
 
     // 8. Spawn the consolidation agent.
-    let prompt = agent::get_prompt(&root);
+    let prompt = agent::get_prompt(&root, config.memories.version);
     let agent = match context
         .spawn_consolidation_agent(agent_config, prompt)
         .await
@@ -170,6 +175,7 @@ pub async fn run(
         new_watermark,
         raw_memories.clone(),
         root,
+        config.memories.version,
         agent,
         phase_two_e2e_timer,
     );
@@ -184,10 +190,16 @@ pub async fn run(
 async fn sync_phase2_workspace_inputs(
     root: &Path,
     raw_memories: &[Stage1Output],
+    config: &Config,
 ) -> std::io::Result<()> {
     let raw_memory_count = raw_memories.len();
     sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count).await?;
-    rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?;
+    match config.memories.version {
+        MemoryVersion::V1 => {
+            rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?
+        }
+        MemoryVersion::V2 => {}
+    }
     prune_old_extension_resources(root).await;
     Ok(())
 }
@@ -337,8 +349,8 @@ mod agent {
         Some(agent_config)
     }
 
-    pub(super) fn get_prompt(root: &Path) -> Vec<UserInput> {
-        let prompt = build_consolidation_prompt(root);
+    pub(super) fn get_prompt(root: &Path, version: MemoryVersion) -> Vec<UserInput> {
+        let prompt = build_consolidation_prompt_for_version(root, version);
         vec![UserInput::Text {
             text: prompt,
             text_elements: vec![],
@@ -353,6 +365,7 @@ mod agent {
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
         memory_root: codex_utils_absolute_path::AbsolutePathBuf,
+        version: MemoryVersion,
         agent: SpawnedConsolidationAgent,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
@@ -388,7 +401,7 @@ mod agent {
             }
 
             let artifacts_valid = if agent_completed {
-                match validate_consolidation_artifacts(&memory_root).await {
+                match validate_consolidation_artifacts_for_version(&memory_root, version).await {
                     Ok(()) => true,
                     Err(err) => {
                         tracing::error!("memory consolidation artifacts are invalid: {err}");

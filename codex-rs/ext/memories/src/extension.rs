@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use codex_core::config::Config;
+use codex_core::context::ContextualUserFragment;
+use codex_core::context::MemoryContextFragment;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContentItemKind;
 use codex_extension_api::ContextContributor;
@@ -65,15 +67,36 @@ impl ContextContributor for MemoriesExtension {
                 return Vec::new();
             }
 
-            build_memory_tool_developer_instructions(&config.codex_home, config.version)
-                .await
+            let Some(instructions) =
+                build_memory_tool_developer_instructions(&config.codex_home, config.version).await
+            else {
+                return Vec::new();
+            };
+            let instructions = match config.version {
+                MemoryVersion::V1 => vec![instructions],
+                MemoryVersion::V2 => {
+                    // Keep the complete summary while respecting each fragment's byte cap.
+                    let mut remaining = instructions.as_str();
+                    let mut fragments = Vec::new();
+                    while !remaining.is_empty() {
+                        let end = remaining.floor_char_boundary(remaining.len().min(8_900));
+                        fragments.push(
+                            MemoryContextFragment::ReadInstructions(remaining[..end].to_string())
+                                .render(),
+                        );
+                        remaining = &remaining[end..];
+                    }
+                    fragments
+                }
+            };
+            instructions
+                .into_iter()
                 .map(|instructions| {
                     PromptFragment::developer_policy(
                         instructions,
                         ContentItemKind("memories.instructions".to_string()),
                     )
                 })
-                .into_iter()
                 .collect()
         })
     }

@@ -3,6 +3,7 @@ use codex_git_utils::GitBaselineDiff;
 use codex_git_utils::diff_since_latest_init;
 use codex_git_utils::ensure_git_baseline_repository;
 use codex_git_utils::reset_git_repository;
+use codex_protocol::MemoryVersion;
 #[cfg(windows)]
 use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
@@ -49,24 +50,33 @@ pub async fn reset_memory_workspace_baseline(root: &Path) -> anyhow::Result<()> 
 
 /// Verifies that a completed consolidation run left the required memory artifacts in place.
 pub async fn validate_consolidation_artifacts(root: &Path) -> anyhow::Result<()> {
+    validate_consolidation_artifacts_for_version(root, MemoryVersion::V1).await
+}
+
+pub(crate) async fn validate_consolidation_artifacts_for_version(
+    root: &Path,
+    version: MemoryVersion,
+) -> anyhow::Result<()> {
     let removed_symlinks = remove_memory_symlinks(root).await?;
     anyhow::ensure!(
         removed_symlinks == 0,
         "removed {removed_symlinks} symbolic links from consolidated memory workspace"
     );
 
-    let memory_path = root.join("MEMORY.md");
-    let memory_metadata = tokio::fs::metadata(&memory_path).await.with_context(|| {
-        format!(
-            "read consolidated memory artifact {}",
+    if version == MemoryVersion::V1 {
+        let memory_path = root.join("MEMORY.md");
+        let memory_metadata = tokio::fs::metadata(&memory_path).await.with_context(|| {
+            format!(
+                "read consolidated memory artifact {}",
+                memory_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            memory_metadata.is_file(),
+            "consolidated memory artifact is not a file: {}",
             memory_path.display()
-        )
-    })?;
-    anyhow::ensure!(
-        memory_metadata.is_file(),
-        "consolidated memory artifact is not a file: {}",
-        memory_path.display()
-    );
+        );
+    }
 
     let summary_path = root.join("memory_summary.md");
     let summary = tokio::fs::read_to_string(&summary_path)
@@ -78,6 +88,23 @@ pub async fn validate_consolidation_artifacts(root: &Path) -> anyhow::Result<()>
         summary_path.display()
     );
 
+    if version == MemoryVersion::V2 {
+        for heading in [
+            "## User Profile",
+            "## User preferences",
+            "## General Tips",
+            "## What's in Memory",
+        ] {
+            anyhow::ensure!(
+                summary.lines().any(|line| line.trim() == heading),
+                "v2 memory summary missing {heading}"
+            );
+        }
+        anyhow::ensure!(
+            summary.len() < 10_000,
+            "v2 memory summary must be under 10000 UTF-8 bytes"
+        );
+    }
     Ok(())
 }
 

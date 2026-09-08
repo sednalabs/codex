@@ -14,6 +14,13 @@ static MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE: LazyLock<Template> = LazyLoc
     )
 });
 
+static MEMORY_V2_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
+    parse_embedded_template(
+        include_str!("../templates/memories/read_path_v2.md"),
+        "memories/read_path_v2.md",
+    )
+});
+
 fn parse_embedded_template(source: &'static str, template_name: &str) -> Template {
     match Template::parse(source) {
         Ok(template) => template,
@@ -44,7 +51,11 @@ pub(crate) async fn build_memory_tool_developer_instructions(
         return None;
     }
     let base_path = base_path.display().to_string();
-    MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
+    let template = match version {
+        MemoryVersion::V1 => &MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE,
+        MemoryVersion::V2 => &MEMORY_V2_TEMPLATE,
+    };
+    template
         .render([
             ("base_path", base_path.as_str()),
             ("memory_summary", memory_summary.as_str()),
