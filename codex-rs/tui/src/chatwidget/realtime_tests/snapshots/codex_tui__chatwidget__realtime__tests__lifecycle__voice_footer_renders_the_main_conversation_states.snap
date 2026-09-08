@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/realtime_tests.rs
+source: tui/src/chatwidget/realtime_tests/lifecycle.rs
 assertion_line: 176
 expression: "states.join(\"\\n\\n\")"
 ---
