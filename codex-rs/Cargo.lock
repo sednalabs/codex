@@ -4035,7 +4035,12 @@ dependencies = [
  "anyhow",
  "appcontainer_common",
  "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-path-uri",
  "learning_mode_windows",
+ "pretty_assertions",
+ "tempfile",
+ "thiserror 2.0.18",
  "tracelogging",
  "wxc_common",
 ]
