@@ -1,21 +1,16 @@
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_guardian_context::CollectedContext;
 use codex_guardian_context::ContextPresentation;
-use codex_guardian_context::ContextTarget;
-use codex_guardian_context::ConversationTranscriptConfig;
+use codex_guardian_context::ContextProfile;
+#[cfg(test)]
 use codex_guardian_context::ConversationTranscriptEntry;
-use codex_guardian_context::ConversationTranscriptEntryKind;
-use codex_guardian_context::ConversationTranscriptOptions;
 use codex_guardian_context::GuardianRootMessage;
 use codex_guardian_context::PermissionContext;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
-use codex_guardian_context::RenderedTranscript;
 use codex_guardian_context::SectionError;
 use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
-use codex_guardian_context::TranscriptEntryLimits;
-use codex_guardian_context::TranscriptRetentionConfig;
 use codex_guardian_context::default_registry;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::user_input::UserInput;
@@ -28,26 +23,16 @@ use crate::event_mapping::is_contextual_user_message_content;
 use crate::session::session::Session;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
-use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 
 use super::ApprovalRequestReasons;
-use super::GUARDIAN_MAX_MESSAGE_ENTRY_TOKENS;
-use super::GUARDIAN_MAX_MESSAGE_TRANSCRIPT_TOKENS;
 use super::GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKENS;
 use super::GUARDIAN_MAX_TOOL_ENTRY_TOKENS;
-use super::GUARDIAN_MAX_TOOL_TRANSCRIPT_TOKENS;
-use super::GUARDIAN_RECENT_ENTRY_LIMIT;
 use super::GuardianApprovalRequest;
 use super::GuardianReviewContext;
 use super::approval_request::format_guardian_action_pretty;
 
 const GUARDIAN_MAX_APPROVAL_REASON_TOKENS: usize = 512;
-const GUARDIAN_TRANSCRIPT_RETENTION: TranscriptRetentionConfig = TranscriptRetentionConfig {
-    max_message_transcript_tokens: GUARDIAN_MAX_MESSAGE_TRANSCRIPT_TOKENS,
-    max_tool_transcript_tokens: GUARDIAN_MAX_TOOL_TRANSCRIPT_TOKENS,
-    max_recent_non_user_entries: GUARDIAN_RECENT_ENTRY_LIMIT,
-};
 pub(super) const GUARDIAN_TRANSCRIPT_START: &str = ">>> TRANSCRIPT START\n";
 
 pub(crate) struct GuardianPromptItems {
@@ -220,16 +205,13 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             },
         ),
     };
-    let (items, omission_note) =
-        render_guardian_transcript_entries_with_offset(transcript_entries, offset, placeholder);
+    let profile = ContextProfile::synchronous();
+    let mut transcript = profile.render_transcript(transcript_entries, offset);
+    if transcript_entries.is_empty() {
+        transcript.items.push(placeholder.to_owned());
+    }
     let items = sections
-        .compose(
-            presentation,
-            RenderedTranscript {
-                items,
-                omission_note,
-            },
-        )?
+        .compose(presentation, transcript)?
         .into_user_inputs()?;
     Ok(GuardianPromptItems {
         items,
@@ -265,124 +247,19 @@ enum GuardianPromptShape {
     Delta { already_seen_entry_count: usize },
 }
 
-/// Renders a compact guardian transcript from shared, per-entry-bounded evidence.
-///
-/// Selection is intentionally simple and predictable:
-/// - collection has already applied each entry's per-entry cap
-/// - user and assistant entries share the message budget
-/// - tool calls/results use a separate tool budget so tool evidence cannot
-///   crowd out the human conversation
-/// - if all user turns fit, keep them all
-/// - otherwise keep the first and latest user turns as anchors, then fill the
-///   remaining message budget with other user turns from newest to oldest
-/// - after user turns are selected, keep recent non-user entries from newest to
-///   oldest while the budgets and recent-entry limit allow
-///
-/// Returns the rendered transcript plus an omission note when some entries were
-/// skipped.
+/// Exercises the sync profile through the host's existing transcript tests.
 #[cfg(test)]
 pub(crate) fn render_guardian_transcript_entries(
     entries: &[ConversationTranscriptEntry],
 ) -> (Vec<String>, Option<String>) {
-    render_guardian_transcript_entries_with_offset(
-        entries,
-        /*entry_number_offset*/ 0,
-        "<no retained transcript entries>",
-    )
-}
-
-fn render_guardian_transcript_entries_with_offset(
-    entries: &[ConversationTranscriptEntry],
-    entry_number_offset: usize,
-    empty_placeholder: &str,
-) -> (Vec<String>, Option<String>) {
+    let mut transcript =
+        ContextProfile::synchronous().render_transcript(entries, /*entry_number_offset*/ 0);
     if entries.is_empty() {
-        return (vec![empty_placeholder.to_string()], None);
+        transcript
+            .items
+            .push("<no retained transcript entries>".to_owned());
     }
-
-    let rendered_entries = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let rendered = format!(
-                "[{}] {}: {}",
-                index + entry_number_offset + 1,
-                entry.kind.role(),
-                entry.text
-            );
-            let token_count = approx_token_count(&rendered);
-            (rendered, token_count)
-        })
-        .collect::<Vec<_>>();
-
-    let mut included = vec![false; entries.len()];
-    let user_messages = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, entry)| {
-            matches!(entry.kind, ConversationTranscriptEntryKind::User).then_some(
-                codex_guardian_context::UserMessageCost {
-                    index,
-                    tokens: rendered_entries[index].1,
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    let selection = codex_guardian_context::select_user_messages(
-        &user_messages,
-        GUARDIAN_TRANSCRIPT_RETENTION.max_message_transcript_tokens,
-    );
-    for index in selection.indices {
-        included[index] = true;
-    }
-    let mut message_tokens = selection.tokens;
-    let mut tool_tokens = 0usize;
-
-    let mut retained_non_user_entries = 0usize;
-    for index in (0..entries.len()).rev() {
-        let entry = &entries[index];
-        if matches!(entry.kind, ConversationTranscriptEntryKind::User)
-            || retained_non_user_entries
-                >= GUARDIAN_TRANSCRIPT_RETENTION.max_recent_non_user_entries
-        {
-            continue;
-        }
-
-        let token_count = rendered_entries[index].1;
-        let is_tool = matches!(
-            entry.kind,
-            ConversationTranscriptEntryKind::ToolCall(_)
-                | ConversationTranscriptEntryKind::ToolOutput(_)
-                | ConversationTranscriptEntryKind::NodeReplToolOutput(_)
-        );
-        let within_budget = if is_tool {
-            tool_tokens + token_count <= GUARDIAN_TRANSCRIPT_RETENTION.max_tool_transcript_tokens
-        } else {
-            message_tokens + token_count
-                <= GUARDIAN_TRANSCRIPT_RETENTION.max_message_transcript_tokens
-        };
-        if !within_budget {
-            continue;
-        }
-
-        included[index] = true;
-        retained_non_user_entries += 1;
-        if is_tool {
-            tool_tokens += token_count;
-        } else {
-            message_tokens += token_count;
-        }
-    }
-
-    let transcript = entries
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| included[*index])
-        .map(|(index, _)| rendered_entries[index].0.clone())
-        .collect::<Vec<_>>();
-    let omitted_any = included.iter().any(|included_entry| !included_entry);
-    let omission_note = omitted_any.then(|| "Some conversation entries were omitted.".to_string());
-    (transcript, omission_note)
+    (transcript.items, transcript.omission_note)
 }
 
 /// Retains the human-readable conversation plus recent tool call / result
@@ -404,18 +281,12 @@ pub(super) fn collect_guardian_context(
     permissions: Option<&PermissionContext>,
     node_repl: Option<&codex_guardian_context::NodeReplContext<'_>>,
 ) -> Result<CollectedContext, SectionError> {
-    let transcript = ConversationTranscriptConfig {
-        options: ConversationTranscriptOptions::default(),
-        entry_limits: TranscriptEntryLimits {
-            message_tokens: GUARDIAN_MAX_MESSAGE_ENTRY_TOKENS,
-            tool_tokens: GUARDIAN_MAX_TOOL_ENTRY_TOKENS,
-            node_repl_output_tokens: node_repl_result_token_limit,
-        },
-    };
+    let mut profile = ContextProfile::synchronous();
+    profile.transcript.entry_limits.node_repl_output_tokens = node_repl_result_token_limit;
     default_registry().prepare(&SectionInput {
-        target: ContextTarget::Sync,
+        target: profile.target,
         history: &FilteredGuardianHistory(history),
-        transcript: &transcript,
+        transcript: &profile.transcript,
         root_conversation,
         trusted_user_answers,
         planned_action,

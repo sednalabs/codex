@@ -4,7 +4,8 @@
 //! without section composition.
 //! Contributor failures abort collection without returning partial context.
 //! Sections preserve source-specific evidence and share prompt framing, while
-//! hosts retain transcript selection, compaction and request lifecycles.
+//! profiles retain the consumer-specific transcript policy. Hosts own full/delta
+//! cursors, compaction and request lifecycles.
 //! Registered contributors declare their scope once and are collected only for
 //! matching context consumers. History and collection settings are borrowed for
 //! each request so the default registry can be reused without retaining state.
@@ -48,10 +49,12 @@ mod retained_instructions;
 
 mod action;
 mod composition;
+mod profile;
 pub use composition::CollectedContext;
 pub use composition::ComposedContext;
 pub use composition::ContextPresentation;
 pub use composition::RenderedTranscript;
+pub use profile::ContextProfile;
 mod authorization;
 mod entry;
 mod history;

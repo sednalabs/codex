@@ -71,7 +71,6 @@ use super::wrapper_lag::WrapperLag;
 use codex_core::context::GuardianReviewEvidenceFragment;
 use codex_guardian_context::PreviousReviews;
 use codex_guardian_context::ReviewEvidence;
-use codex_guardian_context::TranscriptImageInput;
 use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
@@ -577,14 +576,7 @@ impl GuardianV2Extension {
                         previous_reviews: Some(&reviews),
                         trusted_tool: trusted_tool_context.as_ref(),
                         trusted_skill_paths: &trusted_skill_paths,
-                        images: Some(TranscriptImageInput {
-                            enabled: guardian_config.transcript.include_images,
-                            include_tool_outputs: guardian_config
-                                .transcript
-                                .sources
-                                .contains(&super::transcript::TranscriptSource::ToolOutputs),
-                            node_repl_images: &node_repl_images,
-                        }),
+                        node_repl_images: Some(&node_repl_images),
                     })
                 });
             let mut transcript = match transcript {

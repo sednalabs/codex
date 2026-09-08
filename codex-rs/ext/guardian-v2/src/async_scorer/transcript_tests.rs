@@ -109,7 +109,7 @@ fn transcript_keeps_conversation_and_configured_sources() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -136,7 +136,7 @@ fn transcript_keeps_conversation_and_configured_sources() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("compose authorization and transcript");
     let mut expected_text = vec![
@@ -180,7 +180,7 @@ fn transcript_keeps_conversation_and_configured_sources() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -208,7 +208,7 @@ fn transcript_keeps_conversation_and_configured_sources() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -261,7 +261,7 @@ fn transcript_truncates_oversized_entries_without_splitting_characters() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript");
     let truncations = std::mem::take(&mut rendered.truncations);
@@ -329,7 +329,7 @@ fn transcript_preserves_first_and_latest_user_messages_and_recent_history() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -395,7 +395,7 @@ fn transcript_preserves_user_restrictions_before_final_assistant_messages() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -435,7 +435,7 @@ fn transcript_preserves_recent_tool_evidence_when_protected_messages_fill_entry_
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript");
 
@@ -501,7 +501,7 @@ fn transcript_reserves_five_recent_tool_entries_from_protected_messages() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -557,7 +557,7 @@ fn rejected_commentary_does_not_evict_retained_message_evidence() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -598,7 +598,7 @@ fn transcript_evicts_protected_messages_in_cacheable_chunks() {
                     previous_reviews: None,
                     trusted_tool: None,
                     trusted_skill_paths: &[],
-                    images: None,
+                    node_repl_images: None,
                 })
                 .expect("collect transcript")
                 .transcript_entries()
@@ -669,7 +669,7 @@ fn transcript_preserves_latest_final_when_reserved_tools_fill_entry_window() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -742,7 +742,7 @@ fn transcript_does_not_protect_legacy_inter_agent_instructions() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -789,7 +789,7 @@ fn transcript_reserves_separate_budget_for_recent_tool_evidence() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -851,7 +851,7 @@ fn transcript_reserves_separate_budget_for_recent_tool_evidence() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -915,7 +915,7 @@ fn transcript_preserves_newest_manual_approval_when_message_budget_overflows() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -975,7 +975,7 @@ fn rejected_message_does_not_evict_retained_tool_entries() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -1020,7 +1020,7 @@ fn transcript_evicts_non_user_entries_in_cacheable_chunks() {
                 previous_reviews: None,
                 trusted_tool: None,
                 trusted_skill_paths: &[],
-                images: None,
+                node_repl_images: None,
             })
             .expect("collect transcript")
             .transcript_entries()
@@ -1093,7 +1093,7 @@ fn transcript_truncates_tool_results_using_standard_budget() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -1148,7 +1148,7 @@ fn transcript_preserves_outputs_with_call_ids_or_explicit_names() {
                 previous_reviews: None,
                 trusted_tool: None,
                 trusted_skill_paths: &[],
-                images: None,
+                node_repl_images: None,
             })
             .expect("collect transcript")
             .transcript_entries(),
@@ -1177,7 +1177,7 @@ fn transcript_preserves_outputs_with_call_ids_or_explicit_names() {
                 previous_reviews: None,
                 trusted_tool: None,
                 trusted_skill_paths: &[],
-                images: None,
+                node_repl_images: None,
             })
             .expect("collect transcript")
             .transcript_entries(),
@@ -1224,7 +1224,7 @@ fn configured_reasoning_counts_against_message_budget() {
         previous_reviews: None,
         trusted_tool: None,
         trusted_skill_paths: &[],
-        images: None,
+        node_repl_images: None,
     })
     .expect("collect transcript")
     .transcript_entries();
@@ -1293,7 +1293,7 @@ fn transcript_keeps_only_manual_approval_developer_messages() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -1380,7 +1380,7 @@ fn transcript_omits_media_payloads_and_keeps_readable_content() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();
@@ -1449,7 +1449,7 @@ fn transcript_omits_encrypted_messages_arguments_and_tool_outputs() {
             previous_reviews: None,
             trusted_tool: None,
             trusted_skill_paths: &[],
-            images: None,
+            node_repl_images: None,
         })
         .expect("collect transcript")
         .transcript_entries();

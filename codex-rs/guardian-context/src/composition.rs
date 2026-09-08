@@ -1,5 +1,5 @@
 //! Composes collected evidence into ordered sections with explicit delivery.
-//! Hosts select the transcript and retain cursor/budget policy; composition owns
+//! Profiles retain the host-selected transcript slice; composition owns
 //! framing, message boundaries and section placement, without retaining history.
 
 use codex_context_fragments::ContextualUserFragment;
@@ -24,6 +24,7 @@ pub enum ContextPresentation<'a> {
 pub struct RenderedTranscript {
     pub items: Vec<String>,
     pub omission_note: Option<String>,
+    pub truncations: Vec<TruncationObservation>,
 }
 
 /// Evidence collected successfully before host transcript selection.
@@ -67,7 +68,7 @@ impl CollectedContext {
     pub fn compose(
         self,
         presentation: ContextPresentation<'_>,
-        transcript: RenderedTranscript,
+        mut transcript: RenderedTranscript,
     ) -> Result<ComposedContext, SectionError> {
         let (action, intro, start, end, session_id) = match presentation {
             ContextPresentation::SyncFull { session_id } => (
@@ -97,7 +98,7 @@ impl CollectedContext {
             ),
         };
         let mut sections = Vec::new();
-        let mut truncations = Vec::new();
+        let mut truncations = std::mem::take(&mut transcript.truncations);
         if let Some(intro) = intro {
             sections.push((
                 0,
