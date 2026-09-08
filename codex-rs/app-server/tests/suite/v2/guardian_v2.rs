@@ -131,7 +131,7 @@ async fn resumed_thread_does_not_wait_for_guardian_websocket_warmup() -> Result<
     let config = load_default_config_for_test(&codex_home).await;
     let mut model = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model])?;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
     let thread_id = create_fake_rollout(
         codex_home.path(),
         "2025-01-05T12-00-00",
@@ -833,7 +833,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         let config = load_default_config_for_test(&codex_home).await;
         let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
         model_info.node_repl_auto_review_required = true;
-        write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+        write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     }
     let original_thread_id = match lifecycle {
         ThreadLifecycle::New
@@ -2042,7 +2042,7 @@ async fn first_cua_review_does_not_wait_for_initial_score(
     let config = load_default_config_for_test(&codex_home).await;
     let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model_info.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)
@@ -2128,7 +2128,7 @@ async fn user_approval_skips_async_guardian_without_changing_other_modes() -> Re
     let config = load_default_config_for_test(&codex_home).await;
     let mut model_info = codex_core::test_support::construct_model_info_offline(MODEL, &config);
     model_info.node_repl_auto_review_required = true;
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(TIMEOUT)

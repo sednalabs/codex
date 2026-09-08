@@ -5,6 +5,7 @@ mod models_endpoint;
 mod models_identity;
 mod provider;
 mod shared_state;
+pub mod test_support;
 
 pub use amazon_bedrock::is_supported_amazon_bedrock_region;
 pub use auth::AgentIdentitySessionFallback;

@@ -427,7 +427,7 @@ dependencies = [
  "codex-exec-server",
  "codex-features",
  "codex-login",
- "codex-models-manager",
+ "codex-model-provider",
  "codex-protocol",
  "codex-utils-cargo-bin",
  "core_test_support",

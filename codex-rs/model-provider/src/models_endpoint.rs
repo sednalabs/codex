@@ -456,4 +456,104 @@ mod tests {
             Some(&"eu".into())
         );
     }
+
+    #[derive(Debug)]
+    struct RotatingAuth(std::sync::atomic::AtomicUsize);
+
+    impl codex_login::ExternalAuth for RotatingAuth {
+        fn resolve(&self) -> codex_login::ExternalAuthFuture<'_, CodexAuth> {
+            Box::pin(async move {
+                let generation = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(CodexAuth::from_api_key(&format!("token-{generation}")))
+            })
+        }
+
+        fn refresh(
+            &self,
+            _context: codex_login::ExternalAuthRefreshContext,
+        ) -> codex_login::ExternalAuthFuture<'_, CodexAuth> {
+            self.resolve()
+        }
+    }
+
+    #[tokio::test]
+    async fn command_auth_refresh_fetches_a_catalog_for_the_current_credentials() {
+        use codex_models_manager::manager::ModelsManager;
+        use codex_models_manager::manager::OpenAiModelsManager;
+        use codex_models_manager::manager::RefreshStrategy;
+
+        let server = MockServer::start().await;
+        let auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("initial"));
+        auth.set_external_auth(Arc::new(RotatingAuth(std::sync::atomic::AtomicUsize::new(
+            0,
+        ))))
+        .await
+        .unwrap();
+        let model = codex_protocol::openai_models::ModelInfo {
+            used_fallback_model_metadata: false,
+            ..codex_models_manager::model_info::model_info_from_slug("command-auth-model")
+        };
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ModelsResponse {
+                models: vec![model.clone()],
+            }))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let mut provider = provider_info_with_command_auth();
+        provider.base_url = Some(server.uri());
+        // Keep this test independent of the residency override exercised in parallel.
+        provider.http_headers = Some(std::collections::HashMap::from([(
+            RESIDENCY_HEADER_NAME.to_string(),
+            "us".into(),
+        )]));
+        let manager = OpenAiModelsManager::new_without_cache(
+            Arc::new(OpenAiModelsEndpoint::new(provider, Some(auth.clone()))),
+            Some(auth.clone()),
+        );
+        let catalog = manager
+            .raw_model_catalog(
+                RefreshStrategy::OnlineIfUncached,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await;
+        assert_eq!(
+            catalog
+                .models
+                .iter()
+                .find(|candidate| candidate.slug == model.slug),
+            Some(&model)
+        );
+        auth.auth().await;
+        let bundled = codex_models_manager::bundled_models_response().unwrap();
+        assert_eq!(manager.get_remote_models().await, bundled.models);
+        assert_eq!(manager.try_get_remote_models().unwrap(), bundled.models);
+        assert_eq!(
+            manager
+                .raw_model_catalog(
+                    RefreshStrategy::Offline,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )
+                .await,
+            bundled
+        );
+        assert_eq!(
+            manager
+                .raw_model_catalog(
+                    RefreshStrategy::OnlineIfUncached,
+                    HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                )
+                .await,
+            catalog
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.headers["authorization"].to_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["Bearer token-2", "Bearer token-6"]
+        );
+    }
 }

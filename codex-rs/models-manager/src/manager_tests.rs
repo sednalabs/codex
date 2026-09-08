@@ -27,6 +27,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
+#[path = "cache_identity_tests.rs"]
+mod cache_identity_tests;
+
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
 
@@ -164,6 +167,8 @@ impl ModelsCache for TestModelsCache {
     fn refresh_ttl<'a>(
         &'a self,
         _client_version: &'a str,
+        _identity: &'a str,
+        _etag: &'a str,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>> {
         Box::pin(async move {
             let refreshed = {
@@ -394,7 +399,11 @@ async fn file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale() 
     );
 
     cache
-        .refresh_ttl(&client_version)
+        .refresh_ttl(
+            &client_version,
+            entry.identity.as_deref().unwrap(),
+            entry.etag.as_deref().unwrap(),
+        )
         .await
         .expect("TTL refresh succeeds");
 
