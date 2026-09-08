@@ -33,8 +33,6 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
-use codex_guardian_context::ActionPresentation;
-use codex_guardian_context::ContextSection;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PlannedActionKind;
@@ -74,7 +72,6 @@ use codex_core::context::GuardianReviewEvidenceFragment;
 use codex_guardian_context::PreviousReviews;
 use codex_guardian_context::ReviewEvidence;
 use codex_guardian_context::TranscriptImageInput;
-use codex_guardian_context::TranscriptImages;
 use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
@@ -590,7 +587,7 @@ impl GuardianV2Extension {
                         }),
                     })
                 });
-            let transcript = match transcript {
+            let mut transcript = match transcript {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
@@ -610,45 +607,8 @@ impl GuardianV2Extension {
             };
             drop(history);
             drop(node_repl_images);
-            truncations.extend(transcript.truncations);
-            let mut classification_input = Vec::new();
-            let mut trusted_review_evidence = None;
-            let mut trusted_tool_context = None;
-            let mut trusted_skills = None;
-            let mut rendered_images = TranscriptImages::default();
-            for section in transcript.sections {
-                match section {
-                    ContextSection::NodeReplEvidence(_) => {
-                        unreachable!("REPL response sections are sync-only")
-                    }
-                    ContextSection::TranscriptImages(images) => rendered_images = images,
-                    ContextSection::TrustedSkills(skills) => trusted_skills = Some(skills),
-                    ContextSection::TrustedTool(tool) => trusted_tool_context = Some(tool),
-                    ContextSection::PreviousReviews(reviews) => {
-                        trusted_review_evidence = Some(reviews)
-                    }
-                    ContextSection::PermissionContext { items }
-                    | ContextSection::RootConversation { items }
-                    | ContextSection::RetainedUserInstructions { items }
-                    | ContextSection::TrustedUserAnswers { items } => {
-                        classification_input.extend(items)
-                    }
-                    ContextSection::ConversationTranscript { items } => {
-                        classification_input.push(">>> TRANSCRIPT START\n".to_owned());
-                        classification_input.extend(items);
-                        classification_input.push(">>> TRANSCRIPT END\n\n".to_owned());
-                    }
-                    ContextSection::PlannedAction(action) => {
-                        classification_input.extend(action.render(ActionPresentation::Async))
-                    }
-                }
-            }
-            truncations.record(
-                "transcript_image",
-                rendered_images.omitted_bytes,
-                /*retained_bytes*/ 0,
-            );
-            let images = rendered_images.images;
+            truncations.extend(std::mem::take(&mut transcript.truncations));
+            let classification_input = transcript.into_messages();
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;
@@ -682,11 +642,7 @@ impl GuardianV2Extension {
                     .sample(LunaSamplingRequest {
                         parent_response_id,
                         instructions,
-                        trusted_review_evidence,
-                        trusted_tool_context,
-                        trusted_skills,
                         input: classification_input,
-                        images,
                         parent_compaction,
                         parent_compaction_hash,
                         reasoning_effort: guardian_config.reasoning_effort.clone(),

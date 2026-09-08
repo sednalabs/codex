@@ -1,7 +1,8 @@
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ResponseItem;
 pub(crate) use codex_features::GuardianV2TranscriptSource as TranscriptSource;
-use codex_guardian_context::ContextSection;
+use codex_guardian_context::ComposedContext;
+use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextTarget;
 use codex_guardian_context::ConversationTranscriptConfig;
 use codex_guardian_context::ConversationTranscriptEntry;
@@ -12,6 +13,7 @@ use codex_guardian_context::GuardianRootMessage;
 use codex_guardian_context::MANUAL_APPROVAL_DEVELOPER_PREFIX;
 use codex_guardian_context::PlannedAction;
 use codex_guardian_context::PreviousReviews;
+use codex_guardian_context::RenderedTranscript;
 use codex_guardian_context::SectionError;
 use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
@@ -62,10 +64,7 @@ pub(crate) struct ContextInput<'a> {
     pub(crate) images: Option<TranscriptImageInput<'a>>,
 }
 
-pub(crate) struct RenderedContext {
-    pub(crate) sections: Vec<ContextSection<String>>,
-    pub(crate) truncations: Vec<TruncationObservation>,
-}
+pub(crate) type RenderedContext = ComposedContext;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TranscriptConfig {
@@ -126,7 +125,7 @@ impl TranscriptConfig {
                 node_repl_output_tokens: self.max_tool_entry_tokens,
             },
         };
-        let context = default_registry().collect(&SectionInput {
+        let context = default_registry().prepare(&SectionInput {
             target,
             history: &history,
             transcript: &transcript,
@@ -140,49 +139,21 @@ impl TranscriptConfig {
             images,
             node_repl: None,
         })?;
-        let mut truncations = Vec::new();
-        let sections = context
-            .into_iter()
-            .map(|section| match section {
-                ContextSection::ConversationTranscript { items } => {
-                    let (items, observations) = Self::render(items, &retention);
-                    truncations.extend(observations);
-                    ContextSection::ConversationTranscript { items }
-                }
-                ContextSection::RootConversation { items } => {
-                    ContextSection::RootConversation { items }
-                }
-                ContextSection::TrustedUserAnswers { items } => {
-                    ContextSection::TrustedUserAnswers { items }
-                }
-                ContextSection::RetainedUserInstructions { items } => {
-                    ContextSection::RetainedUserInstructions { items }
-                }
-                ContextSection::PermissionContext { items } => {
-                    ContextSection::PermissionContext { items }
-                }
-                ContextSection::NodeReplEvidence(evidence) => {
-                    ContextSection::NodeReplEvidence(evidence)
-                }
-                ContextSection::TranscriptImages(images) => {
-                    ContextSection::TranscriptImages(images)
-                }
-                ContextSection::TrustedSkills(skills) => ContextSection::TrustedSkills(skills),
-                ContextSection::TrustedTool(tool) => ContextSection::TrustedTool(tool),
-                ContextSection::PreviousReviews(reviews) => {
-                    ContextSection::PreviousReviews(reviews)
-                }
-                ContextSection::PlannedAction(action) => ContextSection::PlannedAction(action),
-            })
-            .collect::<Vec<_>>();
-        Ok(RenderedContext {
-            sections,
-            truncations,
-        })
+        let (items, mut truncations) = Self::render(context.transcript_entries(), &retention);
+        let mut context = context.compose(
+            ContextPresentation::Async,
+            RenderedTranscript {
+                items,
+                omission_note: None,
+            },
+        )?;
+        truncations.append(&mut context.truncations);
+        context.truncations = truncations;
+        Ok(context)
     }
 
     fn render(
-        transcript_entries: impl IntoIterator<Item = ConversationTranscriptEntry>,
+        transcript_entries: &[ConversationTranscriptEntry],
         retention: &TranscriptRetentionConfig,
     ) -> (Vec<String>, Vec<TruncationObservation>) {
         let mut entries = Vec::new();
@@ -204,7 +175,7 @@ impl TranscriptConfig {
                 }
             };
             let original_bytes = entry.original_bytes;
-            let text = entry.text;
+            let text = &entry.text;
             let retained_bytes = text.len();
             let entry_number = entries.len() + 1;
             let text = format!("[{entry_number}] {role}: {text}\n");
