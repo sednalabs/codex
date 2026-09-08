@@ -1500,20 +1500,12 @@ impl ChatWidget {
 
     fn realtime_transcript_history_cell(&self, role: &str, text: &str) -> Box<dyn HistoryCell> {
         if role == "user" {
-            Box::new(history_cell::new_user_prompt(
-                text.to_string(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ))
+            Box::new(history_cell::new_spoken_user_prompt(text.to_string()))
         } else {
-            Box::new(
-                history_cell::AgentMarkdownCell::new_with_inline_visualizations(
-                    text.to_string(),
-                    &self.config.cwd,
-                    /*inline_visualization_context*/ None,
-                ),
-            )
+            Box::new(history_cell::AgentMarkdownCell::new_spoken(
+                text.to_string(),
+                &self.config.cwd,
+            ))
         }
     }
 
