@@ -13,6 +13,7 @@ use tracing::warn;
 use crate::config::Config;
 use crate::config::Constrained;
 use crate::config::NetworkProxySpec;
+use crate::config::TokenBudgetConfig;
 
 use super::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 use super::prompt::guardian_policy_prompt_with_config_and_template;
@@ -43,6 +44,10 @@ pub fn build_guardian_review_session_config(
     guardian_config.include_skill_instructions = false;
     guardian_config.memories.use_memories = false;
     guardian_config.memories.dedicated_tools = false;
+    // Clear inherited startup activation and keep an explicit configuration so model
+    // defaults cannot re-enable token-budget mode after the feature is disabled below.
+    guardian_config.token_budget_startup_config = None;
+    guardian_config.token_budget = Some(TokenBudgetConfig::default());
     let catalog_auto_review = model_messages.and_then(|messages| messages.auto_review.as_ref());
     let tenant_policy_config = parent_config.resolve_guardian_policy(model_messages);
     let policy_template = catalog_auto_review
@@ -90,6 +95,8 @@ pub fn build_guardian_review_session_config(
         Feature::Collab,
         Feature::MultiAgentV2,
         Feature::GuardianV2,
+        Feature::TokenBudget,
+        Feature::ContextManagement,
         Feature::CodexHooks,
         Feature::Apps,
         Feature::Plugins,
