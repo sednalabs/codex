@@ -257,6 +257,10 @@ mod thread_session_state;
 mod thread_settings;
 mod thread_title;
 mod transcript_export;
+#[cfg_attr(not(test), allow(dead_code))]
+mod user_verification_errors;
+#[allow(dead_code)] // Connected by the following verification UI integration.
+mod user_verification_requests;
 mod working_directory;
 
 use self::agent_navigation::AgentNavigationDirection;
