@@ -114,6 +114,7 @@ impl App {
                     crate::worktree_browser::fetch(
                         request,
                         self.config.codex_home.to_path_buf(),
+                        app_server.request_handle(),
                         self.app_event_tx.clone(),
                     );
                 }
@@ -129,6 +130,37 @@ impl App {
             AppEvent::ShowManagedWorktreeActions { request, entry } => {
                 self.chat_widget.show_managed_worktree_actions(request, entry);
             }
+            AppEvent::ConfirmManagedWorktreeRemoval { request, root } => {
+                self.chat_widget.confirm_managed_worktree_removal(request, root);
+            }
+            AppEvent::RemoveManagedWorktree { request, root } => {
+                if self.chat_widget.worktree_request_is_current(&request)
+                    && !request.cwd.starts_with(&root)
+                {
+                    let codex_home = self.config.codex_home.to_path_buf();
+                    let tx = self.app_event_tx.clone();
+                    tokio::spawn(async move {
+                        let result = crate::worktree_browser::remove(
+                            codex_home,
+                            request.cwd,
+                            root.clone(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string());
+                        tx.send(AppEvent::ManagedWorktreeRemoved { root, result });
+                    });
+                }
+            }
+            AppEvent::ManagedWorktreeRemoved { root, result } => match result {
+                Ok(()) => self.chat_widget.add_info_message(
+                    format!("Removed worktree at {}. Thread history was kept.", root.display()),
+                    /*hint*/ None,
+                ),
+                Err(error) => self.chat_widget.add_error_message(format!(
+                    "Could not remove worktree at {}: {error}",
+                    root.display()
+                )),
+            },
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
                 requested_cwd,

@@ -460,6 +460,18 @@ pub(crate) enum AppEvent {
         request: crate::worktree_browser::Request,
         entry: crate::worktree_browser::Entry,
     },
+    ConfirmManagedWorktreeRemoval {
+        request: crate::worktree_browser::Request,
+        root: PathBuf,
+    },
+    RemoveManagedWorktree {
+        request: crate::worktree_browser::Request,
+        root: PathBuf,
+    },
+    ManagedWorktreeRemoved {
+        root: PathBuf,
+        result: Result<(), String>,
+    },
 
     /// Change the working directory of the originating idle primary thread.
     ChangeWorkingDirectory {
