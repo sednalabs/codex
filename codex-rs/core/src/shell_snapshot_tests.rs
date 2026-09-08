@@ -87,19 +87,6 @@ async fn get_snapshot(shell_type: ShellType) -> Result<String> {
 }
 
 #[test]
-fn strip_snapshot_preamble_removes_leading_output() {
-    let snapshot = "noise\n# Snapshot file\nexport PATH=/bin\n";
-    let cleaned = strip_snapshot_preamble(snapshot).expect("snapshot marker exists");
-    assert_eq!(cleaned, "# Snapshot file\nexport PATH=/bin\n");
-}
-
-#[test]
-fn strip_snapshot_preamble_requires_marker() {
-    let result = strip_snapshot_preamble("missing header");
-    assert!(result.is_err());
-}
-
-#[test]
 fn snapshot_file_name_parser_supports_legacy_and_suffixed_names() {
     let session_id = "019cf82b-6a62-7700-bbbd-46909794ef89";
 
@@ -217,7 +204,15 @@ async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
     let home_display = home.display();
     let script = format!(
         "HOME=\"{home_display}\"; export HOME; {}",
-        snapshot_script(ShellType::Bash).expect("bash supports snapshots")
+        snapshot_capture_script(
+            ShellType::Bash,
+            SnapshotCaptureOptions {
+                startup: SnapshotStartup::Interactive,
+                declarations: true,
+                environment: false,
+            }
+        )
+        .expect("bash supports snapshots")
     );
     let output = run_script_with_timeout(
         &shell,

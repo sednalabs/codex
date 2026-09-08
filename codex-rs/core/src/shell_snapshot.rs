@@ -17,7 +17,10 @@ use anyhow::bail;
 use codex_exec_server::Environment;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
-use codex_shell_command::shell_snapshot::snapshot_script;
+use codex_shell_command::shell_snapshot::CapturedSnapshot;
+use codex_shell_command::shell_snapshot::SnapshotCaptureOptions;
+use codex_shell_command::shell_snapshot::SnapshotStartup;
+use codex_shell_command::shell_snapshot::snapshot_capture_script;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use tokio::fs;
@@ -209,8 +212,7 @@ async fn write_shell_snapshot(
     let shell =
         get_shell(shell_type).with_context(|| format!("No available shell for {shell_type:?}"))?;
 
-    let raw_snapshot = capture_snapshot(&shell, cwd).await?;
-    let snapshot = strip_snapshot_preamble(&raw_snapshot)?;
+    let snapshot = capture_snapshot(&shell, cwd).await?;
 
     if let Some(parent) = output_path.parent() {
         let parent_display = parent.display();
@@ -229,18 +231,19 @@ async fn write_shell_snapshot(
 
 async fn capture_snapshot(shell: &Shell, cwd: &AbsolutePathBuf) -> Result<String> {
     let shell_type = shell.shell_type;
-    let script = snapshot_script(shell_type)
-        .ok_or_else(|| anyhow!("Shell snapshotting is not yet supported for {shell_type:?}"))?;
-    run_shell_script(shell, &script, cwd).await
-}
-
-fn strip_snapshot_preamble(snapshot: &str) -> Result<String> {
-    let marker = "# Snapshot file";
-    let Some(start) = snapshot.find(marker) else {
-        bail!("Snapshot output missing marker {marker}");
-    };
-
-    Ok(snapshot[start..].to_string())
+    let script = snapshot_capture_script(
+        shell_type,
+        SnapshotCaptureOptions {
+            startup: SnapshotStartup::Interactive,
+            declarations: true,
+            environment: false,
+        },
+    )
+    .ok_or_else(|| anyhow!("Shell snapshotting is not yet supported for {shell_type:?}"))?;
+    let captured = run_shell_script(shell, &script, cwd).await?;
+    CapturedSnapshot::parse(shell_type, captured.as_bytes())
+        .map(|snapshot| snapshot.render_script())
+        .ok_or_else(|| anyhow!("Invalid shell snapshot capture"))
 }
 
 async fn validate_snapshot(
