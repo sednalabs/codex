@@ -15,6 +15,7 @@ use codex_models_manager::cache::ModelsCacheError;
 use codex_models_manager::cache::ModelsCacheFuture;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::ModelsEndpointFuture;
+use codex_models_manager::manager::ModelsEndpointResponse;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
@@ -105,6 +106,10 @@ impl TestModelsEndpoint {
 }
 
 impl ModelsEndpointClient for TestModelsEndpoint {
+    fn identity(&self) -> Option<String> {
+        Some("test-provider".to_string())
+    }
+
     fn has_command_auth(&self) -> bool {
         false
     }
@@ -117,10 +122,14 @@ impl ModelsEndpointClient for TestModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         _http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(async move {
             self.fetch_count.fetch_add(1, Ordering::SeqCst);
-            Ok((self.models.clone(), None))
+            Ok(ModelsEndpointResponse {
+                models: self.models.clone(),
+                etag: None,
+                identity: self.identity().expect("test endpoint identity"),
+            })
         })
     }
 }
@@ -210,6 +219,7 @@ async fn injected_cache_hit_drives_agent_model_selection() -> Result<()> {
     let model_slug = "injected-cache-model";
     let cache = Arc::new(TestModelsCache {
         entry: Some(ModelsCacheEntry {
+            identity: Some("test-provider".to_string()),
             fetched_at: Utc::now(),
             etag: None,
             client_version: Some(codex_models_manager::client_version_to_whole()),

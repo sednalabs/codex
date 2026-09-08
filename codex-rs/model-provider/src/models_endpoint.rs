@@ -23,10 +23,10 @@ use codex_login::default_client::create_client_for_route_async;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::manager::ModelsEndpointClient;
 use codex_models_manager::manager::ModelsEndpointFuture;
+use codex_models_manager::manager::ModelsEndpointResponse;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CoreResult;
-use codex_protocol::openai_models::ModelInfo;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::telemetry_transport_error_message;
 use http::HeaderMap;
@@ -77,10 +77,11 @@ impl OpenAiModelsEndpoint {
         &self,
         client_version: &str,
         http_client_factory: HttpClientFactory,
-    ) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    ) -> CoreResult<ModelsEndpointResponse> {
         let _timer =
             codex_otel::start_global_timer("codex.remote_models.fetch_update.duration_ms", &[]);
         let auth = self.auth().await;
+        let identity = crate::models_identity::identity(&self.provider_info, auth.as_ref())?;
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let mut api_provider = self.provider_info.to_api_provider(auth_mode)?;
         enforce_managed_residency(&mut api_provider);
@@ -100,7 +101,7 @@ impl OpenAiModelsEndpoint {
             agent_identity_telemetry,
             auth_env: self.auth_env(),
         });
-        timeout(MODELS_REFRESH_TIMEOUT, async {
+        let (models, etag) = timeout(MODELS_REFRESH_TIMEOUT, async {
             let transport = self
                 .transport_builder
                 .build(http_client_factory, request_url.clone())
@@ -113,7 +114,12 @@ impl OpenAiModelsEndpoint {
                 .map_err(map_api_error)
         })
         .await
-        .map_err(|_| CodexErr::Timeout)?
+        .map_err(|_| CodexErr::Timeout)??;
+        Ok(ModelsEndpointResponse {
+            models,
+            etag,
+            identity,
+        })
     }
 
     fn auth_env(&self) -> AuthEnvTelemetry {
@@ -126,6 +132,14 @@ impl OpenAiModelsEndpoint {
 }
 
 impl ModelsEndpointClient for OpenAiModelsEndpoint {
+    fn identity(&self) -> Option<String> {
+        let auth = self
+            .auth_manager
+            .as_ref()
+            .and_then(|manager| manager.auth_cached());
+        crate::models_identity::identity(&self.provider_info, auth.as_ref()).ok()
+    }
+
     fn has_command_auth(&self) -> bool {
         self.provider_info.has_command_auth()
     }
@@ -138,7 +152,7 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         &'a self,
         client_version: &'a str,
         http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(OpenAiModelsEndpoint::list_models(
             self,
             client_version,

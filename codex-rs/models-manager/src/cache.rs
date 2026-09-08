@@ -71,6 +71,9 @@ pub struct ModelsCacheEntry {
     /// The models manager rejects entries whose value is absent or differs from its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
+    /// Opaque provider and auth identity associated with this catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
     /// Models returned by the catalog endpoint.
     #[serde(
         deserialize_with = "codex_protocol::openai_models::deserialize_model_infos_with_legacy_base"

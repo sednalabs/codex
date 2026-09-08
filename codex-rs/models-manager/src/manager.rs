@@ -35,6 +35,12 @@ const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 /// manager owns refresh policy, cache behavior, and catalog merging; it calls
 /// this endpoint only when it decides a remote refresh should happen.
 pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
+    /// Opaque identity of the current provider and credentials, without resolving auth.
+    ///
+    /// Must change when account, email, plan, provider, or API credentials change.
+    /// Return `None` when identity is unavailable.
+    fn identity(&self) -> Option<String>;
+
     /// Returns whether this provider can authenticate command-scoped requests.
     fn has_command_auth(&self) -> bool;
 
@@ -46,7 +52,17 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
         &'a self,
         client_version: &'a str,
         http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>>;
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>>;
+}
+
+/// Catalog and validation metadata captured using the credentials for one request.
+#[derive(Debug)]
+pub struct ModelsEndpointResponse {
+    pub models: Vec<ModelInfo>,
+    pub etag: Option<String>,
+    /// Identity of the credentials actually used to fetch this catalog.
+    /// Successful responses must always identify their provider and authentication scope.
+    pub identity: String,
 }
 
 pub type ModelsEndpointFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -414,7 +430,11 @@ impl OpenAiModelsManager {
         http_client_factory: &HttpClientFactory,
     ) -> CoreResult<()> {
         let client_version = crate::client_version_to_whole();
-        let (models, etag) = self
+        let ModelsEndpointResponse {
+            models,
+            etag,
+            identity,
+        } = self
             .endpoint_client
             .list_models(&client_version, http_client_factory.clone())
             .await?;
@@ -425,6 +445,7 @@ impl OpenAiModelsManager {
                 fetched_at: Utc::now(),
                 etag,
                 client_version: Some(client_version),
+                identity: Some(identity),
                 models,
             };
             if let Err(err) = cache.store(&entry).await {

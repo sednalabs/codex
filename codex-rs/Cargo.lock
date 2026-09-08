@@ -3972,6 +3972,7 @@ dependencies = [
 name = "codex-model-provider"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "codex-agent-identity",
  "codex-api",
  "codex-aws-auth",
@@ -3987,6 +3988,7 @@ dependencies = [
  "http 1.4.0",
  "pretty_assertions",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "wiremock",
