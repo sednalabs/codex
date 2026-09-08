@@ -67,6 +67,13 @@ impl App {
         }
 
         match event {
+            AppEvent::UserVerificationApproved { thread_id, server_name, request_id } => {
+                Box::pin(self.start_user_verification(app_server, thread_id, server_name, request_id)).await?;
+            }
+            AppEvent::UserVerificationFinished { thread_id, server_name, request_id, attempt_id, result } => {
+                // Keep this RPC future out of the event loop's stack frame.
+                Box::pin(self.finish_user_verification(app_server, thread_id, server_name, request_id, attempt_id, result)).await?;
+            }
             AppEvent::ReviewMisalignment(review) => {
                 self.open_misalignment_review(tui, review);
             }

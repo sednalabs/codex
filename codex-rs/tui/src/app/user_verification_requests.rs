@@ -16,6 +16,7 @@ pub(super) struct UserVerificationRequests {
 
 #[derive(Debug)]
 struct PendingVerification {
+    thread_id: String,
     params: UserVerificationVerifyParams,
     attempt: Option<Uuid>,
     cancelled: CancellationToken,
@@ -48,6 +49,7 @@ impl UserVerificationRequests {
             self.pending.insert(
                 (params.server_name.clone(), request_id.clone()),
                 PendingVerification {
+                    thread_id: params.thread_id.clone(),
                     params: UserVerificationVerifyParams {
                         title: title.clone(),
                         description: description.clone(),
@@ -94,6 +96,19 @@ impl UserVerificationRequests {
     pub(super) fn remove(&mut self, server_name: &str, request_id: &RequestId) {
         self.pending
             .remove(&(server_name.to_string(), request_id.clone()));
+    }
+
+    pub(super) fn cancel_thread(&mut self, thread_id: &str) -> Vec<(String, RequestId)> {
+        let discarded_keys = self
+            .pending
+            .iter()
+            .filter(|(_, pending)| pending.thread_id == thread_id)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for (server_name, request_id) in &discarded_keys {
+            self.remove(server_name, request_id);
+        }
+        discarded_keys
     }
 
     pub(super) fn clear(&mut self) {

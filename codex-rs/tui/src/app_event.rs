@@ -350,6 +350,21 @@ pub(crate) enum AppEvent {
         prompt: UserMessage,
     },
 
+    /// Sign the challenge associated with an approved elicitation.
+    UserVerificationApproved {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+    },
+    /// Return a controller-owned verification result, never a native provider handle.
+    UserVerificationFinished {
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+        attempt_id: Uuid,
+        result: Result<codex_app_server_protocol::UserVerificationProof, String>,
+    },
+
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
     RetrySafetyBufferedTurn {
         thread_id: ThreadId,

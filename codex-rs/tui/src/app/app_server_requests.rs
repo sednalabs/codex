@@ -96,6 +96,15 @@ impl PendingAppServerRequests {
         self.user_verification.clear();
     }
 
+    pub(super) fn cancel_thread_verification(&mut self, thread_id: &str) {
+        for (server_name, request_id) in self.user_verification.cancel_thread(thread_id) {
+            self.mcp_requests.remove(&McpRequestKey {
+                server_name,
+                request_id,
+            });
+        }
+    }
+
     pub(super) fn note_server_request(
         &mut self,
         request: &ServerRequest,

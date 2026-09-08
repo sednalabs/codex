@@ -73,6 +73,51 @@ fn user_verification_cancellation_invalidates_the_inflight_result() {
 }
 
 #[test]
+fn discarded_thread_cancels_only_its_verification_attempts() {
+    let mut pending = PendingAppServerRequests::default();
+    let request = verification_request();
+    let ServerRequest::McpServerElicitationRequest { params, .. } = &request else {
+        unreachable!()
+    };
+    let discarded_thread_id = params.thread_id.clone();
+    pending.note_server_request(&request);
+    let discarded_attempt = pending
+        .user_verification
+        .begin("deployments", request.id())
+        .expect("discarded thread attempt");
+
+    let mut other_request = verification_request();
+    let ServerRequest::McpServerElicitationRequest { request_id, params } = &mut other_request
+    else {
+        unreachable!()
+    };
+    *request_id = RequestId::Integer(8);
+    params.thread_id = ThreadId::new().to_string();
+    pending.note_server_request(&other_request);
+    let other_attempt = pending
+        .user_verification
+        .begin("deployments", other_request.id())
+        .expect("other thread attempt");
+
+    pending.cancel_thread_verification(&discarded_thread_id);
+
+    assert!(discarded_attempt.cancelled.is_cancelled());
+    assert!(!pending.contains_server_request(&request));
+    assert!(!pending.user_verification.is_pending(
+        "deployments",
+        request.id(),
+        discarded_attempt.id
+    ));
+    assert!(!other_attempt.cancelled.is_cancelled());
+    assert!(pending.contains_server_request(&other_request));
+    assert!(pending.user_verification.is_pending(
+        "deployments",
+        other_request.id(),
+        other_attempt.id
+    ));
+}
+
+#[test]
 fn user_verification_reconnect_cannot_accept_a_previous_connections_proof() {
     let mut pending = PendingAppServerRequests::default();
     let request = verification_request();

@@ -199,10 +199,13 @@ impl BottomPaneView for UserVerificationView {
         }
     }
 
-    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
-        if matches!(request, ResolvedAppServerRequest::McpElicitation { server_name, request_id }
+    fn matches_app_server_request(&self, request: &ResolvedAppServerRequest) -> bool {
+        matches!(request, ResolvedAppServerRequest::McpElicitation { server_name, request_id }
             if server_name == &self.request.server_name && request_id == &self.request.request_id)
-        {
+    }
+
+    fn dismiss_app_server_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
+        if self.matches_app_server_request(request) {
             self.state = UserVerificationState::Complete(ViewCompletion::Accepted);
             true
         } else {
@@ -300,3 +303,54 @@ fn waiting_view(request: &UserVerificationRequest, keymap: &ListKeymap) -> Box<d
 #[cfg(test)]
 #[path = "user_verification_tests.rs"]
 mod tests;
+
+impl super::BottomPane {
+    pub(crate) fn push_user_verification_request(
+        &mut self,
+        thread_id: codex_protocol::ThreadId,
+        request: UserVerificationRequest,
+    ) {
+        // App-server request IDs are shared across threads, unlike raw MCP request IDs.
+        let request_key = ResolvedAppServerRequest::McpElicitation {
+            server_name: request.server_name.clone(),
+            request_id: request.request_id.clone(),
+        };
+        if self
+            .view_stack
+            .iter()
+            .any(|view| view.matches_app_server_request(&request_key))
+        {
+            return;
+        }
+        let app_event_tx = self.app_event_tx.clone();
+        let server_name = request.server_name.clone();
+        let request_id = request.request_id.clone();
+        let view = UserVerificationView::new(
+            request,
+            self.app_event_tx.clone(),
+            self.keymap.approval.clone(),
+            self.keymap.list.clone(),
+            Box::new(move |decision| match decision {
+                UserVerificationDecision::Verify => {
+                    app_event_tx.send(crate::app_event::AppEvent::UserVerificationApproved {
+                        thread_id,
+                        server_name: server_name.clone(),
+                        request_id: request_id.clone(),
+                    });
+                }
+                UserVerificationDecision::Cancel => app_event_tx.resolve_user_verification(
+                    thread_id,
+                    server_name.clone(),
+                    request_id.clone(),
+                    crate::app_command::UserVerificationResponse::Cancel,
+                ),
+            }),
+        );
+        self.pause_status_timer_for_modal();
+        self.set_composer_input_enabled(
+            /*enabled*/ false,
+            Some("Complete user verification to continue.".to_string()),
+        );
+        self.push_view(Box::new(view));
+    }
+}

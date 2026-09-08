@@ -162,7 +162,6 @@ pub(crate) enum AppCommand {
         content: Option<Value>,
         meta: Option<Value>,
     },
-    #[allow(dead_code)] // Connected by the following verification UI integration.
     ResolveUserVerification {
         server_name: String,
         request_id: AppServerRequestId,
@@ -194,7 +193,6 @@ pub(crate) enum AppCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[allow(dead_code)] // Connected by the following verification UI integration.
 pub(crate) enum UserVerificationResponse {
     Accept {
         // AppCommand serialization is used by session recording, not the RPC wire response.
@@ -313,7 +311,6 @@ impl AppCommand {
         }
     }
 
-    #[allow(dead_code)] // Connected by the following verification UI integration.
     pub(crate) fn resolve_user_verification(
         server_name: String,
         request_id: AppServerRequestId,

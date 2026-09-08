@@ -65,6 +65,8 @@ mod thread_usage;
 mod transcript_composer;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
+#[path = "tests/user_verification_routes_tests.rs"]
+mod user_verification_routes;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
