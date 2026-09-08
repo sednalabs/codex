@@ -532,7 +532,30 @@ pub(super) fn handle_agent_message_delta(chat: &mut ChatWidget, delta: impl Into
     );
 }
 
+pub(super) fn handle_agent_reasoning_started(chat: &mut ChatWidget, id: impl Into<String>) {
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: thread_id(chat),
+            turn_id: chat
+                .turn_lifecycle
+                .last_turn_id
+                .clone()
+                .unwrap_or_else(|| "turn-1".to_string()),
+            started_at_ms: 0,
+            item: AppServerThreadItem::Reasoning {
+                id: id.into(),
+                summary: Vec::new(),
+                content: Vec::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+}
+
 pub(super) fn handle_agent_reasoning_delta(chat: &mut ChatWidget, delta: impl Into<String>) {
+    if chat.status_state.reasoning_item_id.is_none() {
+        handle_agent_reasoning_started(chat, "reasoning-1");
+    }
     chat.handle_server_notification(
         ServerNotification::ReasoningSummaryTextDelta(ReasoningSummaryTextDeltaNotification {
             thread_id: thread_id(chat),
@@ -550,6 +573,9 @@ pub(super) fn handle_agent_reasoning_delta(chat: &mut ChatWidget, delta: impl In
 }
 
 pub(super) fn handle_agent_reasoning_final(chat: &mut ChatWidget) {
+    if chat.status_state.reasoning_item_id.is_none() {
+        handle_agent_reasoning_started(chat, "reasoning-1");
+    }
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: thread_id(chat),

@@ -4297,7 +4297,7 @@ impl Session {
             .map(ResponseItemEnvelope::new)
             .chain(retained_client_developer_messages)
             .collect();
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = step_context.to_turn_context_item();
         self.replace_compacted_history(
             context_items,
             Some(turn_context_item),
@@ -4343,7 +4343,7 @@ impl Session {
             let state = self.state.lock().await;
             state.reference_context_item()
         };
-        let turn_context_item = turn_context.to_turn_context_item();
+        let turn_context_item = step_context.to_turn_context_item();
         let turn_context_changed = reference_context_item.as_ref() != Some(&turn_context_item);
         let should_inject_full_context = reference_context_item.is_none();
         let world_state = Arc::new(self.build_world_state_for_step(step_context).await?);

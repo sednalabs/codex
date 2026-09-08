@@ -639,7 +639,7 @@ impl TurnContext {
             realtime_active: Some(self.realtime_active),
             cyber_access_program: self.cyber_access_program,
             effort: self.reasoning_effort().cloned(),
-            summary: ReasoningSummaryConfig::Auto,
+            summary: self.reasoning_summary(),
         }
     }
 

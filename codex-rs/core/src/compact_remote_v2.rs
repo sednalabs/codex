@@ -329,8 +329,8 @@ async fn run_remote_compact_task_inner_impl(
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage { .. } => {
-            Some(compaction_turn_context.to_turn_context_item())
+        InitialContextInjection::BeforeLastUserMessage { step_context, .. } => {
+            Some(step_context.to_turn_context_item())
         }
     };
     if let Some(trace_input_history) = trace_input_history.as_deref() {
