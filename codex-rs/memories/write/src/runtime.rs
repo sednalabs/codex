@@ -47,6 +47,7 @@ pub(crate) struct SpawnedConsolidationAgent {
 
 #[derive(Clone, Debug)]
 pub(crate) struct StageOneRequestContext {
+    version: MemoryVersion,
     pub(crate) model_info: ModelInfo,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
@@ -56,15 +57,19 @@ pub(crate) struct StageOneRequestContext {
 
 impl StageOneRequestContext {
     pub(crate) fn start_timer(&self, name: &str) -> Option<codex_otel::Timer> {
-        self.session_telemetry.start_timer(name, &[]).ok()
+        self.session_telemetry
+            .start_timer(name, &memory_metric_tags(self.version, &[]))
+            .ok()
     }
 
     pub(crate) fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
-        self.session_telemetry.counter(name, inc, tags);
+        self.session_telemetry
+            .counter(name, inc, &memory_metric_tags(self.version, tags));
     }
 
     pub(crate) fn histogram(&self, name: &str, value: i64, tags: &[(&str, &str)]) {
-        self.session_telemetry.histogram(name, value, tags);
+        self.session_telemetry
+            .histogram(name, value, &memory_metric_tags(self.version, tags));
     }
 }
 
@@ -76,6 +81,21 @@ pub(crate) struct MemoryStartupContext {
     auth_manager: Arc<AuthManager>,
     provider: SharedModelProvider,
     session_telemetry: SessionTelemetry,
+}
+
+fn memory_metric_tags<'a>(
+    version: MemoryVersion,
+    tags: &[(&'a str, &'a str)],
+) -> Vec<(&'a str, &'a str)> {
+    let mut tags = tags.to_vec();
+    tags.push((
+        "memory_version",
+        match version {
+            MemoryVersion::V1 => "v1",
+            MemoryVersion::V2 => "v2",
+        },
+    ));
+    tags
 }
 
 fn build_session_telemetry(
@@ -209,15 +229,19 @@ impl MemoryStartupContext {
     }
 
     pub(crate) fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
-        self.session_telemetry.counter(name, inc, tags);
+        self.session_telemetry
+            .counter(name, inc, &memory_metric_tags(self.version, tags));
     }
 
     pub(crate) fn histogram(&self, name: &str, value: i64, tags: &[(&str, &str)]) {
-        self.session_telemetry.histogram(name, value, tags);
+        self.session_telemetry
+            .histogram(name, value, &memory_metric_tags(self.version, tags));
     }
 
     pub(crate) fn start_timer(&self, name: &str) -> Option<codex_otel::Timer> {
-        self.session_telemetry.start_timer(name, &[]).ok()
+        self.session_telemetry
+            .start_timer(name, &memory_metric_tags(self.version, &[]))
+            .ok()
     }
 
     pub(crate) async fn stage_one_request_context(
@@ -237,6 +261,7 @@ impl MemoryStartupContext {
             .unwrap_or(model_info.default_reasoning_summary);
 
         StageOneRequestContext {
+            version: self.version,
             model_info,
             session_telemetry: build_session_telemetry(
                 &self.auth_manager,

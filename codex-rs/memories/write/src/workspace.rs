@@ -89,23 +89,23 @@ pub(crate) async fn validate_consolidation_artifacts_for_version(
     );
 
     if version == MemoryVersion::V2 {
-        for heading in [
+        anyhow::ensure!(is_valid_v2_summary(&summary), "invalid v2 memory summary");
+    }
+    Ok(())
+}
+
+/// Checks the artifact shared by the writer and the read-only readiness endpoint.
+pub fn is_valid_v2_summary(summary: &str) -> bool {
+    summary.lines().next() == Some("v1")
+        && summary.len() < 10_000
+        && [
             "## User Profile",
             "## User preferences",
             "## General Tips",
             "## What's in Memory",
-        ] {
-            anyhow::ensure!(
-                summary.lines().any(|line| line.trim() == heading),
-                "v2 memory summary missing {heading}"
-            );
-        }
-        anyhow::ensure!(
-            summary.len() < 10_000,
-            "v2 memory summary must be under 10000 UTF-8 bytes"
-        );
-    }
-    Ok(())
+        ]
+        .iter()
+        .all(|heading| summary.lines().any(|line| line.trim() == *heading))
 }
 
 pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {

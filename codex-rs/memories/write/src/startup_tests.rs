@@ -59,6 +59,9 @@ use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
+#[path = "startup_dual_write_tests.rs"]
+mod dual_write;
+
 #[tokio::test]
 async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
     let server = start_mock_server().await;
@@ -70,6 +73,33 @@ async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
     trigger_memories_startup(&test).await;
     wait_for_dir(&memory_root).await?;
 
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dual_write_prepares_both_roots_without_importing_old_notes() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let old_notes = home.path().join("memories/extensions/ad_hoc/notes");
+    tokio::fs::create_dir_all(&old_notes).await?;
+    tokio::fs::write(old_notes.join("old.md"), "old memory").await?;
+    let mut memories = startup_test_memories_config();
+    memories.dual_write = true;
+    let test = build_test_codex_with_memories_config(&server, Arc::clone(&home), memories).await?;
+    trigger_memories_startup(&test).await;
+    wait_for_dir(&home.path().join("memories/extensions/ad_hoc")).await?;
+    wait_for_dir(&home.path().join("memories_v2/extensions/ad_hoc")).await?;
+    assert_eq!(
+        tokio::fs::read_to_string(old_notes.join("old.md")).await?,
+        "old memory"
+    );
+    assert!(
+        !home
+            .path()
+            .join("memories_v2/extensions/ad_hoc/notes/old.md")
+            .exists()
+    );
     shutdown_test_codex(&test).await?;
     Ok(())
 }

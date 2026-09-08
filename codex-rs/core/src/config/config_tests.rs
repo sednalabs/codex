@@ -334,6 +334,7 @@ consolidation_model = "gpt-5.2"
         toml::from_str::<ConfigToml>(memories).expect("TOML deserialization should succeed");
     assert_eq!(
         Some(MemoriesToml {
+            dual_write: None,
             version: None,
             disable_on_external_context: Some(true),
             generate_memories: Some(false),
@@ -361,6 +362,7 @@ consolidation_model = "gpt-5.2"
     assert_eq!(
         config.memories,
         MemoriesConfig {
+            dual_write: false,
             version: codex_protocol::MemoryVersion::V1,
             disable_on_external_context: true,
             generate_memories: false,
