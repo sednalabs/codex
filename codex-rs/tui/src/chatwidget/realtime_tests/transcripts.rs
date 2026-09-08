@@ -731,7 +731,7 @@ async fn live_voice_split_flap_animates_without_changing_final_history() {
 async fn spoken_user_transcript_preserves_red_chevron_and_canonical_history() {
     let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
     activate_voice(&mut chat);
-    chat.on_realtime_transcript_delta("user".to_string(), "hello".to_string());
+    chat.on_realtime_transcript_delta("user".to_string(), " hello".to_string());
     let marker = chat
         .realtime_conversation
         .live_transcript_cell
@@ -749,10 +749,26 @@ async fn spoken_user_transcript_preserves_red_chevron_and_canonical_history() {
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD)
     );
-    chat.on_realtime_transcript_done("user".to_string(), "hello".to_string());
+    chat.config.animations = false;
+    chat.on_realtime_transcript_delta("user".to_string(), " world".to_string());
+    assert!(
+        chat.realtime_conversation
+            .live_transcript_cell
+            .as_ref()
+            .unwrap()
+            .display_lines(/*width*/ 32)
+            .iter()
+            .any(|line| line.to_string() == "› hello world")
+    );
+    chat.on_realtime_transcript_done("user".to_string(), " hello world".to_string());
     let Ok(AppEvent::InsertHistoryCell(cell)) = events.try_recv() else {
         panic!("completed voice transcript should retain its ordinary history cell");
     };
     assert!(cell.as_any().is::<crate::history_cell::UserHistoryCell>());
-    assert_eq!(cell.raw_lines()[0].to_string(), "hello");
+    assert_eq!(cell.raw_lines()[0].to_string(), " hello world");
+    assert!(
+        cell.display_lines(/*width*/ 32)
+            .iter()
+            .any(|line| line.to_string() == "› hello world")
+    );
 }

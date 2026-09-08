@@ -10,6 +10,8 @@ use super::realtime_split_flap::SplitFlapTranscriptCell;
 use super::realtime_split_flap::VoiceAmplitudeHistory;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::bottom_pane::VoiceStripPhase;
+use crate::bottom_pane::VoiceStripState;
 use crate::history_cell;
 use crate::key_hint;
 use crate::motion::MotionMode;
@@ -51,7 +53,7 @@ const MAX_SPEAKABLE_FINAL_TOKENS: usize = 990;
 const AUDIO_METER_SEGMENTS: usize = 5;
 const AUDIO_METER_NOISE_FLOOR: u16 = 512;
 const AUDIO_METER_FULL_SCALE: u16 = 8192;
-const MAX_REALTIME_AUDIO_METER_FRAMES: usize = 24;
+const MAX_REALTIME_AUDIO_METER_FRAMES: usize = 12;
 const MICROPHONE_METER_INTERVAL: Duration = Duration::from_millis(100);
 const SPEAKER_ACTIVITY_HOLD: Duration = Duration::from_millis(500);
 const INTERRUPTION_ACKNOWLEDGMENT: Duration = Duration::from_millis(400);
@@ -140,9 +142,11 @@ pub(super) struct RealtimeConversationUiState {
     microphone_muted: bool,
     microphone_level: usize,
     speaker_level: usize,
+    microphone_intensity: u8,
+    speaker_intensity: u8,
     microphone_history: VoiceAmplitudeHistory,
     speaker_history: VoiceAmplitudeHistory,
-    audio_meter_history: VecDeque<(VoiceAmplitudeHistory, VoiceAmplitudeHistory)>,
+    audio_meter_history: VecDeque<(u8, u8)>,
     speaker_active_until: Option<Instant>,
     interruption_acknowledged_until: Option<Instant>,
     speaker_suppression_generation: Option<u64>,
@@ -318,7 +322,7 @@ impl ChatWidget {
             handle.close();
             self.realtime_conversation.phase = RealtimeConversationPhase::Stopping;
             self.refresh_terminal_title();
-            self.set_footer_hint_override(/*items*/ None);
+            self.bottom_pane.set_voice_strip(/*state*/ None);
             let Some(thread_id) = self.realtime_conversation.thread_id else {
                 self.reset_realtime_conversation();
                 return;
@@ -1674,7 +1678,7 @@ impl ChatWidget {
         if had_live_transcript {
             self.bump_active_cell_revision();
         }
-        self.set_footer_hint_override(/*items*/ None);
+        self.bottom_pane.set_voice_strip(/*state*/ None);
         self.flush_realtime_transcript_history();
         if should_refresh_terminal_title {
             self.refresh_terminal_title();
