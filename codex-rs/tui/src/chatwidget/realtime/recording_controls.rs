@@ -30,22 +30,22 @@ impl ChatWidget {
         self.refresh_terminal_title();
     }
 
-    pub(in crate::chatwidget) fn handle_realtime_microphone_shortcut(
-        &mut self,
-        key_event: KeyEvent,
-    ) -> bool {
+    pub(crate) fn realtime_microphone_shortcut_available(&self) -> bool {
+        (self.realtime_conversation.phase == RealtimeConversationPhase::Active
+            || (self.realtime_conversation.phase == RealtimeConversationPhase::Starting
+                && self.realtime_conversation.handle.is_some()))
+            && self.realtime_conversation.thread_id.is_some()
+            && self.realtime_conversation.thread_id == self.thread_id()
+            && self.bottom_pane.no_modal_or_popup_active()
+    }
+
+    pub(crate) fn handle_realtime_microphone_shortcut(&mut self, key_event: KeyEvent) -> bool {
         if key_event.kind != KeyEventKind::Press
-            || !REALTIME_MICROPHONE_SHORTCUT.is_press(key_event)
-            || !(self.realtime_conversation.phase == RealtimeConversationPhase::Active
-                || (self.realtime_conversation.phase == RealtimeConversationPhase::Starting
-                    && self.realtime_conversation.handle.is_some()))
-            || self.realtime_conversation.thread_id.is_none()
-            || self.realtime_conversation.thread_id != self.thread_id()
-            || !self.bottom_pane.no_modal_or_popup_active()
+            || !self.chat_keymap.toggle_voice_mute.is_pressed(key_event)
+            || !self.realtime_microphone_shortcut_available()
         {
             return false;
         }
-
         self.toggle_realtime_microphone();
         true
     }
@@ -185,7 +185,7 @@ impl ChatWidget {
             .schedule_frame_in(MICROPHONE_METER_INTERVAL);
     }
 
-    pub(super) fn update_realtime_footer(&mut self) {
+    pub(in crate::chatwidget) fn update_realtime_footer(&mut self) {
         let microphone_live = self.realtime_microphone_is_listening();
         let active = self.realtime_conversation.phase == RealtimeConversationPhase::Active;
         if !matches!(
@@ -218,6 +218,7 @@ impl ChatWidget {
             "listening"
         };
         self.bottom_pane.set_voice_strip(Some(VoiceStripState {
+            mute_hint: self.chat_keymap.voice_mute_hint(),
             phase: if active {
                 VoiceStripPhase::Active
             } else {

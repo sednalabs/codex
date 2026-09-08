@@ -121,15 +121,23 @@ impl App {
     }
 
     fn active_keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
-        if self.overlay.is_some() {
-            return crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::Pager);
-        }
+        use crate::keymap::KeymapContext;
+        use crate::keymap::KeymapContextSet;
 
+        if self.overlay.is_some() {
+            return KeymapContextSet::new(KeymapContext::Pager);
+        }
+        let voice_available = self.chat_widget.realtime_microphone_shortcut_available();
         let contexts = self.chat_widget.keymap_contexts();
         if self.chat_widget.no_modal_or_popup_active() {
-            contexts
-                .with(crate::keymap::KeymapContext::Global)
-                .with(crate::keymap::KeymapContext::Chat)
+            let contexts = contexts
+                .with(KeymapContext::Global)
+                .with(KeymapContext::Chat);
+            if voice_available {
+                contexts.with(KeymapContext::Voice)
+            } else {
+                contexts
+            }
         } else {
             contexts
         }

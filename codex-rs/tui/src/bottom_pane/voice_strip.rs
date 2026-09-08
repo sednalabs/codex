@@ -1,6 +1,7 @@
 //! Renders compact voice controls and caller-owned microphone/speaker sample histories.
 //! Keep control positions stable and show mute only when the current phase permits it.
 
+use crate::key_hint::ShortcutHint;
 use crate::motion::MotionMode;
 use crate::render::renderable::Renderable;
 use crate::tui::FrameRequester;
@@ -15,6 +16,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use std::time::Duration;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VoiceStripPhase {
@@ -24,6 +26,7 @@ pub(crate) enum VoiceStripPhase {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct VoiceStripState {
+    pub(crate) mute_hint: Option<ShortcutHint>,
     pub(crate) phase: VoiceStripPhase,
     pub(crate) microphone_live: bool,
     pub(crate) microphone_muted: bool,
@@ -97,30 +100,39 @@ impl Renderable for VoiceStrip {
         };
         let activity = format!(" {}", self.state.activity).into();
         let mut status = Line::from(vec!["voice ".dim(), marker, activity]);
-        let mute = if self.state.microphone_muted {
-            "ctrl+x unmute"
-        } else {
-            "ctrl+x mute  "
-        };
+        let mute = self.state.mute_hint.map_or_else(
+            || "/voice mute".to_string(),
+            |hint| {
+                format!(
+                    "{} {}",
+                    hint.display_label().replace(" + ", "+"),
+                    if self.state.microphone_muted {
+                        "unmute"
+                    } else {
+                        "mute  "
+                    }
+                )
+            },
+        );
         let full_controls = format!("{mute}   /voice stop");
         let available = usize::from(area.width);
         let can_mute = !connecting || self.state.microphone_live || self.state.microphone_muted;
         if can_mute
-            && available < status.width() + full_controls.len() + 1
-            && available >= "voice ".len() + full_controls.len() + 2
+            && available < status.width() + full_controls.width() + 1
+            && available >= "voice ".len() + full_controls.width() + 2
         {
             status.spans.pop();
         }
-        let controls = if can_mute && available > status.width() + full_controls.len() {
+        let controls = if can_mute && available > status.width() + full_controls.width() {
             full_controls.as_str()
         } else {
             "/voice stop"
         };
-        if available < status.width() + controls.len() + 1 {
+        if available < status.width() + controls.width() + 1 {
             status = Line::from(vec!["voice".dim()]);
         }
         status.spans.push(
-            " ".repeat(available.saturating_sub(status.width() + controls.len()))
+            " ".repeat(available.saturating_sub(status.width() + controls.width()))
                 .into(),
         );
         status.spans.push(controls.dim());

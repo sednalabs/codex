@@ -8,6 +8,9 @@ use ratatui::style::Color;
 fn active_strip() -> VoiceStrip {
     VoiceStrip::new(
         VoiceStripState {
+            mute_hint: crate::keymap::RuntimeKeymap::defaults()
+                .chat
+                .voice_mute_hint(),
             phase: VoiceStripPhase::Active,
             microphone_live: true,
             microphone_muted: false,
@@ -129,4 +132,35 @@ fn waveform_preserves_real_sample_order_width_and_channel_colors() {
     assert!(silent.contains("mic ▁▁▁▁▁▁  codex ▁▃▄▅▆█"));
     assert_eq!(buffer[(7, 1)].fg, Color::DarkGray);
     assert_eq!(buffer[(22, 1)].fg, Color::Magenta);
+}
+
+#[test]
+fn voice_controls_follow_configured_mute_binding_and_unbinding() {
+    let mut strip = active_strip();
+    let mut layouts = Vec::new();
+    for (binding, expected) in [
+        ("'f8'", "f8 mute"),
+        ("'ctrl-x m'", "ctrl+x m mute"),
+        ("[]", "/voice mute"),
+    ] {
+        let config = toml::from_str(&format!("[chat]\ntoggle_voice_mute = {binding}")).unwrap();
+        strip.state.mute_hint = crate::keymap::RuntimeKeymap::from_config(&config)
+            .unwrap()
+            .chat
+            .voice_mute_hint();
+        let (text, _) = rows(&strip, /*width*/ 80);
+        assert!(text.contains(expected));
+        assert!(text.contains("/voice stop"));
+        for muted in [false, true] {
+            strip.state.microphone_muted = muted;
+            strip.state.activity = if muted { "muted" } else { "listening" };
+            for width in [80, 22] {
+                let (text, _) = rows(&strip, width);
+                layouts.push(format!("{binding}, muted={muted}, width={width}:\n{text}"));
+            }
+        }
+        strip.state.microphone_muted = false;
+        strip.state.activity = "listening";
+    }
+    insta::assert_snapshot!(layouts.join("\n\n"));
 }

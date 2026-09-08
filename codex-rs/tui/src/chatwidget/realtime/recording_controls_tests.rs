@@ -63,6 +63,32 @@ async fn voice_mute_shortcut_accepts_raw_terminal_control_bytes() {
 }
 
 #[tokio::test]
+async fn voice_mute_keymap_updates_the_active_handler_and_composer_hint() {
+    let (mut chat, _sender, mut events, _ops) = make_chatwidget_manual_with_sender().await;
+    activate_voice(&mut chat);
+    let custom = KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE);
+    for (binding, hint, handles_key) in [("'f8'", "f8 mute", true), ("[]", "/voice mute", false)] {
+        let config = toml::from_str::<codex_config::types::TuiKeymap>(&format!(
+            "[chat]\ntoggle_voice_mute = {binding}"
+        ))
+        .unwrap();
+        let runtime = crate::keymap::RuntimeKeymap::from_config(&config).unwrap();
+        chat.apply_keymap_update(config, &runtime);
+        assert!(render_bottom_popup(&chat, /*width*/ 80).contains(hint));
+        assert!(!chat.handle_realtime_microphone_shortcut(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL
+        )));
+        assert_eq!(
+            chat.handle_realtime_microphone_shortcut(custom),
+            handles_key
+        );
+        assert_eq!(events.try_recv().is_ok(), handles_key);
+        assert!(!chat.realtime_conversation.microphone_muted);
+    }
+}
+
+#[tokio::test]
 async fn voice_composer_preserves_normal_colors_across_microphone_states() {
     use crate::render::renderable::Renderable;
     use ratatui::prelude::Buffer;
