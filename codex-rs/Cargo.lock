@@ -4327,6 +4327,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tracing",
+ "tracing-test",
  "url",
  "urlencoding",
  "webbrowser",
