@@ -766,6 +766,7 @@ impl Session {
             windows_sandbox_private_desktop: config.permissions.windows_sandbox_private_desktop,
             use_legacy_landlock: config.features.use_legacy_landlock(),
             legacy_fallback_cwd: config.cwd.clone(),
+            runtime_workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
             original_config_do_not_use: Arc::clone(&config),
@@ -1472,8 +1473,14 @@ impl Session {
                 self.state.lock().await.latest_token_usage_record =
                     Self::last_token_usage_record_from_rollout(&rollout_items);
 
+                // Checkpoint effective settings even when no turn follows the resume.
+                self.persist_rollout_items(&[RolloutItem::EventMsg(
+                    thread_settings::applied_event(self).await,
+                )])
+                .await;
+
                 // Defer seeding the session's initial context until the first turn starts so
-                // turn/start overrides can be merged before we write to the rollout.
+                // turn/start overrides can be merged before we write model-visible context.
                 if !is_subagent {
                     let _ = self.flush_rollout().await;
                 }
