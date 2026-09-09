@@ -34,7 +34,7 @@ pub(super) fn virtualize_text(
         }
 
         let replacement = credentials.iter().copied().find(|candidate| {
-            std::ptr::eq(candidate.provider, credential.provider)
+            candidate.provider.same_provider(&credential.provider)
                 && candidate.real_value == credential.real_value
                 && (allowed_keys.iter().any(|key| {
                     env_key_matches(key, &candidate.env_var)

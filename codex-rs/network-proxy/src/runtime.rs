@@ -408,6 +408,15 @@ impl NetworkProxyState {
         })
     }
 
+    pub(crate) fn for_environment_id(&self, environment_id: Option<&str>) -> Self {
+        Self {
+            environment_id: environment_id
+                .map(Arc::from)
+                .or_else(|| self.environment_id.clone()),
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn environment_id(&self) -> Option<&str> {
         self.environment_id.as_deref()
     }
@@ -444,12 +453,21 @@ impl NetworkProxyState {
     }
 
     pub fn virtualize_child_credentials(&self, env: &mut HashMap<String, String>) {
+        self.virtualize_child_credentials_for_environment(env, self.environment_id());
+    }
+
+    pub(crate) fn virtualize_child_credentials_for_environment(
+        &self,
+        env: &mut HashMap<String, String>,
+        environment_id: Option<&str>,
+    ) {
         let parent_env = std::env::vars_os()
             .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
             .collect();
         self.credential_broker
-            .discover_parent_credentials(&parent_env, env);
-        self.credential_broker.virtualize_child_env(env);
+            .discover_parent_credentials_for_environment(&parent_env, env, environment_id);
+        self.credential_broker
+            .virtualize_child_env_for_environment(env, environment_id);
     }
 
     pub(crate) fn restore_child_credentials(
@@ -458,6 +476,26 @@ impl NetworkProxyState {
         command: &mut [String],
     ) {
         self.credential_broker.restore_child_env(env, command);
+    }
+
+    pub(crate) fn virtualize_snapshot_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        environment_id: Option<&str>,
+    ) {
+        self.credential_broker
+            .virtualize_snapshot_env(env, environment_id);
+    }
+
+    pub(crate) fn child_credential_alias_matches(
+        &self,
+        key: &str,
+        value: &str,
+        snapshot_value: &str,
+        environment_id: Option<&str>,
+    ) -> bool {
+        self.credential_broker
+            .child_alias_matches(key, value, snapshot_value, environment_id)
     }
 
     pub(crate) fn restore_and_disable_child_credentials(
@@ -482,7 +520,8 @@ impl NetworkProxyState {
     }
 
     pub fn inject_request_credentials(&self, host: &str, headers: &mut rama_http::HeaderMap) {
-        self.credential_broker.inject_request_headers(host, headers);
+        self.credential_broker
+            .inject_request_headers_for_environment(host, headers, self.environment_id());
     }
 
     pub async fn plaintext_credential_injection_enabled(&self) -> Result<bool> {
@@ -814,7 +853,11 @@ impl NetworkProxyState {
         Ok(evaluate_mitm_hooks(&guard.mitm_hooks, host, req))
     }
 
-    pub(crate) async fn host_mitm_requirement(&self, host: &str) -> Result<HostMitmRequirement> {
+    pub(crate) async fn host_mitm_requirement(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<HostMitmRequirement> {
         self.reload_if_needed().await?;
         let normalized_host = normalize_host(host);
         let host_has_mitm_hooks = {
@@ -823,7 +866,11 @@ impl NetworkProxyState {
         };
         Ok(if host_has_mitm_hooks {
             HostMitmRequirement::Always
-        } else if self.credential_broker.host_requires_mitm(&normalized_host) {
+        } else if self.credential_broker.host_requires_mitm_for_environment(
+            &normalized_host,
+            port,
+            self.environment_id(),
+        ) {
             HostMitmRequirement::Tls
         } else {
             HostMitmRequirement::None

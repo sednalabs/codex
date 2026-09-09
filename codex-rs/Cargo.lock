@@ -4074,8 +4074,12 @@ dependencies = [
  "rama-tls-rustls",
  "rama-unix",
  "rand 0.9.3",
+ "rand_regex",
+ "regex",
+ "regex-syntax",
  "rustls-native-certs",
  "schannel",
+ "schemars 0.8.22",
  "security-framework 3.5.1",
  "serde",
  "serde_json",
@@ -12470,6 +12474,16 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_regex"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04db2e382d13679a1e42400e90e306cdbb79dc5cd41bb035ba4eae72e78cdf37"
+dependencies = [
+ "rand 0.9.3",
+ "regex-syntax",
+]
 
 [[package]]
 name = "rand_xorshift"

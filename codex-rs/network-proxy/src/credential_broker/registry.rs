@@ -1,8 +1,264 @@
 use super::CredentialBrokerState;
 use super::CredentialRecord;
+use super::MIN_EMBEDDED_CREDENTIAL_LENGTH;
+use super::configured::ConfiguredCredentialProvider;
 use super::env_entry;
+use super::env_value;
+use super::providers;
+use base64::Engine;
 use rama_http::HeaderMap;
+use rama_http::HeaderName;
+use rama_http::HeaderValue;
+use rama_http::header::AUTHORIZATION;
 use std::collections::HashMap;
+use std::sync::Arc;
+use url::Url;
+
+#[derive(Clone)]
+pub(super) enum BrokeredCredentialProvider {
+    Builtin(&'static providers::CredentialProvider),
+    Configured(Arc<ConfiguredCredentialProvider>),
+}
+
+pub(super) struct ActiveCredentialSource {
+    pub(super) provider: BrokeredCredentialProvider,
+    pub(super) host_binding: providers::CredentialHostBinding,
+    pub(super) env_vars: Vec<String>,
+}
+
+impl BrokeredCredentialProvider {
+    pub(super) fn same_provider(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Builtin(left), Self::Builtin(right)) => std::ptr::eq(*left, *right),
+            (Self::Configured(left), Self::Configured(right)) => Arc::ptr_eq(left, right),
+            (Self::Builtin(_), Self::Configured(_)) | (Self::Configured(_), Self::Builtin(_)) => {
+                false
+            }
+        }
+    }
+
+    pub(super) fn dummy_value(&self, real_value: &str) -> Option<String> {
+        match self {
+            Self::Builtin(provider) => Some(provider.dummy_value(real_value)),
+            Self::Configured(provider) => provider.dummy_value(real_value),
+        }
+    }
+
+    pub(super) fn contains_embedded_value(&self, text: &str, value: &str) -> bool {
+        value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH && text.contains(value)
+    }
+
+    pub(super) fn replace_embedded_value(
+        &self,
+        text: &str,
+        value: &str,
+        replacement: &str,
+    ) -> String {
+        text.replace(value, replacement)
+    }
+
+    pub(super) fn request_header_value(&self, value: &str) -> Option<HeaderValue> {
+        match self {
+            Self::Builtin(provider) => provider.request_header_value(value),
+            Self::Configured(provider) => provider
+                .matches_value(value)
+                .then(|| provider.request_header_value(value))
+                .flatten(),
+        }
+    }
+
+    pub(super) fn translate_request_headers(
+        &self,
+        headers: &HeaderMap,
+        expected_value: &str,
+        replacement_value: &str,
+    ) -> Vec<(HeaderName, HeaderValue)> {
+        match self {
+            Self::Builtin(provider) => provider
+                .translate_request_header(headers, expected_value, replacement_value)
+                .map(|value| (AUTHORIZATION, value)),
+            Self::Configured(provider) => {
+                return provider.translate_request_headers(
+                    headers,
+                    expected_value,
+                    replacement_value,
+                );
+            }
+        }
+        .into_iter()
+        .collect()
+    }
+
+    pub(super) fn insert_request_header(
+        &self,
+        headers: &mut HeaderMap,
+        name: HeaderName,
+        value: HeaderValue,
+    ) {
+        match self {
+            Self::Builtin(provider) => provider.insert_request_header(headers, value),
+            Self::Configured(_) => {
+                headers.insert(name, value);
+            }
+        }
+    }
+}
+
+pub(super) fn select_credentials<'a>(
+    headers: &HeaderMap,
+    host: &str,
+    request: Option<&Url>,
+    credentials: &'a [CredentialRecord],
+    environment_id: Option<&str>,
+) -> Vec<(&'a CredentialRecord, HeaderName, HeaderValue)> {
+    let mut translated_matches = Vec::<(&CredentialRecord, HeaderName, HeaderValue)>::new();
+    for credential in credentials.iter().filter(|credential| {
+        credential.belongs_to_environment(environment_id)
+            && credential
+                .host_bindings()
+                .any(|binding| binding.matches_request(host, request))
+    }) {
+        for candidate in credentials.iter().filter(|candidate| {
+            candidate.belongs_to_environment(environment_id)
+                && candidate.provider.same_provider(&credential.provider)
+                && candidate.real_value == credential.real_value
+                && candidate
+                    .host_bindings()
+                    .any(|binding| binding.matches_request(host, request))
+        }) {
+            for (name, value) in credential.provider.translate_request_headers(
+                headers,
+                &candidate.dummy_value,
+                &credential.real_value,
+            ) {
+                if !translated_matches
+                    .iter()
+                    .any(|(existing, header, translated)| {
+                        existing.provider.same_provider(&credential.provider)
+                            && existing.real_value == credential.real_value
+                            && *header == name
+                            && *translated == value
+                    })
+                {
+                    translated_matches.push((credential, name, value));
+                }
+            }
+        }
+    }
+    let mut selected = Vec::<(&CredentialRecord, HeaderName, HeaderValue)>::new();
+    let mut ambiguous_headers = Vec::<HeaderName>::new();
+    for (credential, header_name, header_value) in translated_matches {
+        if ambiguous_headers.contains(&header_name) {
+            continue;
+        }
+        let Some(existing) = selected
+            .iter()
+            .position(|(_, selected_header, _)| selected_header == header_name)
+        else {
+            selected.push((credential, header_name, header_value));
+            continue;
+        };
+        if !credential
+            .provider
+            .same_provider(&selected[existing].0.provider)
+            || credential.real_value != selected[existing].0.real_value
+            || header_value != selected[existing].2
+        {
+            if header_name == AUTHORIZATION
+                && let Some(merged) = headers.get(AUTHORIZATION).and_then(|original| {
+                    merge_basic_auth_fields(original, &selected[existing].2, &header_value)
+                })
+            {
+                // Keep the caller's configured-provider raw-path validation for either field.
+                if matches!(
+                    credential.provider,
+                    BrokeredCredentialProvider::Configured(_)
+                ) {
+                    selected[existing].0 = credential;
+                }
+                selected[existing].2 = merged;
+                continue;
+            }
+            selected.swap_remove(existing);
+            ambiguous_headers.push(header_name);
+        }
+    }
+    selected
+}
+
+fn merge_basic_auth_fields(
+    original: &HeaderValue,
+    left: &HeaderValue,
+    right: &HeaderValue,
+) -> Option<HeaderValue> {
+    let decode = |header: &HeaderValue| {
+        let (scheme, value) = header.to_str().ok()?.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("basic").then_some(())?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(value.trim())
+            .ok()?;
+        let separator = decoded.iter().position(|byte| *byte == b':')?;
+        Some((
+            decoded[..separator].to_vec(),
+            decoded[separator + 1..].to_vec(),
+        ))
+    };
+    let (original_user, original_password) = decode(original)?;
+    let (left_user, left_password) = decode(left)?;
+    let (right_user, right_password) = decode(right)?;
+    // Only combine independent fields. Overlapping translations remain ambiguous.
+    let (user, password) = if left_user != original_user
+        && left_password == original_password
+        && right_user == original_user
+        && right_password != original_password
+    {
+        (left_user, right_password)
+    } else if right_user != original_user
+        && right_password == original_password
+        && left_user == original_user
+        && left_password != original_password
+    {
+        (right_user, left_password)
+    } else {
+        return None;
+    };
+    let encoded =
+        base64::engine::general_purpose::STANDARD.encode([user, vec![b':'], password].concat());
+    HeaderValue::from_str(&format!("Basic {encoded}")).ok()
+}
+
+pub(super) fn active_credential_sources(
+    state: &CredentialBrokerState,
+    env: &HashMap<String, String>,
+) -> Vec<ActiveCredentialSource> {
+    let mut sources = Vec::new();
+    for provider in providers::credential_providers() {
+        for source in provider.sources() {
+            if let Some(host_binding) = (source.host_binding)(env, state.openai_api_host.as_deref())
+            {
+                sources.push(ActiveCredentialSource {
+                    provider: BrokeredCredentialProvider::Builtin(provider),
+                    host_binding,
+                    env_vars: source
+                        .env_vars
+                        .iter()
+                        .map(|key| (*key).to_string())
+                        .collect(),
+                });
+            }
+        }
+    }
+    for provider in &state.configured_providers {
+        if let Some(host_binding) = provider.host_binding(env) {
+            sources.push(ActiveCredentialSource {
+                provider: BrokeredCredentialProvider::Configured(provider.clone()),
+                host_binding,
+                env_vars: provider.config.env.clone(),
+            });
+        }
+    }
+    sources
+}
 
 pub(super) fn prioritized_credentials<'a>(
     state: &'a CredentialBrokerState,
@@ -12,11 +268,25 @@ pub(super) fn prioritized_credentials<'a>(
     credentials.sort_unstable_by_key(|credential| {
         let active = env_entry(env, &credential.env_var)
             .is_some_and(|(_, value)| value == credential.dummy_value);
-        let has_matching_host_binding = credential.provider.sources().iter().any(|source| {
-            !source.binding_env_vars.is_empty()
-                && (source.host_binding)(env, state.openai_api_host.as_deref())
-                    .is_some_and(|binding| binding == credential.host_binding)
-        });
+        let has_matching_host_binding = match &credential.provider {
+            BrokeredCredentialProvider::Builtin(provider) => {
+                provider.sources().iter().any(|source| {
+                    !source.binding_env_vars.is_empty()
+                        && (source.host_binding)(env, state.openai_api_host.as_deref())
+                            .is_some_and(|binding| binding == credential.host_binding)
+                })
+            }
+            BrokeredCredentialProvider::Configured(provider) => provider
+                .config
+                .url_prefix_from_env
+                .as_deref()
+                .is_some_and(|key| {
+                    env_value(env, key).is_some()
+                        && provider
+                            .host_binding(env)
+                            .is_some_and(|binding| binding == credential.host_binding)
+                }),
+        };
         (
             std::cmp::Reverse(credential.real_value.len()),
             std::cmp::Reverse(active),
@@ -24,38 +294,4 @@ pub(super) fn prioritized_credentials<'a>(
         )
     });
     credentials
-}
-
-pub(super) fn select_credential<'a>(
-    headers: &HeaderMap,
-    host: &str,
-    credentials: &'a [CredentialRecord],
-) -> Option<(&'a CredentialRecord, rama_http::HeaderValue)> {
-    let mut translated_matches = credentials
-        .iter()
-        .filter(|credential| credential.matches_host(host))
-        .filter_map(|credential| {
-            credentials
-                .iter()
-                .filter(|candidate| {
-                    std::ptr::eq(candidate.provider, credential.provider)
-                        && candidate.real_value == credential.real_value
-                        && candidate.matches_host(host)
-                })
-                .find_map(|candidate| {
-                    credential.provider.translate_request_header(
-                        headers,
-                        &candidate.dummy_value,
-                        &credential.real_value,
-                    )
-                })
-                .map(|header_value| (credential, header_value))
-        });
-    let matched = translated_matches.next()?;
-    translated_matches
-        .all(|(credential, _)| {
-            std::ptr::eq(credential.provider, matched.0.provider)
-                && credential.real_value == matched.0.real_value
-        })
-        .then_some(matched)
 }

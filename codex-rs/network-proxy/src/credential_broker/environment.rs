@@ -3,6 +3,7 @@ use super::BROKERED_CREDENTIALS_ENV_KEY;
 use super::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use super::CredentialBrokerState;
 use super::MIN_EMBEDDED_CREDENTIAL_LENGTH;
+use super::configured::valid_environment_key;
 use super::env_entry;
 use super::env_key_matches;
 use super::env_value;
@@ -99,7 +100,7 @@ pub fn brokered_credential_dummy_env_keys(env: &HashMap<String, String>) -> Vec<
 }
 
 /// Returns canonical credential and known alias keys recorded for an active brokered child,
-/// including keys that are currently absent.
+/// including configured provider keys and keys that are currently absent.
 pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec<String> {
     if env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY) != Some("1") {
         return Vec::new();
@@ -109,16 +110,14 @@ pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec
         .unwrap_or_default();
     let dummy_values = entries
         .iter()
-        .filter(|(key, _)| {
-            providers::credential_env_keys().any(|candidate| env_key_matches(key, candidate))
-        })
+        .filter(|(key, value)| valid_environment_key(key) && !value.is_empty())
         .map(|(_, dummy_value)| dummy_value.clone())
         .collect::<Vec<_>>();
     let mut keys = entries
         .into_iter()
         .filter_map(|(key, value)| {
-            if providers::credential_env_keys().any(|candidate| env_key_matches(&key, candidate)) {
-                return Some(key);
+            if valid_environment_key(&key) {
+                return (!value.is_empty()).then_some(key);
             }
             let alias_key = key.strip_prefix(BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX)?;
             let known_alias = dummy_values.iter().any(|dummy_value| {
@@ -126,7 +125,7 @@ pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec
                     || dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
                         && value.contains(dummy_value)
             });
-            known_alias.then(|| alias_key.to_string())
+            (known_alias && valid_environment_key(alias_key)).then(|| alias_key.to_string())
         })
         .collect::<Vec<_>>();
     keys.sort_unstable();
@@ -145,9 +144,7 @@ pub fn brokered_credential_value_env_keys(env: &HashMap<String, String>) -> Vec<
         .unwrap_or_default()
         .into_iter()
         .filter_map(|(key, dummy_value)| {
-            providers::credential_env_keys()
-                .any(|candidate| env_key_matches(&key, candidate))
-                .then_some(dummy_value)
+            (valid_environment_key(&key) && !dummy_value.is_empty()).then_some(dummy_value)
         })
         .collect::<Vec<_>>();
     let mut keys = env

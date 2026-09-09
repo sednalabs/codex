@@ -138,6 +138,8 @@ pub struct NetworkProxyConfig {
     pub mitm: bool,
     #[serde(default)]
     pub credential_broker: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credential_providers: BTreeMap<String, crate::CredentialProviderConfig>,
     /// Trusted OpenAI endpoint derived from local configuration, never sent to remote executors.
     #[serde(skip)]
     pub credential_broker_openai_host: Option<String>,
@@ -164,6 +166,7 @@ impl Default for NetworkProxyConfig {
             allow_local_binding: false,
             mitm: false,
             credential_broker: false,
+            credential_providers: BTreeMap::new(),
             credential_broker_openai_host: None,
             dangerously_allow_plaintext_credential_injection: false,
             mitm_hooks: Vec::new(),
@@ -637,6 +640,7 @@ mod tests {
                 allow_local_binding: false,
                 mitm: false,
                 credential_broker: false,
+                credential_providers: BTreeMap::new(),
                 credential_broker_openai_host: None,
                 dangerously_allow_plaintext_credential_injection: false,
                 mitm_hooks: Vec::new(),

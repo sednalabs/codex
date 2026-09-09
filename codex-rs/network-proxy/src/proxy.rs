@@ -894,6 +894,7 @@ impl NetworkProxy {
         // Proxy enablement and credential brokerage remain controller-owned.
         let mut broker_only_config = config::NetworkProxyConfig {
             enabled: config.enabled,
+            credential_providers: config.credential_providers.clone(),
             credential_broker_openai_host: config.credential_broker_openai_host.clone(),
             dangerously_allow_plaintext_credential_injection: config
                 .dangerously_allow_plaintext_credential_injection,
@@ -1031,6 +1032,7 @@ impl NetworkProxy {
         addrs: EnvironmentProxyAddrs,
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         client: EnvironmentProxyClient,
+        environment_id: Option<&str>,
     ) -> PreparedManagedNetwork {
         #[cfg(target_os = "windows")]
         let shared_socks_addr = (client == EnvironmentProxyClient::SandboxedProcess)
@@ -1056,7 +1058,13 @@ impl NetworkProxy {
             runtime_settings.allow_local_binding,
             runtime_settings.mitm_ca_trust_bundle.as_ref(),
         );
-        self.state.virtualize_child_credentials(&mut env);
+        let credential_environment_id = environment_id.or_else(|| {
+            self.execution_scope
+                .as_ref()
+                .map(|scope| scope.environment_id.as_str())
+        });
+        self.state
+            .virtualize_child_credentials_for_environment(&mut env, credential_environment_id);
         if let Some(execution_scope) = self.execution_scope.as_ref() {
             env.insert(
                 PROXY_ATTRIBUTION_TOKEN_ENV_KEY.to_string(),
@@ -1105,11 +1113,13 @@ impl NetworkProxy {
         &self,
         env: &mut HashMap<String, String>,
         addrs: EnvironmentProxyAddrs,
+        environment_id: Option<&str>,
     ) {
         let prepared = self.prepare_for_addrs(
             std::mem::take(env),
             addrs,
             EnvironmentProxyClient::SandboxedProcess,
+            environment_id,
         );
         *env = prepared.env;
     }
@@ -1121,7 +1131,38 @@ impl NetworkProxy {
                 http_addr: self.http_addr,
                 socks_addr: self.socks_addr,
             },
+            /*environment_id*/ None,
         );
+    }
+
+    /// Prepares a snapshot for redaction, retaining dummies even for destinations that bypass
+    /// the proxy. Actual child execution must use `apply_to_env` instead.
+    pub fn apply_to_env_for_snapshot(&self, env: &mut HashMap<String, String>) {
+        self.apply_to_env(env);
+        let environment_id = self
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.environment_id.as_str());
+        self.state
+            .virtualize_snapshot_credentials(env, environment_id);
+    }
+
+    /// Checks a captured alias against registered child values, including scope-specific dummies
+    /// and credentials restored for direct destinations. This does not authorize new destinations.
+    pub fn child_credential_alias_matches(
+        &self,
+        key: &str,
+        value: &str,
+        snapshot_value: &str,
+        environment_id: Option<&str>,
+    ) -> bool {
+        let environment_id = environment_id.or_else(|| {
+            self.execution_scope
+                .as_ref()
+                .map(|scope| scope.environment_id.as_str())
+        });
+        self.state
+            .child_credential_alias_matches(key, value, snapshot_value, environment_id)
     }
 
     /// Restores known dummy credentials before a child intentionally leaves managed networking.
@@ -1165,7 +1206,7 @@ impl NetworkProxy {
     ) -> Result<()> {
         let addrs =
             self.environment_proxy_addrs(environment_id, EnvironmentProxyClient::SandboxedProcess)?;
-        self.apply_to_env_for_addrs(env, addrs);
+        self.apply_to_env_for_addrs(env, addrs, Some(environment_id));
         Ok(())
     }
 
@@ -1200,7 +1241,12 @@ impl NetworkProxy {
                 socks_addr: self.socks_addr,
             },
         };
-        Ok(self.prepare_for_addrs(env, addrs, EnvironmentProxyClient::SandboxedProcess))
+        Ok(self.prepare_for_addrs(
+            env,
+            addrs,
+            EnvironmentProxyClient::SandboxedProcess,
+            environment_id,
+        ))
     }
 
     /// Prepares proxy settings for a remote executor whose connection reaches this process through
@@ -1212,7 +1258,12 @@ impl NetworkProxy {
     ) -> Result<PreparedManagedNetwork> {
         let addrs =
             self.environment_proxy_addrs(environment_id, EnvironmentProxyClient::TrustedBridge)?;
-        Ok(self.prepare_for_addrs(env, addrs, EnvironmentProxyClient::TrustedBridge))
+        Ok(self.prepare_for_addrs(
+            env,
+            addrs,
+            EnvironmentProxyClient::TrustedBridge,
+            Some(environment_id),
+        ))
     }
 
     fn environment_proxy_addrs(

@@ -409,6 +409,7 @@ pretty_assertions = "1.4.1"
 pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
 rand = "0.9"
+rand_regex = "0.18.1"
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
     "layout-cache",
@@ -421,6 +422,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 ] }
 regex = "1.12.3"
 regex-lite = "0.1.8"
+regex-syntax = "0.8.8"
 reqwest = { version = "0.12", features = ["cookies"] }
 rmcp = { version = "=3.2.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }

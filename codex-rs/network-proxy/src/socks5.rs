@@ -364,7 +364,7 @@ async fn handle_socks5_tcp(
         }
     }
 
-    let host_mitm_requirement = match app_state.host_mitm_requirement(&host).await {
+    let host_mitm_requirement = match app_state.host_mitm_requirement(&host, port).await {
         Ok(requirement) => requirement,
         Err(err) => {
             error!("failed to inspect MITM requirements for {host}: {err}");

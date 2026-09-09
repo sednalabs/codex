@@ -295,13 +295,13 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
     let log_path = path_for_log(req.uri());
 
     let (mut parts, body) = req.into_parts();
+    let authority = authority_header_value(&target_host, target_port);
+    parts.uri = build_https_uri(&authority, &path)?;
     request_ctx
         .policy
         .app_state
-        .inject_request_credentials(&target_host, &mut parts.headers);
+        .inject_request_credentials(&parts.uri.to_string(), &mut parts.headers);
     apply_mitm_hook_actions(&mut parts.headers, hook_actions.as_ref());
-    let authority = authority_header_value(&target_host, target_port);
-    parts.uri = build_https_uri(&authority, &path)?;
     parts
         .headers
         .insert(HOST, HeaderValue::from_str(&authority)?);

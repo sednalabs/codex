@@ -783,6 +783,10 @@ fn brokered_credential_value_env_keys_include_dummy_aliases() {
                 "@alias:AUTH_HEADER".to_string(),
                 env["OPENAI_API_KEY"].clone()
             ),
+            (
+                "@alias:OPENAI_API_KEY".to_string(),
+                env["OPENAI_API_KEY"].clone()
+            ),
             ("OPENAI_API_KEY".to_string(), env["OPENAI_API_KEY"].clone()),
         ]
     );
@@ -904,7 +908,7 @@ fn virtualize_child_env_keeps_unbound_enterprise_token_out_of_persisted_text() {
 
     assert_eq!(env["GH_ENTERPRISE_TOKEN"], token);
     assert_eq!(headers, headers_with_bearer(token));
-    assert!(!broker.host_requires_mitm("attacker.example"));
+    assert!(!broker.host_requires_mitm("attacker.example", /*port*/ 443));
 
     env.insert("GH_HOST".to_string(), "github.example.com".to_string());
     broker.virtualize_child_env(&mut env);
@@ -1000,6 +1004,117 @@ fn inject_request_headers_requires_dummy_and_preserves_explicit_authorization() 
 }
 
 #[test]
+fn concurrent_commands_preserve_discovered_credential_destinations() {
+    for (key, host_key, token) in [
+        (
+            "GH_ENTERPRISE_TOKEN",
+            "GH_HOST",
+            "ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+        ),
+        (
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        ),
+        (
+            "PROVIDER_TOKEN",
+            "PROVIDER_ENDPOINT",
+            "provider_abcdefghijklmnopqrstuvwx",
+        ),
+    ] {
+        let broker = CredentialBroker::new(/*enabled*/ true);
+        broker.configure(&NetworkProxyConfig {
+            credential_broker: true,
+            credential_providers: BTreeMap::from([(
+                "custom".to_string(),
+                CredentialProviderConfig {
+                    env: vec!["PROVIDER_TOKEN".to_string()],
+                    patterns: vec!["^provider_[a-z]{24}$".to_string()],
+                    url_prefix_from_env: Some("PROVIDER_ENDPOINT".to_string()),
+                    ..CredentialProviderConfig::default()
+                },
+            )]),
+            ..NetworkProxyConfig::default()
+        });
+        let mut commands = ["first.example", "second.example"].map(|host| {
+            let destination = if host_key == "GH_HOST" {
+                host.to_string()
+            } else {
+                format!("https://{host}/v1")
+            };
+            env_map([
+                (key, token),
+                (host_key, &destination),
+                ("AUTH_HEADER", &format!("Bearer {token}")),
+            ])
+        });
+        for env in &mut commands {
+            broker.virtualize_child_env_for_environment(env, Some("shared-environment"));
+        }
+        let dummy = commands[0][key].clone();
+        assert_ne!(dummy, token);
+        assert_eq!(commands[1][key], dummy);
+        let assert_destinations = || {
+            for (environment_id, host, injected) in [
+                ("shared-environment", "first.example", true),
+                ("shared-environment", "second.example", true),
+                ("shared-environment", "unrelated.example", false),
+                ("other-environment", "first.example", false),
+                ("other-environment", "second.example", false),
+            ] {
+                let mut headers = headers_with_bearer(&dummy);
+                broker.inject_request_headers_for_environment(
+                    &format!("https://{host}/v1/models"),
+                    &mut headers,
+                    Some(environment_id),
+                );
+                assert_eq!(
+                    headers,
+                    headers_with_bearer(if injected { token } else { &dummy }),
+                    "{key}, {environment_id}, {host}"
+                );
+                assert_eq!(
+                    broker.host_requires_mitm_for_environment(
+                        host,
+                        /*port*/ 443,
+                        Some(environment_id),
+                    ),
+                    injected,
+                    "{key}, {environment_id}, {host}"
+                );
+            }
+        };
+        assert_destinations();
+        for env in &mut commands {
+            env.remove(key);
+            broker.virtualize_child_env_for_environment(env, Some("shared-environment"));
+            assert_eq!(env["AUTH_HEADER"], format!("Bearer {dummy}"));
+            assert_destinations();
+        }
+
+        commands[0].insert(key.to_string(), token.to_string());
+        broker.virtualize_child_env_for_environment(&mut commands[0], Some("shared-environment"));
+        assert_eq!(commands[0][key], dummy);
+        assert_destinations();
+
+        let mut inherited = env_map([(key, token), (host_key, &commands[0][host_key])]);
+        broker.virtualize_child_env_for_environment(&mut inherited, Some("parent-environment"));
+        let parent_dummy = inherited[key].clone();
+        assert_ne!(parent_dummy, dummy);
+        broker.virtualize_child_env_for_environment(&mut inherited, Some("shared-environment"));
+        assert_eq!(inherited[key], dummy);
+        assert_destinations();
+        let mut headers = headers_with_bearer(&parent_dummy);
+        broker.inject_request_headers_for_environment(
+            "https://second.example/v1/models",
+            &mut headers,
+            Some("parent-environment"),
+        );
+        assert_eq!(headers, headers_with_bearer(&parent_dummy));
+    }
+}
+
+#[test]
 fn openai_credentials_bind_only_to_default_and_configured_trusted_hosts() {
     let broker = CredentialBroker::new(/*enabled*/ true);
     let mut config = NetworkProxyConfig::default();
@@ -1077,12 +1192,42 @@ fn github_cloud_credentials_do_not_bind_to_ghes_host_hint() {
         authorization(&headers),
         Some(expected_authorization.as_str())
     );
-    assert!(!broker.host_requires_mitm("github.example.com"));
-    assert!(broker.host_requires_mitm("api.github.com"));
+    assert!(!broker.host_requires_mitm("github.example.com", /*port*/ 443));
+    assert!(broker.host_requires_mitm("api.github.com", /*port*/ 443));
 }
 
 #[test]
 fn github_enterprise_credentials_bind_to_gh_host() {
+    for (hint, host) in [
+        (" GitHub.Example.Com.:8443 ", "github.example.com"),
+        ("127.0.0.1:8443", "127.0.0.1"),
+        ("[::1]:8443", "::1"),
+        ("::1", "::1"),
+        ("[fe80::1%en0]:8443", "fe80::1%en0"),
+        ("fe80::1%en0", "fe80::1%en0"),
+    ] {
+        let broker = CredentialBroker::new(/*enabled*/ true);
+        let mut env = env_map([
+            ("GH_HOST", hint),
+            ("GH_ENTERPRISE_TOKEN", "ghp-enterprise-real"),
+        ]);
+        broker.virtualize_child_env(&mut env);
+        let dummy = env["GH_ENTERPRISE_TOKEN"].clone();
+        assert_ne!(dummy, "ghp-enterprise-real", "{hint}");
+        env.remove("GH_HOST");
+        env.insert(
+            "GH_ENTERPRISE_TOKEN".to_string(),
+            "ghp-enterprise-real".to_string(),
+        );
+        broker.virtualize_child_env(&mut env);
+        let mut headers = headers_with_bearer(&dummy);
+        broker.inject_request_headers(host, &mut headers);
+        assert_eq!(
+            authorization(&headers),
+            Some("Bearer ghp-enterprise-real"),
+            "{hint}"
+        );
+    }
     let broker = CredentialBroker::new(/*enabled*/ true);
     let mut env = env_map([
         ("GH_HOST", "github.example.com"),
@@ -1130,8 +1275,8 @@ fn github_enterprise_credentials_bind_to_gh_host() {
     ]);
     broker.virtualize_child_env(&mut cloud_only);
     assert_eq!(cloud_only["AUTH_HEADER"], format!("Bearer {github_dummy}"));
-    assert!(broker.host_requires_mitm("github.example.com"));
-    assert!(broker.host_requires_mitm("api.github.com"));
+    assert!(broker.host_requires_mitm("github.example.com", /*port*/ 443));
+    assert!(broker.host_requires_mitm("api.github.com", /*port*/ 443));
 
     env.insert("GH_HOST".to_string(), "attacker.example".to_string());
     env.insert("GH_ENTERPRISE_TOKEN".to_string(), github_dummy.clone());
@@ -1139,7 +1284,7 @@ fn github_enterprise_credentials_bind_to_gh_host() {
     let mut attacker_headers = headers_with_bearer(&github_dummy);
     broker.inject_request_headers("attacker.example", &mut attacker_headers);
     assert_eq!(attacker_headers, headers_with_bearer(&github_dummy));
-    assert!(!broker.host_requires_mitm("attacker.example"));
+    assert!(!broker.host_requires_mitm("attacker.example", /*port*/ 443));
 
     let mut alternate_enterprise_key = env_map([
         ("GH_HOST", "github.alternate.example"),

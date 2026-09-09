@@ -24,6 +24,10 @@ pub(super) static PROVIDER: CredentialProvider = CredentialProvider {
     sources: &[CredentialSource {
         env_vars: OPENAI_API_KEY_ENV_VARS,
         binding_env_vars: &[OPENAI_BASE_URL_ENV_VAR],
+        invalidates_host_binding: |env| {
+            env_value(env, OPENAI_BASE_URL_ENV_VAR)
+                .is_some_and(|value| trusted_credential_broker_host(value).is_none())
+        },
         host_binding,
     }],
     reset_on_configuration_change: true,
