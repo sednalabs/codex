@@ -6,6 +6,12 @@ use serde_json::json;
 
 use super::*;
 
+fn new_recorder() -> ExecutedToolCalls {
+    let mut features = Features::default();
+    features.enable(Feature::ExecutedToolCallMetadata);
+    ExecutedToolCalls::new(&features)
+}
+
 fn output(call_id: &str) -> ResponseItem {
     ResponseItem::from(ResponseInputItem::FunctionCallOutput {
         call_id: call_id.to_string(),
@@ -13,12 +19,103 @@ fn output(call_id: &str) -> ResponseItem {
     })
 }
 
+#[tokio::test]
+async fn recorder_preserves_session_and_turn_gates_and_lazy_result_sources() {
+    struct SourceLookup(std::cell::Cell<usize>);
+
+    impl ToolOutput for SourceLookup {
+        fn log_output(&self) -> String {
+            panic!("recording must not read the diagnostic output")
+        }
+
+        fn success_for_logging(&self) -> bool {
+            panic!("recording must not inspect execution success")
+        }
+
+        fn to_response_item(&self, _call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
+            panic!("recording must not rebuild the tool result")
+        }
+
+        fn tool_result_sources(&self) -> Option<ToolResultSources> {
+            self.0.set(self.0.get() + 1);
+            Some(ToolResultSources::new(Vec::new()))
+        }
+    }
+
+    let (_session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut turn = Arc::new(turn);
+    assert!(ExecutedToolCalls::default().state.is_none());
+    for session_enabled in [false, true] {
+        let mut features = Features::default();
+        features.set_enabled(Feature::ExecutedToolCallMetadata, session_enabled);
+        for turn_enabled in [false, true] {
+            let calls = ExecutedToolCalls::new(&features);
+            assert_eq!(calls.state.is_some(), session_enabled);
+            Arc::make_mut(
+                &mut Arc::get_mut(&mut turn)
+                    .expect("the previous step must have released its turn")
+                    .config,
+            )
+            .features
+            .set_enabled(Feature::ExecutedToolCallMetadata, turn_enabled)
+            .expect("test feature must be configurable");
+            let step = StepContext::for_test(Arc::clone(&turn));
+            assert_eq!(
+                ExecutedToolCalls::is_enabled(&step.turn.config.features),
+                turn_enabled
+            );
+
+            let call = ToolCall {
+                tool_name: codex_tools::ToolName::plain("test_tool"),
+                call_id: "call".to_string(),
+                payload: ToolPayload::Function {
+                    arguments: r#"{"value":7}"#.to_string(),
+                },
+                encrypted_function_args: None,
+            };
+            calls.record_tool_call(&call, &ToolCallSource::Direct, &step);
+            let result = SourceLookup(std::cell::Cell::new(0));
+            calls.record_accepted_result(&ToolCallSource::Direct, &call.call_id, &result);
+            // Accepted sources follow session availability even when this turn stops recording calls.
+            assert_eq!(result.0.get(), usize::from(session_enabled));
+
+            let input = serde_json::from_value(json!({
+                "type": "function_call",
+                "call_id": "call",
+                "name": "test_tool",
+                "arguments": "{\"value\":7}",
+            }))
+            .expect("tool input must deserialize");
+            let mut prompt = vec![input, output("call")];
+            if !session_enabled {
+                prompt[1].mark_tool_calls_complete();
+            }
+            let original = prompt.clone();
+            calls.attach_to_prompt(&mut prompt, &mut HashMap::new());
+            if !session_enabled {
+                assert_eq!(prompt, original);
+            }
+            let mut expected_call =
+                ExecutedToolCall::new("test_tool".to_string(), json!({"value": 7}));
+            assert!(expected_call.set_tool_result_sources(ToolResultSources::new(Vec::new())));
+            let expected_calls = vec![expected_call];
+            assert_eq!(
+                prompt[1]
+                    .executed_tool_call_metadata()
+                    .and_then(|metadata| metadata.executed_tool_calls.as_ref()),
+                (session_enabled && turn_enabled).then_some(&expected_calls),
+                "session_enabled={session_enabled}, turn_enabled={turn_enabled}",
+            );
+        }
+    }
+}
+
 #[test]
 fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
-    let recorder = ExecutedToolCallRecorder::default();
+    let recorder = new_recorder();
 
     for index in 0..MAX_PENDING_EXECUTED_TOOL_CALLS + 2 {
-        recorder.record_tool_call(
+        recorder.record_call(
             &ToolCall {
                 tool_name: codex_tools::ToolName::plain("direct_tool"),
                 call_id: format!("direct-{index}"),
@@ -58,6 +155,8 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
     {
         let state = recorder
             .state
+            .as_ref()
+            .unwrap()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
@@ -131,6 +230,8 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
     {
         let state = recorder
             .state
+            .as_ref()
+            .unwrap()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(state.pending_nested_calls, 0);
@@ -159,6 +260,8 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
     assert!(!recorder.attach_pending_to_prompt(&mut [], &mut compacted_retry_cache));
     let state = recorder
         .state
+        .as_ref()
+        .unwrap()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(state.retained_calls.is_empty());
@@ -166,7 +269,7 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
 
 #[test]
 fn executed_tool_call_recorder_bounds_retained_history_and_reports_omissions() {
-    let recorder = ExecutedToolCallRecorder::default();
+    let recorder = new_recorder();
     let mut history = Vec::new();
     let arguments = serde_json::to_string(&json!({ "payload": "x".repeat(1024) }))
         .expect("tool arguments must serialize");
@@ -174,7 +277,7 @@ fn executed_tool_call_recorder_bounds_retained_history_and_reports_omissions() {
 
     for index in 0..512 {
         let call_id = format!("retained-{index}");
-        recorder.record_tool_call(
+        recorder.record_call(
             &ToolCall {
                 tool_name: codex_tools::ToolName::plain(format!("retained_tool_{index}")),
                 call_id: call_id.clone(),
@@ -215,6 +318,8 @@ fn executed_tool_call_recorder_bounds_retained_history_and_reports_omissions() {
 
     let state = recorder
         .state
+        .as_ref()
+        .unwrap()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let retained_bytes = state
@@ -245,7 +350,7 @@ fn executed_tool_call_recorder_bounds_retained_history_and_reports_omissions() {
 #[test]
 fn tool_call_completeness_requires_finished_lossless_recording() {
     for scenario in ["empty", "unobserved", "late_call"] {
-        let recorder = ExecutedToolCallRecorder::default();
+        let recorder = new_recorder();
         let cell_id = CellId::new(scenario.to_string());
         if scenario == "unobserved" {
             recorder.register_cell(&cell_id, "output");
@@ -289,7 +394,7 @@ fn tool_call_completeness_survives_waits_without_changing_deltas() {
         (false, ToolResultSources::parse_failed()),
         (true, ToolResultSources::parse_failed()),
     ] {
-        let recorder = ExecutedToolCallRecorder::default();
+        let recorder = new_recorder();
         let cell_id = CellId::new("multi-wait".to_string());
         recorder.start_cell(&cell_id, "exec");
         let mut history = Vec::new();
@@ -368,7 +473,7 @@ fn tool_call_completeness_survives_waits_without_changing_deltas() {
                 assert_eq!(prompt, expected);
             }
         }
-        let state = recorder.state.lock().unwrap();
+        let state = recorder.state.as_ref().unwrap().lock().unwrap();
         assert!(state.cells.is_empty());
         assert_eq!(state.pending_nested_calls, 0);
     }
@@ -379,7 +484,7 @@ fn cell_correlation_uses_originating_exec_across_runtime_restarts() {
     let runtime_cell_id = CellId::new("1".to_string());
 
     for originating_call_id in ["first-exec", "resumed-exec"] {
-        let recorder = ExecutedToolCallRecorder::default();
+        let recorder = new_recorder();
         recorder.start_cell(&runtime_cell_id, originating_call_id);
         recorder.record_nested_tool_call(
             runtime_cell_id.clone(),
@@ -411,7 +516,7 @@ fn cell_correlation_uses_originating_exec_across_runtime_restarts() {
 
 #[test]
 fn request_truncation_prevents_completion_after_compaction() {
-    let recorder = ExecutedToolCallRecorder::default();
+    let recorder = new_recorder();
     let cell_id = CellId::new("compacted-cell".to_string());
     recorder.start_cell(&cell_id, "exec");
 
@@ -465,7 +570,7 @@ fn request_truncation_prevents_completion_after_compaction() {
 
 #[test]
 fn source_shedding_preserves_completion_after_compaction() {
-    let recorder = ExecutedToolCallRecorder::default();
+    let recorder = new_recorder();
     let cell_id = CellId::new("compacted-cell".to_string());
     recorder.start_cell(&cell_id, "exec");
 
@@ -547,7 +652,7 @@ fn source_shedding_preserves_completion_after_compaction() {
 
 #[test]
 fn finished_cells_without_more_waits_do_not_block_new_calls() {
-    let recorder = ExecutedToolCallRecorder::default();
+    let recorder = new_recorder();
     let call = ExecutedToolCall::new("nested_tool".to_string(), json!({}));
     for index in 0..MAX_PENDING_EXECUTED_TOOL_CALLS {
         let cell = CellId::new(format!("cell-{index}"));
