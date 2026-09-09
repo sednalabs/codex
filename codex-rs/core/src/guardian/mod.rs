@@ -35,20 +35,23 @@ pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;
 #[cfg(test)]
 pub(crate) use approval_request::guardian_approval_request_to_json;
+pub(crate) use codex_guardian_reviewer::guardian_timeout_message;
 pub(crate) use decision::decide_approval;
 pub(crate) use decision::spawn_approval_decision;
 pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY;
 pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 pub(crate) use prompt::guardian_truncate_text;
 pub(crate) use review::GuardianReviewOptions;
-pub(crate) use review::guardian_timeout_message;
 pub(crate) use review::is_basic_session_source;
 pub(crate) use review::new_guardian_review_id;
 #[cfg(test)]
 pub(crate) use review::record_guardian_denial_for_test;
 pub(crate) use review::routes_approval_policy_to_guardian;
 pub(crate) use review::routes_approval_to_guardian;
-pub use review_session::GuardianReviewSessionManager;
+pub use review_session::GuardianReviewSession;
+pub use review_session::GuardianReviewSessionHost;
+pub(crate) use review_session::GuardianReviewSessionManager;
+pub(crate) use review_session::prewarm_guardian_review_session;
 pub(crate) use review_session::prompt_cache_key_override_for_review_session;
 pub(crate) use runtime::ReviewAction;
 
@@ -160,10 +163,8 @@ impl From<&Arc<TurnContext>> for GuardianReviewContext {
     }
 }
 
-pub use codex_guardian_reviewer::GuardianAssessment;
-pub use codex_guardian_reviewer::guardian_output_schema;
-pub use codex_guardian_reviewer::parse_guardian_assessment;
-pub use reviewer_config::build_guardian_review_session_config;
+#[cfg(test)]
+use codex_guardian_reviewer::guardian_output_schema;
 
 pub(crate) use codex_guardian_reviewer::GuardianRejectionCircuitBreaker;
 pub(crate) use codex_guardian_reviewer::GuardianRejectionCircuitBreakerAction;

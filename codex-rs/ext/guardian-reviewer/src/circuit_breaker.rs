@@ -24,6 +24,18 @@ pub enum GuardianRejectionCircuitBreakerPolicy {
     CyberModel,
 }
 
+impl From<&codex_protocol::openai_models::ModelInfo> for GuardianRejectionCircuitBreakerPolicy {
+    fn from(model: &codex_protocol::openai_models::ModelInfo) -> Self {
+        if model.model_specialty.as_deref()
+            == Some(codex_protocol::openai_models::MODEL_SPECIALTY_CYBER)
+        {
+            Self::CyberModel
+        } else {
+            Self::Standard
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuardianRejectionCircuitBreakerAction {
     Continue,

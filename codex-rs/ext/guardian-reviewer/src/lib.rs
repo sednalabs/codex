@@ -3,9 +3,13 @@
 
 mod assessment;
 mod circuit_breaker;
+mod completion;
+mod deadline;
 mod model;
 mod outcome;
+mod pool;
 mod retry;
+mod review;
 
 pub use assessment::GuardianAssessment;
 pub use assessment::guardian_output_contract_prompt;
@@ -25,3 +29,18 @@ pub use retry::run_with_retry;
 
 pub const MAX_REVIEW_ATTEMPTS: i64 = 3;
 pub const REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+pub use deadline::run_before_review_deadline;
+pub use deadline::run_before_review_deadline_with_cancel;
+pub use pool::ReviewerPool;
+pub use pool::ReviewerRequest;
+pub use pool::ReviewerSession;
+pub use pool::ReviewerSessionFactory;
+pub use pool::SessionDisposition;
+
+pub use review::ReviewHost;
+pub use review::SynchronousReview;
+
+pub use completion::ReviewCompletion;
+pub use completion::complete_review;
+pub use completion::guardian_timeout_message;
