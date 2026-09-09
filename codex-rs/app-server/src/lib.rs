@@ -132,6 +132,7 @@ mod skills_watcher;
 mod thread_state;
 mod thread_status;
 mod transport;
+mod turn_admission;
 mod turn_cost_worker;
 mod user_verification;
 mod user_verification_response;
@@ -247,6 +248,7 @@ impl ShutdownState {
         signal: ShutdownSignal,
         connection_count: usize,
         running_turn_count: usize,
+        turn_admission: &turn_admission::TurnAdmission,
     ) {
         if self.requested {
             if matches!(signal, ShutdownSignal::Forceable) {
@@ -255,20 +257,26 @@ impl ShutdownState {
             return;
         }
 
+        turn_admission.begin_drain();
         self.requested = true;
         self.last_logged_running_turn_count = None;
         info!(
-            "received shutdown signal; entering graceful restart drain (connections={}, runningAssistantTurns={}, requests still accepted until no assistant turns are running)",
+            "received shutdown signal; entering graceful restart drain (connections={}, runningAssistantTurns={}, new client turns rejected)",
             connection_count, running_turn_count,
         );
     }
 
-    fn update(&mut self, running_turn_count: usize, connection_count: usize) -> ShutdownAction {
+    fn update(
+        &mut self,
+        running_turn_count: usize,
+        active_admissions: usize,
+        connection_count: usize,
+    ) -> ShutdownAction {
         if !self.requested {
             return ShutdownAction::Noop;
         }
 
-        if self.forced || running_turn_count == 0 {
+        if self.forced || (running_turn_count == 0 && active_admissions == 0) {
             if self.forced {
                 info!(
                     "received second shutdown signal; forcing restart with {running_turn_count} running assistant turn(s) and {connection_count} connection(s)"
@@ -283,7 +291,7 @@ impl ShutdownState {
 
         if self.last_logged_running_turn_count != Some(running_turn_count) {
             info!(
-                "shutdown signal restart: waiting for {running_turn_count} running assistant turn(s) to finish"
+                "shutdown signal restart: waiting for {running_turn_count} running assistant turn(s) and {active_admissions} admitted request(s) to finish"
             );
             self.last_logged_running_turn_count = Some(running_turn_count);
         }
@@ -954,6 +962,7 @@ pub async fn run_main_with_transport_options(
         }));
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
+        let mut active_admissions_rx = processor.turn_admission.subscribe_active();
         let mut connections = HashMap::<ConnectionId, ConnectionState>::new();
         let mut connection_cleanup_tasks = ConnectionCleanupTasks::new();
         let mut remote_control_status_rx = remote_control_handle.status_receiver();
@@ -963,12 +972,12 @@ pub async fn run_main_with_transport_options(
             let mut listen_for_threads = true;
             let mut shutdown_state = ShutdownState::default();
             let exit_reason = loop {
-                let running_turn_count = {
-                    let running_turn_count = running_turn_count_rx.borrow();
-                    *running_turn_count
-                };
+                // Sample submissions first: one can publish a running turn before
+                // releasing its permit, and shutdown must observe that new turn.
+                let active_admissions = *active_admissions_rx.borrow_and_update();
+                let running_turn_count = *running_turn_count_rx.borrow_and_update();
                 if matches!(
-                    shutdown_state.update(running_turn_count, connections.len()),
+                    shutdown_state.update(running_turn_count, active_admissions, connections.len()),
                     ShutdownAction::Finish
                 ) {
                     transport_shutdown_token.cancel();
@@ -988,11 +997,16 @@ pub async fn run_main_with_transport_options(
                             }
                         };
                         let running_turn_count = *running_turn_count_rx.borrow();
-                        shutdown_state.on_signal(signal, connections.len(), running_turn_count);
+                        shutdown_state.on_signal(signal, connections.len(), running_turn_count, &processor.turn_admission);
                     }
                     changed = running_turn_count_rx.changed(), if shutdown_state.requested() => {
                         if changed.is_err() {
                             warn!("running-turn watcher closed during graceful restart drain");
+                        }
+                    }
+                    changed = active_admissions_rx.changed(), if shutdown_state.requested() => {
+                        if changed.is_err() {
+                            warn!("turn admission watcher closed during graceful restart drain");
                         }
                     }
                     event = transport_event_rx.recv() => {
@@ -1001,7 +1015,7 @@ pub async fn run_main_with_transport_options(
                         };
                         match event {
                             TransportEvent::DaemonShutdown => {
-                                shutdown_state.on_signal(ShutdownSignal::Forceable, connections.len(), *running_turn_count_rx.borrow());
+                                shutdown_state.on_signal(ShutdownSignal::Forceable, connections.len(), *running_turn_count_rx.borrow(), &processor.turn_admission);
                             }
                             TransportEvent::ConnectionOpened {
                                 connection_id,
@@ -1414,13 +1428,49 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 #[cfg(test)]
 mod tests {
     use super::LogFormat;
+    use super::ShutdownAction;
+    use super::ShutdownSignal;
+    use super::ShutdownState;
     #[cfg(debug_assertions)]
     use super::loader_overrides_with_test_user_config_file;
+    use super::turn_admission::TurnAdmission;
     #[cfg(debug_assertions)]
     use codex_config::LoaderOverrides;
     #[cfg(debug_assertions)]
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn shutdown_waits_for_admitted_requests_but_force_remains_available() {
+        let admission = TurnAdmission::default();
+        let active = admission.subscribe_active();
+        let in_flight = admission.admit().expect("request admitted");
+        let mut shutdown = ShutdownState::default();
+        let connection_count = 1;
+        let running_turn_count = 0;
+        shutdown.on_signal(
+            ShutdownSignal::Forceable,
+            connection_count,
+            running_turn_count,
+            &admission,
+        );
+        assert!(matches!(
+            shutdown.update(running_turn_count, *active.borrow(), connection_count),
+            ShutdownAction::Noop
+        ));
+        shutdown.on_signal(
+            ShutdownSignal::Forceable,
+            connection_count,
+            running_turn_count,
+            &admission,
+        );
+        assert!(shutdown.forced());
+        assert!(matches!(
+            shutdown.update(running_turn_count, *active.borrow(), connection_count),
+            ShutdownAction::Finish
+        ));
+        drop(in_flight);
+    }
 
     #[test]
     fn log_format_from_env_value_matches_json_values_case_insensitively() {

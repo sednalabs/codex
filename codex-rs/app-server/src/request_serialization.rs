@@ -491,7 +491,9 @@ mod tests {
     #[tokio::test]
     async fn shutdown_of_live_gate_skips_already_queued_requests() {
         let queues = RequestSerializationQueues::default();
-        let (queued_tx, mut queued_rx) = oneshot::channel::<()>();
+        let admission = crate::turn_admission::TurnAdmission::default();
+        let active = admission.subscribe_active();
+        let permit = admission.admit().expect("admit queued request");
         let key = RequestSerializationQueueKey::Global("test");
         let live_gate = gate();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -518,7 +520,7 @@ mod tests {
                     key,
                     RequestSerializationAccess::Exclusive,
                     QueuedInitializedRequest::new(live_gate.clone(), async move {
-                        let _queued_tx = queued_tx;
+                        let _permit = permit;
                         tx.send(SECOND_REQUEST_VALUE)
                             .expect("receiver should be open");
                     }),
@@ -534,16 +536,11 @@ mod tests {
             Some(FIRST_REQUEST_VALUE)
         );
 
-        assert_eq!(
-            queued_rx.try_recv(),
-            Err(oneshot::error::TryRecvError::Empty)
-        );
+        admission.begin_drain();
+        assert_eq!(*active.borrow(), 1);
         live_gate.close().await;
         queues.discard_closed().await;
-        assert_eq!(
-            queued_rx.try_recv(),
-            Err(oneshot::error::TryRecvError::Closed)
-        );
+        assert_eq!(*active.borrow(), 0);
 
         let gate_for_shutdown = Arc::clone(&live_gate);
         let shutdown_task = tokio::spawn(async move {
