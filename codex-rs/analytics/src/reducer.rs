@@ -2932,6 +2932,7 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                         saved_path_present: item.saved_path.is_some(),
                         transparent_background: item.transparent_background,
                         imagegen_request_id: item.imagegen_request_id.clone(),
+                        generation_id: item.generation_id.clone(),
                     },
                 },
             ))

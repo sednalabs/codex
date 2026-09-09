@@ -764,6 +764,7 @@ pub(super) fn handle_image_generation_end(
                 failure: None,
                 saved_path,
                 imagegen_request_id: None,
+                generation_id: None,
             }),
         }),
         /*replay_kind*/ None,
