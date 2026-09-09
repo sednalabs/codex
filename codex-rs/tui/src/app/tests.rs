@@ -2377,8 +2377,9 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         .enable_all()
         .build()?;
 
-    runtime.block_on(async {
-        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    // Keep the scenario and its large setup/resume futures off the test thread's stack.
+    runtime.block_on(Box::pin(async {
+        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
         let root_thread_id = ThreadId::new();
         let rollout_dir = app
             .config
@@ -2450,16 +2451,17 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         }
 
         // Cold-resume the persisted V2 root so its children are registered before selection.
-        let mut app_server =
-            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-        let root = app_server
-            .resume_thread(
-                &app.local_settings,
-                app.config.clone(),
-                root_thread_id,
-                crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
-            )
-            .await?;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+            app.chat_widget.config_ref(),
+        ))
+        .await?;
+        let root = Box::pin(app_server.resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            root_thread_id,
+            crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+        ))
+        .await?;
         app.enqueue_primary_thread_session(root.session, root.turns)
             .await?;
         for (child_thread_id, multi_agent_version) in child_thread_ids
@@ -2531,14 +2533,13 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
 
-        let resumed = app_server
-            .resume_thread(
-                &app.local_settings,
-                app.config.clone(),
-                child_thread_ids[1],
-                app.resume_model_settings(),
-            )
-            .await?;
+        let resumed = Box::pin(app_server.resume_thread(
+            &app.local_settings,
+            app.config.clone(),
+            child_thread_ids[1],
+            app.resume_model_settings(),
+        ))
+        .await?;
         assert!(resumed.blocks_direct_input);
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
@@ -2560,7 +2561,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
         Ok(())
-    })
+    }))
 }
 
 #[test]

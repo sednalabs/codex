@@ -286,7 +286,8 @@ async fn cached_legacy_resume_revalidates_history_across_migration_settings() ->
         [(false, false), (false, true), (true, false), (true, true)]
     {
         let codex_home = tempfile::tempdir().expect("tempdir");
-        let config = build_config(&codex_home).await;
+        // Keep the large setup futures off the test thread's stack.
+        let config = Box::pin(build_config(&codex_home)).await;
         let legacy_thread_id = ThreadId::from_string(
             &create_fake_rollout(
                 codex_home.path(),
@@ -314,7 +315,8 @@ async fn cached_legacy_resume_revalidates_history_across_migration_settings() ->
         let maintenance_guard =
             codex_rollout::try_acquire_rollout_maintenance_lock(codex_home.path())?
                 .expect("acquire rollout maintenance lock");
-        let mut app_server = crate::start_embedded_app_server_for_picker(&startup_config).await?;
+        let mut app_server =
+            Box::pin(crate::start_embedded_app_server_for_picker(&startup_config)).await?;
         app_server.remember_thread_history_mode(legacy_thread_id, ThreadHistoryMode::Legacy);
         let local_settings = crate::local_settings::LocalSettings::from(&resume_config);
         let next_request_id = app_server.next_request_id;

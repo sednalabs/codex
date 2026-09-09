@@ -1241,7 +1241,7 @@ supports_websockets = true
 
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains(
-        "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, and `aws.auth_refresh`; other non-default provider fields are not supported"
+        "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, `aws.credential_export`, and `aws.auth_refresh`; other non-default provider fields are not supported"
     ));
 }
 

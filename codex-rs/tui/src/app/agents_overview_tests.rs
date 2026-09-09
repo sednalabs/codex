@@ -1378,10 +1378,13 @@ async fn failed_root_switch_keeps_background_requests_on_the_active_session() ->
 
 #[tokio::test]
 async fn root_switch_loads_local_preferences_from_disk() -> Result<()> {
-    let mut app = make_test_app().await;
-    let mut app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
-    let previous = app_server.start_thread(&app.config).await?;
+    // Keep the large setup and root-switch futures off the test thread's stack.
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let previous = Box::pin(app_server.start_thread(&app.config)).await?;
     app.enqueue_primary_thread_session(previous.session, previous.turns)
         .await?;
     let target_thread_id = ThreadId::from_string(
@@ -1399,13 +1402,11 @@ async fn root_switch_loads_local_preferences_from_disk() -> Result<()> {
         app.local_settings.user_config_path.as_path(),
         "[tui]\ntheme = \"dracula\"\nresume_cwd = \"session\"\n[history]\npersistence = \"none\"\n",
     )?;
-    let config = app
-        .rebuild_config_for_cwd(app.config.cwd.to_path_buf())
-        .await?;
+    let config = Box::pin(app.rebuild_config_for_cwd(app.config.cwd.to_path_buf())).await?;
     let expected = crate::local_settings::LocalSettings::from(&config);
     let mut tui = crate::tui::test_support::make_test_tui()?;
 
-    app.select_agents_overview_thread(&mut tui, &mut app_server, target_thread_id)
+    Box::pin(app.select_agents_overview_thread(&mut tui, &mut app_server, target_thread_id))
         .await?;
 
     assert_eq!(app.current_displayed_thread_id(), Some(target_thread_id));
