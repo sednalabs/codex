@@ -4,6 +4,12 @@ use codex_core::CodexThread;
 use codex_core::TurnInputRequest;
 use codex_core::config::Constrained;
 use codex_core::config::TokenBudgetConfig;
+use codex_extension_api::ContentItemKind;
+use codex_extension_api::ContextContributor;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::PromptFragment;
+use codex_extension_api::TurnContextContributionInput;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
@@ -63,6 +69,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use test_case::test_case;
 
 const MODEL_A: &str = "step-settings-a";
@@ -366,7 +373,97 @@ async fn settings_updates_preserve_turn_identity_and_target(target: SettingsTarg
             .collect::<Vec<_>>(),
         expected_switch_counts
     );
+    Ok(())
+}
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_context_after_model_switch_uses_captured_extension_window() -> Result<()> {
+    struct WindowContributor;
+
+    impl ContextContributor for WindowContributor {
+        fn contribute_turn_context<'a>(
+            &'a self,
+            input: TurnContextContributionInput<'a>,
+        ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+            Box::pin(async move {
+                input
+                    .model_context_window
+                    .map(|window| {
+                        PromptFragment::developer_policy(
+                            format!("Extension window: {window} tokens."),
+                            ContentItemKind("test.turn_context".to_string()),
+                        )
+                    })
+                    .into_iter()
+                    .collect()
+            })
+        }
+    }
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            paused_response("resp-a", "pause-before-new-context"),
+            sse(vec![
+                ev_response_created("resp-b"),
+                ev_function_call("new-window", "new_context", "{}"),
+                ev_completed("resp-b"),
+            ]),
+            sse_completed("resp-new-window"),
+        ],
+    )
+    .await;
+    let mut extensions = ExtensionRegistryBuilder::new();
+    extensions.prompt_contributor(Arc::new(WindowContributor));
+    let test = step_settings_test()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config.features.enable(Feature::TokenBudget).unwrap();
+            config.model_context_window = None;
+            for model in &mut config.model_catalog.as_mut().unwrap().models {
+                model.context_window = None;
+                model.max_context_window = Some(if model.slug == MODEL_A {
+                    128_000
+                } else {
+                    256_000
+                });
+                model.effective_context_window_percent =
+                    if model.slug == MODEL_A { 75 } else { 50 };
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let paused = start_paused_turn(&test.codex).await?;
+    assert_eq!(
+        submit_turn_settings(
+            &test.codex,
+            &paused.turn_id,
+            TurnSettingsUpdate {
+                model: Some(MODEL_B.to_string()),
+                ..Default::default()
+            },
+        )
+        .await?,
+        TurnSettingsUpdateOutcome::Applied
+    );
+    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json()["model"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(MODEL_A), json!(MODEL_B), json!(MODEL_B)]
+    );
+    assert!(requests[0].body_contains_text("Extension window: 96000 tokens."));
+    assert!(requests[2].body_contains_text("Extension window: 128000 tokens."));
+    assert!(!requests[2].body_contains_text("Extension window: 96000 tokens."));
     Ok(())
 }
 

@@ -290,13 +290,14 @@ impl Session {
             .map(|root| root.selected_root().clone())
             .collect::<Vec<_>>();
         let extension_metrics = super::extension_metrics::from_session_telemetry(
-            turn_context.session_telemetry.clone(),
+            step_context.session_telemetry.clone(),
         );
         for contributor in self.services.extensions.context_contributors() {
             for section in contributor
                 .contribute_world_state(WorldStateContributionInput {
                     thread_id: self.thread_id(),
                     turn_id: turn_context.sub_id.as_str(),
+                    model_info: &step_context.settings.model_info,
                     environments: &environments,
                     ready_selected_capability_roots: &ready_selected_capability_roots,
                     executor_capability_discovery: step_context
