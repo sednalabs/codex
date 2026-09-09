@@ -1,6 +1,6 @@
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ToolResultSources;
+use codex_protocol::models::ToolResultMetadata;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -20,10 +20,10 @@ fn output(call_id: &str) -> ResponseItem {
 }
 
 #[tokio::test]
-async fn recorder_preserves_session_and_turn_gates_and_lazy_result_sources() {
-    struct SourceLookup(std::cell::Cell<usize>);
+async fn recorder_preserves_session_and_turn_gates_and_lazy_result_metadata() {
+    struct MetadataLookup(std::cell::Cell<usize>, JsonValue);
 
-    impl ToolOutput for SourceLookup {
+    impl ToolOutput for MetadataLookup {
         fn log_output(&self) -> String {
             panic!("recording must not read the diagnostic output")
         }
@@ -36,9 +36,9 @@ async fn recorder_preserves_session_and_turn_gates_and_lazy_result_sources() {
             panic!("recording must not rebuild the tool result")
         }
 
-        fn tool_result_sources(&self) -> Option<ToolResultSources> {
+        fn tool_result_metadata(&self) -> Option<&JsonValue> {
             self.0.set(self.0.get() + 1);
-            Some(ToolResultSources::new(Vec::new()))
+            Some(&self.1)
         }
     }
 
@@ -74,9 +74,9 @@ async fn recorder_preserves_session_and_turn_gates_and_lazy_result_sources() {
                 encrypted_function_args: None,
             };
             calls.record_tool_call(&call, &ToolCallSource::Direct, &step);
-            let result = SourceLookup(std::cell::Cell::new(0));
+            let result = MetadataLookup(std::cell::Cell::new(0), json!({}));
             calls.record_accepted_result(&ToolCallSource::Direct, &call.call_id, &result);
-            // Accepted sources follow session availability even when this turn stops recording calls.
+            // Accepted metadata follows session availability even when this turn stops recording calls.
             assert_eq!(result.0.get(), usize::from(session_enabled));
 
             let input = serde_json::from_value(json!({
@@ -97,7 +97,7 @@ async fn recorder_preserves_session_and_turn_gates_and_lazy_result_sources() {
             }
             let mut expected_call =
                 ExecutedToolCall::new("test_tool".to_string(), json!({"value": 7}));
-            assert!(expected_call.set_tool_result_sources(ToolResultSources::new(Vec::new())));
+            expected_call.set_tool_result_metadata(ToolResultMetadata::new(&json!({})));
             let expected_calls = vec![expected_call];
             assert_eq!(
                 prompt[1]
@@ -128,11 +128,8 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
             ToolMode::Direct,
         );
     }
-    assert!(recorder.record_tool_result_sources(
-        &ToolCallSource::Direct,
-        "direct-0",
-        ToolResultSources::new(Vec::new())
-    ));
+    let metadata = json!({ "arbitrary-key": ["R1", null] });
+    assert!(recorder.record_tool_result_metadata(&ToolCallSource::Direct, "direct-0", &metadata));
 
     let cell_id = CellId::new("bounded-cell".to_string());
     recorder.start_cell(&cell_id, "bounded-output");
@@ -162,6 +159,10 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
         assert_eq!(
             state.direct_calls.len(),
             MAX_PENDING_EXECUTED_TOOL_CALLS + 1
+        );
+        assert_eq!(
+            serde_json::to_value(state.direct_calls.get("direct-0").unwrap()).unwrap()["tool_result_metadata"],
+            metadata,
         );
         assert_eq!(
             serde_json::to_value(
@@ -384,16 +385,8 @@ fn tool_call_completeness_requires_finished_lossless_recording() {
 
 #[test]
 fn tool_call_completeness_survives_waits_without_changing_deltas() {
-    let sources = ToolResultSources::new(vec![codex_protocol::models::ToolResultSource {
-        r#type: "test_channel".to_string(),
-        id: "CLATE".to_string(),
-    }]);
-    for (truncated, sources) in [
-        (false, sources.clone()),
-        (true, sources),
-        (false, ToolResultSources::parse_failed()),
-        (true, ToolResultSources::parse_failed()),
-    ] {
+    let metadata = json!({ "provider": { "ids": ["CLATE"] } });
+    for truncated in [false, true] {
         let recorder = new_recorder();
         let cell_id = CellId::new("multi-wait".to_string());
         recorder.start_cell(&cell_id, "exec");
@@ -431,30 +424,22 @@ fn tool_call_completeness_survives_waits_without_changing_deltas() {
                         cell_id: cell_id.to_string(),
                         runtime_tool_call_id: "runtime-call".to_string(),
                     };
-                    assert!(!recorder.record_tool_result_sources(
+                    assert!(!recorder.record_tool_result_metadata(
                         &source("other-cell"),
                         "nested-0",
-                        ToolResultSources::new(Vec::new()),
+                        &json!({}),
                     ));
                     let source = source(cell_id.as_str());
-                    assert!(recorder.record_tool_result_sources(
-                        &source,
-                        "nested-0",
-                        sources.clone(),
-                    ));
+                    assert!(recorder.record_tool_result_metadata(&source, "nested-0", &metadata));
                     let mut delayed_call =
                         ExecutedToolCall::new("nested_tool".to_string(), json!({}));
-                    assert!(delayed_call.set_tool_result_sources(sources.clone()));
+                    delayed_call.set_tool_result_metadata(ToolResultMetadata::new(&metadata));
                     let mut delayed_output = output("exec");
                     delayed_output.append_executed_tool_calls(vec![delayed_call]);
                     delayed_output.set_tool_call_cell_id("exec");
                     expected[0] = delayed_output;
-                    assert!(recorder.record_tool_result_sources(
-                        &source,
-                        "nested-1",
-                        ToolResultSources::new(Vec::new())
-                    ));
-                    assert!(call.set_tool_result_sources(ToolResultSources::new(Vec::new())));
+                    assert!(recorder.record_tool_result_metadata(&source, "nested-1", &json!({})));
+                    call.set_tool_result_metadata(ToolResultMetadata::new(&json!({})));
                 }
                 expected_output.append_executed_tool_calls(vec![call]);
             } else if index == 3 {
@@ -548,10 +533,10 @@ fn request_truncation_prevents_completion_after_compaction() {
         runtime_tool_call_id: "runtime-call".to_string(),
     };
     for index in 0..4 {
-        assert!(!recorder.record_tool_result_sources(
+        assert!(!recorder.record_tool_result_metadata(
             &source,
             &format!("nested-{index}"),
-            ToolResultSources::new(Vec::new()),
+            &json!({}),
         ));
     }
 
@@ -569,7 +554,58 @@ fn request_truncation_prevents_completion_after_compaction() {
 }
 
 #[test]
-fn source_shedding_preserves_completion_after_compaction() {
+fn result_metadata_updates_the_exact_retained_call_and_marks_oversized_retries() {
+    let recorder = new_recorder();
+    let cell_id = CellId::new("metadata-cell".to_string());
+    recorder.start_cell(&cell_id, "exec");
+    let call = ExecutedToolCall::new("nested_tool".to_string(), json!({}));
+    for call_id in ["first", "second"] {
+        recorder.record_nested_tool_call(
+            cell_id.clone(),
+            call_id.to_string(),
+            call.clone(),
+            /*original_bytes*/ 2,
+        );
+    }
+    recorder.finish_cell_recording(&cell_id);
+    let mut retry_cache = HashMap::new();
+    let mut initial = [output("exec")];
+    assert!(recorder.attach_pending_to_prompt(&mut initial, &mut retry_cache));
+
+    let metadata = json!({ "all-keys": { "ids": ["R1"] }, "other": true });
+    let source = |cell_id: &str| ToolCallSource::CodeMode {
+        cell_id: cell_id.to_string(),
+        runtime_tool_call_id: "runtime-call".to_string(),
+    };
+    assert!(!recorder.record_tool_result_metadata(&source("other-cell"), "first", &metadata));
+    assert!(!recorder.record_tool_result_metadata(&source(cell_id.as_str()), "unknown", &metadata));
+    assert!(recorder.record_tool_result_metadata(&source(cell_id.as_str()), "first", &metadata));
+
+    let mut expected_call = call.clone();
+    expected_call.set_tool_result_metadata(ToolResultMetadata::new(&metadata));
+    let mut expected = output("exec");
+    expected.append_executed_tool_calls(vec![expected_call, call]);
+    expected.set_tool_call_cell_id("exec");
+    expected.mark_tool_calls_complete();
+    let mut retry = [output("exec")];
+    assert!(recorder.attach_pending_to_prompt(&mut retry, &mut retry_cache));
+    assert_eq!(retry, [expected]);
+
+    assert!(recorder.record_tool_result_metadata(
+        &source(cell_id.as_str()),
+        "first",
+        &json!({ "oversized": "x".repeat(32 * 1024) }),
+    ));
+    let mut expected = serde_json::to_value(&initial).unwrap();
+    expected[0]["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]["tool_result_metadata"] =
+        json!("omitted_due_to_size_limit");
+    let mut retry = [output("exec")];
+    assert!(recorder.attach_pending_to_prompt(&mut retry, &mut retry_cache));
+    assert_eq!(serde_json::to_value(&retry).unwrap(), expected);
+}
+
+#[test]
+fn result_metadata_shedding_preserves_completion_after_compaction() {
     let recorder = new_recorder();
     let cell_id = CellId::new("compacted-cell".to_string());
     recorder.start_cell(&cell_id, "exec");
@@ -592,52 +628,48 @@ fn source_shedding_preserves_completion_after_compaction() {
     };
     let mut retry_cache = HashMap::new();
     recorder.attach_pending_to_prompt(&mut [output("exec")], &mut retry_cache);
-    assert!(
-        recorder.record_tool_result_sources(
-            &source,
-            "nested-0",
-            ToolResultSources::new(
-                (0..32)
-                    .map(|index| codex_protocol::models::ToolResultSource {
-                        r#type: "test_channel".to_string(),
-                        id: format!("C{index:063}"),
-                    })
-                    .collect()
-            ),
-        )
-    );
+    // This snapshot fits alone, but pushes the four calls over the aggregate budget.
+    assert!(recorder.record_tool_result_metadata(
+        &source,
+        "nested-0",
+        &json!({ "provider_data": "x".repeat(4 * 1024) }),
+    ));
 
-    assert!(recorder.record_tool_result_sources(
+    assert!(recorder.record_tool_result_metadata(
         &source,
         "nested-1",
-        ToolResultSources::parse_failed()
+        &json!({ "status": "unavailable" })
     ));
     let mut initial = [output("exec")];
     assert!(recorder.attach_pending_to_prompt(&mut initial, &mut retry_cache));
     let calls = initial[0]
         .executed_tool_call_metadata()
         .and_then(|metadata| metadata.executed_tool_calls.as_ref())
-        .expect("source shedding must preserve recorded calls");
-    assert_eq!(
-        calls,
-        &vec![ExecutedToolCall::new("nested_tool".to_string(), arguments); 4]
-    );
-    assert!(!recorder.record_tool_result_sources(
-        &source,
-        "nested-0",
-        ToolResultSources::new(Vec::new())
-    ));
+        .expect("metadata shedding must preserve recorded calls");
+    let mut expected_calls = vec![ExecutedToolCall::new("nested_tool".to_string(), arguments); 4];
+    for call in &mut expected_calls[..2] {
+        call.set_tool_result_metadata(ToolResultMetadata::new(&json!("omitted_due_to_size_limit")));
+    }
+    assert_eq!(calls, &expected_calls);
     let mut retry = [output("exec")];
     assert!(recorder.attach_pending_to_prompt(&mut retry, &mut retry_cache));
     assert_eq!(retry, initial);
 
+    // A different call can still attach a small result after the oversized metadata is shed.
+    let metadata = json!({ "id": "R2" });
+    assert!(recorder.record_tool_result_metadata(&source, "nested-2", &metadata));
+    let mut expected_calls = calls.clone();
+    expected_calls[2].set_tool_result_metadata(ToolResultMetadata::new(&metadata));
+    let mut expected = output("exec");
+    expected.append_executed_tool_calls(expected_calls);
+    expected.set_tool_call_cell_id("exec");
+    let mut retry = [output("exec")];
+    assert!(recorder.attach_pending_to_prompt(&mut retry, &mut retry_cache));
+    assert_eq!(retry, [expected]);
+
     recorder.attach_pending_to_prompt(&mut [], &mut retry_cache);
     assert!(retry_cache.is_empty());
-    assert!(!recorder.record_tool_result_sources(
-        &source,
-        "nested-1",
-        ToolResultSources::new(Vec::new())
-    ));
+    assert!(!recorder.record_tool_result_metadata(&source, "nested-2", &metadata));
     recorder.register_cell(&cell_id, "wait");
     recorder.finish_cell_recording(&cell_id);
     let mut final_output = [output("wait")];

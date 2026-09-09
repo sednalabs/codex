@@ -39,7 +39,7 @@ impl ExecutedToolCalls {
             !state
                 .retained_calls
                 .get(key)
-                .is_some_and(|retained| retained.sources_updated)
+                .is_some_and(|retained| retained.result_metadata_updated)
         });
         let mut pending_retry_outputs = retry_cache.keys().cloned().collect::<HashSet<_>>();
         let mut pending_retained_outputs =
@@ -128,7 +128,7 @@ impl ExecutedToolCalls {
                         cell_id: cell_id.clone(),
                         runtime_cell_id,
                         call_index_by_id,
-                        sources_updated: false,
+                        result_metadata_updated: false,
                     },
                 );
                 calls
@@ -189,11 +189,10 @@ impl ExecutedToolCalls {
                 {
                     let runtime_cell_id =
                         previous.and_then(|retained| retained.runtime_cell_id.clone());
-                    // Budget rewriting or duplicate outputs invalidate the original index slots.
+                    // Metadata-only shedding preserves slots; changed calls or duplicate outputs do not.
                     let call_index_by_id = previous
                         .filter(|retained| {
-                            unique_output
-                                && metadata.executed_tool_calls.as_ref() == Some(&retained.calls)
+                            unique_output && metadata.has_same_tool_calls(&retained.calls)
                         })
                         .map(|retained| retained.call_index_by_id.clone())
                         .unwrap_or_default();
@@ -205,8 +204,8 @@ impl ExecutedToolCalls {
                     }
                     retained.complete |= metadata.tool_calls_complete == Some(true);
                     retained.call_index_by_id = call_index_by_id;
-                    retained.sources_updated =
-                        previous.is_some_and(|retained| retained.sources_updated);
+                    retained.result_metadata_updated =
+                        previous.is_some_and(|retained| retained.result_metadata_updated);
                 }
             }
         }

@@ -243,8 +243,8 @@ impl ToolOutput for PostToolUseFeedbackOutput {
         self.original.code_mode_result(payload)
     }
 
-    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
-        self.original.tool_result_sources()
+    fn tool_result_metadata(&self) -> Option<&Value> {
+        self.original.tool_result_metadata()
     }
 }
 

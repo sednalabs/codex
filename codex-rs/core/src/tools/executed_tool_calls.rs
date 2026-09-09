@@ -60,7 +60,7 @@ struct RetainedToolCalls {
     runtime_cell_id: Option<CellId>,
     // Invocation IDs stay local and are retained only with their original output's calls.
     call_index_by_id: HashMap<String, usize>,
-    sources_updated: bool,
+    result_metadata_updated: bool,
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -147,9 +147,9 @@ impl ExecutedToolCalls {
         result: &dyn ToolOutput,
     ) {
         if self.state.is_some()
-            && let Some(sources) = result.tool_result_sources()
+            && let Some(metadata) = result.tool_result_metadata()
         {
-            self.record_tool_result_sources(source, call_id, sources);
+            self.record_tool_result_metadata(source, call_id, metadata);
         }
     }
 
@@ -282,15 +282,17 @@ impl ExecutedToolCalls {
         state.pending_nested_calls += 1;
     }
 
-    fn record_tool_result_sources(
+    fn record_tool_result_metadata(
         &self,
         source: &ToolCallSource,
         call_id: &str,
-        result_sources: codex_protocol::models::ToolResultSources,
+        metadata: &JsonValue,
     ) -> bool {
         let Some(state) = &self.state else {
             return false;
         };
+        let metadata = codex_protocol::models::ToolResultMetadata::new(metadata);
+        let has_metadata = metadata.is_some();
         let mut state = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -304,7 +306,8 @@ impl ExecutedToolCalls {
                 .and_then(|cell| cell.pending_calls.get_mut(call_id)),
         };
         if let Some(call) = call {
-            return call.set_tool_result_sources(result_sources);
+            call.set_tool_result_metadata(metadata);
+            return has_metadata;
         }
         let ToolCallSource::CodeMode { cell_id, .. } = source else {
             return false;
@@ -319,8 +322,9 @@ impl ExecutedToolCalls {
             return false;
         };
         // Older retry copies must not overwrite this output's accepted result metadata.
-        retained.sources_updated = true;
-        retained.calls[index].set_tool_result_sources(result_sources)
+        retained.result_metadata_updated = true;
+        retained.calls[index].set_tool_result_metadata(metadata);
+        has_metadata
     }
 
     pub(crate) fn register_cell(&self, cell_id: &CellId, output_call_id: &str) {

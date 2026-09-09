@@ -12,7 +12,11 @@ use codex_core::config::Constrained;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_core::context::NodeReplReviewEvidence;
 use codex_extension_api::ExtensionData;
+use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::McpServerContribution;
+use codex_extension_api::McpServerContributionContext;
+use codex_extension_api::McpServerContributor;
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolFinishInput;
@@ -22,6 +26,8 @@ use codex_extension_api::ToolStartInput;
 use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::codex_apps_mcp_server_config;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
@@ -111,7 +117,9 @@ use test_case::test_case;
 use tokio::sync::oneshot;
 use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::Request;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::body_partial_json;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -1332,6 +1340,422 @@ await new Promise(() => {});
         }
     }
 
+    Ok(())
+}
+
+const RESULT_METADATA_TOOL: &str = "message_search";
+const RESULT_METADATA_PRIVATE_RESULT: &str = "connector result text is not result metadata";
+
+struct ResultMetadataTestControl {
+    server: Mutex<McpServerContribution>,
+    gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+}
+
+impl McpServerContributor<Config> for ResultMetadataTestControl {
+    fn id(&self) -> &'static str {
+        "result_metadata_apps"
+    }
+
+    fn contribute<'a>(
+        &'a self,
+        _context: McpServerContributionContext<'a, Config>,
+    ) -> ExtensionFuture<'a, Vec<McpServerContribution>> {
+        let server = self.server.lock().unwrap().clone();
+        Box::pin(async move { vec![server] })
+    }
+}
+
+impl ToolLifecycleContributor for ResultMetadataTestControl {
+    fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            if !input.tool_name.name.ends_with(RESULT_METADATA_TOOL) {
+                return;
+            }
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((reached, release)) = gate {
+                reached.send(()).unwrap();
+                // Finish notification precedes accepted-result metadata capture.
+                release
+                    .await
+                    .expect("test should release the accepted result");
+            }
+        })
+    }
+}
+
+fn result_metadata_fixture_calls(input: &[Value]) -> impl Iterator<Item = &Value> {
+    input.iter().flat_map(|output| {
+        output
+            .pointer("/internal_chat_message_metadata_passthrough/executed_tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(move |_| output)
+    })
+}
+
+async fn mount_result_metadata_app(
+    server: &MockServer,
+    result_metadata: Option<Value>,
+    is_error: bool,
+) -> Result<AppsTestServer> {
+    let apps_server = AppsTestServer::mount(server).await?;
+    let mut tool_result = serde_json::json!({
+        "content": [{ "type": "text", "text": RESULT_METADATA_PRIVATE_RESULT }],
+        "isError": is_error,
+    });
+    if let Some(metadata) = result_metadata {
+        tool_result["_meta"] = metadata;
+    }
+    for (method_name, result) in [
+        (
+            "tools/list",
+            serde_json::json!({
+                "tools": [{
+                    "name": RESULT_METADATA_TOOL,
+                    "annotations": { "readOnlyHint": true },
+                    "inputSchema": { "type": "object" },
+                    "_meta": {
+                        "connector_id": "test_connector",
+                        "connector_name": "MessageSearch",
+                    },
+                }],
+                "nextCursor": null,
+            }),
+        ),
+        ("tools/call", tool_result),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/api/codex/ps/mcp"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": method_name }),
+            ))
+            .respond_with(move |request: &Request| {
+                let request: Value = serde_json::from_slice(&request.body).unwrap();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result,
+                }))
+            })
+            .with_priority(/*p*/ 1)
+            .mount(server)
+            .await;
+    }
+    Ok(apps_server)
+}
+
+fn result_metadata_apps_builder(base_url: String, account_email: &str) -> TestCodexBuilder {
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::json!({
+            "email": account_email,
+            "https://api.openai.com/auth": { "chatgpt_account_id": "account_id" },
+        })
+        .to_string(),
+    );
+    let auth = CodexAuth::from_external_chatgpt_tokens(
+        &format!("e30.{payload}.signature"),
+        "account_id",
+        /*chatgpt_plan_type*/ None,
+    )
+    .unwrap();
+    search_capable_apps_builder(base_url)
+        .with_auth(auth)
+        .with_config(|config| {
+            for feature in [
+                Feature::CodeMode,
+                Feature::CodeModeOnly,
+                Feature::ExecutedToolCallMetadata,
+            ] {
+                config.features.enable(feature).unwrap();
+            }
+        })
+}
+
+fn assert_result_metadata_call(
+    output: &Value,
+    arguments: &Value,
+    expected_metadata: Option<Value>,
+) {
+    let metadata = &output["internal_chat_message_metadata_passthrough"];
+    let call_name = metadata["executed_tool_calls"][0]["name"].as_str().unwrap();
+    assert!(call_name.ends_with(RESULT_METADATA_TOOL));
+    let mut expected_call = serde_json::json!({ "name": call_name, "arguments": arguments });
+    if let Some(result_metadata) = expected_metadata {
+        expected_call["tool_result_metadata"] = result_metadata;
+    }
+    assert_eq!(
+        metadata["executed_tool_calls"],
+        serde_json::json!([expected_call])
+    );
+    assert!(metadata.get("tool_result_metadata").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[test_case(true, true, true, false, "employee@openai.com"; "copies_full_metadata_without_rules")]
+#[test_case(true, true, true, true, "employee@openai.com"; "accepted_error_keeps_metadata")]
+#[test_case(true, true, false, false, "employee@openai.com"; "missing_metadata_stays_absent")]
+#[test_case(false, true, true, false, "employee@openai.com"; "feature_off_does_not_record")]
+#[test_case(true, false, true, false, "employee@openai.com"; "extension_owned_apps_do_not_record")]
+#[test_case(true, true, true, false, "employee@example.com"; "external_user_keeps_calls_without_metadata")]
+#[test_case(true, true, true, false, "employee@openai.com.attacker.invalid"; "lookalike_domain_does_not_record")]
+async fn code_mode_result_metadata_follows_call_binding(
+    metadata_enabled: bool,
+    host_owned: bool,
+    has_metadata: bool,
+    is_error: bool,
+    account_email: &str,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let result_metadata = has_metadata.then(|| {
+        serde_json::json!({
+            "openai/resource_access": {
+                "resource_coverage": "incomplete",
+                "coverage_reasons": ["tool_error"],
+            },
+            "provider_state": {
+                "items": [{ "id": "room-42", "labels": ["one", "two"] }],
+                "ready": true,
+                "count": 2,
+                "missing": null,
+            },
+        })
+    });
+    let apps_server = mount_result_metadata_app(&server, result_metadata.clone(), is_error).await?;
+    let mut builder =
+        result_metadata_apps_builder(apps_server.chatgpt_base_url.clone(), account_email)
+            .with_config(move |config| {
+                if !metadata_enabled {
+                    config
+                        .features
+                        .disable(Feature::ExecutedToolCallMetadata)
+                        .unwrap();
+                }
+            });
+    if !host_owned {
+        let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+        extensions.mcp_server_contributor(Arc::new(ResultMetadataTestControl {
+            server: Mutex::new(McpServerContribution::Set {
+                name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                config: Box::new(codex_apps_mcp_server_config(
+                    &apps_server.chatgpt_base_url,
+                    /*apps_mcp_product_sku*/ None,
+                    /*originator*/ None,
+                )),
+            }),
+            gate: Mutex::new(None),
+        }));
+        builder = builder.with_extensions(Arc::new(extensions.build()));
+    }
+    let arguments = serde_json::json!({ "search": "launch plan" });
+    let code = format!(
+        "const tool = ALL_TOOLS.find(({{ name }}) => name.endsWith(\"{RESULT_METADATA_TOOL}\")); \
+         const result = await tools[tool.name]({arguments}); \
+         text(JSON.stringify({{ isError: Boolean(result.isError), hasMeta: Object.hasOwn(result, \"_meta\") }}));"
+    );
+    let (test, follow_up) =
+        run_code_mode_turn_with_builder(&server, "Search a connected app", &code, builder).await?;
+    let request = follow_up.single_request();
+    assert_eq!(recorded_apps_tool_calls(&server).await.len(), 1);
+    assert!(
+        !request
+            .body_json()
+            .to_string()
+            .contains(RESULT_METADATA_PRIVATE_RESULT)
+    );
+    let (body, success) = custom_tool_output_body_and_success(&request, "call-1");
+    assert_ne!(success, Some(false), "Code Mode failed: {body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body)?,
+        serde_json::json!({ "isError": is_error, "hasMeta": false }),
+    );
+    assert_eq!(
+        result_metadata_fixture_calls(&request.input()).count(),
+        usize::from(metadata_enabled),
+    );
+    let output = request.custom_tool_call_output("call-1");
+    if metadata_enabled {
+        // The custom inference endpoint gets no raw metadata; inspect capture independently.
+        assert_result_metadata_call(&output, &arguments, /*expected_metadata*/ None);
+        let captured = codex_core::test_support::history_with_tool_call_metadata(&test.codex).await;
+        let captured = serde_json::to_value(captured)?;
+        let captured_output = captured
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == "call-1")
+            .expect("captured exec output");
+        // The public build never captures result metadata, even with employee test credentials.
+        let expected_metadata = None;
+        assert_result_metadata_call(captured_output, &arguments, expected_metadata);
+        assert_eq!(
+            output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+            true
+        );
+    } else {
+        assert!(
+            output["internal_chat_message_metadata_passthrough"]
+                .get("tool_calls_complete")
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_result_metadata_keeps_prepared_call_binding_across_runtime_refresh() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let original_metadata =
+        serde_json::json!({ "provider": { "origin": "original", "items": [] } });
+    let apps_server = mount_result_metadata_app(
+        &server,
+        Some(original_metadata.clone()),
+        /*is_error*/ false,
+    )
+    .await?;
+    let refreshed_server = responses::start_mock_server().await;
+    let refreshed_apps = mount_result_metadata_app(
+        &refreshed_server,
+        Some(serde_json::json!({ "provider": { "origin": "refreshed" } })),
+        /*is_error*/ false,
+    )
+    .await?;
+    let (reached_tx, reached_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let control = Arc::new(ResultMetadataTestControl {
+        server: Mutex::new(McpServerContribution::HostedApps {
+            config: Box::new(codex_apps_mcp_server_config(
+                &apps_server.chatgpt_base_url,
+                /*apps_mcp_product_sku*/ None,
+                /*originator*/ None,
+            )),
+        }),
+        gate: Mutex::new(Some((reached_tx, release_rx))),
+    });
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.mcp_server_contributor(control.clone());
+    extensions.tool_lifecycle_contributor(control.clone());
+    let builder = result_metadata_apps_builder(apps_server.chatgpt_base_url, "employee@openai.com")
+        .with_extensions(Arc::new(extensions.build()));
+    let arguments = serde_json::json!({
+        "query": "launch plan",
+        "response_format": "detailed",
+        "content_types": "messages",
+    });
+    let code = format!(
+        "const tool = ALL_TOOLS.find(({{ name }}) => name.endsWith(\"{RESULT_METADATA_TOOL}\")); \
+         const pending = tools[tool.name]({arguments}); yield_control(); await pending; \
+         await tools[tool.name]({arguments}); text(\"done\");"
+    );
+    let (test, follow_up) =
+        run_code_mode_turn_with_builder(&server, "Search a connected app", &code, builder).await?;
+    let first_items = custom_tool_output_items(&follow_up.single_request(), "call-1");
+    assert!(
+        text_item(&first_items, /*index*/ 0).starts_with("Script running with cell ID "),
+        "expected the held call to yield: {first_items:?}",
+    );
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+    tokio::time::timeout(Duration::from_secs(10), reached_rx).await??;
+
+    // Yield may precede call admission. Drain inventory after the lifecycle gate is reached;
+    // the short wait is only a poll budget while the gate keeps acceptance blocked.
+    let held_wait = responses::mount_function_call_agent_response(
+        &server,
+        "call-2",
+        &serde_json::to_string(&serde_json::json!({
+            "cell_id": cell_id,
+            "yield_time_ms": 1,
+        }))?,
+        "wait",
+    )
+    .await;
+    test.submit_turn("Read the pending call inventory").await?;
+    let held_request = held_wait.completion.single_request();
+    let held_items = function_tool_output_items(&held_request, "call-2");
+    assert_eq!(
+        extract_running_cell_id(text_item(&held_items, /*index*/ 0)),
+        cell_id
+    );
+    let held_input = held_request.input();
+    let emitted_calls = result_metadata_fixture_calls(&held_input).collect::<Vec<_>>();
+    assert_eq!(
+        emitted_calls.len(),
+        1,
+        "held wait must not duplicate inventory"
+    );
+    let original_output = emitted_calls[0];
+    assert_result_metadata_call(original_output, &arguments, /*expected_metadata*/ None);
+    assert_ne!(
+        original_output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+        true
+    );
+    // The next call uses an extension-owned binding, but the held call keeps its host proof.
+    *control.server.lock().unwrap() = McpServerContribution::Set {
+        name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        config: Box::new(codex_apps_mcp_server_config(
+            &refreshed_apps.chatgpt_base_url,
+            /*apps_mcp_product_sku*/ None,
+            /*originator*/ None,
+        )),
+    };
+    test.codex.refresh_runtime_config(test.config.clone()).await;
+    release_tx.send(()).unwrap();
+    let wait = responses::mount_function_call_agent_response(
+        &server,
+        "call-3",
+        &serde_json::to_string(&serde_json::json!({
+            "cell_id": cell_id,
+            "yield_time_ms": 10_000,
+        }))?,
+        "wait",
+    )
+    .await;
+    test.submit_turn("Wait for the accepted app result").await?;
+    let request = wait.completion.single_request();
+    assert_eq!(recorded_apps_tool_calls(&server).await.len(), 1);
+    assert_eq!(recorded_apps_tool_calls(&refreshed_server).await.len(), 1);
+    assert!(
+        !request
+            .body_json()
+            .to_string()
+            .contains(RESULT_METADATA_PRIVATE_RESULT)
+    );
+    let input = request.input();
+    assert_eq!(
+        result_metadata_fixture_calls(&input).count(),
+        2,
+        "late results must not duplicate the call"
+    );
+    let captured = codex_core::test_support::history_with_tool_call_metadata(&test.codex).await;
+    let captured = serde_json::to_value(captured)?;
+    // A's accepted result must update the output that first reported it, not the final wait.
+    let expected_metadata = None;
+    for (call_id, call_type, expected_metadata) in [
+        (
+            original_output["call_id"].as_str().unwrap(),
+            original_output["type"].as_str().unwrap(),
+            expected_metadata,
+        ),
+        ("call-3", "function_call_output", None),
+    ] {
+        let output = request.call_output(call_id, call_type);
+        assert_result_metadata_call(&output, &arguments, /*expected_metadata*/ None);
+        let captured_output = captured
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == call_type && item["call_id"] == call_id)
+            .expect("captured tool output");
+        assert_result_metadata_call(captured_output, &arguments, expected_metadata);
+    }
+    let terminal_output = request.function_call_output("call-3");
+    assert_eq!(
+        terminal_output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+        true
+    );
     Ok(())
 }
 
