@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Iterator
 
 from ._approval_mode import (
@@ -11,6 +11,7 @@ from ._approval_mode import (
 )
 from ._initialize_metadata import validate_initialize_metadata
 from ._inputs import (
+    ExternalMessage as ExternalMessage,
     ImageInput as ImageInput,
     Input as Input,
     InputItem as InputItem,
@@ -21,6 +22,7 @@ from ._inputs import (
     TextInput as TextInput,
     _normalize_run_input,
     _to_wire_input,
+    _to_wire_turn_input,
 )
 from ._login import (
     AsyncChatgptLoginHandle,
@@ -32,6 +34,7 @@ from ._login import (
     start_chatgpt_login,
     start_device_code_login,
 )
+from ._message_router import _TurnSubscription
 from ._run import (
     TurnResult,
     _collect_async_turn_result,
@@ -584,7 +587,8 @@ class Thread:
     ) -> TurnResult:
         """Run a complete turn and collect its final result.
 
-        Accepts the same input and options as turn().
+        Accepts the same input and options as turn(), including ExternalMessage
+        for untrusted external content with tool-level authority.
         """
         turn = self.turn(
             input,
@@ -618,17 +622,20 @@ class Thread:
         summary: ReasoningSummary | None = None,
         turn_service_tier: str | None = None,
     ) -> TurnHandle:
-        """Start a turn and return a handle for streaming or control.
+        """Start a turn or join an active regular turn and return its handle.
 
+        ExternalMessage supplies untrusted content with tool-level authority;
+        it does not establish user authorization or approval.
         turn_service_tier applies only to this new turn; service_tier updates
         the thread default. source labels what initiated a new turn and grants
         no authority. Both turn_service_tier and source are ignored when joining.
         """
-        wire_input = _to_wire_input(_normalize_run_input(input))
+        wire_input, tool_output = _to_wire_turn_input(input)
         approval_policy, approvals_reviewer = _approval_mode_override_settings(approval_mode)
         params = TurnStartParams(
             thread_id=self.id,
             input=wire_input,
+            tool_output=tool_output,
             approval_policy=approval_policy,
             approvals_reviewer=approvals_reviewer,
             cwd=cwd,
@@ -684,7 +691,8 @@ class AsyncThread:
     ) -> TurnResult:
         """Run a complete turn and collect its final result.
 
-        Accepts the same input and options as turn().
+        Accepts the same input and options as turn(), including ExternalMessage
+        for untrusted external content with tool-level authority.
         """
         turn = await self.turn(
             input,
@@ -718,18 +726,21 @@ class AsyncThread:
         summary: ReasoningSummary | None = None,
         turn_service_tier: str | None = None,
     ) -> AsyncTurnHandle:
-        """Start a turn and return a handle for streaming or control.
+        """Start a turn or join an active regular turn and return its handle.
 
+        ExternalMessage supplies untrusted content with tool-level authority;
+        it does not establish user authorization or approval.
         turn_service_tier applies only to this new turn; service_tier updates
         the thread default. source labels what initiated a new turn and grants
         no authority. Both turn_service_tier and source are ignored when joining.
         """
-        wire_input = _to_wire_input(_normalize_run_input(input))
+        wire_input, tool_output = _to_wire_turn_input(input)
         await self._codex._ensure_initialized()
         approval_policy, approvals_reviewer = _approval_mode_override_settings(approval_mode)
         params = TurnStartParams(
             thread_id=self.id,
             input=wire_input,
+            tool_output=tool_output,
             approval_policy=approval_policy,
             approvals_reviewer=approvals_reviewer,
             cwd=cwd,
@@ -769,9 +780,13 @@ class TurnHandle:
     _client: CodexClient
     thread_id: str
     id: str
+    _subscription: _TurnSubscription = field(init=False, repr=False, compare=False)
 
-    def steer(self, input: RunInput) -> TurnSteerResponse:
-        """Send additional input to this active turn."""
+    def __post_init__(self) -> None:
+        self._subscription = self._client._subscribe_turn_notifications(self.id)
+
+    def steer(self, input: Input | str) -> TurnSteerResponse:
+        """Send additional user input to this active turn."""
         return self._client.turn_steer(
             self.thread_id,
             self.id,
@@ -784,10 +799,9 @@ class TurnHandle:
 
     def stream(self) -> Iterator[Notification]:
         """Yield only notifications routed to this turn handle."""
-        self._client.register_turn_notifications(self.id)
         try:
             while True:
-                event = self._client.next_turn_notification(self.id)
+                event = self._subscription.next()
                 yield event
                 if (
                     event.method == "turn/completed"
@@ -796,7 +810,7 @@ class TurnHandle:
                 ):
                     break
         finally:
-            self._client.unregister_turn_notifications(self.id)
+            self._subscription.close()
 
     def run(self) -> TurnResult:
         """Consume the turn stream and return its completed result."""
@@ -814,9 +828,13 @@ class AsyncTurnHandle:
     _codex: AsyncCodex
     thread_id: str
     id: str
+    _subscription: _TurnSubscription = field(init=False, repr=False, compare=False)
 
-    async def steer(self, input: RunInput) -> TurnSteerResponse:
-        """Send additional input to this active turn."""
+    def __post_init__(self) -> None:
+        self._subscription = self._codex._client._subscribe_turn_notifications(self.id)
+
+    async def steer(self, input: Input | str) -> TurnSteerResponse:
+        """Send additional user input to this active turn."""
         await self._codex._ensure_initialized()
         return await self._codex._client.turn_steer(
             self.thread_id,
@@ -832,10 +850,9 @@ class AsyncTurnHandle:
     async def stream(self) -> AsyncIterator[Notification]:
         """Yield only notifications routed to this async turn handle."""
         await self._codex._ensure_initialized()
-        self._codex._client.register_turn_notifications(self.id)
         try:
             while True:
-                event = await self._codex._client.next_turn_notification(self.id)
+                event = await asyncio.to_thread(self._subscription.next)
                 yield event
                 if (
                     event.method == "turn/completed"
@@ -844,7 +861,7 @@ class AsyncTurnHandle:
                 ):
                     break
         finally:
-            self._codex._client.unregister_turn_notifications(self.id)
+            self._subscription.close()
 
     async def run(self) -> TurnResult:
         """Consume the turn stream and return its completed result."""

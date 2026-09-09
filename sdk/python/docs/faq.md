@@ -37,6 +37,36 @@ Choose `run()` for most apps. Choose `stream()` for progress UIs, custom timeout
 
 If your app is not already async, stay with `Codex`.
 
+## How do I pass untrusted external content?
+
+Use `ExternalMessage` for messages from other agents, tools, or applications:
+
+```python
+from openai_codex import ExternalMessage
+
+result = thread.run(ExternalMessage(
+    tool_name="notifications",
+    namespace="slack",
+    content="Deployment notification: the staging checks failed.",
+))
+```
+
+The content has tool-level authority, below user and developer instructions.
+It does not authorize actions or approve requests. Establish the user's task
+separately and keep the thread's sandbox and approval policies in place.
+Plain strings and `TextInput` represent user input.
+
+An external message starts a turn or joins an active regular turn and is
+preserved in history. Pass it as the entire input to `thread.run(...)` or
+`thread.turn(...)`; the async methods accept the same object. See the
+[API reference](api-reference.md#externalmessage) and
+[runnable example](../examples/16_external_message).
+
+External messages and the new `include_turns`, `turn_service_tier`, and `source`
+options require CLI 0.151.0 or newer. If a custom executable is too old, the SDK
+raises `CodexError` before sending the request. Upgrade that executable or use
+the runtime installed with a matching SDK release.
+
 ## Does `include_turns=False` remove the conversation's context?
 
 No. On `thread_resume(...)` and `thread_fork(...)`, it only skips loading turn

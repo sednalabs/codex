@@ -70,6 +70,11 @@ with Codex() as codex:
 Use `Thread.turn(...)` when you need a `TurnHandle` for streaming, steering,
 or interrupting an active turn.
 
+For **untrusted content** from another agent, tool, or application, pass an
+[`ExternalMessage`](api-reference.md#externalmessage). It retains tool-level
+authority and does not establish user authorization or approval. Plain strings
+and `TextInput` represent user input.
+
 ## 4. Choose Sandbox Access
 
 Use one enum for the initial thread and later turn overrides:

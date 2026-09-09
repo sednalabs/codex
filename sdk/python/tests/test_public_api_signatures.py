@@ -14,6 +14,7 @@ from openai_codex import (
     AsyncTurnHandle,
     Codex,
     CodexConfig,
+    ExternalMessage,
     Sandbox,
     Thread,
     TurnHandle,
@@ -46,6 +47,7 @@ EXPECTED_ROOT_EXPORTS = [
     "Input",
     "InputItem",
     "RunInput",
+    "ExternalMessage",
     "TextInput",
     "ImageInput",
     "LocalImageInput",
@@ -187,7 +189,7 @@ def test_turn_input_methods_accept_string_shortcut() -> None:
     assert {
         fn: inspect.signature(fn).parameters["input"].annotation
         for fn in (TurnHandle.steer, AsyncTurnHandle.steer)
-    } == dict.fromkeys((TurnHandle.steer, AsyncTurnHandle.steer), "RunInput")
+    } == dict.fromkeys((TurnHandle.steer, AsyncTurnHandle.steer), "Input | str")
 
 
 def test_root_exports_approval_mode() -> None:
@@ -228,6 +230,7 @@ def test_curated_public_api_has_builtin_help_documentation() -> None:
         "TurnHandle": TurnHandle,
         "AsyncTurnHandle": AsyncTurnHandle,
         "TurnResult": TurnResult,
+        "ExternalMessage": ExternalMessage,
         "Sandbox": Sandbox,
         "thread_start": Codex.thread_start,
         "thread_resume": Codex.thread_resume,

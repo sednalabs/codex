@@ -84,6 +84,7 @@ def _initialized_client(
 @pytest.mark.parametrize(
     ("method", "params"),
     [
+        ("turn/start", {"input": [], "toolOutput": {"name": "delegate", "output": "Investigate"}}),
         ("turn/start", {"input": [], "turnTrigger": "automation"}),
         ("turn/start", {"input": [], "serviceTierForTurn": "default"}),
         ("thread/resume", {"threadId": "thread-1", "excludeTurns": False}),
@@ -117,7 +118,7 @@ def test_new_options_accept_supported_runtime_metadata(
     monkeypatch: pytest.MonkeyPatch, metadata: JsonObject
 ) -> None:
     client, requests = _initialized_client(monkeypatch, metadata)
-    params = {"input": [], "turnTrigger": "automation"}
+    params = {"input": [], "toolOutput": {"name": "delegate", "output": "Investigate"}}
 
     client.request("turn/start", params, response_model=InitializeResponse)
 
@@ -665,7 +666,7 @@ def test_turn_notification_router_clears_unregistered_turn_when_completed() -> N
         )
     )
 
-    assert client._router._pending_turn_notifications == {}
+    assert client._router._turn_states == {}
 
 
 def test_turn_notification_router_routes_unknown_turn_notifications() -> None:

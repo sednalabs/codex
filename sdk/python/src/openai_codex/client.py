@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from ._goal import _GoalOperationState
 from ._initialize_metadata import _split_user_agent
-from ._message_router import MessageRouter
+from ._message_router import MessageRouter, _TurnSubscription
 from ._runtime_requirements import CheckoutCapabilities, require_runtime_version
 from ._version import __version__ as SDK_VERSION
 from .errors import CodexError, InvalidRequestError, TransportClosedError
@@ -332,7 +332,7 @@ class CodexClient:
         response_model: type[ModelT],
     ) -> ModelT:
         runtime_fields = {
-            "turn/start": ("turnTrigger", "serviceTierForTurn"),
+            "turn/start": ("toolOutput", "turnTrigger", "serviceTierForTurn"),
             "thread/resume": ("excludeTurns",),
             "thread/fork": ("excludeTurns",),
         }
@@ -406,6 +406,9 @@ class CodexClient:
     def next_login_notification(self, login_id: str) -> Notification:
         """Return the next routed notification for the requested login id."""
         return self._router.next_login_notification(login_id)
+
+    def _subscribe_turn_notifications(self, turn_id: str) -> _TurnSubscription:
+        return self._router.subscribe_turn(turn_id)
 
     def register_turn_notifications(self, turn_id: str) -> None:
         """Start routing notifications for one turn into its dedicated queue."""
@@ -662,9 +665,10 @@ class CodexClient:
                 "threadId": thread_id,
                 "input": self._normalize_input_items(input_items),
             }
-            started = self.request("turn/start", payload, response_model=TurnStartResponse)
-            self.register_turn_notifications(started.turn.id)
-            return started
+            with self._router.pending_turn(thread_id):
+                started = self.request("turn/start", payload, response_model=TurnStartResponse)
+                self._router.prepare_turn(started.turn.id, thread_id)
+                return started
 
     @contextmanager
     def _thread_start_lock(self, thread_id: str) -> Iterator[None]:
