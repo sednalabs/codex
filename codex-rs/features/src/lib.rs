@@ -346,7 +346,7 @@ pub enum Feature {
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
-    /// Enable remote compaction v2 over the normal Responses API.
+    /// Removed compatibility key, still advertised to the Responses API.
     RemoteCompactionV2,
     /// Include retained images in the remote compaction context budget.
     CompactionImageBudget,

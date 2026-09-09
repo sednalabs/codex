@@ -285,7 +285,6 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         .enable_feature(Feature::GuardianApproval)
         .enable_feature(Feature::GuardianReuseParentCompaction)
         .disable_feature(Feature::EnableRequestCompression)
-        .enable_feature(Feature::RemoteCompactionV2)
         .disable_feature(Feature::TokenBudget)
         .with_extra_config(&format!(
             "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\"\n\n[features.guardianv2]\nenabled = true\nthread_context = {thread_context_enabled}\npersist_scores = true\nreuse_parent_compaction = {reuse_parent_compaction}\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"

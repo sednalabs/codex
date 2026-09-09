@@ -637,9 +637,6 @@ async fn response_item_ids_are_sent_for_all_remote_v2_compaction_requests() -> a
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(|config| {
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
-        })
         .build(&server)
         .await?;
 

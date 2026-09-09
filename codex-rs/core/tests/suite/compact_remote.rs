@@ -188,7 +188,6 @@ fn amazon_bedrock_test_codex() -> TestCodexBuilder {
         .with_auth(auth)
         .with_model(AMAZON_BEDROCK_GPT_5_5_MODEL_ID)
         .with_config(|config| {
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
             config.model_provider = ModelProviderInfo {
                 base_url: config.model_provider.base_url.clone(),
                 ..ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None)
@@ -353,10 +352,6 @@ async fn remote_compact_v2_retains_only_client_developer_messages_when_enabled(
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(move |config| {
-                config
-                    .features
-                    .enable(Feature::RemoteCompactionV2)
-                    .expect("remote compaction v2 should be configurable");
                 if enabled {
                     config
                         .features
@@ -441,14 +436,7 @@ async fn remote_compact_v2_records_usage_before_output_validation() -> Result<()
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_auto_env_builder(
-        test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(|config| {
-                config
-                    .features
-                    .enable(Feature::RemoteCompactionV2)
-                    .expect("remote compaction v2 should be configurable");
-            }),
+        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
     let codex = &harness.test().codex;
@@ -588,7 +576,6 @@ async fn remote_compact_v2_charges_retained_images_to_token_budget(
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(move |config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
                 let _ = config.features.enable(Feature::UnifiedImageBudget);
                 if let Some(enabled) = image_budget_enabled {
                     let _ = config
@@ -724,11 +711,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
-        test_codex()
-            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-            .with_config(|config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
-            }),
+        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
     let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=";
@@ -1082,7 +1065,6 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
             .with_history_mode(ThreadHistoryMode::Paginated)
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
                 config.model_provider.request_max_retries = Some(0);
                 config.model_provider.stream_max_retries = Some(2);
             }),
@@ -1418,7 +1400,6 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_http() -> Result<()> {
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
-                let _ = config.features.enable(Feature::RemoteCompactionV2);
                 config.model_auto_compact_token_limit = Some(200);
             }),
     )
@@ -1547,7 +1528,6 @@ async fn remote_mid_turn_compact_v2_sends_turn_state_over_websocket() -> Result<
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
             config.model_auto_compact_token_limit = Some(200);
         });
     let test = builder.build_with_websocket_server(&server).await?;

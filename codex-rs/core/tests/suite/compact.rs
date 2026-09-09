@@ -2892,7 +2892,6 @@ async fn pre_sampling_compact_falls_back_after_previous_model_invalid_request_on
             config.model_provider = model_provider;
             config.tool_registry.turn_metadata_includes_tool_info = true;
             set_test_compact_prompt(config);
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
         });
     let test = builder.build(&server).await.expect("build test codex");
 
@@ -5312,10 +5311,7 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     )?;
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
-        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(|config| {
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
-        });
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let test = builder.build(&server).await?;
 
     // Materialize the old snapshot, rewrite the selected file in place, and compact remotely.
@@ -5375,10 +5371,7 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     let mut resume_builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(move |config| {
-            config.cwd = resumed_cwd;
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
-        });
+        .with_config(move |config| config.cwd = resumed_cwd);
     let resumed = resume_builder
         .resume(&server, Arc::clone(&home), rollout_path)
         .await?;

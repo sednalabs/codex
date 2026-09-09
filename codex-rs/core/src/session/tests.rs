@@ -11304,7 +11304,6 @@ async fn make_remote_compaction_session(
         move |config| {
             config.model = Some("gpt-5.2".to_string());
             config.model_provider = provider;
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
             let _ = config.features.disable(Feature::TokenBudget);
         },
     )

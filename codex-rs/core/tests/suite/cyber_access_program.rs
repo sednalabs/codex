@@ -217,10 +217,7 @@ async fn cyber_access_program_survives_mid_turn_remote_compaction_v2() -> Result
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(|config| {
-            let _ = config.features.disable(Feature::RemoteCompactionV2);
-            config.model_auto_compact_token_limit = Some(200);
-        })
+        .with_config(|config| config.model_auto_compact_token_limit = Some(200))
         .build_with_auto_env(&server)
         .await?;
 

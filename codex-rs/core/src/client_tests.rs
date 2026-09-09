@@ -1,5 +1,4 @@
 use super::AuthRequestTelemetryContext;
-use super::CompactConversationRequestSettings;
 use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
@@ -22,8 +21,6 @@ use codex_api::ResponsesEndpoint;
 use codex_api::TransportError;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_login::AuthCredentialsStoreMode;
-use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -55,7 +52,6 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::ExecutionStatus;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
@@ -87,13 +83,7 @@ use tracing_subscriber::layer::Context as LayerContext;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
-use wiremock::Mock;
-use wiremock::MockServer;
-use wiremock::ResponseTemplate;
-use wiremock::matchers::method;
-use wiremock::matchers::path;
 
-const TEST_CHATGPT_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
@@ -121,118 +111,6 @@ fn test_model_client_with_thread_id(
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     )
-}
-
-#[tokio::test]
-async fn compact_uses_bearer_after_agent_identity_session_fallback() -> anyhow::Result<()> {
-    let server = MockServer::start().await;
-    let registration_count = Arc::new(AtomicUsize::new(0));
-    let response_count = Arc::clone(&registration_count);
-    Mock::given(method("POST"))
-        .and(path("/v1/agent/register"))
-        .respond_with(move |_request: &wiremock::Request| {
-            response_count.fetch_add(1, Ordering::SeqCst);
-            ResponseTemplate::new(/*status*/ 503)
-        })
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/compact"))
-        .respond_with(ResponseTemplate::new(/*status*/ 200).set_body_json(json!({
-            "output": []
-        })))
-        .expect(/*requests*/ 1)
-        .mount(&server)
-        .await;
-
-    let codex_home = TempDir::new()?;
-    let auth_manager = chatgpt_auth_manager(&codex_home, server.uri()).await;
-    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider.base_url = Some(format!("{}/v1", server.uri()));
-    provider.supports_websockets = false;
-    let thread_id = ThreadId::new();
-    let client = ModelClient::new(
-        Some(auth_manager),
-        AgentIdentityAuthPolicy::ChatGptAuth,
-        thread_id,
-        provider,
-        SessionSource::Cli,
-        "test_originator".to_string(),
-        /*model_verbosity*/ None,
-        /*content_item_kinds_enabled*/ true,
-        /*enable_request_compression*/ false,
-        /*include_timing_metrics*/ false,
-        /*beta_features_header*/ None,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        /*attestation_provider*/ None,
-        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-    );
-    let prompt = Prompt {
-        input: vec![ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "please compact".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        }],
-        base_instructions: BaseInstructions {
-            text: "base instructions".to_string(),
-            provenance: None,
-        },
-        ..Default::default()
-    };
-    let responses_metadata = test_responses_metadata_for_client(
-        &client,
-        /*turn_id*/ None,
-        format!("{}:0", client.state.thread_id),
-        /*parent_thread_id*/ None,
-        TestCodexResponsesRequestKind::Turn,
-    );
-
-    let output = client
-        .compact_conversation_history(
-            &prompt,
-            &test_model_info(),
-            /*turn_state*/ None,
-            CompactConversationRequestSettings {
-                effort: None,
-                summary: codex_protocol::config_types::ReasoningSummary::None,
-                service_tier: None,
-            },
-            &test_session_telemetry(),
-            &CompactionTraceContext::disabled(),
-            &responses_metadata,
-        )
-        .await?;
-
-    assert!(output.is_empty());
-    assert_eq!(registration_count.load(Ordering::SeqCst), 3);
-    let requests = server
-        .received_requests()
-        .await
-        .expect("server should record requests");
-    let compact_request = requests
-        .iter()
-        .find(|request| request.url.path() == "/v1/responses/compact")
-        .expect("compact request should be captured");
-    assert_eq!(
-        compact_request
-            .headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("Bearer test-access-token")
-    );
-    assert_eq!(
-        compact_request
-            .headers
-            .get("ChatGPT-Account-ID")
-            .and_then(|value| value.to_str().ok()),
-        Some("account-123")
-    );
-
-    Ok(())
 }
 
 fn test_model_provider() -> SharedModelProvider {
@@ -498,45 +376,6 @@ fn reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior() {
             ReasoningEffort::Custom("disabled".to_string()),
         )
     );
-}
-
-fn write_chatgpt_auth_json(codex_home: &std::path::Path) {
-    let auth_json = json!({
-        "tokens": {
-            "id_token": TEST_CHATGPT_ID_TOKEN,
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token",
-            "account_id": "account-123"
-        },
-        "last_refresh": "2099-01-01T00:00:00Z"
-    });
-    std::fs::write(
-        codex_home.join("auth.json"),
-        serde_json::to_string_pretty(&auth_json).expect("serialize auth.json"),
-    )
-    .expect("write auth.json");
-}
-
-async fn chatgpt_auth_manager(
-    codex_home: &TempDir,
-    agent_identity_authapi_base_url: String,
-) -> Arc<AuthManager> {
-    write_chatgpt_auth_json(codex_home.path());
-    let auth_manager = AuthManager::shared(
-        codex_home.path().to_path_buf(),
-        /*enable_codex_api_key_env*/ false,
-        AuthCredentialsStoreMode::File,
-        /*forced_chatgpt_workspace_id*/ None,
-        /*chatgpt_base_url*/ None,
-        AuthKeyringBackendKind::default(),
-        codex_login::test_support::transport_default_auth_route_config(),
-    )
-    .await;
-    let auth = auth_manager.auth().await.expect("auth should load");
-    AuthManager::from_auth_for_testing_with_agent_identity_authapi_base_url(
-        auth,
-        agent_identity_authapi_base_url,
-    )
 }
 
 #[derive(Default)]
