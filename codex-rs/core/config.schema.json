@@ -1193,6 +1193,62 @@
       },
       "type": "object"
     },
+    "CredentialAuthMethod": {
+      "description": "Authentication formats supported by declarative credential providers.",
+      "enum": [
+        "bearer",
+        "token",
+        "basic",
+        "header"
+      ],
+      "type": "string"
+    },
+    "CredentialProviderConfig": {
+      "additionalProperties": false,
+      "description": "Declarative description of an environment-backed credential family.",
+      "properties": {
+        "auth": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/CredentialAuthMethod"
+          },
+          "type": "array"
+        },
+        "env": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "header": {
+          "type": "string"
+        },
+        "patterns": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prefix": {
+          "type": "string"
+        },
+        "url_prefix_from_env": {
+          "description": "Environment variable containing an additional URL prefix or hostname.",
+          "type": "string"
+        },
+        "url_prefixes": {
+          "default": [],
+          "description": "URL prefixes authorized for injection. Bare loopback hosts imply HTTP; other bare hosts imply HTTPS.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "CurrentTimeReminderConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -2588,6 +2644,12 @@
         },
         "credential_broker": {
           "type": "boolean"
+        },
+        "credentials": {
+          "additionalProperties": {
+            "$ref": "#/definitions/CredentialProviderConfig"
+          },
+          "type": "object"
         },
         "dangerously_allow_all_unix_sockets": {
           "type": "boolean"

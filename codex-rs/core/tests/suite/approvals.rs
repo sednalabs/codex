@@ -2807,6 +2807,7 @@ async fn spawned_subagent_execpolicy_amendment_propagates_to_parent_session() ->
 #[test_case("direct", true, true; "login_startup")]
 #[test_case("filtered_startup", false, false; "filtered_global_startup")]
 #[test_case("startup_override", false, false; "global_startup_overrides")]
+#[test_case("additional_permissions", false, false; "filtered_host_additional_permissions")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_startup_credentials_are_brokered(
     shell_mode: &'static str,
@@ -2818,8 +2819,16 @@ async fn shell_startup_credentials_are_brokered(
     const GH_HOST: &str = "github.example.com";
     const REAL_GITHUB_TOKEN: &str =
         "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const CUSTOM_HOST: &str = "api.custom.example";
+    const REAL_CUSTOM_TOKEN: &str = "custom_abcdefghijklmnopqrstuvwx";
+    let request_extra_permissions = shell_mode == "additional_permissions";
+    let approval_policy = if request_extra_permissions {
+        AskForApproval::OnRequest
+    } else {
+        AskForApproval::Never
+    };
     let global_startup = matches!(shell_mode, "filtered_startup" | "startup_override");
-    let direct = shell_mode == "direct" || global_startup;
+    let direct = shell_mode == "direct" || global_startup || request_extra_permissions;
 
     let builder = if shell_mode == "zsh_fork" {
         let Some(runtime) = zsh_fork_runtime("zsh-fork credential broker environment test")? else {
@@ -2830,10 +2839,12 @@ async fn shell_startup_credentials_are_brokered(
         let Some(zsh) = codex_core::shell::get_shell(codex_core::shell::ShellType::Zsh) else {
             return Ok(());
         };
-        test_codex().with_user_shell(zsh).with_config(|config| {
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config.features.enable(Feature::ShellTool).unwrap();
-        })
+        test_codex()
+            .with_user_shell(zsh)
+            .with_config(move |config| {
+                config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+                config.features.enable(Feature::ShellTool).unwrap();
+            })
     };
 
     let outside_dir = tempfile::tempdir_in(std::env::current_dir()?)?;
@@ -2848,8 +2859,10 @@ async fn shell_startup_credentials_are_brokered(
         format!(
             "export GH_HOST='{GH_HOST}'\n\
              if [[ ! -o login ]]; then export GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'; fi\n\
-             export AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\n\
+             export CUSTOM_API_KEY='{REAL_CUSTOM_TOKEN}'\n\
+             export CUSTOM_HOST='{CUSTOM_HOST}'\n\
              export APP_SETTING EXCLUDED_SETTING\n\
+             export AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\n\
              export BROKERED_STARTUP_CWD=\"$PWD\"\n\
              if {untrusted_snapshot_condition}; then\n\
                  print -r -- escaped > {outside_path_arg} 2>/dev/null || true\n\
@@ -2882,7 +2895,7 @@ async fn shell_startup_credentials_are_brokered(
         fs::write(
             &path,
             format!(
-                "#!/bin/sh\nexport GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'\nexport AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\nexec {} \"$@\"\n",
+                "#!/bin/sh\nexport GH_ENTERPRISE_TOKEN='{REAL_GITHUB_TOKEN}'\nexport CUSTOM_API_KEY='{REAL_CUSTOM_TOKEN}'\nexport AUTH_HEADER=\"Bearer $GH_ENTERPRISE_TOKEN\"\nexec {} \"$@\"\n",
                 shlex::try_quote(&zsh_path)?
             ),
         )?;
@@ -2895,8 +2908,16 @@ async fn shell_startup_credentials_are_brokered(
         home.path().join("config.toml"),
         format!(
             r#"default_permissions = "brokered"
-features = {{ network_proxy = {{ enabled = true, credential_broker = true }} }}
 permissions = {{ brokered = {{ extends = ":workspace", network = {{ enabled = true, allow_local_binding = true }} }} }}
+
+[features.network_proxy]
+enabled = true
+credential_broker = true
+
+[features.network_proxy.credentials.custom]
+env = ["CUSTOM_API_KEY"]
+patterns = ["custom_[a-z]{{24}}"]
+url_prefix_from_env = "CUSTOM_HOST"
 
 [shell_environment_policy.set]
 ZDOTDIR = "{}"
@@ -2918,13 +2939,27 @@ ZDOTDIR = "{}"
         config.permissions.shell_environment_policy.exclude.push(
             EnvironmentVariablePattern::new_case_insensitive("EXCLUDED_SETTING"),
         );
-        if shell_mode == "filtered_startup" {
+        if request_extra_permissions {
+            config
+                .features
+                .enable(Feature::ExecPermissionApprovals)
+                .unwrap();
+            config
+                .features
+                .enable(Feature::RequestPermissionsTool)
+                .unwrap();
             config.permissions.shell_environment_policy.exclude.push(
-                EnvironmentVariablePattern::new_case_insensitive("GH_ENTERPRISE_TOKEN"),
+                EnvironmentVariablePattern::new_case_insensitive("CUSTOM_HOST"),
             );
+        } else if shell_mode == "filtered_startup" {
+            config.permissions.shell_environment_policy.exclude.extend([
+                EnvironmentVariablePattern::new_case_insensitive("GH_ENTERPRISE_TOKEN"),
+                EnvironmentVariablePattern::new_case_insensitive("CUSTOM_API_KEY"),
+            ]);
         } else if shell_mode == "startup_override" {
             config.permissions.shell_environment_policy.r#set.extend([
                 ("GH_ENTERPRISE_TOKEN".to_string(), String::new()),
+                ("CUSTOM_API_KEY".to_string(), String::new()),
                 ("AUTH_HEADER".to_string(), "enterprise-header".to_string()),
             ]);
         }
@@ -2950,13 +2985,19 @@ ZDOTDIR = "{}"
         workdir
     };
     let call_id = "zsh-fork-brokered-github-credential";
-    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}" "$AUTH_HEADER""#;
+    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CUSTOM_HOST" "$CUSTOM_API_KEY" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}" "$AUTH_HEADER""#;
     let command = format!(
         "APP_SETTING=production; EXCLUDED_SETTING=denied; [ \"$(/usr/bin/printenv APP_SETTING)\" = production ] || exit 1; if /usr/bin/printenv EXCLUDED_SETTING >/dev/null; then exit 1; fi; {command}"
     );
+    let command = if request_extra_permissions {
+        let script = format!("{command}\nprintf escaped 2>/dev/null > {outside_path_arg} || true");
+        format!("/bin/sh -c {}", shlex::try_quote(&script)?)
+    } else {
+        command.to_string()
+    };
     let snapshot_dir_arg = shlex::try_join([snapshot_dir.to_string_lossy().as_ref()])?;
     let command = format!("{command}; /bin/cat {snapshot_dir_arg}/*.sh > captured-snapshot");
-    let arguments = if direct {
+    let mut arguments = if direct {
         let Some(zsh) = codex_core::shell::get_shell(codex_core::shell::ShellType::Zsh) else {
             return Ok(());
         };
@@ -2978,6 +3019,12 @@ ZDOTDIR = "{}"
             "yield_time_ms": 10_000,
         })
     };
+    if request_extra_permissions {
+        let approved_dir = test.home.path().join("approved-command");
+        fs::create_dir(&approved_dir)?;
+        arguments["sandbox_permissions"] = json!(SandboxPermissions::WithAdditionalPermissions);
+        arguments["additional_permissions"] = json!({"file_system": {"write": [approved_dir]}});
+    }
     let event = ev_function_call(call_id, "exec_command", &serde_json::to_string(&arguments)?);
     let responses = mount_sse_sequence(
         &server,
@@ -2998,10 +3045,35 @@ ZDOTDIR = "{}"
     submit_turn_preserving_active_permission_profile(
         &test,
         "show the brokered GitHub environment",
-        AskForApproval::Never,
+        approval_policy,
     )
     .await?;
-    wait_for_completion_without_approval(&test).await;
+    if request_extra_permissions {
+        let mut approvals = 0;
+        loop {
+            let event = wait_for_event(&test.codex, |event| {
+                matches!(
+                    event,
+                    EventMsg::ExecApprovalRequest(_) | EventMsg::TurnComplete(_)
+                )
+            })
+            .await;
+            let EventMsg::ExecApprovalRequest(approval) = event else {
+                break;
+            };
+            approvals += 1;
+            test.codex
+                .submit(Op::ExecApproval {
+                    id: approval.effective_approval_id(),
+                    turn_id: None,
+                    decision: ReviewDecision::Approved,
+                })
+                .await?;
+        }
+        assert!(approvals > 0, "additional permissions must be approved");
+    } else {
+        wait_for_completion_without_approval(&test).await;
+    }
 
     let output = responses.requests()[1].function_call_output(call_id);
     if shell_mode == "zsh_fork" {
@@ -3014,14 +3086,16 @@ ZDOTDIR = "{}"
     let result = parse_result(&output);
     assert_eq!(result.exit_code, Some(0), "command failed: {result:?}");
     assert!(!result.stdout.contains(REAL_GITHUB_TOKEN));
+    assert!(!result.stdout.contains(REAL_CUSTOM_TOKEN));
     let values = result.stdout.lines().collect::<Vec<_>>();
-    assert_eq!(values.len(), 7, "unexpected command output: {result:?}");
+    assert_eq!(values.len(), 9, "unexpected command output: {result:?}");
     assert_eq!(values[0], GH_HOST);
     assert_ne!(values[1], REAL_GITHUB_TOKEN);
     if global_startup {
         assert_eq!(values[1], "");
+        assert_eq!(values[3], "");
         assert_eq!(
-            values[6],
+            values[8],
             if shell_mode == "startup_override" {
                 "enterprise-header"
             } else {
@@ -3031,12 +3105,23 @@ ZDOTDIR = "{}"
     } else {
         assert!(values[1].starts_with("ghp_"));
         assert_eq!(values[1].len(), REAL_GITHUB_TOKEN.len());
-        assert_eq!(values[6], format!("Bearer {}", values[1]));
+        assert!(values[3].starts_with("custom_"));
+        assert_eq!(values[3].len(), REAL_CUSTOM_TOKEN.len());
+        assert_eq!(values[8], format!("Bearer {}", values[1]));
     }
-    assert_eq!(values[2], "1");
-    assert_eq!(PathBuf::from(values[3]), fs::canonicalize(&workdir)?);
-    assert_eq!(PathBuf::from(values[4]), fs::canonicalize(&workdir)?);
-    assert_eq!(values[5], if login { "ready" } else { "unset" });
+    assert_eq!(
+        values[2],
+        if request_extra_permissions {
+            ""
+        } else {
+            CUSTOM_HOST
+        }
+    );
+    assert_ne!(values[3], REAL_CUSTOM_TOKEN);
+    assert_eq!(values[4], "1");
+    assert_eq!(PathBuf::from(values[5]), fs::canonicalize(&workdir)?);
+    assert_eq!(PathBuf::from(values[6]), fs::canonicalize(&workdir)?);
+    assert_eq!(values[7], if login { "ready" } else { "unset" });
     assert!(
         !outside_path.exists(),
         "shell snapshot startup wrote outside the command sandbox"
@@ -3047,6 +3132,10 @@ ZDOTDIR = "{}"
     assert!(
         !snapshot.contains(REAL_GITHUB_TOKEN),
         "shell snapshot persisted a real GitHub credential"
+    );
+    assert!(
+        !snapshot.contains(REAL_CUSTOM_TOKEN),
+        "shell snapshot persisted a real configured credential"
     );
 
     Ok(())

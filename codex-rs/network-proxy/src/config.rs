@@ -139,6 +139,9 @@ pub struct NetworkProxyConfig {
     pub mitm: bool,
     #[serde(default)]
     pub credential_broker: bool,
+    /// Whether brokerage enabled MITM rather than inheriting an explicit setting.
+    #[serde(skip)]
+    pub credential_broker_enabled_mitm: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credential_providers: BTreeMap<String, crate::CredentialProviderConfig>,
     /// Trusted OpenAI endpoint derived from local configuration, never sent to remote executors.
@@ -170,6 +173,7 @@ impl Default for NetworkProxyConfig {
             allow_local_binding: false,
             mitm: false,
             credential_broker: false,
+            credential_broker_enabled_mitm: false,
             credential_providers: BTreeMap::new(),
             credential_broker_openai_host: None,
             credential_broker_context: crate::CredentialBrokerContext::default(),
@@ -182,7 +186,13 @@ impl Default for NetworkProxyConfig {
 impl NetworkProxyConfig {
     pub fn set_credential_broker_enabled(&mut self, enabled: bool) {
         self.credential_broker = enabled;
-        self.mitm |= enabled;
+        if enabled {
+            self.credential_broker_enabled_mitm |= !self.mitm;
+            self.mitm = true;
+        } else if self.credential_broker_enabled_mitm {
+            self.mitm = !self.mitm_hooks.is_empty();
+            self.credential_broker_enabled_mitm = false;
+        }
     }
 
     pub fn set_credential_broker_openai_base_url(&mut self, base_url: Option<&str>) {
@@ -691,12 +701,63 @@ mod tests {
                 allow_local_binding: false,
                 mitm: false,
                 credential_broker: false,
+                credential_broker_enabled_mitm: false,
                 credential_providers: BTreeMap::new(),
                 credential_broker_openai_host: None,
                 credential_broker_context: crate::CredentialBrokerContext::default(),
                 dangerously_allow_plaintext_credential_injection: false,
                 mitm_hooks: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn disabling_credential_broker_restores_independent_mitm_setting() {
+        for (mitm, add_hook) in [(false, false), (true, false), (false, true)] {
+            let mut original = NetworkProxyConfig {
+                enabled: true,
+                mitm,
+                ..Default::default()
+            };
+            let mut config = original.clone();
+            for _ in 0..2 {
+                config.set_credential_broker_enabled(/*enabled*/ true);
+            }
+            if add_hook {
+                config.mitm_hooks.push(MitmHookConfig {
+                    host: "api.example".to_string(),
+                    ..Default::default()
+                });
+                original.mitm_hooks.clone_from(&config.mitm_hooks);
+                original.mitm = true;
+            }
+            for _ in 0..2 {
+                config.set_credential_broker_enabled(/*enabled*/ false);
+            }
+            assert_eq!(config, original);
+            assert_eq!(
+                crate::RemoteNetworkProxyConfig::from_effective_config(&config).is_err(),
+                original.mitm
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn ambiguous_credential_environment_preserves_remote_proxy_support() {
+        let mut config = NetworkProxyConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let expected = crate::RemoteNetworkProxyConfig::from_effective_config(&config).unwrap();
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        config.configure_credential_broker_environment(&HashMap::from([
+            ("GH_HOST".to_string(), "first.example".to_string()),
+            ("gh_host".to_string(), "second.example".to_string()),
+        ]));
+        assert_eq!(
+            crate::RemoteNetworkProxyConfig::from_effective_config(&config).unwrap(),
+            expected
         );
     }
 

@@ -528,7 +528,12 @@ fn brokered_zsh_snapshot_preserves_tied_credential_aliases() -> Result<()> {
     let brokered_keys = vec!["VENDOR_PASSWORD".to_string()];
     for separator in [":", "|", "'", "\t", "$", "_", "x"] {
         let appended = format!("ordinary{separator}other");
-        for rcquotes in [false, true] {
+        for (rcquotes, captured_credential) in [
+            (false, real),
+            (true, real),
+            (false, "captured$0123456789abcdef"),
+            (true, "pin_ab$cd"),
+        ] {
             let script = snapshot_capture_script(ShellType::Zsh, CAPTURE_NON_INTERACTIVE).unwrap();
             let setup = format!(
                 "{}\nexport -UT SERVICE_URLS service_urls=( \"https://user:$VENDOR_PASSWORD@example.invalid/path\" '' {} ) {}\nservice_urls+=({})\n{script}",
@@ -542,11 +547,14 @@ fn brokered_zsh_snapshot_preserves_tied_credential_aliases() -> Result<()> {
                 shlex::try_quote(&appended)?,
             );
             let original = HashMap::from([
-                ("VENDOR_PASSWORD".to_string(), real.to_string()),
+                (
+                    "VENDOR_PASSWORD".to_string(),
+                    captured_credential.to_string(),
+                ),
                 (
                     "SERVICE_URLS".to_string(),
                     [
-                        format!("https://user:{real}@example.invalid/path"),
+                        format!("https://user:{captured_credential}@example.invalid/path"),
                         String::new(),
                         last.to_string(),
                         appended.clone(),
@@ -557,21 +565,25 @@ fn brokered_zsh_snapshot_preserves_tied_credential_aliases() -> Result<()> {
             let captured = Command::new("/bin/zsh")
                 .args(["-fc", &setup])
                 .env_clear()
-                .env("VENDOR_PASSWORD", real)
+                .env("VENDOR_PASSWORD", captured_credential)
                 .env("PATH", "/usr/bin:/bin")
                 .output()?;
             assert!(captured.status.success(), "{captured:?}");
             let mut snapshot = String::from_utf8(captured.stdout)?;
             let allowed = original
                 .iter()
-                .map(|(key, value)| (key.clone(), value.replace(real, dummy)))
+                .map(|(key, value)| (key.clone(), value.replace(captured_credential, dummy)))
+                .collect::<HashMap<_, _>>();
+            let restored = original
+                .iter()
+                .map(|(key, value)| (key.clone(), value.replace(captured_credential, real)))
                 .collect::<HashMap<_, _>>();
             let rewritten = rewrite_snapshot_credentials(
                 ShellType::Zsh,
                 &mut snapshot,
                 SnapshotCredentialEnvironment {
                     original: &original,
-                    restored: &original,
+                    restored: &restored,
                     configured: &HashMap::new(),
                     discovered: &allowed,
                     allowed: &allowed,
@@ -581,7 +593,9 @@ fn brokered_zsh_snapshot_preserves_tied_credential_aliases() -> Result<()> {
                     allowed_brokered_keys: &brokered_keys,
                 },
                 |text| {
-                    *text = text.replace(real, dummy);
+                    *text = text
+                        .replace(real, dummy)
+                        .replace(captured_credential, dummy);
                     true
                 },
             )
@@ -601,7 +615,7 @@ fn brokered_zsh_snapshot_preserves_tied_credential_aliases() -> Result<()> {
                     .env("VENDOR_PASSWORD", live)
                     .output()?;
                 assert!(replayed.status.success(), "{replayed:?}");
-                let scalar = original["SERVICE_URLS"].replace(real, live);
+                let scalar = original["SERVICE_URLS"].replace(captured_credential, live);
                 let mut array = vec![
                     format!("https://user:{live}@example.invalid/path"),
                     String::new(),
@@ -1893,6 +1907,178 @@ fn brokered_snapshot_alias_values_follow_allowed_credential_overrides() {
             Some(expected),
         );
     }
+}
+
+#[test]
+fn brokered_short_alias_respects_policy_override() -> Result<()> {
+    let real = "pin_abcdefgh";
+    let dummy = "pin_qrstuvwx";
+    let keys = vec!["VENDOR_PASSWORD".to_string()];
+    for captured in [real, "pin_ijklmnop"] {
+        let original = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), captured.to_string()),
+            ("AUTH_HEADER".to_string(), format!("Bearer {captured}")),
+        ]);
+        let restored = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), real.to_string()),
+            ("AUTH_HEADER".to_string(), format!("Bearer {real}")),
+        ]);
+        let discovered = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), dummy.to_string()),
+            ("AUTH_HEADER".to_string(), format!("Bearer {dummy}")),
+        ]);
+        for replacement in ["", "replacement"] {
+            let configured = HashMap::from([("AUTH_HEADER".to_string(), replacement.to_string())]);
+            let mut allowed = discovered.clone();
+            allowed.extend(configured.clone());
+            let mut snapshot = format!(
+                "# Snapshot file\n\0\0AUTH_HEADER\0export AUTH_HEADER='Bearer {captured}'\n\0\0"
+            );
+            let prepared = rewrite_snapshot_credentials(
+                ShellType::Bash,
+                &mut snapshot,
+                SnapshotCredentialEnvironment {
+                    original: &original,
+                    restored: &restored,
+                    configured: &configured,
+                    discovered: &discovered,
+                    allowed: &allowed,
+                    is_allowed_unset: &|_| false,
+                    brokered_keys: &keys,
+                    brokered_alias_keys: &[],
+                    allowed_brokered_keys: &keys,
+                },
+                |value| {
+                    *value = value.replace(real, dummy).replace(captured, dummy);
+                    true
+                },
+            )
+            .expect("policy override keeps short aliases usable");
+            assert_eq!(prepared.aliases, configured);
+            assert!(!snapshot.contains(real));
+            assert!(!snapshot.contains(captured));
+            let output = Command::new("/bin/bash")
+                .args(["-c", &format!("{snapshot}\nprintf '%s' \"$AUTH_HEADER\"")])
+                .env_clear()
+                .output()?;
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(output.stdout, replacement.as_bytes());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn brokered_snapshot_aliases_follow_captured_dummies() -> Result<()> {
+    for (real, captured, dummy) in [
+        (
+            "ghp_real_abcdefghijklmnopqrstuvwxyz012345",
+            "ghp_old_abcdefghijklmnopqrstuvwxyz0123456",
+            "ghp_new_abcdefghijklmnopqrstuvwxyz0123456",
+        ),
+        ("pin_abcdefgh", "pin_ijklmnop", "pin_ijklmnop"),
+        ("pin_abcdefgh", "pin_ijklmnop", "pin_qrstuvwx"),
+    ] {
+        let original = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), captured.to_string()),
+            ("AUTH_HEADER".to_string(), format!("Bearer {captured}")),
+            ("READONLY_HEADER".to_string(), format!("Bearer {captured}")),
+        ]);
+        let mut restored = original.clone();
+        restored.insert("VENDOR_PASSWORD".to_string(), real.to_string());
+        let allowed = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), dummy.to_string()),
+            ("AUTH_HEADER".to_string(), format!("Bearer {dummy}")),
+            ("READONLY_HEADER".to_string(), format!("Bearer {dummy}")),
+        ]);
+        let keys = vec!["VENDOR_PASSWORD".to_string()];
+        let mut snapshot = format!(
+            "# Snapshot file\n\0\0AUTH_HEADER\0export AUTH_HEADER='Bearer {captured}'\n\0READONLY_HEADER\0declare -rx READONLY_HEADER='Bearer {captured}'\n\0\0"
+        );
+        let rewrite = rewrite_snapshot_credentials(
+            ShellType::Bash,
+            &mut snapshot,
+            SnapshotCredentialEnvironment {
+                original: &original,
+                restored: &restored,
+                configured: &HashMap::new(),
+                discovered: &allowed,
+                allowed: &allowed,
+                is_allowed_unset: &|_| false,
+                brokered_keys: &keys,
+                brokered_alias_keys: &[],
+                allowed_brokered_keys: &keys,
+            },
+            |text| {
+                *text = text
+                    .replace(&format!("Bearer {real}"), &format!("Bearer {dummy}"))
+                    .replace(&format!("Bearer {captured}"), &format!("Bearer {dummy}"));
+                true
+            },
+        )
+        .expect("captured dummy aliases should be rewritten");
+        assert_eq!(
+            rewrite.aliases,
+            HashMap::from([
+                ("AUTH_HEADER".to_string(), format!("Bearer {dummy}")),
+                ("READONLY_HEADER".to_string(), format!("Bearer {dummy}")),
+            ])
+        );
+        let replay = Command::new("/bin/bash")
+            .args([
+                "-c",
+                &format!("{snapshot}\nprintf '%s\\n%s' \"$AUTH_HEADER\" \"$READONLY_HEADER\""),
+            ])
+            .env_clear()
+            .env("VENDOR_PASSWORD", real)
+            .output()?;
+        assert!(replay.status.success(), "{replay:?}");
+        assert_eq!(
+            replay.stdout,
+            format!("Bearer {real}\nBearer {real}").as_bytes()
+        );
+        if std::path::Path::new("/bin/zsh").exists() {
+            let script = snapshot_capture_script(ShellType::Zsh, CAPTURE_NON_INTERACTIVE).unwrap();
+            let capture_output = Command::new("/bin/zsh")
+                .args(["-fc", &format!("readonly READONLY_HEADER\n{script}")])
+                .env_clear()
+                .envs(&original)
+                .env("PATH", "/usr/bin:/bin")
+                .output()?;
+            assert!(capture_output.status.success(), "{capture_output:?}");
+            let mut snapshot = String::from_utf8(capture_output.stdout)?;
+            let rewritten = rewrite_snapshot_credentials(
+                ShellType::Zsh,
+                &mut snapshot,
+                SnapshotCredentialEnvironment {
+                    original: &original,
+                    restored: &restored,
+                    configured: &HashMap::new(),
+                    discovered: &allowed,
+                    allowed: &allowed,
+                    is_allowed_unset: &|_| false,
+                    brokered_keys: &keys,
+                    brokered_alias_keys: &[],
+                    allowed_brokered_keys: &keys,
+                },
+                |text| {
+                    *text = text.replace(real, dummy).replace(captured, dummy);
+                    true
+                },
+            )
+            .expect("omitted readonly exports retain their alias metadata");
+            assert_eq!(rewritten.aliases, rewrite.aliases);
+            let replay = Command::new("/bin/zsh")
+                .args(["-fc", &format!("readonly READONLY_HEADER\n{snapshot}\n[[ $parameters[READONLY_HEADER] == *readonly* ]] || exit 1\nprintf '%s' \"$READONLY_HEADER\"")])
+                .env_clear()
+                .env("VENDOR_PASSWORD", real)
+                .env("READONLY_HEADER", format!("Bearer {real}"))
+                .output()?;
+            assert!(replay.status.success(), "{replay:?}");
+            assert_eq!(replay.stdout, format!("Bearer {real}").as_bytes());
+        }
+    }
+    Ok(())
 }
 
 #[test]

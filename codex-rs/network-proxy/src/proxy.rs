@@ -2158,6 +2158,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_credential_context_prepares_spawn_ready_env() -> Result<()> {
+        #[cfg(target_os = "windows")]
+        let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();
+        let mut config = NetworkProxyConfig {
+            enabled: true,
+            ..NetworkProxyConfig::default()
+        };
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        let state = Arc::new(network_proxy_state_for_policy(config));
+        let proxy = NetworkProxy::builder()
+            .state(Arc::clone(&state))
+            .build()
+            .await?;
+        let handle = proxy.run().await?;
+        let real = "ghp-private-context-test";
+        for previous in [None, Some(""), Some("visible.example")] {
+            let mut env = HashMap::from([("GH_ENTERPRISE_TOKEN".to_string(), real.to_string())]);
+            if let Some(previous) = previous {
+                env.insert("GH_HOST".to_string(), previous.to_string());
+            }
+            let context = crate::CredentialBrokerContext::from(HashMap::from([(
+                "GH_HOST".to_string(),
+                "private.enterprise.example".to_string(),
+            )]));
+            let prepared =
+                context.prepare_child_environment(&proxy, env, Some("snapshot-context"))?;
+            assert_eq!(prepared.env.get("GH_HOST").map(String::as_str), previous);
+            let dummy = &prepared.env["GH_ENTERPRISE_TOKEN"];
+            assert_ne!(dummy, real);
+            for (host, expected) in [
+                ("private.enterprise.example", real),
+                ("visible.example", dummy.as_str()),
+            ] {
+                let mut headers = rama_http::HeaderMap::new();
+                headers.insert(
+                    rama_http::header::AUTHORIZATION,
+                    format!("Bearer {dummy}").parse()?,
+                );
+                state
+                    .for_environment_id(Some("snapshot-context"))
+                    .inject_request_credentials(host, &mut headers);
+                assert_eq!(
+                    headers[rama_http::header::AUTHORIZATION],
+                    format!("Bearer {expected}")
+                );
+            }
+        }
+        handle.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn remote_launch_config_carries_execution_scope() -> Result<()> {
         #[cfg(target_os = "windows")]
         let _permit = WINDOWS_INGRESS_TEST_LOCK.acquire().await.unwrap();

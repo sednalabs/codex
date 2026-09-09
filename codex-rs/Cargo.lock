@@ -3404,6 +3404,7 @@ dependencies = [
 name = "codex-features"
 version = "0.0.0"
 dependencies = [
+ "codex-network-proxy",
  "codex-otel",
  "codex-protocol",
  "pretty_assertions",

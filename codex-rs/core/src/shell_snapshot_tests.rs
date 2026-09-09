@@ -8,6 +8,8 @@ use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
 #[cfg(unix)]
 use crate::tools::runtimes::prepare_brokered_shell_snapshot_env;
 #[cfg(unix)]
+use codex_network_proxy::CredentialProviderConfig;
+#[cfg(unix)]
 use codex_network_proxy::NetworkProxyConfig;
 #[cfg(unix)]
 use codex_protocol::config_types::EnvironmentVariablePattern;
@@ -94,13 +96,39 @@ fn assert_posix_snapshot_sections(snapshot: &str) {
     assert!(snapshot.contains("setopts "));
 }
 
+#[cfg(not(windows))]
+#[test]
+fn preserved_provider_context_respects_unix_environment_casing() {
+    let mut env = HashMap::from([
+        ("GH_HOST".to_string(), "startup.example.com".to_string()),
+        ("gh_host".to_string(), "custom.example.com".to_string()),
+    ]);
+
+    replace_provider_context_with_trusted(
+        &mut env,
+        &HashMap::new(),
+        ["GH_HOST".to_string(), "gh_host".to_string()],
+        &["gh_host".to_string()],
+    );
+
+    assert_eq!(
+        env,
+        HashMap::from([("gh_host".to_string(), "custom.example.com".to_string())])
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn inherited_provider_context_matches_windows_environment_casing() {
     let mut env = HashMap::new();
     let inherited = HashMap::from([("gh_host".to_string(), "github.example.com".to_string())]);
 
-    replace_provider_context_with_inherited(&mut env, &inherited, std::iter::once("GH_HOST"));
+    replace_provider_context_with_trusted(
+        &mut env,
+        &inherited,
+        std::iter::once("GH_HOST".to_string()),
+        &[],
+    );
 
     assert_eq!(
         env,
@@ -473,8 +501,10 @@ async fn inactive_profiles_keep_snapshots_but_active_brokers_require_sandbox() -
     assert!(rebuilt.path().as_path().is_file());
     let proxy = started_proxy.proxy();
     let mut old_env = HashMap::new();
-    rebuilt.restore_credentials(&mut old_env, environment.shell_environment_policy());
-    proxy.apply_to_env(&mut old_env);
+    let context = rebuilt.restore_credentials(&mut old_env, environment.shell_environment_policy());
+    old_env = context
+        .prepare_child_environment(&proxy, old_env, /*environment_id*/ None)?
+        .env;
 
     let original_config = proxy.current_cfg().await?;
     let mut changed_config = original_config.clone();
@@ -507,8 +537,11 @@ async fn inactive_profiles_keep_snapshots_but_active_brokers_require_sandbox() -
         .context("a changed broker configuration must invalidate cached snapshots")?;
     assert!(!Arc::ptr_eq(&rebuilt, &refreshed));
     let mut new_env = HashMap::new();
-    refreshed.restore_credentials(&mut new_env, environment.shell_environment_policy());
-    proxy.apply_to_env(&mut new_env);
+    let context =
+        refreshed.restore_credentials(&mut new_env, environment.shell_environment_policy());
+    new_env = context
+        .prepare_child_environment(&proxy, new_env, /*environment_id*/ None)?
+        .env;
     assert_ne!(new_env["OPENAI_API_KEY"], old_env["OPENAI_API_KEY"]);
     assert_ne!(new_env["OPENAI_API_KEY"], "sk-snapshot-cache-test");
 
@@ -567,6 +600,16 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
          export GH_ENTERPRISE_TOKEN='ghp_enterprise_secret'\n\
          export GH_HOST='attacker.example'\n\
          export OPENAI_API_KEY='sk-proj-snapshot-secret'\n\
+         export STRIPE_API_KEY='stripe_live_abcdefghijklmnopqrstuvwx'\n\
+         export STRIPE_HOST='https://startup.stripe.example/v1'\n\
+         export STRIPE_AUTH_HEADER=\"Bearer $STRIPE_API_KEY\"\n\
+         export VENDOR_PASSWORD='pin_abcdefgh'\n\
+         export VENDOR_AUTH_HEADER=\"Bearer $VENDOR_PASSWORD\"\n\
+         export VENDOR_HOST='https://attacker.vendor.example/v2'\n\
+         export LOCAL_TOKEN='local_abcdefghijklmnopqrstuvwx'\n\
+         export LOCAL_URL='http://127.0.0.1:1234/v1'\n\
+         export LOCAL_AUTH_HEADER=\"Bearer $LOCAL_TOKEN\"\n\
+         unset LOCAL_TOKEN\n\
          export AUTH_BUNDLE=\"GitHub $GH_TOKEN\n\
          OpenAI $OPENAI_API_KEY\"\n\
          export OPENAI_BASE_URL='https://api.snapshot.example/v1'\n\
@@ -579,6 +622,39 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
 
     let mut network_config = NetworkProxyConfig::default();
     network_config.set_credential_broker_enabled(/*enabled*/ true);
+    network_config.allow_local_binding = true;
+    network_config.credential_providers.insert(
+        "local".to_string(),
+        CredentialProviderConfig {
+            env: vec!["LOCAL_TOKEN".to_string()],
+            patterns: vec!["local_[a-z]{24}".to_string()],
+            url_prefixes: vec!["https://public.local-provider.example/v1".to_string()],
+            url_prefix_from_env: Some("LOCAL_URL".to_string()),
+            ..CredentialProviderConfig::default()
+        },
+    );
+    network_config.credential_providers.insert(
+        "stripe".to_string(),
+        CredentialProviderConfig {
+            env: vec!["STRIPE_API_KEY".to_string()],
+            patterns: vec!["stripe_live_[a-z]{24}".to_string()],
+            url_prefix_from_env: Some("STRIPE_HOST".to_string()),
+            ..CredentialProviderConfig::default()
+        },
+    );
+    network_config.credential_providers.insert(
+        "vendor".to_string(),
+        CredentialProviderConfig {
+            env: vec!["VENDOR_PASSWORD".to_string()],
+            patterns: vec!["pin_[a-z]{8}".to_string()],
+            url_prefix_from_env: Some("VENDOR_HOST".to_string()),
+            ..CredentialProviderConfig::default()
+        },
+    );
+    network_config.configure_credential_broker_environment(&HashMap::from([(
+        "STRIPE_HOST".to_string(),
+        "api.stripe.example".to_string(),
+    )]));
     let permission_profile = PermissionProfile::workspace_write();
     let network_spec = NetworkProxySpec::from_config_and_constraints(
         network_config,
@@ -602,7 +678,11 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     };
     let trusted_startup = ("BASH_ENV".to_string(), startup.display().to_string());
     let shell_environment_policy = ShellEnvironmentPolicy {
-        exclude: vec![EnvironmentVariablePattern::new_case_insensitive("HOME")],
+        exclude: vec![
+            EnvironmentVariablePattern::new_case_insensitive("HOME"),
+            EnvironmentVariablePattern::new_case_insensitive("VENDOR_HOST"),
+            EnvironmentVariablePattern::new_case_insensitive("STRIPE_HOST"),
+        ],
         r#set: HashMap::from([
             trusted_startup.clone(),
             ("GH_HOST".to_string(), "github.example.com".to_string()),
@@ -621,6 +701,10 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             ("PATH".to_string(), "/enterprise/bin".to_string()),
             ("CORP_REGION".to_string(), "production".to_string()),
             ("NPM_TOKEN".to_string(), "npm_enterprise_token".to_string()),
+            (
+                "VENDOR_HOST".to_string(),
+                "https://api.vendor.example/v2".to_string(),
+            ),
         ]),
         ..ShellEnvironmentPolicy::default()
     };
@@ -638,6 +722,29 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         /*sandbox*/ None,
     )
     .await?;
+    let captured_credentials = credentials.as_ref().expect("brokered snapshot credentials");
+    assert_eq!(
+        captured_credentials
+            .context_env
+            .get("STRIPE_HOST")
+            .map(String::as_str),
+        Some("api.stripe.example"),
+        "excluding a trusted destination must not let startup replace it"
+    );
+    assert_eq!(
+        captured_credentials
+            .context_env
+            .get("VENDOR_HOST")
+            .map(String::as_str),
+        Some("https://api.vendor.example/v2")
+    );
+    assert_eq!(
+        captured_credentials
+            .context_env
+            .get("OPENAI_BASE_URL")
+            .map(String::as_str),
+        Some("https://api.snapshot.example/v1")
+    );
     let snapshot = fs::read_to_string(&path).await?;
 
     for secret in [
@@ -645,12 +752,17 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         "ghp_readonly_secret",
         "ghp_enterprise_secret",
         "sk-proj-snapshot-secret",
+        "stripe_live_abcdefghijklmnopqrstuvwx",
+        "pin_abcdefgh",
+        "local_abcdefghijklmnopqrstuvwx",
         "identity-token-secret",
     ] {
         assert!(!snapshot.contains(secret), "snapshot exposed {secret}");
     }
     assert!(!snapshot.contains("attacker.example"));
+    assert!(!snapshot.contains("CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS"));
     assert!(snapshot.contains("api.snapshot.example"));
+    assert!(!snapshot.contains("attacker.vendor.example"));
     assert!(snapshot.contains("IDENTITY_SEEN=\"missing\""));
     assert!(snapshot.contains("EXCLUDED_PARENT_HOME=\"missing\""));
     assert!(snapshot.contains("STARTUP_PATH_OVERRIDE_SEEN=\"/enterprise/bin\""));
@@ -658,6 +770,8 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     assert!(snapshot.contains("STARTUP_CORP_REGION_SEEN=\"production\""));
     assert!(snapshot.contains("STARTUP_NPM_TOKEN_SEEN=\"npm_enterprise_token\""));
     assert!(snapshot.contains("declare -rx HOMEBREW_GITHUB_API_TOKEN=\"${GITHUB_TOKEN-}\""));
+    assert!(snapshot.contains("${VENDOR_PASSWORD-}"));
+    assert!(!snapshot.contains("api.stripe.example"));
 
     validate_snapshot(
         &shell,
@@ -750,10 +864,13 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         ),
         ("GH_HOST".to_string(), "attacker.example".to_string()),
     ]);
-    replace_provider_context_with_inherited(
+    replace_provider_context_with_trusted(
         &mut inherited_discovery_env,
         &inherited_context,
-        credential_broker_provider_context_env_keys(),
+        network_proxy
+            .credential_broker_environment(&HashMap::new())
+            .provider_context_keys,
+        &[],
     );
     assert_eq!(
         inherited_discovery_env.get("GH_HOST").map(String::as_str),
@@ -764,10 +881,13 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         "GH_ENTERPRISE_TOKEN".to_string(),
         inherited_secret.to_string(),
     )]);
-    replace_provider_context_with_inherited(
+    replace_provider_context_with_trusted(
         &mut inherited_allowed_env,
         &inherited_context,
-        brokered_credential_binding_env_keys(&inherited_discovery_env),
+        network_proxy
+            .credential_broker_environment(&inherited_discovery_env)
+            .binding_keys,
+        &[],
     );
     network_proxy.apply_to_env(&mut inherited_allowed_env);
     assert_eq!(
@@ -802,15 +922,22 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     for key in unset_credential_keys {
         unset_env.insert(key.clone(), unset_policy.r#set.remove(key).unwrap());
     }
-    snapshot_file.restore_credentials(&mut unset_env, &unset_policy);
-    snapshot_file.restore_fail_open_aliases(&mut unset_env);
+    let _ = snapshot_file.restore_credentials(&mut unset_env, &unset_policy);
+    snapshot_file.restore_fail_open_aliases(&mut unset_env, /*environment_id*/ None);
     assert!(
         unset_credential_keys
             .iter()
             .all(|key| !unset_env.contains_key(key))
     );
 
-    let mut env = HashMap::from([("GH_HOST".to_string(), "github.example.com".to_string())]);
+    let mut env = HashMap::from([
+        ("GH_HOST".to_string(), "github.example.com".to_string()),
+        ("STRIPE_HOST".to_string(), "api.stripe.example".to_string()),
+        (
+            "VENDOR_HOST".to_string(),
+            "https://api.vendor.example/v2".to_string(),
+        ),
+    ]);
     env.extend(
         shell_environment_policy
             .r#set
@@ -818,7 +945,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             .filter(|(key, _)| unset_credential_keys.contains(key))
             .map(|(key, value)| (key.clone(), value.clone())),
     );
-    snapshot_file.restore_credentials(&mut env, &shell_environment_policy);
+    let credential_context = snapshot_file.restore_credentials(&mut env, &shell_environment_policy);
     for (key, value) in [
         ("GH_TOKEN", "ghp_shell_only_secret"),
         ("GITHUB_TOKEN", "ghp_readonly_secret"),
@@ -826,6 +953,10 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         ("GITHUB_ENTERPRISE_TOKEN", "ghp_removed_enterprise_secret"),
         ("UNSET_AUTH_HEADER", "Bearer ghp_removed_enterprise_secret"),
         ("OPENAI_API_KEY", "sk-proj-snapshot-secret"),
+        ("STRIPE_API_KEY", "stripe_live_abcdefghijklmnopqrstuvwx"),
+        ("STRIPE_HOST", "api.stripe.example"),
+        ("VENDOR_PASSWORD", "pin_abcdefgh"),
+        ("VENDOR_HOST", "https://api.vendor.example/v2"),
     ] {
         assert_eq!(env.get(key).map(String::as_str), Some(value), "{key}");
     }
@@ -833,6 +964,120 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         env.get("OPENAI_BASE_URL").map(String::as_str),
         Some("https://api.snapshot.example/v1")
     );
+    let explicit_vendor_policy = ShellEnvironmentPolicy {
+        inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::None,
+        r#set: HashMap::from([("VENDOR_PASSWORD".to_string(), "pin_abcdefgh".to_string())]),
+        ..ShellEnvironmentPolicy::default()
+    };
+    let mut explicit_vendor_env = explicit_vendor_policy.r#set.clone();
+    let explicit_vendor_context =
+        snapshot_file.restore_credentials(&mut explicit_vendor_env, &explicit_vendor_policy);
+    assert!(!explicit_vendor_env.contains_key("VENDOR_HOST"));
+    assert_eq!(
+        explicit_vendor_context.with_fallbacks(&explicit_vendor_env)["VENDOR_HOST"],
+        "https://api.vendor.example/v2"
+    );
+    explicit_vendor_env = explicit_vendor_context
+        .prepare_child_environment(
+            &network_proxy,
+            explicit_vendor_env,
+            /*environment_id*/ None,
+        )?
+        .env;
+    assert!(!explicit_vendor_env.contains_key("VENDOR_HOST"));
+    assert_ne!(explicit_vendor_env["VENDOR_PASSWORD"], "pin_abcdefgh");
+    let prepared_vendor_env = explicit_vendor_env.clone();
+    network_proxy.apply_to_env(&mut explicit_vendor_env);
+    assert_eq!(explicit_vendor_env, prepared_vendor_env);
+
+    let current_vendor_host = "https://api.current-vendor.example/v2";
+    let mut current_vendor_env = explicit_vendor_policy.r#set.clone();
+    current_vendor_env.insert("VENDOR_HOST".to_string(), current_vendor_host.to_string());
+    let current_vendor_context =
+        snapshot_file.restore_credentials(&mut current_vendor_env, &explicit_vendor_policy);
+    current_vendor_env = current_vendor_context
+        .prepare_child_environment(
+            &network_proxy,
+            current_vendor_env,
+            /*environment_id*/ None,
+        )?
+        .env;
+    assert_eq!(
+        current_vendor_env.get("VENDOR_HOST").map(String::as_str),
+        Some(current_vendor_host)
+    );
+    assert_ne!(current_vendor_env["VENDOR_PASSWORD"], "pin_abcdefgh");
+
+    for excluded_context in [false, true] {
+        let mut policy = shell_environment_policy.clone();
+        if excluded_context {
+            policy
+                .exclude
+                .push(EnvironmentVariablePattern::new_case_insensitive(
+                    "OPENAI_BASE_URL",
+                ));
+        }
+        let ambient_host = "https://api.ambient.example/v1";
+        let mut restored_env =
+            HashMap::from([("OPENAI_BASE_URL".to_string(), ambient_host.to_string())]);
+        let context = snapshot_file.restore_credentials(&mut restored_env, &policy);
+        assert_eq!(
+            restored_env["OPENAI_BASE_URL"],
+            if excluded_context {
+                ambient_host
+            } else {
+                "https://api.snapshot.example/v1"
+            }
+        );
+        restored_env = context
+            .prepare_child_environment(&network_proxy, restored_env, /*environment_id*/ None)?
+            .env;
+        assert_ne!(restored_env["OPENAI_API_KEY"], "sk-proj-snapshot-secret");
+        assert_eq!(
+            restored_env["OPENAI_BASE_URL"],
+            if excluded_context {
+                ambient_host
+            } else {
+                "https://api.snapshot.example/v1"
+            }
+        );
+    }
+
+    for (credential_key, context_key, real, current_host) in [
+        (
+            "GH_ENTERPRISE_TOKEN",
+            "GH_HOST",
+            "ghp_enterprise_secret",
+            "github.override.example",
+        ),
+        (
+            "VENDOR_PASSWORD",
+            "VENDOR_HOST",
+            "pin_abcdefgh",
+            "https://api.current-vendor.example/v2",
+        ),
+    ] {
+        let policy = ShellEnvironmentPolicy {
+            ignore_default_excludes: true,
+            include_only: vec![EnvironmentVariablePattern::new_case_insensitive(
+                credential_key,
+            )],
+            r#set: HashMap::from([(context_key.to_string(), current_host.to_string())]),
+            ..ShellEnvironmentPolicy::default()
+        };
+        let mut restored_env = create_env_from_vars([], &policy, /*thread_id*/ None);
+        let context = snapshot_file.restore_credentials(&mut restored_env, &policy);
+        assert!(!restored_env.contains_key(context_key));
+        assert_eq!(
+            context.with_fallbacks(&restored_env)[context_key],
+            current_host
+        );
+        restored_env = context
+            .prepare_child_environment(&network_proxy, restored_env, /*environment_id*/ None)?
+            .env;
+        assert_ne!(restored_env[credential_key], real, "{credential_key}");
+        assert!(!restored_env.contains_key(context_key));
+    }
 
     let unbrokered_replay = Command::new("/bin/bash")
         .arg("-c")
@@ -848,28 +1093,54 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         "Bearer ghp_shell_only_secret\nGitHub ghp_shell_only_secret\nOpenAI sk-proj-snapshot-secret"
     );
 
-    network_proxy.apply_to_env(&mut env);
+    let mut cleared_local_context = HashMap::from([
+        (
+            "LOCAL_AUTH_HEADER".to_string(),
+            snapshot_file
+                .credentials
+                .as_ref()
+                .unwrap()
+                .fail_open_aliases["LOCAL_AUTH_HEADER"]
+                .dummy_value
+                .clone()
+                .unwrap(),
+        ),
+        ("LOCAL_URL".to_string(), String::new()),
+    ]);
+    network_proxy.apply_to_env_for_snapshot(&mut cleared_local_context);
+    env = credential_context
+        .prepare_child_environment(&network_proxy, env, Some("snapshot-child"))?
+        .env;
+    snapshot_file.restore_fail_open_aliases(&mut env, Some("snapshot-child"));
     assert_ne!(env["GH_TOKEN"], "ghp_shell_only_secret");
     assert_ne!(env["GITHUB_TOKEN"], "ghp_readonly_secret");
     assert_ne!(env["GH_ENTERPRISE_TOKEN"], "ghp_enterprise_secret");
     assert_ne!(env["OPENAI_API_KEY"], "sk-proj-snapshot-secret");
+    assert_ne!(
+        env["STRIPE_API_KEY"],
+        "stripe_live_abcdefghijklmnopqrstuvwx"
+    );
+    assert_ne!(env["VENDOR_PASSWORD"], "pin_abcdefgh");
+    assert!(!env.contains_key("LOCAL_TOKEN"));
+    let mut replay_env = env.clone();
+    replay_env.remove("STRIPE_HOST");
     let snapshot_path = snapshot_file.path();
-    prepare_brokered_shell_snapshot_env(&mut env, Some(&snapshot_path), &shell);
+    prepare_brokered_shell_snapshot_env(&mut replay_env, Some(&snapshot_path), &shell);
     let replay_command = maybe_wrap_shell_lc_with_snapshot(
         &shell.derive_exec_args(
-            "printf '%s\\n%s\\n%s' \"$HOMEBREW_GITHUB_API_TOKEN\" \"$AUTH_HEADER\" \"$AUTH_BUNDLE\"",
+            "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s' \"$HOMEBREW_GITHUB_API_TOKEN\" \"$AUTH_HEADER\" \"$AUTH_BUNDLE\" \"$VENDOR_PASSWORD\" \"${VENDOR_HOST-missing}\" \"${STRIPE_HOST-missing}\" \"$LOCAL_AUTH_HEADER\"",
             /*use_login_shell*/ false,
         ),
         &shell,
         Some(&snapshot_path),
         &shell_environment_policy.r#set,
-        &env,
+        &replay_env,
         &RuntimePathPrepends::default(),
     );
     let replay = Command::new(&replay_command[0])
         .args(&replay_command[1..])
         .env_clear()
-        .envs(&env)
+        .envs(&replay_env)
         .output()?;
     assert!(
         replay.status.success(),
@@ -878,8 +1149,13 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     assert_eq!(
         String::from_utf8(replay.stdout)?,
         format!(
-            "{}\nBearer {}\nGitHub {}\nOpenAI {}",
-            env["GITHUB_TOKEN"], env["GH_TOKEN"], env["GH_TOKEN"], env["OPENAI_API_KEY"]
+            "{}\nBearer {}\nGitHub {}\nOpenAI {}\n{}\n{}\nmissing\nBearer local_abcdefghijklmnopqrstuvwx",
+            env["GITHUB_TOKEN"],
+            env["GH_TOKEN"],
+            env["GH_TOKEN"],
+            env["OPENAI_API_KEY"],
+            env["VENDOR_PASSWORD"],
+            env["VENDOR_HOST"]
         )
     );
 
@@ -888,7 +1164,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         ..ShellEnvironmentPolicy::default()
     };
     let mut filtered_env = HashMap::new();
-    snapshot_file.restore_credentials(&mut filtered_env, &filtered_policy);
+    let _ = snapshot_file.restore_credentials(&mut filtered_env, &filtered_policy);
     assert!(filtered_env.is_empty());
 
     let partially_filtered_credential_broker = SnapshotCredentialBroker {
@@ -948,7 +1224,8 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             credentials: filtered_credentials,
         };
         let mut fail_open_env = HashMap::new();
-        filtered_snapshot.restore_fail_open_aliases(&mut fail_open_env);
+        filtered_snapshot
+            .restore_fail_open_aliases(&mut fail_open_env, /*environment_id*/ None);
         assert!(!fail_open_env.contains_key("AUTH_BUNDLE"));
     }
 
@@ -1010,7 +1287,10 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
          export HIDDEN_HEADER=\"prefix\\\"$GH_TOKEN\\\"suffix\"\n\
          export GITHUB_TOKEN='ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh'\n\
          export UNKNOWN_HEADER=\"Bearer $GITHUB_TOKEN\"\n\
-         unset GH_TOKEN GITHUB_TOKEN GITHUB_ENTERPRISE_TOKEN\n",
+         export STRIPE_API_KEY='stripe_live_zyxwvutsrqponmlkjihgfedc'\n\
+         export STRIPE_HIDDEN_HEADER=\"Bearer $STRIPE_API_KEY\"\n\
+         export STRIPE_HOST='api.stripe.example'\n\
+         unset GH_TOKEN GITHUB_TOKEN GITHUB_ENTERPRISE_TOKEN STRIPE_API_KEY\n",
     )?;
     let mut previously_brokered_env = HashMap::from([(
         "GH_TOKEN".to_string(),
@@ -1037,15 +1317,19 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     let inherited_snapshot = fs::read_to_string(&inherited_path).await?;
     assert!(!inherited_snapshot.contains("ghp_hidden_alias_secret"));
     assert!(!inherited_snapshot.contains("ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh"));
+    assert!(!inherited_snapshot.contains("stripe_live_zyxwvutsrqponmlkjihgfedc"));
     let inherited_replay = Command::new("/bin/bash")
         .arg("-c")
-        .arg(". \"$1\" && printf '%s\\n%s' \"${HIDDEN_HEADER-unset}\" \"${UNKNOWN_HEADER-unset}\"")
+        .arg(". \"$1\" && printf '%s\\n%s\\n%s' \"${HIDDEN_HEADER-unset}\" \"${UNKNOWN_HEADER-unset}\" \"${STRIPE_HIDDEN_HEADER-unset}\"")
         .arg("snapshot")
         .arg(inherited_path.as_path())
         .env_clear()
         .output()?;
     assert!(inherited_replay.status.success());
-    assert_eq!(String::from_utf8(inherited_replay.stdout)?, "unset\nunset");
+    assert_eq!(
+        String::from_utf8(inherited_replay.stdout)?,
+        "unset\nunset\nunset"
+    );
 
     let snapshot_file = ShellSnapshotFile {
         path: inherited_path,
@@ -1053,19 +1337,26 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     };
     let real_hidden_header = "prefix\"ghp_hidden_alias_secret\"suffix";
     let real_header = "Bearer ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh";
+    let real_stripe_header = "Bearer stripe_live_zyxwvutsrqponmlkjihgfedc";
     let mut brokered_env = HashMap::new();
-    snapshot_file.restore_credentials(
+    let credential_context = snapshot_file.restore_credentials(
         &mut brokered_env,
         &inherited_credential_broker.shell_environment_policy,
     );
-    inherited_credential_broker
-        .network_proxy
-        .apply_to_env(&mut brokered_env);
+    brokered_env = credential_context
+        .prepare_child_environment(
+            &inherited_credential_broker.network_proxy,
+            brokered_env,
+            /*environment_id*/ None,
+        )?
+        .env;
     let dummy_header = brokered_env["UNKNOWN_HEADER"].clone();
     let dummy_hidden_header = brokered_env["HIDDEN_HEADER"].clone();
+    let dummy_stripe_header = brokered_env["STRIPE_HIDDEN_HEADER"].clone();
     assert_ne!(dummy_header, real_header);
     assert_ne!(dummy_hidden_header, real_hidden_header);
-    snapshot_file.restore_fail_open_aliases(&mut brokered_env);
+    assert_ne!(dummy_stripe_header, real_stripe_header);
+    snapshot_file.restore_fail_open_aliases(&mut brokered_env, /*environment_id*/ None);
     assert_eq!(
         brokered_env.get("UNKNOWN_HEADER").map(String::as_str),
         Some(dummy_header.as_str())
@@ -1074,13 +1365,17 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         brokered_env.get("HIDDEN_HEADER").map(String::as_str),
         Some(dummy_hidden_header.as_str())
     );
+    assert_eq!(
+        brokered_env.get("STRIPE_HIDDEN_HEADER").map(String::as_str),
+        Some(dummy_stripe_header.as_str())
+    );
 
     let mut fail_open_env = HashMap::new();
-    snapshot_file.restore_credentials(
+    let _ = snapshot_file.restore_credentials(
         &mut fail_open_env,
         &inherited_credential_broker.shell_environment_policy,
     );
-    snapshot_file.restore_fail_open_aliases(&mut fail_open_env);
+    snapshot_file.restore_fail_open_aliases(&mut fail_open_env, /*environment_id*/ None);
     assert_eq!(
         fail_open_env.get("UNKNOWN_HEADER").map(String::as_str),
         Some(real_header)
@@ -1088,6 +1383,12 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
     assert_eq!(
         fail_open_env.get("HIDDEN_HEADER").map(String::as_str),
         Some(real_hidden_header)
+    );
+    assert_eq!(
+        fail_open_env
+            .get("STRIPE_HIDDEN_HEADER")
+            .map(String::as_str),
+        Some(real_stripe_header)
     );
 
     std::fs::write(
@@ -1147,9 +1448,11 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         };
         let policy = &inherited_credential_broker.shell_environment_policy;
         let mut restored = HashMap::new();
-        snapshot_file.restore_credentials(&mut restored, policy);
-        network_proxy.apply_to_env(&mut restored);
-        snapshot_file.restore_fail_open_aliases(&mut restored);
+        let context = snapshot_file.restore_credentials(&mut restored, policy);
+        restored = context
+            .prepare_child_environment(&network_proxy, restored, /*environment_id*/ None)?
+            .env;
+        snapshot_file.restore_fail_open_aliases(&mut restored, /*environment_id*/ None);
         assert_eq!(
             restored.get("GH_ENTERPRISE_TOKEN").map(String::as_str),
             Some(real)
@@ -1162,7 +1465,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
                 "GH_ENTERPRISE_TOKEN",
             ));
         let mut filtered = HashMap::new();
-        snapshot_file.restore_credentials(&mut filtered, &excluded);
+        let _ = snapshot_file.restore_credentials(&mut filtered, &excluded);
         assert!(!filtered.contains_key("GH_ENTERPRISE_TOKEN"));
 
         let mut overridden = policy.clone();
@@ -1170,7 +1473,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             .r#set
             .insert("GH_ENTERPRISE_TOKEN".to_string(), String::new());
         let mut empty = overridden.r#set.clone();
-        snapshot_file.restore_credentials(&mut empty, &overridden);
+        let _ = snapshot_file.restore_credentials(&mut empty, &overridden);
         assert_eq!(
             empty.get("GH_ENTERPRISE_TOKEN").map(String::as_str),
             Some("")
@@ -1201,9 +1504,11 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
             };
             std::fs::write(&snapshot_file.path, snapshot)?;
             let mut env = HashMap::from([("AUTH_HEADER".to_string(), format!("Bearer {real}"))]);
-            snapshot_file.restore_credentials(&mut env, &policy);
-            network_proxy.apply_to_env(&mut env);
-            snapshot_file.restore_fail_open_aliases(&mut env);
+            let context = snapshot_file.restore_credentials(&mut env, &policy);
+            env = context
+                .prepare_child_environment(&network_proxy, env, /*environment_id*/ None)?
+                .env;
+            snapshot_file.restore_fail_open_aliases(&mut env, /*environment_id*/ None);
             let replayed = Command::new("/bin/bash")
                 .args([
                     "-c",

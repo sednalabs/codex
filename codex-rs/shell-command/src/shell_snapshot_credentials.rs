@@ -60,9 +60,32 @@ pub fn prepare_snapshot_credentials(
                 .iter()
                 .filter(|credential_key| {
                     real_credential_value(credential_key).is_some_and(|real| {
-                        value == real || real.len() >= 16 && value.contains(real)
-                    }) || discovered.get(*credential_key).is_some_and(|dummy| {
-                        value == dummy || dummy.len() >= 16 && value.contains(dummy)
+                        value == real
+                            || value.contains(real)
+                                && (real.len() >= 16
+                                    || discovered.get(*credential_key).is_some_and(|dummy| {
+                                        discovered.get(key).is_some_and(|virtualized| {
+                                            virtualized != value && virtualized.contains(dummy)
+                                        })
+                                    }))
+                    }) || [
+                        original.get(*credential_key),
+                        discovered.get(*credential_key),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|dummy| !dummy.is_empty())
+                    .any(|dummy| {
+                        value == dummy
+                            || value.contains(dummy)
+                                && (dummy.len() >= 16
+                                    || real_credential_value(credential_key).is_some_and(|real| {
+                                        // Confirm short spans with the broker's path and pattern rules.
+                                        let mut restored = value.replace(dummy, real);
+                                        restored != *value
+                                            && virtualize_text(&mut restored)
+                                            && discovered.get(key) == Some(&restored)
+                                    }))
                     })
                 })
                 .map(String::as_str)
