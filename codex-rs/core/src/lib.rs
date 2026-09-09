@@ -111,6 +111,8 @@ mod stream_events_utils;
 pub mod test_support;
 mod unified_exec;
 pub mod windows_sandbox;
+#[cfg(windows)]
+mod windows_system_config;
 pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
 pub use codex_protocol::config_types::ModelProviderAuthInfo;
 mod event_mapping;

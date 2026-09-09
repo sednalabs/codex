@@ -1,3 +1,5 @@
+use crate::winutil::resolve_sid;
+use crate::winutil::sid_bytes_from_string;
 use crate::winutil::to_wide;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -28,7 +30,9 @@ use windows_sys::Win32::Security::EqualSid;
 use windows_sys::Win32::Security::GENERIC_MAPPING;
 use windows_sys::Win32::Security::GetAce;
 use windows_sys::Win32::Security::GetAclInformation;
+use windows_sys::Win32::Security::IsValidAcl;
 use windows_sys::Win32::Security::MapGenericMask;
+use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -47,7 +51,10 @@ use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_EA;
 use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+use windows_sys::Win32::Storage::FileSystem::WRITE_OWNER;
 const SE_KERNEL_OBJECT: u32 = 6;
+const OBJECT_INHERIT_ACE_FLAG: u8 = 0x01;
 const INHERIT_ONLY_ACE: u8 = 0x08;
 const INHERITED_ACE: u8 = 0x10;
 const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -55,6 +62,17 @@ const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 const GENERIC_READ_MASK: u32 = 0x8000_0000;
 const GENERIC_WRITE_MASK: u32 = 0x4000_0000;
 const DENY_ACCESS: i32 = 3;
+// TrustedInstaller is a deterministic service SID, not a machine-local account SID.
+const TRUSTED_INSTALLER_SID: &str =
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+const STANDARD_USER_MUTATION_MASK: u32 = FILE_WRITE_DATA
+    | FILE_APPEND_DATA
+    | FILE_WRITE_EA
+    | FILE_WRITE_ATTRIBUTES
+    | DELETE
+    | FILE_DELETE_CHILD
+    | WRITE_DAC
+    | WRITE_OWNER;
 
 fn acl_api_result(path: &Path, operation: &str, code: u32) -> Result<()> {
     if code == ERROR_SUCCESS {
@@ -126,6 +144,7 @@ pub unsafe fn dacl_mask_allows(
 enum AceScope {
     Effective,
     Explicit,
+    EffectiveOrChildFile,
 }
 
 unsafe fn dacl_mask_allows_with_scope(
@@ -163,7 +182,10 @@ unsafe fn dacl_mask_allows_with_scope(
         if hdr.AceType != ACCESS_ALLOWED_ACE_TYPE {
             continue; // not ACCESS_ALLOWED
         }
-        if (hdr.AceFlags & INHERIT_ONLY_ACE) != 0 {
+        if (hdr.AceFlags & INHERIT_ONLY_ACE) != 0
+            && (!matches!(scope, AceScope::EffectiveOrChildFile)
+                || (hdr.AceFlags & OBJECT_INHERIT_ACE_FLAG) == 0)
+        {
             continue;
         }
         // SET_ACCESS cannot replace an ACE inherited from an ancestor, so it cannot make
@@ -210,6 +232,105 @@ pub fn path_mask_allows(
         require_all_bits,
         AceScope::Effective,
     )
+}
+
+/// Whether a broad standard-user principal has an allow ACE that can mutate
+/// the path. This is intentionally conservative and does not evaluate deny
+/// ACEs against a concrete token.
+pub fn path_has_standard_user_mutation_allow(path: &Path) -> Result<bool> {
+    path_has_standard_user_mutation_allow_with_scope(path, AceScope::Effective)
+}
+
+/// Whether a broad standard-user principal has an allow ACE that can mutate
+/// the path or a directly inherited child file.
+pub fn path_or_child_file_has_standard_user_mutation_allow(path: &Path) -> Result<bool> {
+    path_has_standard_user_mutation_allow_with_scope(path, AceScope::EffectiveOrChildFile)
+}
+
+fn path_has_standard_user_mutation_allow_with_scope(path: &Path, scope: AceScope) -> Result<bool> {
+    // These canonical labels map to fixed SIDs before any localized account lookup.
+    let mut users = resolve_sid("Users")?;
+    let mut authenticated_users = resolve_sid("Authenticated Users")?;
+    let mut everyone = resolve_sid("Everyone")?;
+    let sids = [
+        users.as_mut_ptr().cast(),
+        authenticated_users.as_mut_ptr().cast(),
+        everyone.as_mut_ptr().cast(),
+    ];
+    unsafe {
+        let (dacl, descriptor) = fetch_dacl_handle(path)?;
+        let result = if dacl.is_null() {
+            Ok(true)
+        } else if IsValidAcl(dacl) == 0 {
+            Err(anyhow!("invalid DACL for {}", path.display()))
+        } else {
+            Ok(dacl_mask_allows_with_scope(
+                dacl,
+                &sids,
+                STANDARD_USER_MUTATION_MASK,
+                /*require_all_bits*/ false,
+                scope,
+            ))
+        };
+        if !descriptor.is_null() {
+            LocalFree(descriptor as HLOCAL);
+        }
+        result
+    }
+}
+
+/// Whether the path owner is one of the conservative administrator-controlled
+/// principals used by the Windows system-config shadow check.
+pub fn path_has_trusted_system_owner(path: &Path) -> Result<bool> {
+    // These canonical labels map to fixed SIDs before any localized account lookup.
+    let mut administrators = resolve_sid("Administrators")?;
+    let mut system = resolve_sid("SYSTEM")?;
+    let mut trusted_installer = sid_bytes_from_string(TRUSTED_INSTALLER_SID)?;
+    let trusted_sids = [
+        administrators.as_mut_ptr().cast(),
+        system.as_mut_ptr().cast(),
+        trusted_installer.as_mut_ptr().cast(),
+    ];
+    path_owner_matches(path, &trusted_sids)
+}
+
+fn path_owner_matches(path: &Path, trusted_sids: &[*mut c_void]) -> Result<bool> {
+    let mut owner = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    let code = unsafe {
+        GetNamedSecurityInfoW(
+            to_wide(path).as_ptr(),
+            1, // SE_FILE_OBJECT
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if code != ERROR_SUCCESS {
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor as HLOCAL) };
+        }
+        return Err(anyhow!(
+            "GetNamedSecurityInfoW failed for {}: {code}",
+            path.display()
+        ));
+    }
+    if owner.is_null() {
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor as HLOCAL) };
+        }
+        return Err(anyhow!("missing owner for {}", path.display()));
+    }
+    let matches = trusted_sids
+        .iter()
+        .any(|trusted_sid| unsafe { EqualSid(owner, *trusted_sid) } != 0);
+    if !descriptor.is_null() {
+        unsafe { LocalFree(descriptor as HLOCAL) };
+    }
+    Ok(matches)
 }
 
 fn path_mask_allows_with_scope(

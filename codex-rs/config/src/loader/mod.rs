@@ -5,6 +5,8 @@ mod macos;
 mod project_discovery;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows;
 
 use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
@@ -58,6 +60,10 @@ pub use local::LocalConfigLayers;
 pub use local::LocalTomlLayer;
 pub use local::LocalTomlLayerStack;
 pub use local::load_local_config_layers;
+#[cfg(windows)]
+pub use windows::WindowsSystemConfigNamespaceProbe;
+#[cfg(windows)]
+pub use windows::probe_windows_system_config_namespace;
 
 #[cfg(unix)]
 const SYSTEM_CONFIG_TOML_FILE_UNIX: &str = "/etc/codex/config.toml";

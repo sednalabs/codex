@@ -1143,7 +1143,7 @@ impl Session {
                 model: Some(session_model.clone()),
                 slug: Some(session_model),
             };
-            config.features.emit_metrics(&session_telemetry);
+            crate::config::emit_session_start_metrics(config.as_ref(), &session_telemetry);
             let is_worktree = session_configuration.cwd().canonicalize().ok().and_then(|cwd| {
                 codex_git_utils::repository_identity(&cwd).and_then(|_| {
                     get_git_repo_root(&cwd).map(|root| root.join(".git").is_file())
