@@ -4065,11 +4065,13 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
+ "codex-windows-sandbox",
  "learning_mode_windows",
  "pretty_assertions",
  "tempfile",
  "thiserror 2.0.18",
  "tracelogging",
+ "windows-sys 0.61.2",
  "wxc_common",
 ]
 
