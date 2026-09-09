@@ -19,6 +19,7 @@ use codex_app_server_protocol::RemoteControlPairingStartParams;
 use codex_app_server_protocol::RemoteControlPairingStatusParams;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::AuthManager;
 use codex_login::save_auth;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -36,16 +37,17 @@ async fn connect_test_websocket(
     auth_manager: &Arc<AuthManager>,
     current_enrollment: &CurrentRemoteControlEnrollment,
 ) -> io::Result<()> {
-    let mut auth_recovery = auth_manager.unauthorized_recovery();
+    let session_auth = RemoteControlAuth::capture(auth_manager.clone()).0;
+    let mut auth_recovery = session_auth.unauthorized_recovery();
     let mut auth_change_rx = auth_manager.auth_change_receiver();
     let (status_publisher, _) = remote_control_status_channel();
     let desired_state_tx = enabled_desired_state_sender();
-    let desired_state_persistence_lock = Semaphore::new(1);
+    let persistence = RemoteControlPersistence::default();
     connect_remote_control_websocket(
         remote_control_target,
         Some(state_db),
         RemoteControlAuthContext {
-            auth_manager,
+            auth_manager: &session_auth,
             auth_recovery: &mut auth_recovery,
             auth_change_rx: &mut auth_change_rx,
         },
@@ -56,7 +58,7 @@ async fn connect_test_websocket(
             subscribe_cursor: None,
             app_server_client_name: None,
             desired_state_tx: &desired_state_tx,
-            desired_state_persistence_lock: &desired_state_persistence_lock,
+            persistence: &persistence,
         },
         &status_publisher,
     )

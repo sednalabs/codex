@@ -33,6 +33,20 @@ async fn assert_overload_retry_after(status: &str, reject_enrollment: bool) {
     let (transport_event_tx, _transport_event_rx) = mpsc::channel(CHANNEL_CAPACITY);
     let shutdown_token = CancellationToken::new();
     let auth_manager = remote_control_auth_manager_with_home(&codex_home);
+    let mut initial_auth = remote_control_auth_dot_json(Some("account_id"));
+    initial_auth
+        .tokens
+        .as_mut()
+        .expect("fixture should contain tokens")
+        .access_token = "Initial Access Token".to_string();
+    save_auth(
+        codex_home.path(),
+        &initial_auth,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("initial credentials should save");
+    auth_manager.reload().await;
     let (remote_task, remote_handle) = start_remote_control(
         RemoteControlStartConfig {
             remote_control_url: remote_control_url_for_listener(&listener),
@@ -144,6 +158,8 @@ async fn assert_overload_retry_after(status: &str, reject_enrollment: bool) {
     if !reject_enrollment {
         assert_eq!(
             remote_handle
+                .inner
+                .session()
                 .current_enrollment
                 .snapshot()
                 .and_then(|enrollment| enrollment.remote_control_token),
