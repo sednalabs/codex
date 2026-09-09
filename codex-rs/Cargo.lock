@@ -2212,6 +2212,7 @@ dependencies = [
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
+ "codex-network-proxy",
  "codex-otel",
  "codex-plugin",
  "codex-protocol",

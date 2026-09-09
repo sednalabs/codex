@@ -40,6 +40,7 @@ codex-aws-auth = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-config = { workspace = true }
+codex-network-proxy = { workspace = true }
 codex-connectors = { workspace = true }
 codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
