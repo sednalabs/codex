@@ -278,7 +278,7 @@ pub(crate) enum AppEvent {
     },
     /// Start a background task directly from the shared dashboard.
     DispatchAgentsOverviewTask {
-        prompt: String,
+        prompt: UserMessage,
         cwd: Option<AbsolutePathBuf>,
     },
     /// Rename a task directly from the shared dashboard.

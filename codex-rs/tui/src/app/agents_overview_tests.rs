@@ -145,7 +145,7 @@ async fn overview_composer_preserves_editing_and_routes_focus() {
     view.handle_key_event(KeyCode::Esc.into());
     view.handle_key_event(KeyCode::Tab.into());
     assert!(
-        matches!(rx.try_recv(), Ok(AppEvent::DispatchAgentsOverviewTask { prompt, .. }) if prompt == expected.0)
+        matches!(rx.try_recv(), Ok(AppEvent::DispatchAgentsOverviewTask { prompt, .. }) if prompt.text == expected.0)
     );
     view.handle_key_event(KeyCode::Up.into());
     assert_eq!(overview_draft(&app).0, expected.0);
@@ -161,7 +161,7 @@ async fn overview_composer_preserves_editing_and_routes_focus() {
     app.dispatch_agents_overview_task(&mut server, "retry me".into(), Some(app.config.cwd.clone()))
         .await;
     view.handle_paste(" later".into());
-    app.submit_agents_overview_prompt(&server, thread_id, "older failure".into())
+    app.submit_agents_overview_prompt(&server, thread_id, "older failure".into(), Vec::new())
         .await;
     assert_eq!(overview_draft(&app).0, "retry me later");
     server.shutdown().await.unwrap();
@@ -222,7 +222,7 @@ async fn overview_composer_preserves_pastes_and_editor_bindings() {
     view.handle_key_event(KeyCode::Char('x').into());
     view.handle_key_event(KeyCode::F(8).into());
     assert!(
-        matches!(rx.try_recv(), Ok(AppEvent::DispatchAgentsOverviewTask { prompt, .. }) if prompt == format!("{pasted}\nabcxlast line"))
+        matches!(rx.try_recv(), Ok(AppEvent::DispatchAgentsOverviewTask { prompt, .. }) if prompt.text == format!("{pasted}\nabcxlast line"))
     );
 }
 
@@ -1094,7 +1094,7 @@ async fn shared_overview_shows_only_root_sessions() {
     assert!(matches!(
         event_rx.try_recv(),
         Ok(AppEvent::DispatchAgentsOverviewTask { prompt, cwd: None })
-            if prompt == "Use the current project"
+            if prompt.text == "Use the current project"
     ));
     action_view.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     action_view.handle_key_event(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
@@ -1114,7 +1114,7 @@ async fn shared_overview_shows_only_root_sessions() {
     assert!(matches!(
         event_rx.try_recv(),
         Ok(AppEvent::DispatchAgentsOverviewTask { prompt, cwd: Some(cwd) })
-            if prompt == "Fix the flaky tests after all retries complete"
+            if prompt.text == "Fix the flaky tests after all retries complete"
                 && cwd == test_path_buf("/tmp/project").abs()
     ));
     assert!(action_view.handle_paste("   ".to_string()));
@@ -1131,7 +1131,7 @@ async fn shared_overview_shows_only_root_sessions() {
     assert!(matches!(
         event_rx.try_recv(),
         Ok(AppEvent::DispatchAgentsOverviewTask { prompt, .. })
-            if prompt.trim() == "Continue working"
+            if prompt.text.trim() == "Continue working"
     ));
     action_view.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     action_view.handle_paste("First line\nSecond line".into());
