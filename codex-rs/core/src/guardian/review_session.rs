@@ -36,6 +36,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::AskForApproval;
+#[cfg(test)]
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::ErrorEvent;
@@ -100,17 +101,7 @@ use super::reviewer_config::read_only_guardian_permission_profile;
 
 const GUARDIAN_INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const GUARDIAN_MAX_IMAGE_ITEM_TOKENS: i64 = 10_000;
-#[derive(Debug)]
-pub(crate) enum GuardianReviewSessionOutcome {
-    Completed(anyhow::Result<Option<String>>),
-    PromptBuildFailed(anyhow::Error),
-    SessionFailed {
-        error: anyhow::Error,
-        error_info: Option<CodexErrorInfo>,
-    },
-    TimedOut,
-    Aborted,
-}
+pub(crate) use codex_guardian_reviewer::GuardianReviewSessionOutcome;
 
 pub(crate) struct GuardianReviewSessionParams {
     pub(crate) parent_session: Arc<Session>,

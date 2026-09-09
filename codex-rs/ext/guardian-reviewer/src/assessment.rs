@@ -104,7 +104,7 @@ pub fn guardian_output_schema() -> Value {
 
 /// Prompt fragment that describes the exact JSON contract paired with
 /// `guardian_output_schema()`.
-pub(super) fn guardian_output_contract_prompt() -> &'static str {
+pub fn guardian_output_contract_prompt() -> &'static str {
     r#"You may use read-only tool checks to gather any additional context you need before deciding. When you are ready to answer, your final message must be strict JSON.
 
 For low-risk actions, give the final answer directly: {"outcome":"allow"}.

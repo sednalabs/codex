@@ -362,8 +362,8 @@ pub(crate) fn guardian_truncate_text(content: &str, token_cap: usize) -> (String
     )
 }
 
-use super::assessment::guardian_output_contract_prompt;
-pub use super::assessment::parse_guardian_assessment;
+use codex_guardian_reviewer::guardian_output_contract_prompt;
+pub use codex_guardian_reviewer::parse_guardian_assessment;
 
 pub(crate) const BUNDLED_GUARDIAN_POLICY: &str = include_str!("../../assets/guardian/policy.md");
 pub(crate) const BUNDLED_GUARDIAN_POLICY_TEMPLATE: &str =
