@@ -517,13 +517,13 @@ jobs:
           # Release tags bump Cargo.toml without rewriting the workspace lockfile.
           # Refresh workspace versions before Bazel reads the Cargo dependency graph.
           (cd codex-rs && cargo update --workspace)
-          bazel build //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
+          bazel build -c opt //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
           runtime="bazel-bin/third_party/voice/native_runtime_${PREFIX}"
           PYTHONPATH=third_party/voice python3 - "$runtime" "$TARGET" <<'PY'
           from pathlib import Path
           import sys
           from package_runtime import runtime_files
-          runtime_files(Path(sys.argv[1]), sys.argv[2])
+          runtime_files(Path(sys.argv[1]).resolve(strict=True), sys.argv[2])
           PY
           mkdir -p "voice-unsigned/${TARGET}"
           cp -R "$runtime" "voice-unsigned/${TARGET}/runtime"
@@ -863,7 +863,7 @@ jobs:
           from pathlib import Path
           import sys
           from package_runtime import runtime_files
-          runtime_files(Path(sys.argv[1]), sys.argv[2], public_release=True)
+          runtime_files(Path(sys.argv[1]).resolve(strict=True), sys.argv[2], public_release=True)
           PY
           while IFS= read -r -d '' binary; do
             lipo "$binary" -verify_arch "$arch"
@@ -1330,7 +1330,7 @@ jobs:
           from runtime import digest
 
           voice, target, package = map(Path, sys.argv[1:])
-          runtime_files(voice, str(target), public_release=True)
+          runtime_files(voice.resolve(strict=True), str(target), public_release=True)
           manifest = json.loads((voice / "manifest.json").read_text())
           assert manifest["buildCommit"] == __import__("os").environ["VOICE_BUILD_COMMIT"]
           for relative, expected in manifest["sha256"].items():

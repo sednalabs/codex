@@ -37,6 +37,7 @@ def seal(root: Path, target: str) -> None:
         record["sha256"] = digest(root / record["path"])
     manifest["developmentOnly"] = False
     manifest["distribution"] = "publicRelease"
+    manifest_path.chmod(manifest_path.stat().st_mode | 0o200)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     runtime_files(root, target, public_release=True)
 

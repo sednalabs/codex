@@ -225,7 +225,7 @@ if [[ -n "$voice_signed_dir" ]]; then
     --build-commit "$(git -C "$repo_root" rev-parse HEAD)" \
     --release-version "$release_version" \
     --output "$voice_package"
-  PYTHONPATH="${repo_root}/public/scripts" "$python_bin" - \
+  PYTHONPATH="${repo_root}/scripts" "$python_bin" - \
     "$voice_package" "$gzip_archive_path" "$zstd_archive_path" <<'PY'
 import sys
 from pathlib import Path
