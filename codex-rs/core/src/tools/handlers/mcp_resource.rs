@@ -13,6 +13,7 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
+use codex_utils_output_truncation::with_serialization_allowance;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -362,7 +363,7 @@ where
     })?;
     // Match regular MCP tool outputs by bounding the copy persisted to the
     // rollout and injected into model context.
-    let content = truncate_text(&content, truncation_policy * 1.2);
+    let content = truncate_text(&content, with_serialization_allowance(truncation_policy));
 
     Ok(FunctionToolOutput::from_text(content, Some(true)))
 }

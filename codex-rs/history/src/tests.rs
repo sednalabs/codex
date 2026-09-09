@@ -78,7 +78,7 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
             item: response_item.clone(),
             metadata: Some(CodexHarnessMetadata {
                 client_authored: true,
-                fallback_token_limit_override: Some(20_000),
+                history_truncation_token_limit: Some(20_000),
                 inherited_user_message: true,
                 ..Default::default()
             }),
@@ -110,7 +110,7 @@ fn response_item_envelope_stores_metadata_beside_rollout_payload() -> Result<()>
         envelope.metadata,
         Some(CodexHarnessMetadata {
             client_authored: true,
-            fallback_token_limit_override: Some(20_000),
+            history_truncation_token_limit: Some(20_000),
             inherited_user_message: true,
             ..Default::default()
         })

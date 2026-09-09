@@ -2532,10 +2532,17 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 }
 
-#[test_case::test_case(false; "plain items")]
-#[test_case::test_case(true; "annotated items")]
+#[test_case::test_case(false, None, false, 5; "plain items")]
+#[test_case::test_case(true, None, false, 5; "annotated items")]
+#[test_case::test_case(true, Some(100), false, 100; "existing tool budget")]
+#[test_case::test_case(false, None, true, 31; "byte policy includes allowance before conversion")]
 #[tokio::test]
-async fn annotated_history_uses_explicit_model_without_a_step(retain_metadata: bool) {
+async fn annotated_history_uses_explicit_model_without_a_step(
+    retain_metadata: bool,
+    saved_budget: Option<usize>,
+    byte_policy: bool,
+    expected_budget: usize,
+) {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
@@ -2548,8 +2555,11 @@ async fn annotated_history_uses_explicit_model_without_a_step(retain_metadata: b
     )
     .await;
     let mut model_info = turn_context.model_info().as_ref().clone();
-    model_info.truncation_policy =
-        codex_protocol::openai_models::TruncationPolicyConfig::tokens(/*limit*/ 4);
+    model_info.truncation_policy = if byte_policy {
+        codex_protocol::openai_models::TruncationPolicyConfig::bytes(/*limit*/ 101)
+    } else {
+        codex_protocol::openai_models::TruncationPolicyConfig::tokens(/*limit*/ 4)
+    };
     let text = "diagnostic line\n".repeat(50);
     let mut item = ResponseItem::FunctionCallOutput {
         id: Some(ResponseItemId::with_suffix("fco", "existing")),
@@ -2564,24 +2574,52 @@ async fn annotated_history_uses_explicit_model_without_a_step(retain_metadata: b
     };
     item.set_turn_id_if_missing("existing-turn");
     item.set_create_time_if_missing(123.into());
-    let mut expected = ResponseItemEnvelope {
+    let expected = ResponseItemEnvelope {
         item,
         metadata: retain_metadata.then_some(CodexHarnessMetadata {
             client_authored: true,
+            history_truncation_token_limit: saved_budget,
             ..Default::default()
         }),
     };
+    let mut expected = vec![
+        expected,
+        ResponseItemEnvelope {
+            item: ResponseItem::CustomToolCallOutput {
+                id: Some(ResponseItemId::with_suffix("ctco", "existing")),
+                call_id: "call-custom".to_string(),
+                name: None,
+                output: FunctionCallOutputPayload::from_text(text.clone()),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            metadata: retain_metadata.then_some(CodexHarnessMetadata {
+                client_authored: true,
+                history_truncation_token_limit: saved_budget,
+                ..Default::default()
+            }),
+        },
+    ];
+    expected[1].item.set_turn_id_if_missing("existing-turn");
+    expected[1].item.set_create_time_if_missing(123.into());
     session
-        .record_annotated_conversation_items(&turn_context, &model_info, vec![expected.clone()])
+        .record_annotated_conversation_items(&turn_context, &model_info, expected.clone())
         .await;
-    let ResponseItem::FunctionCallOutput { output, .. } = &mut expected.item else {
-        unreachable!("fixture is a tool output");
-    };
-    output.body = FunctionCallOutputBody::Text(codex_utils_output_truncation::truncate_text(
-        &text,
-        codex_utils_output_truncation::TruncationPolicy::Tokens(4) * 1.2,
-    ));
-    assert_eq!(session.clone_history().await.annotated_items(), &[expected]);
+    for envelope in &mut expected {
+        envelope
+            .metadata
+            .get_or_insert_default()
+            .history_truncation_token_limit = Some(expected_budget);
+        let (ResponseItem::FunctionCallOutput { output, .. }
+        | ResponseItem::CustomToolCallOutput { output, .. }) = &mut envelope.item
+        else {
+            unreachable!("fixture is a tool output");
+        };
+        output.body = FunctionCallOutputBody::Text(codex_utils_output_truncation::truncate_text(
+            &text,
+            codex_utils_output_truncation::TruncationPolicy::Tokens(expected_budget),
+        ));
+    }
+    assert_eq!(session.clone_history().await.annotated_items(), &expected);
 }
 
 #[tokio::test]

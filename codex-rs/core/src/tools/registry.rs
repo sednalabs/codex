@@ -203,7 +203,7 @@ impl AnyToolResult {
             metadata: result
                 .fallback_token_limit_override()
                 .map(|limit| CodexHarnessMetadata {
-                    fallback_token_limit_override: Some(limit),
+                    history_truncation_token_limit: Some(limit),
                     ..Default::default()
                 }),
         }

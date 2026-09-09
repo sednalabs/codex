@@ -3,6 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_config::McpServerConfig;
 use codex_core::CodexThread;
+use codex_core::ForkSnapshot;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
@@ -29,6 +30,7 @@ use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -83,6 +85,7 @@ use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_response_sequence;
+use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
@@ -286,7 +289,7 @@ fn request_turn_id(request: &ResponsesRequest) -> String {
 
 // Dynamic tools return the original payload, so handler truncation cannot hide a recorder bug.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_result_history_keeps_originating_model_across_switch() -> Result<()> {
+async fn tool_result_history_keeps_originating_model_across_switch_and_replay() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let mut test = step_settings_test()
@@ -438,10 +441,8 @@ async fn tool_result_history_keeps_originating_model_across_switch() -> Result<(
 
     // Persistence and raw notifications retain the prepared, untruncated payload in append order.
     test.codex.shutdown_and_wait().await?;
-    let history = codex_rollout::RolloutRecorder::get_rollout_history(
-        &test.codex.rollout_path().expect("rollout path"),
-    )
-    .await?;
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+    let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
     let saved_outputs = history
         .get_rollout_items()
         .iter()
@@ -449,12 +450,183 @@ async fn tool_result_history_keeps_originating_model_across_switch() -> Result<(
             RolloutItem::ResponseItem(envelope)
                 if matches!(&envelope.item, ResponseItem::FunctionCallOutput { .. }) =>
             {
-                Some(serde_json::to_value(&envelope.item).expect("saved output"))
+                Some((
+                    serde_json::to_value(&envelope.item).expect("saved output"),
+                    envelope
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.history_truncation_token_limit),
+                ))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(saved_outputs, raw_outputs);
+    assert_eq!(
+        saved_outputs,
+        raw_outputs
+            .into_iter()
+            .zip([Some(120), Some(480)])
+            .collect::<Vec<_>>()
+    );
+
+    // Resume and fork under both limits. A's output must not grow under B, and
+    // B's output must not shrink under A; image preparation and item IDs also survive.
+    for model in [MODEL_A, MODEL_B] {
+        let mut replay_config = test.config.clone();
+        replay_config.model = Some(model.to_string());
+        let resumed = test
+            .thread_manager
+            .resume_thread_from_rollout(
+                replay_config.clone(),
+                rollout_path.clone(),
+                codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("dummy")),
+                /*parent_trace*/ None,
+                ClientMcpExtensions::default(),
+            )
+            .await?
+            .thread;
+        let forked = test
+            .thread_manager
+            .fork_thread(
+                ForkSnapshot::Interrupted,
+                StartThreadOptions::new(replay_config),
+                rollout_path.clone(),
+            )
+            .await?
+            .thread;
+        for thread in [resumed, forked] {
+            let replay = mount_sse_once(&server, sse_completed("resp-replay")).await;
+            thread
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: "review saved diagnostics".to_string(),
+                    text_elements: Vec::new(),
+                }]))
+                .await?;
+            wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+            let request = replay.single_request();
+            assert_eq!(request.body_json()["model"], model);
+            for call_id in ["call-a", "call-b"] {
+                assert_eq!(
+                    request.function_call_output(call_id),
+                    requests[2].function_call_output(call_id)
+                );
+            }
+            thread.shutdown_and_wait().await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn custom_tool_output_replay_preserves_originating_budget() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let test = step_settings_test()
+        .with_model(MODEL_B)
+        .with_config(|config| {
+            config.features.enable(Feature::CodeMode).unwrap();
+            for model in &mut config.model_catalog.as_mut().expect("models").models {
+                model.truncation_policy =
+                    TruncationPolicyConfig::tokens(if model.slug == MODEL_B { 400 } else { 100 });
+                model.tool_mode = Some(ToolMode::CodeModeOnly);
+                model.use_responses_lite = false;
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-custom"),
+                ev_custom_tool_call(
+                    "call-custom",
+                    "exec",
+                    "text('diagnostic line\\n'.repeat(500));",
+                ),
+                ev_completed("resp-custom"),
+            ]),
+            sse_completed("resp-done"),
+        ],
+    )
+    .await;
+    test.submit_text_turn("collect diagnostics").await?;
+    let live_output = responses.requests()[1].custom_tool_call_output("call-custom");
+    let text = "diagnostic line\n".repeat(500);
+    let live_text = live_output["output"][1]["text"]
+        .as_str()
+        .expect("bounded custom output");
+    assert!(live_text.len() < text.len());
+    // A's smaller history budget would truncate this result again without the saved budget.
+    assert_ne!(
+        truncate_text(live_text, TruncationPolicy::Tokens(120)),
+        live_text
+    );
+
+    test.codex.shutdown_and_wait().await?;
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+    let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
+    let saved = history
+        .get_rollout_items()
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::ResponseItem(envelope)
+                if matches!(&envelope.item, ResponseItem::CustomToolCallOutput { call_id, .. } if call_id == "call-custom") =>
+            {
+                Some(envelope)
+            }
+            _ => None,
+        })
+        .expect("saved custom output");
+    assert_eq!(
+        saved
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.history_truncation_token_limit),
+        Some(480)
+    );
+    assert_eq!(
+        serde_json::to_value(&saved.item)?["output"][1]["text"],
+        text
+    );
+
+    let mut replay_config = test.config.clone();
+    replay_config.model = Some(MODEL_A.to_string());
+    let resumed = test
+        .thread_manager
+        .resume_thread_from_rollout(
+            replay_config.clone(),
+            rollout_path.clone(),
+            codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?
+        .thread;
+    let forked = test
+        .thread_manager
+        .fork_thread(
+            ForkSnapshot::Interrupted,
+            StartThreadOptions::new(replay_config),
+            rollout_path,
+        )
+        .await?
+        .thread;
+    for thread in [resumed, forked] {
+        let replay = mount_sse_once(&server, sse_completed("resp-replay")).await;
+        thread
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "review saved diagnostics".to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+        let request = replay.single_request();
+        assert_eq!(request.body_json()["model"], MODEL_A);
+        assert_eq!(request.custom_tool_call_output("call-custom"), live_output);
+        thread.shutdown_and_wait().await?;
+    }
     Ok(())
 }
 

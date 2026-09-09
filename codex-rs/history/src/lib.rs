@@ -50,10 +50,14 @@ pub struct CodexHarnessMetadata {
     #[serde(default)]
     pub client_authored: bool,
 
-    /// Overrides history's fallback truncation budget, including on resume.
-    /// Measured in tokens, with any tool-specific allowance already included.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback_token_limit_override: Option<usize>,
+    /// The originating history budget, including any tool-specific allowance.
+    /// Measured in tokens and reused when replaying persisted history.
+    #[serde(
+        default,
+        rename = "fallback_token_limit_override",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub history_truncation_token_limit: Option<usize>,
 
     /// Whether a response configuration update was created by the Codex harness itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -21,6 +21,7 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_function_output_payload;
 use codex_utils_output_truncation::truncate_text;
+use codex_utils_output_truncation::with_serialization_allowance;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::num::NonZeroUsize;
@@ -124,7 +125,7 @@ impl ToolOutput for McpToolOutput {
     }
 
     fn fallback_token_limit_override(&self) -> Option<usize> {
-        Some((self.truncation_policy * 1.2).token_budget())
+        Some(with_serialization_allowance(self.truncation_policy).token_budget())
     }
 
     fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
@@ -173,7 +174,7 @@ impl McpToolOutput {
         // History receives this budget in tokens. Code Mode keeps the raw result.
         truncate_function_output_payload(
             &mut payload,
-            self.truncation_policy * 1.2,
+            with_serialization_allowance(self.truncation_policy),
             estimate_audio_token_count,
         );
         payload
@@ -515,7 +516,7 @@ impl ExecCommandToolOutput {
 
     fn response_text(&self) -> String {
         let header = self.response_header();
-        let output_budget = (self.truncation_policy * 1.2)
+        let output_budget = with_serialization_allowance(self.truncation_policy)
             .byte_budget()
             .saturating_sub(header.len().saturating_add(/*rhs*/ 1));
         let mut policy = self.model_output_policy();
