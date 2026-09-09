@@ -45,6 +45,7 @@ fn policy_ctx(
     MitmPolicyContext {
         target_host: target_host.to_string(),
         target_port,
+        scheme: Scheme::HTTPS,
         mode,
         app_state,
     }

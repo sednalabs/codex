@@ -307,7 +307,8 @@ async fn http_connect_accept(
             return Err(text_response(StatusCode::INTERNAL_SERVER_ERROR, "error"));
         }
     };
-    let connect_mitm_mode = if mode == NetworkMode::Limited {
+    let brokered_http = matches!(host_mitm_requirement, HostMitmRequirement::Credential(protocols) if protocols.http);
+    let connect_mitm_mode = if mode == NetworkMode::Limited && !brokered_http {
         ConnectMitmMode::Enabled
     } else {
         match host_mitm_requirement {
@@ -321,7 +322,7 @@ async fn http_connect_accept(
 
     if connect_mitm_mode == ConnectMitmMode::Enabled && mitm_state.is_none() {
         // Limited-mode enforcement and host-specific hooks require interception. Credential-only
-        // interception is deferred until the upgraded stream presents a TLS ClientHello.
+        // interception is deferred until the upgraded stream presents a supported protocol.
         emit_http_block_decision_audit_event(
             &app_state,
             BlockDecisionAuditEventArgs {
@@ -381,6 +382,11 @@ async fn http_connect_accept(
 }
 
 async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
+    let mode = upgraded
+        .extensions()
+        .get::<NetworkMode>()
+        .copied()
+        .unwrap_or(NetworkMode::Full);
     let connect_mitm_mode = upgraded
         .extensions()
         .get::<ConnectMitmMode>()
@@ -394,10 +400,25 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
                 Ok((crate::brokered_tunnel::TunnelProtocol::Tls, stream)) => {
                     mitm_connect_tunnel(stream).await
                 }
-                Ok((crate::brokered_tunnel::TunnelProtocol::Opaque, stream)) => {
-                    forward_connect_tunnel(stream).await
+                Ok((crate::brokered_tunnel::TunnelProtocol::Http, stream)) => {
+                    mitm::mitm_stream(stream, rama_http::uri::Scheme::HTTP)
+                        .await
+                        .map_err(|err| {
+                            OpaqueError::from_display(format!("HTTP tunnel error: {err}"))
+                        })
                 }
-                Err(err) => Err(OpaqueError::from_display(format!("detect TLS: {err:#}"))),
+                Ok((crate::brokered_tunnel::TunnelProtocol::Opaque, stream)) => {
+                    if mode == NetworkMode::Limited {
+                        Err(OpaqueError::from_display(
+                            "opaque tunnels are not allowed in limited mode",
+                        ))
+                    } else {
+                        forward_connect_tunnel(stream).await
+                    }
+                }
+                Err(err) => Err(OpaqueError::from_display(format!(
+                    "detect tunnel protocol: {err:#}"
+                ))),
             }
         }
     };
@@ -430,7 +451,7 @@ where
     }
 
     info!("CONNECT MITM enabled (host={host}, port={port}, mode={mode:?})");
-    mitm::mitm_stream(stream)
+    mitm::mitm_stream(stream, rama_http::uri::Scheme::HTTPS)
         .await
         .map_err(|err| OpaqueError::from_display(format!("MITM tunnel error: {err}")))
 }
@@ -1019,7 +1040,7 @@ fn validate_absolute_form_host_header(
 
     Ok(())
 }
-fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
+pub(crate) fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
     while let Some(raw_connection) = headers.get(header::CONNECTION).cloned() {
         headers.remove(header::CONNECTION);
         if let Ok(raw_connection) = raw_connection.to_str() {
@@ -1333,7 +1354,10 @@ mod tests {
         assert_eq!(
             request.extensions().get::<ConnectMitmMode>().copied(),
             Some(ConnectMitmMode::DetectProtocol(
-                crate::brokered_tunnel::BrokeredProtocols { tls: true }
+                crate::brokered_tunnel::BrokeredProtocols {
+                    tls: true,
+                    http: false
+                }
             ))
         );
     }
@@ -1406,6 +1430,25 @@ mod tests {
             state.virtualize_child_credentials(&mut env);
             let dummy = env.get("PROVIDER_TOKEN").expect("dummy provider token");
             assert_ne!(dummy, real_token);
+            assert_eq!(
+                state.host_mitm_requirement(host, port).await.unwrap(),
+                HostMitmRequirement::Credential(crate::brokered_tunnel::BrokeredProtocols {
+                    tls: !prefix.is_empty(),
+                    http: prefix.is_empty()
+                })
+            );
+            assert_eq!(
+                state.host_mitm_requirement(host, port + 1).await.unwrap(),
+                HostMitmRequirement::None
+            );
+            assert_eq!(
+                state
+                    .for_environment_id(Some("other"))
+                    .host_mitm_requirement(host, port)
+                    .await
+                    .unwrap(),
+                HostMitmRequirement::None
+            );
             for (uri, inject) in [
                 (format!("http://{host}:{port}/v1/models"), prefix.is_empty()),
                 (format!("http://{host}:{}/v1/models", port + 1), false),

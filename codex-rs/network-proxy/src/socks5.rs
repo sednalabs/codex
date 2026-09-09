@@ -271,10 +271,17 @@ async fn handle_socks5_tcp(
             return Err(io::Error::other("proxy error").into());
         }
     };
-    // SOCKS5 only exposes host and port, so only the default HTTPS port is identifiable as a
-    // TLS stream that the HTTPS MITM path can safely terminate.
+    let host_mitm_requirement = match app_state.host_mitm_requirement(&host, port).await {
+        Ok(requirement) => requirement,
+        Err(err) => {
+            error!("failed to inspect MITM requirements for {host}: {err}");
+            return Err(io::Error::other("proxy error").into());
+        }
+    };
+    // Otherwise retain the existing limited-mode restriction to the default HTTPS port.
+    let brokered_http = matches!(host_mitm_requirement, HostMitmRequirement::Credential(protocols) if protocols.http);
     let socks5_tcp_target_is_https = port == 443;
-    if mode == NetworkMode::Limited && !socks5_tcp_target_is_https {
+    if mode == NetworkMode::Limited && !socks5_tcp_target_is_https && !brokered_http {
         emit_socks_block_decision_audit_event(
             &app_state,
             NetworkDecisionSource::ModeGuard,
@@ -364,13 +371,6 @@ async fn handle_socks5_tcp(
         }
     }
 
-    let host_mitm_requirement = match app_state.host_mitm_requirement(&host, port).await {
-        Ok(requirement) => requirement,
-        Err(err) => {
-            error!("failed to inspect MITM requirements for {host}: {err}");
-            return Err(io::Error::other("proxy error").into());
-        }
-    };
     let mitm_state = match app_state.mitm_state().await {
         Ok(state) => state,
         Err(err) => {
@@ -378,7 +378,7 @@ async fn handle_socks5_tcp(
             return Err(io::Error::other("proxy error").into());
         }
     };
-    let socks_mitm_mode = if mode == NetworkMode::Limited {
+    let socks_mitm_mode = if mode == NetworkMode::Limited && !brokered_http {
         SocksMitmMode::Enabled
     } else {
         match host_mitm_requirement {
@@ -599,7 +599,9 @@ async fn proxy_socks5_tcp(
             source.extensions_mut().insert(ProxyTarget(target));
             source.extensions_mut().insert(mode);
             source.extensions_mut().insert(mitm);
-            mitm::mitm_stream(source).await.map_err(Into::into)
+            mitm::mitm_stream(source, rama_http::uri::Scheme::HTTPS)
+                .await
+                .map_err(Into::into)
         }
         Socks5TcpConnection::DetectProtocol {
             protocols,
@@ -617,9 +619,23 @@ async fn proxy_socks5_tcp(
                 .map_err(|err| -> BoxError { err.into() })?;
             match protocol {
                 crate::brokered_tunnel::TunnelProtocol::Tls => {
-                    mitm::mitm_stream(source).await.map_err(Into::into)
+                    mitm::mitm_stream(source, rama_http::uri::Scheme::HTTPS)
+                        .await
+                        .map_err(Into::into)
+                }
+                crate::brokered_tunnel::TunnelProtocol::Http => {
+                    mitm::mitm_stream(source, rama_http::uri::Scheme::HTTP)
+                        .await
+                        .map_err(Into::into)
                 }
                 crate::brokered_tunnel::TunnelProtocol::Opaque => {
+                    if mode == NetworkMode::Limited {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "opaque tunnels are not allowed in limited mode",
+                        )
+                        .into());
+                    }
                     info!("SOCKS opaque upstream dial started (target={target})");
                     let connect_started_at = Instant::now();
                     let EstablishedClientConnection { conn: upstream, .. } =

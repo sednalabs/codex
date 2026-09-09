@@ -907,7 +907,7 @@ impl NetworkProxyState {
         );
         Ok(if host_has_mitm_hooks {
             HostMitmRequirement::Always
-        } else if protocols.tls {
+        } else if protocols.tls || protocols.http {
             HostMitmRequirement::Credential(protocols)
         } else {
             HostMitmRequirement::None
