@@ -1,9 +1,14 @@
 use crate::winutil::resolve_sid;
 use crate::winutil::sid_bytes_from_string;
 use crate::winutil::to_wide;
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::ensure;
 use std::ffi::c_void;
+use std::fs::OpenOptions;
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
@@ -49,8 +54,10 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_EA;
+use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
 use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
 use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_NONE;
 use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
 use windows_sys::Win32::Storage::FileSystem::WRITE_OWNER;
 const SE_KERNEL_OBJECT: u32 = 6;
@@ -740,11 +747,60 @@ impl DenyAceKind {
     }
 }
 
+unsafe fn deny_ace_already_present(
+    handle: &std::fs::File,
+    path: &Path,
+    psid: *mut c_void,
+    kind: DenyAceKind,
+) -> Result<bool> {
+    let (mut p_dacl, mut p_sd) = (std::ptr::null_mut(), std::ptr::null_mut());
+    let code = GetSecurityInfo(
+        handle.as_raw_handle() as _,
+        1,
+        DACL_SECURITY_INFORMATION,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        &mut p_dacl,
+        std::ptr::null_mut(),
+        &mut p_sd,
+    );
+    let result =
+        acl_api_result(path, "GetSecurityInfo", code).map(|()| kind.already_present(p_dacl, psid));
+    if !p_sd.is_null() {
+        LocalFree(p_sd as HLOCAL);
+    }
+    result
+}
+
 unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Result<bool> {
+    let handle = match OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+    {
+        Ok(handle) => handle,
+        Err(write_error) => {
+            let read_handle = OpenOptions::new()
+                .access_mode(READ_CONTROL)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(path)
+                .with_context(|| format!("open deny ACL target {}", path.display()))?;
+            if matches!(kind, DenyAceKind::Read) {
+                ensure_handle_is_not_filesystem_root(&read_handle, path)?;
+            }
+            if deny_ace_already_present(&read_handle, path, psid, kind)? {
+                return Ok(false);
+            }
+            return Err(write_error).context("open deny ACL target for update");
+        }
+    };
+    if matches!(kind, DenyAceKind::Read) {
+        ensure_handle_is_not_filesystem_root(&handle, path)?;
+    }
     let mut p_sd: *mut c_void = std::ptr::null_mut();
     let mut p_dacl: *mut ACL = std::ptr::null_mut();
-    let code = GetNamedSecurityInfoW(
-        to_wide(path).as_ptr(),
+    let code = GetSecurityInfo(
+        handle.as_raw_handle() as _,
         1,
         DACL_SECURITY_INFORMATION,
         std::ptr::null_mut(),
@@ -758,7 +814,7 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
             LocalFree(p_sd as HLOCAL);
         }
         return Err(anyhow!(
-            "GetNamedSecurityInfoW failed for {}: {code}",
+            "GetSecurityInfo failed for {}: {code}",
             path.display()
         ));
     }
@@ -782,8 +838,8 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
         let result = if let Err(err) = acl_api_result(path, "SetEntriesInAclW", code2) {
             Err(err)
         } else {
-            let code3 = SetNamedSecurityInfoW(
-                to_wide(path).as_ptr() as *mut u16,
+            let code3 = SetSecurityInfo(
+                handle.as_raw_handle() as _,
                 1,
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
@@ -791,7 +847,7 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
                 p_new_dacl,
                 std::ptr::null_mut(),
             );
-            acl_api_result(path, "SetNamedSecurityInfoW", code3).map(|()| true)
+            acl_api_result(path, "SetSecurityInfo", code3).map(|()| true)
         };
         if !p_new_dacl.is_null() {
             LocalFree(p_new_dacl as HLOCAL);
@@ -802,6 +858,28 @@ unsafe fn add_deny_ace(path: &Path, psid: *mut c_void, kind: DenyAceKind) -> Res
         LocalFree(p_sd as HLOCAL);
     }
     result
+}
+
+fn ensure_handle_is_not_filesystem_root(handle: &std::fs::File, path: &Path) -> Result<()> {
+    let mut buffer = [0_u16; 2];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            handle.as_raw_handle() as _,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            VOLUME_NAME_NONE,
+        )
+    };
+    if length == 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("resolve deny-read ACL target {}", path.display()));
+    }
+    ensure!(
+        length != 1 || buffer[0] != b'\\' as u16,
+        "refusing to apply a deny-read ACE to filesystem root {}",
+        path.display()
+    );
+    Ok(())
 }
 
 /// Adds a deny ACE to prevent reads for the given SID on the target path.
