@@ -3039,6 +3039,7 @@ async fn experimental_features_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     let worktrees = Feature::Worktrees.stage();
+    let voice = Feature::RealtimeConversation.stage();
     let features = vec![
         ExperimentalFeatureItem {
             key: Feature::JsRepl.key().to_string(),
@@ -3059,6 +3060,13 @@ async fn experimental_features_popup_snapshot() {
             writable: true,
             name: worktrees.experimental_menu_name().unwrap().to_string(),
             description: worktrees.experimental_menu_description().unwrap().to_string(),
+            enabled: false,
+        },
+        ExperimentalFeatureItem {
+            key: Feature::RealtimeConversation.key().to_string(),
+            writable: true,
+            name: voice.experimental_menu_name().unwrap().to_string(),
+            description: voice.experimental_menu_description().unwrap().to_string(),
             enabled: false,
         },
     ];
