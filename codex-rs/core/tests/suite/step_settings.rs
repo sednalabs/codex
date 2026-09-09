@@ -38,6 +38,7 @@ use codex_protocol::openai_models::ApprovalMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ConfirmationPolicies;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
@@ -299,6 +300,11 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                     TruncationPolicyConfig::tokens(if model.slug == MODEL_B { 400 } else { 100 });
                 model.supports_image_detail_original = model.slug == MODEL_B;
                 model.use_responses_lite = false;
+                model.input_modalities = if model.slug == MODEL_C {
+                    vec![InputModality::Text]
+                } else {
+                    vec![InputModality::Text, InputModality::Image]
+                };
             }
             config
                 .features
@@ -333,7 +339,12 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                 ev_function_call("call-b", "diagnostics", "{}"),
                 ev_completed("resp-b"),
             ]),
-            sse_completed("resp-done"),
+            paused_response("resp-before-a", "pause-before-a"),
+            sse_completed("resp-a-again"),
+            sse_completed("resp-next-turn-b"),
+            sse_completed("resp-next-turn-a"),
+            sse_completed("resp-text-only"),
+            sse_completed("resp-images-again"),
         ],
     )
     .await;
@@ -341,13 +352,14 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
     image::DynamicImage::new_rgba8(/*w*/ 2048, /*h*/ 2048)
         .write_to(&mut png, image::ImageFormat::Png)?;
     let text = "diagnostic line\n".repeat(500);
+    let content_items = vec![
+        DynamicToolCallOutputContentItem::InputText { text: text.clone() },
+        DynamicToolCallOutputContentItem::InputImage {
+            image_url: data_url_from_bytes("image/png", &png.into_inner()),
+        },
+    ];
     let response = DynamicToolResponse {
-        content_items: vec![
-            DynamicToolCallOutputContentItem::InputText { text: text.clone() },
-            DynamicToolCallOutputContentItem::InputImage {
-                image_url: data_url_from_bytes("image/png", &png.into_inner()),
-            },
-        ],
+        content_items,
         success: true,
     };
     test.codex
@@ -397,8 +409,9 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
             .await,
         );
     }
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    let paused_request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::RequestUserInput(request) => Some(request.clone()),
+        _ => None,
     })
     .await;
 
@@ -439,31 +452,104 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         requests[2].function_call_output("call-a")
     );
 
+    apply_turn_settings(
+        &test.codex,
+        &paused_request.turn_id,
+        TurnSettingsUpdate {
+            model: Some(MODEL_A.to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    answer_paused_turn(&test.codex, &paused_request.turn_id).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let outputs = ["call-a", "call-b"].map(|call_id| requests[2].function_call_output(call_id));
+    assert_eq!(outputs[1]["output"][1]["detail"], "original");
+
+    // Project for each receiving model without rewriting the prepared images.
+    for model in [MODEL_B, MODEL_A, MODEL_C, MODEL_B] {
+        test.codex
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    model: Some(model.to_string()),
+                    ..Default::default()
+                },
+            })
+            .await?;
+        test.submit_text_turn("review previous diagnostics").await?;
+    }
+    let requests = responses.requests();
+    let mut outputs_for_a = outputs.clone();
+    outputs_for_a[1]["output"][1]["detail"] = json!("high");
+    for (index, call_id) in ["call-a", "call-b"].iter().enumerate() {
+        for request_index in [3, 5] {
+            assert_eq!(
+                requests[request_index].function_call_output(call_id),
+                outputs_for_a[index]
+            );
+        }
+        for request_index in [4, 7] {
+            assert_eq!(
+                requests[request_index].function_call_output(call_id),
+                outputs[index]
+            );
+        }
+        let text_output = requests[6].function_call_output(call_id);
+        assert_eq!(
+            text_output["output"][1],
+            json!({"type": "input_text", "text": "image content omitted because you do not support image input"})
+        );
+    }
+    assert_eq!(
+        requests[3..]
+            .iter()
+            .map(|request| request.body_json()["model"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!(MODEL_A),
+            json!(MODEL_B),
+            json!(MODEL_A),
+            json!(MODEL_C),
+            json!(MODEL_B)
+        ]
+    );
+    assert_eq!(request_turn_id(&requests[3]), turn_id);
+    assert_ne!(request_turn_id(&requests[5]), request_turn_id(&requests[4]));
+
     // Persistence and raw notifications retain the prepared, untruncated payload in append order.
     test.codex.shutdown_and_wait().await?;
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let history = codex_rollout::RolloutRecorder::get_rollout_history(&rollout_path).await?;
-    let saved_outputs = history
-        .get_rollout_items()
-        .iter()
-        .filter_map(|item| match item {
-            RolloutItem::ResponseItem(envelope)
-                if matches!(&envelope.item, ResponseItem::FunctionCallOutput { .. }) =>
-            {
-                Some((
-                    serde_json::to_value(&envelope.item).expect("saved output"),
-                    envelope
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.history_truncation_token_limit),
-                ))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    async fn saved_outputs(path: &std::path::Path) -> Result<Vec<(Value, Option<usize>)>> {
+        let history = codex_rollout::RolloutRecorder::get_rollout_history(path).await?;
+        Ok(history
+            .get_rollout_items()
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::ResponseItem(envelope)
+                    if matches!(&envelope.item, ResponseItem::FunctionCallOutput { call_id, .. }
+                        if matches!(call_id.as_deref(), Some("call-a") | Some("call-b"))) =>
+                {
+                    Some((
+                        serde_json::to_value(&envelope.item).expect("saved output"),
+                        envelope
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.history_truncation_token_limit),
+                    ))
+                }
+                _ => None,
+            })
+            .collect())
+    }
+    let recorded_outputs = saved_outputs(&rollout_path).await?;
     assert_eq!(
-        saved_outputs,
+        recorded_outputs,
         raw_outputs
+            .clone()
             .into_iter()
             .zip([Some(120), Some(480)])
             .collect::<Vec<_>>()
@@ -497,6 +583,14 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         for thread in [resumed, forked] {
             let replay = mount_sse_once(&server, sse_completed("resp-replay")).await;
             thread
+                .submit(Op::ThreadSettings {
+                    thread_settings: ThreadSettingsOverrides {
+                        model: Some(model.to_string()),
+                        ..Default::default()
+                    },
+                })
+                .await?;
+            thread
                 .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                     text: "review saved diagnostics".to_string(),
                     text_elements: Vec::new(),
@@ -505,13 +599,19 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
             wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
             let request = replay.single_request();
             assert_eq!(request.body_json()["model"], model);
-            for call_id in ["call-a", "call-b"] {
-                assert_eq!(
-                    request.function_call_output(call_id),
-                    requests[2].function_call_output(call_id)
-                );
+            for (index, call_id) in ["call-a", "call-b"].iter().enumerate() {
+                let expected = if model == MODEL_A {
+                    &outputs_for_a[index]
+                } else {
+                    &outputs[index]
+                };
+                assert_eq!(request.function_call_output(call_id), *expected);
             }
             thread.shutdown_and_wait().await?;
+            assert_eq!(
+                saved_outputs(&thread.rollout_path().expect("replayed rollout")).await?,
+                recorded_outputs
+            );
         }
     }
     Ok(())
