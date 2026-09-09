@@ -262,6 +262,19 @@ time.sleep(30)
     let input_json = format!(r#"{{"padding":"{}"}}"#, "x".repeat(1024 * 1024));
     let (runtime, _result_receiver) = runtime();
 
+    // Keep user shell startup files out of the pipe I/O timeout test.
+    let runtime = runtime.reconfigured(if cfg!(windows) {
+        CommandShell {
+            program: "cmd.exe".to_string(),
+            args: vec!["/D".to_string(), "/C".to_string()],
+        }
+    } else {
+        CommandShell {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string()],
+        }
+    });
+
     let result = timeout(
         Duration::from_secs(10),
         run_command(&runtime, &handler, command, env, &input_json, temp.path()),
