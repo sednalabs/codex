@@ -3423,6 +3423,7 @@ dependencies = [
  "codex-http-client",
  "codex-login",
  "codex-protocol",
+ "codex-rollout",
  "flate2",
  "http 1.4.0",
  "httpdate",

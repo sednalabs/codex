@@ -206,7 +206,7 @@ impl FeedbackRequestProcessor {
                     .await
                     && seen_attachment_paths.insert(rollout_path.clone())
                 {
-                    thread.rollout_filename = rollout_path
+                    thread.rollout_filename = codex_rollout::plain_rollout_path(&rollout_path)
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned());
                     attachment_paths.push(FeedbackAttachmentPath {
