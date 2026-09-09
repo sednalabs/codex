@@ -1,35 +1,189 @@
 use super::CredentialBrokerState;
 use super::MIN_EMBEDDED_CREDENTIAL_LENGTH;
-use super::brokered_credential_dummy_env_keys;
 use super::env_key_matches;
 use super::env_value;
 use super::prioritized_credentials;
 use super::providers;
+use super::registry::BrokeredCredentialProvider;
+use super::registry::is_builtin_shaped_credential;
+use super::replacement::Replacements;
 use std::collections::HashMap;
 use std::path::Path;
 use url::Position;
 use url::Url;
 
+pub(super) struct KnownCredentialMatch<'a> {
+    pub(super) range: std::ops::Range<usize>,
+    pub(super) env_var: &'a str,
+    pub(super) provider: BrokeredCredentialProvider,
+    pub(super) real_value: &'a str,
+    pub(super) value: &'a str,
+}
+
+pub(super) fn known_credential_matches<'a>(
+    state: &'a CredentialBrokerState,
+    text: &str,
+    source_env: &'a HashMap<String, String>,
+) -> Vec<KnownCredentialMatch<'a>> {
+    let mut matches = Vec::new();
+    let mut add = |env_var: &'a str,
+                   provider: &BrokeredCredentialProvider,
+                   real_value: &'a str,
+                   value: &'a str| {
+        if value.is_empty() {
+            return;
+        }
+        let ranges = if text == value {
+            std::iter::once(0..value.len()).collect()
+        } else if value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+            && (is_builtin_shaped_credential(real_value)
+                || matches!(provider, BrokeredCredentialProvider::Builtin(_)))
+        {
+            text.match_indices(value)
+                .map(|(start, _)| start..start + value.len())
+                .collect()
+        } else if let BrokeredCredentialProvider::Configured(provider) = provider {
+            // Configured short values retain their pattern boundaries and path exclusions.
+            provider
+                .credential_value_match_ranges(text, value)
+                .into_iter()
+                .filter(|range| {
+                    value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        || !is_operational_path_match(text, range.start, range.end)
+                        // A complete longer configured token still needs its own source permission.
+                        && !provider.find_discoverable_credentials(text).any(|candidate| {
+                            candidate.range.start <= range.start && candidate.range.end > range.end
+                        })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        matches.extend(ranges.into_iter().map(|range| KnownCredentialMatch {
+            range,
+            env_var,
+            provider: provider.clone(),
+            real_value,
+            value,
+        }));
+    };
+    for credential in &state.credentials {
+        for value in [&credential.real_value, &credential.dummy_value] {
+            add(
+                &credential.env_var,
+                &credential.provider,
+                &credential.real_value,
+                value,
+            );
+        }
+    }
+    for provider in super::credential_provider_definitions(state) {
+        let owns_key = |key: &str| match &provider {
+            BrokeredCredentialProvider::Builtin(provider) => {
+                provider.sources().iter().any(|source| {
+                    source
+                        .env_vars
+                        .iter()
+                        .any(|source| env_key_matches(source, key))
+                })
+            }
+            BrokeredCredentialProvider::Configured(provider) => provider
+                .config
+                .env
+                .iter()
+                .any(|source| env_key_matches(source, key)),
+        };
+        for owner in &state.credential_owners {
+            if owns_key(&owner.env_var) {
+                add(
+                    &owner.env_var,
+                    &provider,
+                    &owner.real_value,
+                    &owner.real_value,
+                );
+            }
+        }
+        for key in source_env.keys() {
+            if owns_key(key)
+                && let Some(real) =
+                    super::brokerable_credential_value(source_env, state, key, &provider)
+            {
+                add(key, &provider, real, real);
+            }
+        }
+    }
+    for credential in &state.credentials {
+        matches.extend(
+            credential
+                .generated_dummy_ranges(text)
+                .into_iter()
+                .map(|range| KnownCredentialMatch {
+                    range,
+                    env_var: &credential.env_var,
+                    provider: credential.provider.clone(),
+                    real_value: &credential.real_value,
+                    value: &credential.dummy_value,
+                }),
+        );
+    }
+    // Longest exact identities win over overlapping shorter identities, as in replacement.
+    matches.sort_unstable_by_key(|matched| {
+        (std::cmp::Reverse(matched.range.len()), matched.range.start)
+    });
+    let mut selected = Vec::<KnownCredentialMatch<'_>>::new();
+    for matched in matches {
+        if selected.iter().any(|known| {
+            known.range.start < matched.range.end
+                && matched.range.start < known.range.end
+                && (known.range != matched.range
+                    || known.provider.same_provider(&matched.provider)
+                        && env_key_matches(known.env_var, matched.env_var)
+                        && known.real_value == matched.real_value)
+        }) {
+            continue;
+        }
+        selected.push(matched);
+    }
+    selected
+}
+
+pub(super) fn mask_known_credentials(text: &str, matches: &[KnownCredentialMatch<'_>]) -> String {
+    let mut uncovered = text.to_string();
+    for matched in matches {
+        uncovered.replace_range(matched.range.clone(), &"\0".repeat(matched.range.len()));
+    }
+    uncovered
+}
+
 pub(super) fn virtualize_text(
     state: &CredentialBrokerState,
-    text: &mut String,
+    output: &mut String,
     env: &HashMap<String, String>,
 ) -> bool {
     if !state.enabled {
         return true;
     }
 
-    let allowed_keys = brokered_credential_dummy_env_keys(env);
+    let allowed_keys = state.environment(env).credential_keys;
     let credentials = prioritized_credentials(state, env);
+    let text = output.as_str();
+    let source_env = HashMap::new();
+    let known = known_credential_matches(state, text, &source_env);
+    let mut replacements = Replacements::default();
     let mut allowed = true;
     for credential in &credentials {
-        let contains_real = text.as_str() == credential.real_value
-            || credential.real_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                && text.contains(&credential.real_value);
-        let contains_dummy = text.as_str() == credential.dummy_value
-            || credential.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                && text.contains(&credential.dummy_value);
-        if !contains_real && !contains_dummy {
+        let ranges = known
+            .iter()
+            .filter(|matched| {
+                matched.provider.same_provider(&credential.provider)
+                    && env_key_matches(matched.env_var, &credential.env_var)
+                    && matched.real_value == credential.real_value
+                    && (matched.value == credential.real_value
+                        || matched.value == credential.dummy_value)
+            })
+            .map(|matched| matched.range.clone())
+            .collect::<Vec<_>>();
+        if ranges.is_empty() {
             continue;
         }
 
@@ -42,28 +196,33 @@ pub(super) fn virtualize_text(
                 }) || state.credential_aliases.iter().any(|alias| {
                     env_value(env, &alias.env_var) == Some(alias.dummy_value.as_str())
                         && (alias.dummy_value == candidate.dummy_value
-                            || candidate.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                                && alias.dummy_value.contains(&candidate.dummy_value))
+                            || candidate.contains_embedded_value(
+                                &alias.dummy_value,
+                                &candidate.dummy_value,
+                            ))
                         && !state.credentials.iter().any(|other| {
                             other.dummy_value != candidate.dummy_value
                                 && (alias.dummy_value == other.dummy_value
-                                    || other.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                                        && alias.dummy_value.contains(&other.dummy_value))
+                                    || other.contains_embedded_value(
+                                        &alias.dummy_value,
+                                        &other.dummy_value,
+                                    ))
                         })
                 }))
         });
         if replacement.is_none() {
             allowed = false;
         }
-        let replacement = replacement.map_or("", |candidate| candidate.dummy_value.as_str());
-        if contains_real {
-            *text = text.replace(&credential.real_value, replacement);
-        }
-        if contains_dummy && credential.dummy_value != replacement {
-            *text = text.replace(&credential.dummy_value, replacement);
-        }
+        replacements.add(
+            ranges,
+            replacement.map_or("", |candidate| candidate.dummy_value.as_str()),
+            replacement,
+        );
     }
 
+    let original = text;
+    let mut uncovered = replacements.masked(original);
+    let text = &mut uncovered;
     // Startup can copy a supported credential before unsetting its source variable.
     for provider in providers::credential_providers() {
         for prefix in provider.credential_prefixes {
@@ -73,10 +232,19 @@ pub(super) fn virtualize_text(
                 if let Some(length) = state
                     .credentials
                     .iter()
-                    .flat_map(|credential| [&credential.real_value, &credential.dummy_value])
-                    .filter(|credential| credential.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH)
-                    .filter(|credential| text[start..].starts_with(credential.as_str()))
-                    .map(String::len)
+                    .flat_map(|credential| {
+                        [&credential.real_value, &credential.dummy_value]
+                            .map(|value| (credential, value))
+                    })
+                    .filter(|(_, value)| text[start..].starts_with(value.as_str()))
+                    .filter(|(credential, value)| {
+                        value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                            || matches!(&credential.provider, BrokeredCredentialProvider::Configured(provider)
+                                if provider.credential_value_match_ranges(text, value)
+                                    .iter().any(|range| range.start == start
+                                        && !is_operational_path_match(text, range.start, range.end)))
+                    })
+                    .map(|(_, value)| value.len())
                     .max()
                 {
                     offset = start + length;
@@ -136,7 +304,9 @@ pub(super) fn virtualize_text(
                 let ignored_credential_match =
                     ignored_credential_match(provider, text, start, credential);
                 if length >= provider.minimum_credential_len && !ignored_credential_match {
-                    text.replace_range(start..end, "");
+                    replacements.add(std::iter::once(start..end), "", /*dummy*/ None);
+                    text.replace_range(start..end, &"\0".repeat(length));
+                    offset = end;
                     allowed = false;
                 } else {
                     offset = start
@@ -150,6 +320,55 @@ pub(super) fn virtualize_text(
         }
     }
 
+    for provider in &state.configured_providers {
+        if provider.host_binding(env).is_none() {
+            continue;
+        }
+        let mut matches = provider
+            .find_credential_matches(text)
+            .map(|matched| (matched.start, matched.end))
+            .collect::<Vec<_>>();
+        matches.sort_unstable_by_key(|(start, end)| (std::cmp::Reverse(end - start), *start));
+        matches.dedup();
+        let mut removed_ranges = Vec::<(usize, usize)>::new();
+        for (start, end) in matches {
+            let credential = &text[start..end];
+            if credential.contains('\0')
+                || !provider
+                    .credential_value_match_ranges(original, credential)
+                    .contains(&(start..end))
+                || is_operational_path_match(original, start, end)
+                || state
+                    .credentials
+                    .iter()
+                    .flat_map(|known| [&known.real_value, &known.dummy_value])
+                    .flat_map(|known| {
+                        text.match_indices(known)
+                            .map(move |(index, _)| (index, known))
+                    })
+                    .any(|(index, known)| index <= start && end <= index + known.len())
+                || provider
+                    .config
+                    .env
+                    .iter()
+                    .any(|key| env_value(env, key).is_some_and(|value| value == credential))
+                || removed_ranges.iter().any(|(removed_start, removed_end)| {
+                    start < *removed_end && *removed_start < end
+                })
+            {
+                continue;
+            }
+            removed_ranges.push((start, end));
+            allowed = false;
+        }
+        removed_ranges.sort_unstable_by_key(|(start, _)| std::cmp::Reverse(*start));
+        for (start, end) in removed_ranges {
+            replacements.add(std::iter::once(start..end), "", /*dummy*/ None);
+            text.replace_range(start..end, &"\0".repeat(end - start));
+        }
+    }
+
+    replacements.render(output);
     allowed
 }
 
@@ -311,5 +530,11 @@ pub(super) fn builtin_credential_candidate<'a>(
     {
         length = separator;
     }
-    &value[start..start + length]
+    let candidate = &value[start..start + length];
+    if value.as_bytes().get(start + length) == Some(&b'\0') {
+        // A masked known span may follow an alias separator, not part of this builtin token.
+        candidate.trim_end_matches(['_', '-'])
+    } else {
+        candidate
+    }
 }

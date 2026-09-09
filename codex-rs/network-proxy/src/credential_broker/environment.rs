@@ -9,15 +9,102 @@ use super::env_key_matches;
 use super::env_value;
 use super::matching;
 use super::providers;
+use super::registry::BrokeredCredentialProvider;
 use super::remove_env_value;
 use super::set_env_value;
 use std::collections::HashMap;
+
+/// Trusted provider metadata and active credential bindings for one child environment.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CredentialBrokerEnvironment {
+    pub credential_keys: Vec<String>,
+    pub binding_keys: Vec<String>,
+    pub context_keys: Vec<String>,
+    pub provider_keys: Vec<String>,
+    pub provider_context_keys: Vec<String>,
+}
+
+impl CredentialBrokerState {
+    pub(super) fn environment(&self, env: &HashMap<String, String>) -> CredentialBrokerEnvironment {
+        let mut metadata = CredentialBrokerEnvironment::default();
+        for key in
+            providers::credential_env_keys().chain(credential_broker_provider_context_env_keys())
+        {
+            push_unique_key(&mut metadata.provider_keys, key);
+        }
+        for key in credential_broker_provider_context_env_keys() {
+            push_unique_key(&mut metadata.provider_context_keys, key);
+        }
+        for provider in &self.configured_providers {
+            for key in &provider.config.env {
+                push_unique_key(&mut metadata.provider_keys, key);
+            }
+            if let Some(key) = provider.config.url_prefix_from_env.as_deref() {
+                push_unique_key(&mut metadata.provider_keys, key);
+                push_unique_key(&mut metadata.provider_context_keys, key);
+            }
+        }
+
+        if !self.enabled {
+            return metadata;
+        }
+
+        metadata.credential_keys = brokered_credential_dummy_env_keys(env);
+        let marked_credentials = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
+            .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
+            .unwrap_or_default();
+        for credential in &self.credentials {
+            if matches!(
+                credential.provider,
+                BrokeredCredentialProvider::Configured(_)
+            ) && env_value(env, &credential.env_var) == Some(credential.dummy_value.as_str())
+                && marked_credentials.iter().any(|(key, value)| {
+                    env_key_matches(key, &credential.env_var) && value == &credential.dummy_value
+                })
+            {
+                push_unique_key(&mut metadata.credential_keys, &credential.env_var);
+            }
+        }
+
+        for key in providers::credential_context_env_keys(&metadata.credential_keys) {
+            if env_value(env, key).is_some() {
+                push_unique_key(&mut metadata.context_keys, key);
+            }
+        }
+        for key in providers::credential_binding_env_keys(&metadata.credential_keys) {
+            if env_value(env, key).is_some() {
+                push_unique_key(&mut metadata.binding_keys, key);
+            }
+        }
+        for provider in &self.configured_providers {
+            if provider.config.env.iter().any(|provider_key| {
+                metadata
+                    .credential_keys
+                    .iter()
+                    .any(|credential_key| env_key_matches(provider_key, credential_key))
+            }) && let Some(key) = provider.config.url_prefix_from_env.as_deref()
+                && env_value(env, key).is_some()
+            {
+                push_unique_key(&mut metadata.context_keys, key);
+                push_unique_key(&mut metadata.binding_keys, key);
+            }
+        }
+
+        metadata
+    }
+}
+
+fn push_unique_key(keys: &mut Vec<String>, key: &str) {
+    if !keys.iter().any(|candidate| env_key_matches(candidate, key)) {
+        keys.push(key.to_string());
+    }
+}
 
 pub(super) fn update_brokered_credentials_marker(
     state: &CredentialBrokerState,
     env: &mut HashMap<String, String>,
 ) {
-    let mut brokered = state
+    let credentials = state
         .credentials
         .iter()
         .filter(|credential| {
@@ -25,26 +112,28 @@ pub(super) fn update_brokered_credentials_marker(
                 !env_key_matches(key, CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
                     && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
                     && (value == &credential.dummy_value
-                        || credential.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                            && value.contains(&credential.dummy_value))
+                        || credential.contains_embedded_value(value, &credential.dummy_value))
             })
         })
+        .collect::<Vec<_>>();
+    let mut brokered = credentials
+        .iter()
         .map(|credential| (credential.env_var.clone(), credential.dummy_value.clone()))
         .collect::<Vec<_>>();
-    let brokered_dummy_values = brokered
-        .iter()
-        .map(|(_, dummy_value)| dummy_value.clone())
-        .collect::<Vec<_>>();
-    brokered.extend(state.credential_aliases.iter().filter_map(|alias| {
-        let dummy_value = brokered_dummy_values.iter().find(|&dummy_value| {
-            alias.dummy_value == *dummy_value
-                || dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                    && alias.dummy_value.contains(dummy_value)
-        })?;
-        Some((
-            format!("{BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX}{}", alias.env_var),
-            dummy_value.clone(),
-        ))
+    brokered.extend(state.credential_aliases.iter().flat_map(|alias| {
+        credentials
+            .iter()
+            .filter(|credential| {
+                alias.dummy_value == credential.dummy_value
+                    || credential
+                        .contains_embedded_value(&alias.dummy_value, &credential.dummy_value)
+            })
+            .map(|credential| {
+                (
+                    format!("{BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX}{}", alias.env_var),
+                    credential.dummy_value.clone(),
+                )
+            })
     }));
     brokered.sort_unstable();
     brokered.dedup();
@@ -65,16 +154,10 @@ pub(super) fn update_brokered_credentials_marker(
 /// replaced by the user are ignored. The environment is not mutated; callers own the decision to
 /// remove the returned keys.
 pub fn brokered_credential_dummy_env_keys(env: &HashMap<String, String>) -> Vec<String> {
-    let mut keys = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
-        .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
-        .unwrap_or_default()
+    let mut keys = marked_credential_dummy_env_keys(env)
         .into_iter()
-        .filter_map(|(key, dummy_value)| {
-            providers::credential_env_keys()
-                .any(|candidate| env_key_matches(&key, candidate))
-                .then_some(())?;
-            let (actual_key, actual_value) = env_entry(env, &key)?;
-            (actual_value == dummy_value.as_str()).then(|| actual_key.to_string())
+        .filter(|key| {
+            providers::credential_env_keys().any(|candidate| env_key_matches(key, candidate))
         })
         .collect::<Vec<_>>();
     let context_bound = |key: &str| {
@@ -99,6 +182,18 @@ pub fn brokered_credential_dummy_env_keys(env: &HashMap<String, String>) -> Vec<
     keys
 }
 
+pub(crate) fn marked_credential_dummy_env_keys(env: &HashMap<String, String>) -> Vec<String> {
+    env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
+        .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(key, dummy_value)| {
+            let (actual_key, actual_value) = env_entry(env, &key)?;
+            (actual_value == dummy_value.as_str()).then(|| actual_key.to_string())
+        })
+        .collect()
+}
+
 /// Returns canonical credential and known alias keys recorded for an active brokered child,
 /// including configured provider keys and keys that are currently absent.
 pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec<String> {
@@ -120,11 +215,9 @@ pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec
                 return (!value.is_empty()).then_some(key);
             }
             let alias_key = key.strip_prefix(BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX)?;
-            let known_alias = dummy_values.iter().any(|dummy_value| {
-                value == *dummy_value
-                    || dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                        && value.contains(dummy_value)
-            });
+            let known_alias = dummy_values
+                .iter()
+                .any(|dummy_value| value.contains(dummy_value));
             (known_alias && valid_environment_key(alias_key)).then(|| alias_key.to_string())
         })
         .collect::<Vec<_>>();
@@ -139,12 +232,16 @@ pub fn brokered_credential_value_env_keys(env: &HashMap<String, String>) -> Vec<
     if env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY) != Some("1") {
         return Vec::new();
     }
-    let dummy_values = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
+    let marked_values = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
         .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|(key, dummy_value)| {
-            (valid_environment_key(&key) && !dummy_value.is_empty()).then_some(dummy_value)
+        .filter(|(key, dummy_value)| {
+            !dummy_value.is_empty()
+                && (valid_environment_key(key)
+                    || key
+                        .strip_prefix(BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX)
+                        .is_some_and(valid_environment_key))
         })
         .collect::<Vec<_>>();
     let mut keys = env
@@ -153,10 +250,13 @@ pub fn brokered_credential_value_env_keys(env: &HashMap<String, String>) -> Vec<
             !env_key_matches(key, CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
                 && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
         })
-        .filter(|(_, value)| {
-            dummy_values.iter().any(|dummy| {
+        .filter(|(key, value)| {
+            marked_values.iter().any(|(marked_key, dummy)| {
                 value.as_str() == dummy.as_str()
-                    || dummy.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                    || (dummy.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        || marked_key
+                            .strip_prefix(BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX)
+                            .is_some_and(|alias_key| env_key_matches(key, alias_key)))
                         && value.contains(dummy.as_str())
             })
         })

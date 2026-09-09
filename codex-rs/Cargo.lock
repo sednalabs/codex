@@ -4076,6 +4076,7 @@ dependencies = [
  "rand 0.9.3",
  "rand_regex",
  "regex",
+ "regex-automata",
  "regex-syntax",
  "rustls-native-certs",
  "schannel",

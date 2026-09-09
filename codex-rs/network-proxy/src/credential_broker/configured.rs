@@ -13,7 +13,13 @@ use rama_http::HeaderName;
 use rama_http::HeaderValue;
 use rama_http::header::AUTHORIZATION;
 use rand::Rng as _;
+use regex::Regex;
 use regex::RegexBuilder;
+use regex_automata::Anchored;
+use regex_automata::Input;
+use regex_automata::MatchKind;
+use regex_automata::nfa::thompson;
+use regex_automata::nfa::thompson::pikevm::PikeVM;
 use regex_syntax::hir::Class;
 use regex_syntax::hir::ClassBytes;
 use regex_syntax::hir::ClassBytesRange;
@@ -27,6 +33,7 @@ use std::collections::HashMap;
 const MAX_REGEX_BYTES: usize = 2048;
 const MAX_REGEX_REPEAT: u32 = 64;
 const MAX_DUMMY_ATTEMPTS: usize = 64;
+const MIN_DISTINCTIVE_CREDENTIAL_PREFIX_LENGTH: usize = 4;
 const MAX_DUMMY_VALUE_BYTES: usize = 2048;
 
 pub(super) struct ConfiguredCredentialProvider {
@@ -37,9 +44,18 @@ pub(super) struct ConfiguredCredentialProvider {
 }
 
 struct ConfiguredCredentialPattern {
-    full_matcher: regex::Regex,
+    matcher: Regex,
+    longest_matcher: PikeVM,
+    known_value_matcher: Regex,
+    full_matcher: Regex,
     ascii_generator: Option<rand_regex::Regex>,
     generator: rand_regex::Regex,
+    has_distinctive_prefix: bool,
+}
+
+pub(super) struct DiscoveredCredential {
+    pub(super) range: std::ops::Range<usize>,
+    pub(super) has_distinctive_prefix: bool,
 }
 
 impl ConfiguredCredentialPattern {
@@ -59,9 +75,10 @@ impl ConfiguredCredentialPattern {
 }
 
 #[derive(Clone, Copy)]
-enum DummyAlphabet {
-    Ascii,
-    Unicode,
+enum PatternPurpose {
+    Discovery,
+    AsciiDummy,
+    UnicodeDummy,
 }
 
 impl ConfiguredCredentialProvider {
@@ -127,13 +144,38 @@ impl ConfiguredCredentialProvider {
                     "credential pattern exceeds {MAX_REGEX_BYTES} bytes"
                 );
                 let parsed = regex_syntax::parse(pattern)?;
+                let searchable =
+                    prepare_credential_pattern(parsed.clone(), PatternPurpose::Discovery);
+                let has_distinctive_prefix = regex_syntax::hir::literal::Extractor::new()
+                    .extract(&searchable)
+                    .literals()
+                    .is_some_and(|prefixes| {
+                        !prefixes.is_empty()
+                            && prefixes.iter().all(|prefix| {
+                                prefix.len() >= MIN_DISTINCTIVE_CREDENTIAL_PREFIX_LENGTH
+                            })
+                    });
+                let searchable_pattern = searchable.to_string();
+                let matcher = RegexBuilder::new(&searchable_pattern)
+                    .size_limit(1 << 20)
+                    .dfa_size_limit(1 << 20)
+                    .build()?;
+                let longest_matcher = PikeVM::builder()
+                    .configure(PikeVM::config().match_kind(MatchKind::All))
+                    .thompson(thompson::Config::new().nfa_size_limit(Some(1 << 20)))
+                    .build(&searchable_pattern)?;
+                let known_value_matcher =
+                    RegexBuilder::new(&format!(r"\A(?s:.)(?:{searchable_pattern})(?s:.)\z"))
+                        .size_limit(1 << 20)
+                        .dfa_size_limit(1 << 20)
+                        .build()?;
                 let ascii_generator = rand_regex::Regex::with_hir(
-                    dummy_credential_pattern(parsed.clone(), DummyAlphabet::Ascii),
+                    prepare_credential_pattern(parsed.clone(), PatternPurpose::AsciiDummy),
                     MAX_REGEX_REPEAT,
                 )
                 .ok();
                 let generator = rand_regex::Regex::with_hir(
-                    dummy_credential_pattern(parsed.clone(), DummyAlphabet::Unicode),
+                    prepare_credential_pattern(parsed.clone(), PatternPurpose::UnicodeDummy),
                     MAX_REGEX_REPEAT,
                 )?;
                 let full_pattern =
@@ -144,7 +186,10 @@ impl ConfiguredCredentialProvider {
                     .dfa_size_limit(1 << 20)
                     .build()?;
                 ensure!(
-                    !full_matcher.is_match(""),
+                    searchable
+                        .properties()
+                        .minimum_len()
+                        .is_some_and(|length| length > 0),
                     "credential pattern must not match an empty value"
                 );
                 ensure!(
@@ -152,9 +197,13 @@ impl ConfiguredCredentialProvider {
                     "credential pattern must generate bounded UTF-8 values"
                 );
                 let compiled = ConfiguredCredentialPattern {
+                    matcher,
+                    longest_matcher,
+                    known_value_matcher,
                     full_matcher,
                     ascii_generator,
                     generator,
+                    has_distinctive_prefix,
                 };
                 ensure!(
                     compiled.candidates().next().is_some(),
@@ -177,6 +226,98 @@ impl ConfiguredCredentialProvider {
         self.patterns
             .iter()
             .any(|pattern| pattern.full_matcher.is_match(value))
+    }
+
+    pub(super) fn find_credential_matches<'a>(
+        &'a self,
+        value: &'a str,
+    ) -> impl Iterator<Item = std::ops::Range<usize>> + 'a {
+        self.credential_matches(value).map(|matched| matched.range)
+    }
+
+    fn credential_matches<'a>(
+        &'a self,
+        value: &'a str,
+    ) -> impl Iterator<Item = DiscoveredCredential> + 'a {
+        self.patterns.iter().flat_map(move |pattern| {
+            let mut offset = 0;
+            let mut cache = pattern.longest_matcher.create_cache();
+            std::iter::from_fn(move || {
+                let start = pattern.matcher.find_at(value, offset)?.start();
+                // Anchor at the first match, then explore every alternative to its longest end.
+                // Keep the full input so word-boundary assertions retain their context.
+                let input = Input::new(value).range(start..).anchored(Anchored::Yes);
+                let matched = pattern.longest_matcher.find(&mut cache, input)?;
+                offset = matched.end();
+                Some(matched.range())
+            })
+            .filter(move |matched| {
+                matched.len() >= super::MIN_EMBEDDED_CREDENTIAL_LENGTH
+                    || pattern.has_distinctive_prefix
+            })
+            .map(|range| DiscoveredCredential {
+                range,
+                has_distinctive_prefix: pattern.has_distinctive_prefix,
+            })
+        })
+    }
+
+    pub(super) fn find_discoverable_credentials<'a>(
+        &'a self,
+        value: &'a str,
+    ) -> impl Iterator<Item = DiscoveredCredential> + 'a {
+        // Registration needs a complete token; redaction must still catch embedded matches.
+        self.credential_matches(value).filter(move |matched| {
+            value
+                .as_bytes()
+                .get(matched.range.end)
+                .is_none_or(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-'))
+        })
+    }
+
+    pub(super) fn credential_value_match_ranges(
+        &self,
+        text: &str,
+        credential: &str,
+    ) -> Vec<std::ops::Range<usize>> {
+        let Some(first) = credential.chars().next() else {
+            return Vec::new();
+        };
+        let mut offset = 0;
+        let mut ranges = Vec::new();
+        while let Some(relative) = text[offset..].find(credential) {
+            let start = offset + relative;
+            let end = start + credential.len();
+            // Force the full known span to match while retaining adjacent word boundaries.
+            let before = text[..start].chars().next_back().unwrap_or('\0');
+            let after = text[end..].chars().next().unwrap_or('\0');
+            let context = format!("{before}{credential}{after}");
+            offset = if self
+                .patterns
+                .iter()
+                .any(|pattern| pattern.known_value_matcher.is_match(&context))
+            {
+                ranges.push(start..end);
+                end
+            } else {
+                start + first.len_utf8()
+            };
+        }
+        ranges
+    }
+
+    pub(super) fn contains_strictly_embedded_pattern_match(&self, value: &str) -> bool {
+        self.patterns.iter().any(|pattern| {
+            pattern
+                .matcher
+                .find_iter(value)
+                .any(|matched| matched.start() > 0 || matched.end() < value.len())
+        })
+    }
+
+    pub(super) fn find_credentials<'a>(&'a self, value: &'a str) -> impl Iterator<Item = &'a str> {
+        self.find_credential_matches(value)
+            .map(|matched| &value[matched])
     }
 
     pub(super) fn host_binding(
@@ -348,18 +489,18 @@ impl ConfiguredCredentialProvider {
     }
 }
 
-fn dummy_credential_pattern(hir: Hir, alphabet: DummyAlphabet) -> Hir {
+fn prepare_credential_pattern(hir: Hir, purpose: PatternPurpose) -> Hir {
     match hir.into_kind() {
         HirKind::Empty => Hir::empty(),
         HirKind::Literal(literal) => {
-            if matches!(alphabet, DummyAlphabet::Ascii) && !literal.0.is_ascii() {
+            if matches!(purpose, PatternPurpose::AsciiDummy) && !literal.0.is_ascii() {
                 Hir::fail()
             } else {
                 Hir::literal(literal.0)
             }
         }
         HirKind::Class(mut class) => {
-            if matches!(alphabet, DummyAlphabet::Ascii) {
+            if matches!(purpose, PatternPurpose::AsciiDummy) {
                 match &mut class {
                     Class::Unicode(class) => {
                         class.intersect(&ClassUnicode::new([ClassUnicodeRange::new(' ', '~')]))
@@ -371,25 +512,45 @@ fn dummy_credential_pattern(hir: Hir, alphabet: DummyAlphabet) -> Hir {
             }
             Hir::class(class)
         }
-        HirKind::Look(_) => Hir::empty(),
+        HirKind::Look(look) => {
+            if matches!(purpose, PatternPurpose::Discovery)
+                && !matches!(
+                    look,
+                    Look::Start
+                        | Look::End
+                        | Look::StartLF
+                        | Look::EndLF
+                        | Look::StartCRLF
+                        | Look::EndCRLF
+                )
+            {
+                Hir::look(look)
+            } else {
+                Hir::empty()
+            }
+        }
         HirKind::Repetition(mut repetition) => {
-            repetition.sub = Box::new(dummy_credential_pattern(*repetition.sub, alphabet));
+            if matches!(purpose, PatternPurpose::Discovery) {
+                // Discovery needs the whole credential, not a lazy prefix of it.
+                repetition.greedy = true;
+            }
+            repetition.sub = Box::new(prepare_credential_pattern(*repetition.sub, purpose));
             Hir::repetition(repetition)
         }
         HirKind::Capture(mut capture) => {
-            capture.sub = Box::new(dummy_credential_pattern(*capture.sub, alphabet));
+            capture.sub = Box::new(prepare_credential_pattern(*capture.sub, purpose));
             Hir::capture(capture)
         }
         HirKind::Concat(expressions) => Hir::concat(
             expressions
                 .into_iter()
-                .map(|expression| dummy_credential_pattern(expression, alphabet))
+                .map(|expression| prepare_credential_pattern(expression, purpose))
                 .collect(),
         ),
         HirKind::Alternation(expressions) => {
             let mut expressions = expressions
                 .into_iter()
-                .map(|expression| dummy_credential_pattern(expression, alphabet))
+                .map(|expression| prepare_credential_pattern(expression, purpose))
                 .filter(|expression| expression.properties().minimum_len().is_some())
                 .collect::<Vec<_>>();
             expressions.sort_by_key(|expression| {

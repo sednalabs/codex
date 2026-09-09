@@ -5,6 +5,7 @@ mod matching;
 mod provider_config;
 mod providers;
 mod registry;
+mod replacement;
 
 use crate::config::NetworkProxyConfig;
 use crate::policy::normalize_host;
@@ -13,14 +14,17 @@ use rama_http::HeaderMap;
 use registry::ActiveCredentialSource;
 use registry::BrokeredCredentialProvider;
 use registry::active_credential_sources;
+use registry::is_builtin_shaped_credential;
 use registry::prioritized_credentials;
 use registry::select_credentials;
+use replacement::Replacements;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 use url::Url;
 
+pub use environment::CredentialBrokerEnvironment;
 pub use environment::brokered_credential_binding_env_keys;
 pub use environment::brokered_credential_dummy_env_keys;
 pub use environment::brokered_credential_env_keys;
@@ -29,6 +33,7 @@ pub use environment::brokered_credential_value_env_keys;
 pub use environment::credential_broker_provider_context_env_keys;
 pub use environment::credential_broker_provider_sources_allowed;
 pub use environment::is_credential_broker_provider_env_key;
+pub(crate) use environment::marked_credential_dummy_env_keys;
 pub use provider_config::CredentialAuthMethod;
 pub use provider_config::CredentialProviderConfig;
 
@@ -68,6 +73,7 @@ struct CredentialRecord {
     environment_id: Option<String>,
     real_value: String,
     dummy_value: String,
+    generated_aliases: Arc<RwLock<Vec<replacement::GeneratedAlias>>>,
 }
 
 impl CredentialRecord {
@@ -79,9 +85,7 @@ impl CredentialRecord {
                         && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
                         && !crate::is_managed_proxy_env_var(key, value)
                         && (value == &self.real_value
-                            || self
-                                .provider
-                                .contains_embedded_value(value, &self.real_value))
+                            || self.contains_embedded_value(value, &self.real_value))
                 })
     }
 
@@ -366,6 +370,8 @@ impl CredentialBroker {
                 if env_value(child_env, &env_var) != Some(real_value.as_str())
                     && child_env.values().any(|value| {
                         value == &real_value
+                            || is_builtin_shaped_credential(&real_value)
+                                && value.contains(&real_value)
                             || source.provider.contains_embedded_value(value, &real_value)
                     })
                 {
@@ -447,13 +453,7 @@ impl CredentialBroker {
                 )
             })
             .collect::<Vec<_>>();
-        for (dummy_value, real_value) in &stale_credentials {
-            for value in env.values_mut() {
-                if value.contains(dummy_value) {
-                    *value = value.replace(dummy_value, real_value);
-                }
-            }
-        }
+        state.replace_child_env_dummies(env, &stale_credentials);
         state.credentials.retain(|credential| {
             !credential.belongs_to_environment(environment_id)
                 || !stale_credentials
@@ -478,13 +478,7 @@ impl CredentialBroker {
                 )
             })
             .collect::<Vec<_>>();
-        for (dummy_value, real_value) in unbound_inherited_credentials {
-            for value in env.values_mut() {
-                if value.contains(&dummy_value) {
-                    *value = value.replace(&dummy_value, &real_value);
-                }
-            }
-        }
+        state.replace_child_env_dummies(env, &unbound_inherited_credentials);
 
         let inherited_credentials = active_sources
             .iter()
@@ -504,11 +498,14 @@ impl CredentialBroker {
                             source.host_binding.clone(),
                             credential.real_value.clone(),
                             credential.dummy_value.clone(),
+                            Arc::clone(&credential.generated_aliases),
                         )
                     })
             })
             .collect::<Vec<_>>();
-        for (env_var, provider, host_binding, real_value, inherited_dummy) in inherited_credentials
+        let mut rebound_dummies = Vec::new();
+        for (env_var, provider, host_binding, real_value, inherited_dummy, generated_aliases) in
+            inherited_credentials
         {
             let current_dummy = if let Some(credential) =
                 state.credentials.iter_mut().find(|credential| {
@@ -528,17 +525,15 @@ impl CredentialBroker {
                     environment_id: environment_id.map(str::to_string),
                     real_value,
                     dummy_value: inherited_dummy.clone(),
+                    generated_aliases,
                 });
                 inherited_dummy.clone()
             };
             if current_dummy != inherited_dummy {
-                for value in env.values_mut() {
-                    if value.contains(&inherited_dummy) {
-                        *value = value.replace(&inherited_dummy, &current_dummy);
-                    }
-                }
+                rebound_dummies.push((inherited_dummy, current_dummy));
             }
         }
+        state.replace_child_env_dummies(env, &rebound_dummies);
 
         for source in &active_sources {
             for env_var in &source.env_vars {
@@ -552,15 +547,8 @@ impl CredentialBroker {
                 );
             }
         }
-        let provider_context_keys = credential_broker_provider_context_env_keys()
-            .map(str::to_string)
-            .chain(
-                state
-                    .configured_providers
-                    .iter()
-                    .filter_map(|provider| provider.config.url_prefix_from_env.as_ref().cloned()),
-            )
-            .collect::<Vec<_>>();
+        let provider_context_keys = state.environment(env).provider_context_keys;
+        let mut known_registrations = Vec::new();
         let discoverable_values = env
             .iter()
             .filter(|(key, value)| {
@@ -571,8 +559,62 @@ impl CredentialBroker {
                         .iter()
                         .any(|context_key| env_key_matches(key, context_key))
             })
-            .map(|(_, value)| value)
+            .map(|(_, value)| {
+                let known = matching::known_credential_matches(&state, value, env);
+                for matched in &known {
+                    if matched.value == matched.real_value
+                        && env_value(env, matched.env_var).is_none_or(|value| {
+                            !state.is_dummy_value(value)
+                                || state.credentials.iter().any(|credential| {
+                                    credential.dummy_value == value
+                                        && credential.real_value == matched.real_value
+                                        && credential.provider.same_provider(&matched.provider)
+                                        && env_key_matches(&credential.env_var, matched.env_var)
+                                })
+                        })
+                        && let Some(source) = active_sources.iter().find(|source| {
+                            source.provider.same_provider(&matched.provider)
+                                && source
+                                    .env_vars
+                                    .iter()
+                                    .any(|key| env_key_matches(key, matched.env_var))
+                        })
+                    {
+                        known_registrations.push((
+                            matched.env_var.to_string(),
+                            matched.provider.clone(),
+                            source.host_binding.clone(),
+                            matched.real_value.to_string(),
+                        ));
+                    }
+                }
+                matching::mask_known_credentials(value, &known)
+            })
             .collect::<Vec<_>>();
+        // Keep normal destination reconciliation for exact identities before discovering new ones.
+        for (env_var, provider, host_binding, real_value) in known_registrations {
+            let _ = state.register(
+                &env_var,
+                provider,
+                host_binding,
+                environment_id,
+                &real_value,
+                env,
+            );
+        }
+        let configured_discoveries = state
+            .configured_providers
+            .iter()
+            .flat_map(|provider| {
+                discoverable_values.iter().flat_map(move |value| {
+                    provider
+                        .find_discoverable_credentials(value)
+                        .filter(|matched| !value[matched.range.clone()].contains('\0'))
+                        .map(move |matched| (Arc::clone(provider), value, matched))
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut builtin_spans = Vec::new();
         for provider in providers::credential_providers() {
             let brokered_provider = BrokeredCredentialProvider::Builtin(provider);
             let Some((source, host_binding)) = provider.sources().iter().rev().find_map(|source| {
@@ -586,11 +628,24 @@ impl CredentialBroker {
                     for (start, _) in value.match_indices(prefix) {
                         let credential =
                             matching::builtin_credential_candidate(provider, value, start);
+                        let configured_start = configured_discoveries
+                            .iter()
+                            .filter(|(_, candidate_value, matched)| {
+                                *candidate_value == value
+                                    && matched.has_distinctive_prefix
+                                    && matched.range.start > start
+                                    && matched.range.start < start + credential.len()
+                            })
+                            .map(|(_, _, matched)| matched.range.start - start)
+                            .filter(|end| {
+                                credential[..*end].trim_end_matches(['_', '-']).len()
+                                    >= provider.minimum_credential_len
+                            })
+                            .min();
+                        let credential = configured_start.map_or(credential, |end| {
+                            credential[..end].trim_end_matches(['_', '-'])
+                        });
                         if credential.len() < provider.minimum_credential_len
-                            || state
-                                .configured_providers
-                                .iter()
-                                .any(|configured| configured.matches_value(credential))
                             || matching::is_operational_path_match(
                                 value,
                                 start,
@@ -602,6 +657,20 @@ impl CredentialBroker {
                                         .credential_watermark
                                         .is_none_or(|watermark| !credential.contains(watermark))
                             })
+                            || provider.request_header_value(credential).is_none()
+                        {
+                            continue;
+                        }
+                        // Retain ownership spans even when registration fails or is ambiguous.
+                        let span = start..start + credential.len();
+                        builtin_spans.push((value, span.clone()));
+                        if configured_discoveries
+                            .iter()
+                            .any(|(_, candidate_value, matched)| {
+                                *candidate_value == value
+                                    && matched.range.start == start
+                                    && matched.range.end >= span.end
+                            })
                             || state.is_dummy_value(credential)
                             || state.credentials.iter().any(|existing| {
                                 existing.belongs_to_environment(environment_id)
@@ -609,14 +678,20 @@ impl CredentialBroker {
                                     && existing.host_binding == host_binding
                                     && existing.real_value == credential
                             })
-                            || source.binding_env_vars.is_empty()
-                                && state.credential_owners.iter().any(|existing| {
-                                    !source
-                                        .env_vars
-                                        .iter()
-                                        .any(|key| env_key_matches(key, &existing.env_var))
-                                        && existing.real_value == credential
-                                })
+                            || state.credential_owners.iter().any(|existing| {
+                                existing.real_value == credential
+                                    && (source.binding_env_vars.is_empty()
+                                        && !source
+                                            .env_vars
+                                            .iter()
+                                            .any(|key| env_key_matches(key, &existing.env_var))
+                                        || !provider.sources().iter().any(|candidate| {
+                                            candidate
+                                                .env_vars
+                                                .iter()
+                                                .any(|key| env_key_matches(key, &existing.env_var))
+                                        }))
+                            })
                             || provider.sources().iter().any(|candidate| {
                                 candidate
                                     .env_vars
@@ -628,7 +703,6 @@ impl CredentialBroker {
                                     )
                                     .is_none()
                             })
-                            || provider.request_header_value(credential).is_none()
                         {
                             continue;
                         }
@@ -643,6 +717,52 @@ impl CredentialBroker {
                     }
                 }
             }
+        }
+        for (provider, value, matched) in &configured_discoveries {
+            let Some(host_binding) = provider.host_binding(env) else {
+                continue;
+            };
+            let Some(env_var) = provider.config.env.first() else {
+                continue;
+            };
+            let brokered_provider = BrokeredCredentialProvider::Configured(provider.clone());
+            let range = &matched.range;
+            let credential = &value[range.clone()];
+            if matching::is_operational_path_match(value, range.start, range.end)
+                || builtin_spans.iter().any(|(candidate_value, span)| {
+                    candidate_value == value && span.start < range.end && range.start < span.end
+                })
+                || configured_discoveries
+                    .iter()
+                    .any(|(other, candidate_value, matched)| {
+                        !Arc::ptr_eq(provider, other)
+                            && candidate_value == value
+                            && matched.range.start < range.end
+                            && range.start < matched.range.end
+                    })
+                || state.is_dummy_value(credential)
+                || state.credentials.iter().any(|existing| {
+                    existing.belongs_to_environment(environment_id)
+                        && existing.provider.same_provider(&brokered_provider)
+                        && existing.host_binding == host_binding
+                        && existing.real_value == credential
+                })
+                || credential_provider_definitions(&state).any(|other| {
+                    !other.same_provider(&brokered_provider)
+                        && other.recognizes_credential_in(credential)
+                })
+                || brokered_provider.request_header_value(credential).is_none()
+            {
+                continue;
+            }
+            let _ = state.register(
+                env_var,
+                brokered_provider.clone(),
+                host_binding.clone(),
+                environment_id,
+                credential,
+                env,
+            );
         }
         let credentials = prioritized_credentials(&state, env)
             .into_iter()
@@ -659,26 +779,17 @@ impl CredentialBroker {
             if crate::is_managed_proxy_env_var(key, value) {
                 continue;
             }
-            let mut virtualized = false;
+            let mut replacements = Replacements::default();
             for credential in &credentials {
-                if value == &credential.real_value {
-                    value.clone_from(&credential.dummy_value);
-                    virtualized = true;
-                } else if credential
-                    .provider
-                    .contains_embedded_value(value, &credential.real_value)
-                {
-                    *value = credential.provider.replace_embedded_value(
-                        value,
-                        &credential.real_value,
+                for original in [&credential.real_value, &credential.dummy_value] {
+                    replacements.add(
+                        credential.value_match_ranges(value, original),
                         &credential.dummy_value,
+                        Some(credential),
                     );
-                    virtualized = true;
-                } else if value.contains(&credential.dummy_value) {
-                    virtualized = true;
                 }
             }
-            if virtualized {
+            if replacements.render(value) {
                 credential_aliases.push(CredentialAlias {
                     env_var: key.clone(),
                     dummy_value: value.clone(),
@@ -746,9 +857,7 @@ impl CredentialBroker {
                 .iter()
                 .filter(|credential| {
                     text == credential.dummy_value
-                        || credential
-                            .provider
-                            .contains_embedded_value(text, &credential.dummy_value)
+                        || credential.contains_embedded_value(text, &credential.dummy_value)
                 })
                 .collect::<Vec<_>>()
         };
@@ -831,24 +940,104 @@ impl CredentialBroker {
         let mut credentials = state.credentials.iter().collect::<Vec<_>>();
         credentials
             .sort_unstable_by_key(|credential| std::cmp::Reverse(credential.dummy_value.len()));
-        let mut restored = false;
+        let mut replacements = Replacements::default();
         for credential in credentials {
-            if text.as_str() == credential.dummy_value {
-                text.clone_from(&credential.real_value);
-                restored = true;
-            } else if credential
-                .provider
-                .contains_embedded_value(text, &credential.dummy_value)
-            {
-                *text = credential.provider.replace_embedded_value(
-                    text,
-                    &credential.dummy_value,
-                    &credential.real_value,
-                );
-                restored = true;
+            replacements.add(
+                credential.value_match_ranges(text, &credential.dummy_value),
+                &credential.real_value,
+                /*dummy*/ None,
+            );
+        }
+        replacements.render(text)
+    }
+
+    pub(crate) fn environment(&self, env: &HashMap<String, String>) -> CredentialBrokerEnvironment {
+        self.read_state().environment(env)
+    }
+
+    pub(crate) fn provider_sources_allowed(
+        &self,
+        value: &str,
+        virtualized: &str,
+        source_env: &HashMap<String, String>,
+        is_allowed: impl Fn(&str) -> bool,
+    ) -> bool {
+        let state = self.read_state();
+        let known = matching::known_credential_matches(&state, value, source_env);
+        if known.iter().any(|matched| {
+            !known.iter().any(|equivalent| {
+                equivalent.range == matched.range
+                    && equivalent.provider.same_provider(&matched.provider)
+                    && equivalent.real_value == matched.real_value
+                    && is_allowed(equivalent.env_var)
+            })
+        }) {
+            return false;
+        }
+        let uncovered = matching::mask_known_credentials(value, &known);
+        let value = uncovered.as_str();
+        let builtin_recognized = providers::credential_providers().any(|provider| {
+            provider.credential_prefixes.iter().any(|prefix| {
+                value.match_indices(*prefix).any(|(start, _)| {
+                    matching::recognized_credential_match(provider, value, virtualized, start)
+                        .is_some()
+                })
+            })
+        });
+        if builtin_recognized
+            && !credential_broker_provider_sources_allowed(
+                value,
+                virtualized,
+                source_env,
+                &is_allowed,
+            )
+        {
+            return false;
+        }
+
+        let mut configured_recognized = false;
+        for provider in &state.configured_providers {
+            for source in &provider.config.env {
+                if let Some(credential) = env_value(source_env, source)
+                    && provider.matches_value(credential)
+                    && !provider
+                        .credential_value_match_ranges(value, credential)
+                        .is_empty()
+                    && provider
+                        .credential_value_match_ranges(virtualized, credential)
+                        .is_empty()
+                {
+                    configured_recognized = true;
+                    if !provider.config.env.iter().any(|equivalent| {
+                        env_value(source_env, equivalent) == Some(credential)
+                            && is_allowed(equivalent)
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            for credential in provider.find_credentials(value).filter(|credential| {
+                !credential.contains('\0') && !virtualized.contains(credential)
+            }) {
+                configured_recognized = true;
+                let sources = provider
+                    .config
+                    .env
+                    .iter()
+                    .filter(|source| env_value(source_env, source) == Some(credential))
+                    .collect::<Vec<_>>();
+                let allowed = if sources.is_empty() {
+                    provider.config.env.iter().all(|source| is_allowed(source))
+                } else {
+                    sources.iter().any(|source| is_allowed(source))
+                };
+                if !allowed {
+                    return false;
+                }
             }
         }
-        restored
+
+        !known.is_empty() || builtin_recognized || configured_recognized
     }
 
     #[cfg(test)]
@@ -969,11 +1158,7 @@ fn virtualize_env_var(
         if let Some(previous_dummy) = previous_dummy
             && previous_dummy != dummy_value
         {
-            for value in env.values_mut() {
-                if value.contains(&previous_dummy) {
-                    *value = value.replace(&previous_dummy, &dummy_value);
-                }
-            }
+            state.replace_child_env_dummies(env, &[(previous_dummy, dummy_value.clone())]);
         }
         set_env_value(env, env_var, dummy_value);
     }
@@ -1011,9 +1196,7 @@ impl CredentialBrokerState {
                     !env_key_matches(key, CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
                         && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
                         && (value == &credential.dummy_value
-                            || credential
-                                .provider
-                                .contains_embedded_value(value, &credential.dummy_value))
+                            || credential.contains_embedded_value(value, &credential.dummy_value))
                 })
             })
             .collect::<Vec<_>>();
@@ -1034,6 +1217,7 @@ impl CredentialBrokerState {
             {
                 continue;
             }
+            let mut replacements = Replacements::default();
             for credential in &credentials {
                 if canonical_credential
                     && !self.credentials.iter().any(|candidate| {
@@ -1045,19 +1229,21 @@ impl CredentialBrokerState {
                 {
                     continue;
                 }
-                if value == &credential.dummy_value {
-                    value.clone_from(&credential.real_value);
-                } else if credential
-                    .provider
-                    .contains_embedded_value(value, &credential.dummy_value)
-                {
-                    *value = credential.provider.replace_embedded_value(
-                        value,
-                        &credential.dummy_value,
-                        &credential.real_value,
-                    );
-                }
+                replacements.add(
+                    credential.value_match_ranges(value, &credential.dummy_value),
+                    &credential.real_value,
+                    /*dummy*/ None,
+                );
             }
+            // Carry surviving dummy spans through partial local-destination restoration.
+            for credential in &self.credentials {
+                replacements.add(
+                    credential.value_match_ranges(value, &credential.dummy_value),
+                    &credential.dummy_value,
+                    Some(credential),
+                );
+            }
+            replacements.render(value);
         }
     }
 
@@ -1123,14 +1309,35 @@ impl CredentialBrokerState {
             existing.observe_host_binding(host_binding, existing_env);
             return Some(existing.dummy_value.clone());
         }
+        if self.credentials.iter().any(|credential| {
+            is_builtin_shaped_credential(real_value) && credential.dummy_value.contains(real_value)
+                || provider.contains_embedded_value(&credential.dummy_value, real_value)
+        }) {
+            tracing::warn!(
+                env_var,
+                "credential brokerage skipped: credential overlaps an existing dummy"
+            );
+            return None;
+        }
+
         let Some(dummy_value) = (0..64).find_map(|_| {
             let candidate = provider.dummy_value(real_value)?;
             (candidate != real_value
+                // These records restore embedded dummies without configured regex boundaries.
+                && (!is_builtin_shaped_credential(real_value)
+                    || candidate.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH)
                 && !existing_env
                     .values()
                     .any(|value| value.contains(&candidate))
                 && !self.credentials.iter().any(|credential| {
-                    credential.dummy_value == candidate || credential.real_value == candidate
+                    credential.dummy_value == candidate
+                        || credential.real_value == candidate
+                        || credential.contains_embedded_value(&candidate, &credential.dummy_value)
+                        || credential.contains_embedded_value(&candidate, &credential.real_value)
+                })
+                && !credential_provider_definitions(self).any(|other| {
+                    !other.same_provider(&provider)
+                        && other.recognizes_strictly_embedded_dummy_collision_in(&candidate)
                 }))
             .then_some(candidate)
         }) else {
@@ -1148,6 +1355,7 @@ impl CredentialBrokerState {
             environment_id: environment_id.map(str::to_string),
             real_value: real_value.to_string(),
             dummy_value: dummy_value.clone(),
+            generated_aliases: Arc::default(),
         });
         Some(dummy_value)
     }
@@ -1157,6 +1365,20 @@ impl CredentialBrokerState {
             .iter()
             .any(|credential| credential.dummy_value == value)
     }
+}
+
+fn credential_provider_definitions(
+    state: &CredentialBrokerState,
+) -> impl Iterator<Item = BrokeredCredentialProvider> + '_ {
+    providers::credential_providers()
+        .map(BrokeredCredentialProvider::Builtin)
+        .chain(
+            state
+                .configured_providers
+                .iter()
+                .cloned()
+                .map(BrokeredCredentialProvider::Configured),
+        )
 }
 
 #[cfg(test)]

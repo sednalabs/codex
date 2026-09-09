@@ -4,6 +4,8 @@ use super::MIN_EMBEDDED_CREDENTIAL_LENGTH;
 use super::configured::ConfiguredCredentialProvider;
 use super::env_entry;
 use super::env_value;
+use super::matching;
+use super::matching::is_operational_path_match;
 use super::providers;
 use base64::Engine;
 use rama_http::HeaderMap;
@@ -44,17 +46,42 @@ impl BrokeredCredentialProvider {
         }
     }
 
-    pub(super) fn contains_embedded_value(&self, text: &str, value: &str) -> bool {
-        value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH && text.contains(value)
+    pub(super) fn recognizes_credential_in(&self, value: &str) -> bool {
+        match self {
+            Self::Builtin(provider) => provider.credential_prefixes.iter().any(|prefix| {
+                value.match_indices(*prefix).any(|(start, _)| {
+                    matching::recognized_credential_match(provider, value, "", start).is_some()
+                })
+            }),
+            Self::Configured(provider) => provider.find_credential_matches(value).next().is_some(),
+        }
     }
 
-    pub(super) fn replace_embedded_value(
-        &self,
-        text: &str,
-        value: &str,
-        replacement: &str,
-    ) -> String {
-        text.replace(value, replacement)
+    pub(super) fn recognizes_strictly_embedded_dummy_collision_in(&self, value: &str) -> bool {
+        match self {
+            Self::Builtin(provider) => provider.credential_prefixes.iter().any(|prefix| {
+                value.match_indices(*prefix).any(|(start, _)| {
+                    matching::recognized_credential_match(provider, value, "", start)
+                        .is_some_and(|credential| start > 0 || credential.len() < value.len())
+                })
+            }),
+            Self::Configured(provider) => provider.contains_strictly_embedded_pattern_match(value),
+        }
+    }
+
+    pub(super) fn contains_embedded_value(&self, text: &str, value: &str) -> bool {
+        match self {
+            Self::Builtin(_) => {
+                value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH && text.contains(value)
+            }
+            Self::Configured(provider) => provider
+                .credential_value_match_ranges(text, value)
+                .into_iter()
+                .any(|range| {
+                    value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        || !is_operational_path_match(text, range.start, range.end)
+                }),
+        }
     }
 
     pub(super) fn request_header_value(&self, value: &str) -> Option<HeaderValue> {
@@ -102,6 +129,58 @@ impl BrokeredCredentialProvider {
             }
         }
     }
+}
+
+impl CredentialRecord {
+    pub(super) fn contains_embedded_value(&self, text: &str, value: &str) -> bool {
+        !self.value_match_ranges(text, value).is_empty()
+    }
+
+    pub(super) fn value_match_ranges(
+        &self,
+        text: &str,
+        value: &str,
+    ) -> Vec<std::ops::Range<usize>> {
+        let mut ranges = if text == value {
+            std::iter::once(0..text.len()).collect()
+        } else if is_builtin_shaped_credential(&self.real_value)
+            || matches!(self.provider, BrokeredCredentialProvider::Builtin(_))
+                && value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+        {
+            text.match_indices(value)
+                .map(|(start, _)| start..start + value.len())
+                .collect()
+        } else if let BrokeredCredentialProvider::Configured(provider) = &self.provider {
+            provider
+                .credential_value_match_ranges(text, value)
+                .into_iter()
+                .filter(|range| {
+                    value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        || !is_operational_path_match(text, range.start, range.end)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if value == self.dummy_value {
+            ranges.extend(self.generated_dummy_ranges(text));
+            ranges.sort_by_key(|range| range.start);
+            ranges.dedup();
+        }
+        ranges
+    }
+}
+
+pub(super) fn is_builtin_shaped_credential(value: &str) -> bool {
+    providers::credential_providers().any(|provider| {
+        value.len() >= provider.minimum_credential_len
+            && provider
+                .credential_prefixes
+                .iter()
+                .any(|prefix| value.starts_with(prefix))
+            && matching::recognized_credential_match(provider, value, "", /*start*/ 0)
+                .is_some_and(|credential| credential == value)
+    })
 }
 
 pub(super) fn select_credentials<'a>(

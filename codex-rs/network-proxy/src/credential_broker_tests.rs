@@ -254,7 +254,7 @@ fn virtualize_child_env_replaces_supported_credentials() {
         assert!(!broker.virtualize_text(&mut embedded_credential, &env));
         assert_eq!(embedded_credential, format!("Bearer {prefix}"));
     }
-    for component in ["cafe\u{e9}task", "cafe\u{301}task"] {
+    for component in ["\u{e9}task", "e\u{301}task"] {
         let mut unicode_adjacent_path = format!("/workspace/{component}-proj-{hash}/bin");
         assert!(!broker.virtualize_text(&mut unicode_adjacent_path, &env));
         assert_eq!(
@@ -300,8 +300,8 @@ fn virtualize_child_env_replaces_supported_credentials() {
         "harddisk",
         "MY_Task",
         "Flask",
-        "cafe\u{e9}_task",
-        "cafe\u{301}_task",
+        "\u{e9}_task",
+        "e\u{301}_task",
     ] {
         for suffix in ["", "proj-", "admin-", "svcacct-"] {
             for path in [
@@ -660,6 +660,29 @@ fn virtualize_child_env_discovers_credentials_without_canonical_variables() {
         broker.inject_request_headers(host, &mut headers);
         assert_eq!(authorization(&headers), Some(authorization_header.as_str()));
     }
+}
+
+#[test]
+fn virtualize_child_env_preserves_operational_paths_during_credential_discovery() {
+    let broker = CredentialBroker::new(/*enabled*/ true);
+    let hash = "a".repeat(64);
+    let virtual_env = format!("/workspace/multitask-proj-{hash}/bin");
+    let github_host = format!("multitask-proj-{hash}.enterprise.example");
+    let token = "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let authorization_header = format!("Bearer {token}");
+    let mut env = env_map([
+        ("VIRTUAL_ENV", virtual_env.as_str()),
+        ("GH_HOST", github_host.as_str()),
+        ("NO_PROXY", github_host.as_str()),
+        ("AUTH_HEADER", authorization_header.as_str()),
+    ]);
+
+    broker.virtualize_child_env(&mut env);
+
+    assert_eq!(env["VIRTUAL_ENV"], virtual_env);
+    assert_eq!(env["GH_HOST"], github_host);
+    assert_eq!(env["NO_PROXY"], github_host);
+    assert_ne!(env["AUTH_HEADER"], authorization_header);
 }
 
 #[test]

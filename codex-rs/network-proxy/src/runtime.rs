@@ -515,6 +515,24 @@ impl NetworkProxyState {
         self.credential_broker.virtualize_text(text, env)
     }
 
+    pub(crate) fn credential_broker_environment(
+        &self,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.credential_broker.environment(env)
+    }
+
+    pub(crate) fn credential_broker_sources_allowed(
+        &self,
+        value: &str,
+        virtualized: &str,
+        source_env: &HashMap<String, String>,
+        is_allowed: impl Fn(&str) -> bool,
+    ) -> bool {
+        self.credential_broker
+            .provider_sources_allowed(value, virtualized, source_env, is_allowed)
+    }
+
     pub(crate) fn restore_brokered_text(&self, text: &mut String) -> bool {
         self.credential_broker.restore_text(text)
     }

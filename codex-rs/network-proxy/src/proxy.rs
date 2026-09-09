@@ -656,7 +656,7 @@ pub fn is_managed_proxy_env_var(key: &str, value: &str) -> bool {
 
 pub fn strip_managed_proxy_env(env: &mut HashMap<String, String>) {
     let brokered_credential_dummy_env_keys =
-        crate::credential_broker::brokered_credential_dummy_env_keys(env);
+        crate::credential_broker::marked_credential_dummy_env_keys(env);
     env.retain(|key, value| {
         !brokered_credential_dummy_env_keys.contains(key) && !is_managed_proxy_env_var(key, value)
     });
@@ -1192,6 +1192,26 @@ impl NetworkProxy {
         env: &HashMap<String, String>,
     ) -> bool {
         self.state.virtualize_brokered_text(text, env)
+    }
+
+    /// Returns trusted provider metadata and active bindings for a child environment.
+    pub fn credential_broker_environment(
+        &self,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.state.credential_broker_environment(env)
+    }
+
+    /// Checks whether recognized credentials originate from permitted provider variables.
+    pub fn credential_broker_sources_allowed(
+        &self,
+        value: &str,
+        virtualized: &str,
+        source_env: &HashMap<String, String>,
+        is_allowed: impl Fn(&str) -> bool,
+    ) -> bool {
+        self.state
+            .credential_broker_sources_allowed(value, virtualized, source_env, is_allowed)
     }
 
     /// Restores known dummy credentials in trusted text captured for fail-open execution.
