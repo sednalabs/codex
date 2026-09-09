@@ -739,6 +739,7 @@ impl BottomPaneView for AgentsOverviewView {
                         self.move_selection(action == ListAction::PageDown);
                     }
                 }
+                ListAction::MoveRight if !self.state().editing_metadata() => self.activate(),
                 ListAction::MoveLeft | ListAction::MoveRight => {}
             }
         } else if key.code == KeyCode::Backspace {

@@ -63,7 +63,11 @@ impl AgentsOverviewView {
             "resume",
             true,
         );
-        add_hint(list_hint(ListAction::Accept), "open", true);
+        let open_hint = (!self.state().editing_metadata())
+            .then(|| list_hint(ListAction::MoveRight))
+            .flatten()
+            .or_else(|| list_hint(ListAction::Accept));
+        add_hint(open_hint, "open", true);
         add_hint(
             self.agents_keymap
                 .primary_hint("new_task", &self.agents_keymap.new_task),
