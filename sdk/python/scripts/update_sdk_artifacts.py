@@ -143,7 +143,11 @@ def _rewrite_project_name(pyproject_text: str, name: str) -> str:
     return updated
 
 
-def stage_python_sdk_package(staging_dir: Path, sdk_version: str) -> Path:
+def stage_python_sdk_package(
+    staging_dir: Path,
+    sdk_version: str,
+    codex_version: str | None = None,
+) -> Path:
     package_version = normalize_codex_version(sdk_version)
     _copy_package_tree(sdk_root(), staging_dir)
     sdk_bin_dir = staging_dir / "src" / "openai_codex" / "bin"
@@ -154,6 +158,23 @@ def stage_python_sdk_package(staging_dir: Path, sdk_version: str) -> Path:
     pyproject_text = pyproject_path.read_text()
     pyproject_text = _rewrite_project_name(pyproject_text, SDK_DISTRIBUTION_NAME)
     pyproject_text = _rewrite_project_version(pyproject_text, package_version)
+    if codex_version is not None:
+        runtime_version = normalize_codex_version(codex_version)
+        pyproject_text, count = re.subn(
+            rf'"{re.escape(RUNTIME_DISTRIBUTION_NAME)}==[^"]+"',
+            f'"{RUNTIME_DISTRIBUTION_NAME}=={runtime_version}"',
+            pyproject_text,
+        )
+        if count != 1:
+            raise RuntimeError(
+                f"Expected exactly one {RUNTIME_DISTRIBUTION_NAME} dependency pin "
+                "in sdk/python/pyproject.toml"
+            )
+    runtime_versions = re.findall(
+        rf'"{re.escape(RUNTIME_DISTRIBUTION_NAME)}==([^"]+)"', pyproject_text
+    )
+    if len(runtime_versions) != 1:
+        raise RuntimeError("Expected exactly one pinned Codex runtime dependency")
     pyproject_path.write_text(pyproject_text)
     return staging_dir
 
@@ -894,7 +915,7 @@ class PublicFieldSpec:
 @dataclass(frozen=True)
 class CliOps:
     generate_types: Callable[[Path], None]
-    stage_python_sdk_package: Callable[[Path, str], Path]
+    stage_python_sdk_package: Callable[[Path, str, str | None], Path]
     stage_python_runtime_package: Callable[[Path, str, Path, str | None], Path]
 
 
@@ -1323,7 +1344,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     stage_sdk_parser = subparsers.add_parser(
         "stage-sdk",
-        help="Stage a releasable SDK package from its reviewed generated files and runtime pin",
+        help="Stage a releasable SDK package from the checked-in generated code",
     )
     stage_sdk_parser.add_argument(
         "staging_dir",
@@ -1337,6 +1358,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Python SDK release version to write into the staged package. "
             "Accepts PEP 440 versions such as 0.144.4."
         ),
+    )
+    stage_sdk_parser.add_argument(
+        "--codex-version",
+        help="CLI release version to pin; defaults to the checked-in runtime dependency.",
     )
 
     stage_runtime_parser = subparsers.add_parser(
@@ -1400,6 +1425,7 @@ def run_command(args: argparse.Namespace, ops: CliOps) -> None:
         ops.stage_python_sdk_package(
             args.staging_dir,
             normalize_codex_version(args.sdk_version),
+            normalize_codex_version(args.codex_version) if args.codex_version is not None else None,
         )
     elif args.command == "stage-runtime":
         ops.stage_python_runtime_package(

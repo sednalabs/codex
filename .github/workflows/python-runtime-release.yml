@@ -57,7 +57,7 @@ jobs:
 
       - name: Verify Python runtime wheels are available on PyPI
         env:
-          PYTHON_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          PYTHON_RUNTIME_VERSION: ${{ needs.prepare-python-runtime.outputs.python_version }}
         run: |
           uv run --no-project --with packaging==26.2 python .github/scripts/verify_pypi_release.py \
             openai-codex-cli-bin "$PYTHON_RUNTIME_VERSION"
