@@ -2521,6 +2521,15 @@ impl Session {
         item: TurnItem,
     ) {
         record_turn_ttfm_metric(turn_context, &item).await;
+        for contributor in self.services.extensions.turn_lifecycle_contributors() {
+            contributor
+                .on_item_completed(
+                    &self.services.thread_extension_data,
+                    turn_context.extension_data.as_ref(),
+                    &item,
+                )
+                .await;
+        }
         let completed_at_ms = now_unix_timestamp_ms();
         let item_id = item.id();
         let started_at_ms = turn_context
