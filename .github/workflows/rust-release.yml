@@ -514,6 +514,9 @@ jobs:
           PREFIX: ${{ matrix.prefix }}
         run: |
           set -euo pipefail
+          # Release tags bump Cargo.toml without rewriting the workspace lockfile.
+          # Refresh workspace versions before Bazel reads the Cargo dependency graph.
+          (cd codex-rs && cargo update --workspace)
           bazel build //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
           runtime="bazel-bin/third_party/voice/native_runtime_${PREFIX}"
           PYTHONPATH=third_party/voice python3 - "$runtime" "$TARGET" <<'PY'
