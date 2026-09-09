@@ -9,12 +9,19 @@ use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::openai_models::ApprovalMessages;
+use codex_protocol::openai_models::CollaborationModeMessages;
 use codex_protocol::openai_models::ConfirmationPolicies;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::MultiAgentMessages;
+use codex_protocol::openai_models::MultiAgentModeMessages;
+use codex_protocol::openai_models::MultiAgentRoleMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::ToolMessage;
@@ -344,6 +351,21 @@ async fn settings_updates_preserve_turn_identity_and_target(target: SettingsTarg
         Some("original-turn-state".to_string())
     );
     assert_eq!(requests[2].header(TURN_STATE_HEADER), None);
+    let expected_switch_counts = match target {
+        SettingsTarget::Thread => vec![0, 0, 1],
+        SettingsTarget::Turn => vec![0, 1, 2],
+    };
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request
+                .message_input_texts("developer")
+                .iter()
+                .filter(|text| text.contains("<model_switch>"))
+                .count())
+            .collect::<Vec<_>>(),
+        expected_switch_counts
+    );
 
     Ok(())
 }
@@ -365,7 +387,7 @@ enum TokenBudgetScenario {
 #[test_case(TokenBudgetScenario::InitialWindowOnly)]
 #[test_case(TokenBudgetScenario::DestinationWithoutGuidance)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn active_model_switch_resolves_token_budget_from_original_preferences(
+async fn active_model_switch_updates_core_context_from_captured_settings(
     scenario: TokenBudgetScenario,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -411,6 +433,15 @@ async fn active_model_switch_resolves_token_budget_from_original_preferences(
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("enable token-budget feature");
+            config
+                .features
+                .enable(Feature::Personality)
+                .expect("enable personality");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("enable multi-agent V2");
+            config.personality = Some(Personality::Pragmatic);
             if context_window_model.is_some() {
                 config.model_context_window = None;
             }
@@ -426,11 +457,38 @@ async fn active_model_switch_resolves_token_budget_from_original_preferences(
                     model.context_window = (slug == context_window_model).then_some(128_000);
                     model.max_context_window = None;
                 }
-                model
-                    .model_messages
-                    .as_mut()
-                    .expect("model messages")
-                    .token_budget = (initial_model || destination_has_guidance).then(|| ModelTokenBudgetConfig {
+                let messages = model.model_messages.as_mut().expect("model messages");
+                messages.instructions_template = Some(format!(
+                    "Instructions for {slug}. {{{{ personality }}}}"
+                ));
+                messages.instructions_variables = Some(ModelInstructionsVariables {
+                    personality_default: Some(format!("Default {slug} personality.")),
+                    personality_friendly: Some(format!("Friendly {slug} personality.")),
+                    personality_pragmatic: Some(format!("Pragmatic {slug} personality.")),
+                });
+                messages.collaboration_modes = Some(CollaborationModeMessages {
+                    default: Some(format!("Default collaboration for {slug}.")),
+                    plan: None,
+                });
+                messages.multi_agent = Some(MultiAgentMessages {
+                    role: Some(MultiAgentRoleMessages {
+                        root: Some(format!("Root role for {slug}.")),
+                        subagent: None,
+                    }),
+                    mode: Some(MultiAgentModeMessages {
+                        explicit: Some(format!("Delegation policy for {slug}.")),
+                        proactive: None,
+                        hint_text: None,
+                    }),
+                });
+                messages.approvals = Some(ApprovalMessages {
+                    on_request: Some(format!("Approval instructions for {slug}.")),
+                    on_request_auto_review: None,
+                    never: None,
+                    unless_trusted: None,
+                });
+                messages.token_budget =
+                    (initial_model || destination_has_guidance).then(|| ModelTokenBudgetConfig {
                     enabled: false,
                     use_history_notes_extension: false,
                     reminder_threshold_tokens: if initial_model { 8_000 } else { 2_000 },
@@ -487,6 +545,64 @@ async fn active_model_switch_resolves_token_budget_from_original_preferences(
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json()["model"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(MODEL_A), json!(MODEL_B), json!(MODEL_B)]
+    );
+    let initial_instructions =
+        format!("Instructions for {MODEL_A}. Pragmatic {MODEL_A} personality.");
+    assert_eq!(requests[0].instructions_text(), initial_instructions);
+    assert!(!requests[0].body_contains_text("<model_switch>"));
+    for text in [
+        format!("Root role for {MODEL_A}."),
+        format!("Delegation policy for {MODEL_A}."),
+    ] {
+        assert!(requests[0].body_contains_text(&text));
+    }
+    for pair in requests.windows(/*size*/ 2) {
+        assert!(
+            pair[1].input().starts_with(&pair[0].input()),
+            "context updates must be append-only"
+        );
+        assert_eq!(pair[1].instructions_text(), initial_instructions);
+        assert_eq!(pair[1].body_json()["tools"], pair[0].body_json()["tools"]);
+        assert_eq!(
+            pair[1].message_input_texts("user"),
+            pair[0].message_input_texts("user")
+        );
+    }
+    for request in &requests[1..] {
+        let developer_texts = request.message_input_texts("developer");
+        let switches = developer_texts
+            .iter()
+            .filter(|text| text.contains("<model_switch>"))
+            .collect::<Vec<_>>();
+        assert_eq!(switches.len(), 1);
+        assert!(switches[0].contains(&format!(
+            "Instructions for {MODEL_B}. Pragmatic {MODEL_B} personality."
+        )));
+        assert!(
+            !request.body_contains_text("<personality_spec>"),
+            "personality is included in the model-switch instructions"
+        );
+        for text in [
+            format!("Default collaboration for {MODEL_B}."),
+            format!("Approval instructions for {MODEL_B}."),
+            format!("Root role for {MODEL_B}."),
+            format!("Delegation policy for {MODEL_B}."),
+        ] {
+            assert_eq!(
+                developer_texts
+                    .iter()
+                    .filter(|message| message.contains(&text))
+                    .count(),
+                1
+            );
+        }
+    }
     let initial_guidance = format!("Use {MODEL_A} token-budget guidance.");
     let initial_guidance_expected =
         !explicit_default_template && context_window_model != Some(MODEL_B);
@@ -528,6 +644,89 @@ async fn active_model_switch_resolves_token_budget_from_original_preferences(
             "preserve history and append the guidance transition only once"
         );
     }
+
+    Ok(())
+}
+
+#[test_case(Some(ReasoningEffort::Ultra); "selected effort")]
+#[test_case(None; "captured model default effort")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_model_switch_updates_multi_agent_policy_from_captured_effort(
+    effort: Option<ReasoningEffort>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let use_model_default = effort.is_none();
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            paused_response("resp-1", "pause-before-effort-switch"),
+            sse_completed("resp-2"),
+        ],
+    )
+    .await;
+    let test = step_settings_test()
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("enable multi-agent V2");
+            for model in &mut config
+                .model_catalog
+                .as_mut()
+                .expect("controlled model catalog")
+                .models
+            {
+                model
+                    .model_messages
+                    .as_mut()
+                    .expect("model messages")
+                    .multi_agent = None;
+                model
+                    .supported_reasoning_levels
+                    .push(ReasoningEffortPreset {
+                        effort: ReasoningEffort::Ultra,
+                        description: "Ultra".to_string(),
+                    });
+                model.default_reasoning_level =
+                    Some(if model.slug == MODEL_B && use_model_default {
+                        ReasoningEffort::Ultra
+                    } else {
+                        ReasoningEffort::Low
+                    });
+            }
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let request = start_paused_turn(&test.codex).await?;
+    assert_eq!(
+        submit_turn_settings(
+            &test.codex,
+            &request.turn_id,
+            TurnSettingsUpdate {
+                model: Some(MODEL_B.to_string()),
+                effort: Some(effort),
+                ..Default::default()
+            },
+        )
+        .await?,
+        TurnSettingsUpdateOutcome::Applied
+    );
+    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body_json()["model"], MODEL_A);
+    assert_eq!(requests[1].body_json()["model"], MODEL_B);
+    assert_eq!(requests[1].body_json()["reasoning"]["effort"], "xhigh");
+    let proactive_text = "Proactive multi-agent delegation is active.";
+    assert!(!requests[0].body_contains_text(proactive_text));
+    assert!(requests[1].body_contains_text(proactive_text));
 
     Ok(())
 }

@@ -26,7 +26,7 @@ async fn process_compacted_history_with_test_session(
             .expect("world state should build"),
     );
     let initial_context = session
-        .build_initial_context_with_world_state(&turn_context, world_state.as_ref())
+        .build_initial_context_with_world_state(&step_context, world_state.as_ref())
         .await;
     let initial_context_injection = InitialContextInjection::BeforeLastUserMessage {
         world_state,

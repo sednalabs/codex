@@ -3977,11 +3977,15 @@ impl Session {
             .collect()
     }
 
+    /// `step_context` and `world_state` must come from the same captured step.
+    /// If more callers need this pair, bundle them into a captured-context struct
+    /// so callers cannot mix settings and WorldState from different steps.
     pub(crate) async fn build_initial_context_with_world_state(
         &self,
-        turn_context: &TurnContext,
+        step_context: &StepContext,
         world_state: &WorldState,
     ) -> Vec<ResponseItem> {
+        let turn_context = step_context.turn.as_ref();
         let mut developer_sections = Vec::<RenderedFragment>::with_capacity(8);
         let mut contextual_user_sections = Vec::<RenderedFragment>::with_capacity(2);
         let mut separate_developer_sections = Vec::<RenderedFragment>::new();
@@ -4071,7 +4075,11 @@ impl Session {
         }
         // This is full-context metadata. Steady-state context diffs should not re-emit it.
         if turn_context.config.features.enabled(Feature::TokenBudget)
-            && turn_context.model_context_window().is_some()
+            && step_context
+                .settings
+                .model_info
+                .resolved_context_window()
+                .is_some()
         {
             // Keep the legacy bridge hint when native Notes is disabled. A failed
             // native request must not fall back to the bridge.
@@ -4291,7 +4299,7 @@ impl Session {
         };
         let (window_number, window_ids) = window;
         let context_items = self
-            .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+            .build_initial_context_with_world_state(step_context, world_state.as_ref())
             .await
             .into_iter()
             .map(ResponseItemEnvelope::new)
@@ -4350,7 +4358,7 @@ impl Session {
         // Full initial context resets the baseline; later turns persist only its changes.
         let (mut context_items, world_state_item) = if should_inject_full_context {
             let context_items = self
-                .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+                .build_initial_context_with_world_state(step_context, world_state.as_ref())
                 .await;
             let snapshot = world_state.snapshot();
             self.state

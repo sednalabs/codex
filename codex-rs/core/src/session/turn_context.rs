@@ -369,16 +369,6 @@ impl TurnContext {
         self.initial_settings.personality()
     }
 
-    /// Legacy: returns the frozen initial-turn collaboration-mode developer instructions.
-    /// Step-scoped consumers should use their captured `StepContext::settings`.
-    pub(crate) fn collaboration_mode_developer_instructions(&self) -> &Option<String> {
-        &self
-            .initial_settings
-            .selected_collaboration_mode()
-            .settings
-            .developer_instructions
-    }
-
     pub(crate) fn skills_snapshot(&self) -> Arc<HostSkillsSnapshot> {
         let Some(snapshot) = self.extension_data.get::<HostSkillsSnapshot>() else {
             unreachable!("every turn has a host skills snapshot");
@@ -389,14 +379,7 @@ impl TurnContext {
     /// Legacy: returns the frozen initial-turn collaboration mode with the resolved model slug.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn collaboration_mode(&self) -> CollaborationMode {
-        CollaborationMode {
-            mode: self.mode(),
-            settings: Settings {
-                model: self.model_info().slug.clone(),
-                reasoning_effort: self.reasoning_effort().cloned(),
-                developer_instructions: self.collaboration_mode_developer_instructions().clone(),
-            },
-        }
+        self.initial_settings.effective_collaboration_mode()
     }
 
     pub(crate) fn plugin_attribution_for_command(
