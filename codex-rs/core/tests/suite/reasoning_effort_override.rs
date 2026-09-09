@@ -1,5 +1,6 @@
 //! Trusted reasoning-effort updates follow surviving history and the next turn's selected settings.
 
+use codex_core::ForkSnapshot;
 use codex_core::RecoverTurnRequest;
 use codex_core::StartIfIdleSubmission;
 use codex_core::SuspendTurnOutcome;
@@ -372,11 +373,27 @@ async fn reasoning_effort_override_normalizes_ultra_before_comparing_updates(
     Ok(())
 }
 
-#[test_case(true; "feature enabled")]
-#[test_case(false; "feature disabled")]
+#[derive(Clone, Copy)]
+enum PrewarmStartup {
+    New,
+    Resume,
+    Fork,
+    ResumeThenRollback,
+    ForkThenRollback,
+}
+
+#[test_case(true, PrewarmStartup::New; "new thread feature enabled")]
+#[test_case(false, PrewarmStartup::New; "new thread feature disabled")]
+#[test_case(true, PrewarmStartup::Resume; "resumed thread feature enabled")]
+#[test_case(false, PrewarmStartup::Resume; "resumed thread feature disabled")]
+#[test_case(true, PrewarmStartup::Fork; "forked thread feature enabled")]
+#[test_case(false, PrewarmStartup::Fork; "forked thread feature disabled")]
+#[test_case(true, PrewarmStartup::ResumeThenRollback; "resumed thread rollback before first turn")]
+#[test_case(true, PrewarmStartup::ForkThenRollback; "forked thread rollback before first turn")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
     feature_enabled: bool,
+    startup: PrewarmStartup,
 ) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
@@ -392,17 +409,65 @@ async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
     ]])
     .await;
     let base_url = format!("{}/v1", websocket.uri());
-    let test = override_builder()
-        .with_config(move |config| {
-            config.model_provider.base_url = Some(base_url);
-            config.model_provider.supports_websockets = true;
-            config
-                .features
-                .set_enabled(Feature::ReasoningEffortOverride, feature_enabled)
-                .expect("configure reasoning effort overrides");
-        })
-        .build_with_auto_env(&server)
-        .await?;
+    let configure_prewarm = move |config: &mut Config| {
+        config.model_provider.base_url = Some(base_url.clone());
+        config.model_provider.supports_websockets = true;
+        config
+            .features
+            .set_enabled(Feature::ReasoningEffortOverride, feature_enabled)
+            .expect("configure reasoning effort overrides");
+    };
+    let mut builder = override_builder().with_config(configure_prewarm.clone());
+    let test = if !matches!(startup, PrewarmStartup::New) {
+        let previous_mock = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![responses::ev_completed("previous")]),
+        )
+        .await;
+        let mut previous = override_builder()
+            .with_config(|config| {
+                config
+                    .features
+                    .disable(Feature::ReasoningEffortOverride)
+                    .expect("disable reasoning effort overrides for source history");
+                config.model_provider.supports_websockets = false;
+            })
+            .build_with_auto_env(&server)
+            .await?;
+        previous.submit_text_turn("previous turn").await?;
+        assert_eq!(
+            previous_mock
+                .single_request()
+                .message_input_texts("user")
+                .last()
+                .map(String::as_str),
+            Some("previous turn"),
+        );
+        if matches!(
+            startup,
+            PrewarmStartup::Fork | PrewarmStartup::ForkThenRollback
+        ) {
+            previous.codex.shutdown_and_wait().await?;
+            let mut config = previous.config.clone();
+            configure_prewarm(&mut config);
+            let forked = previous
+                .thread_manager
+                .fork_thread(
+                    ForkSnapshot::Interrupted,
+                    codex_core::StartThreadOptions::new(config.clone()),
+                    previous.codex.rollout_path().expect("rollout path"),
+                )
+                .await?;
+            previous.codex = forked.thread;
+            previous.session_configured = forked.session_configured;
+            previous.config = config;
+            previous
+        } else {
+            builder.restart(&server, &previous).await?
+        }
+    } else {
+        builder.build_with_auto_env(&server).await?
+    };
     let warmup = tokio::time::timeout(
         std::time::Duration::from_secs(/*secs*/ 10),
         websocket.wait_for_request(/*connection_index*/ 0, /*request_index*/ 0),
@@ -410,6 +475,23 @@ async fn reasoning_effort_override_websocket_prewarm_preserves_baseline(
     .await?;
     assert_eq!(warmup.body_json()["generate"], false);
     assert_eq!(warmup.body_json()["reasoning"]["effort"], "medium");
+    if matches!(
+        startup,
+        PrewarmStartup::ResumeThenRollback | PrewarmStartup::ForkThenRollback
+    ) {
+        // Observing the warmup request guarantees that Medium is pinned before rollback.
+        test.codex
+            .submit(Op::ThreadRollback { num_turns: 1 })
+            .await?;
+        let rollback = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::ThreadRolledBack(_) | EventMsg::Error(_))
+        })
+        .await;
+        assert!(
+            matches!(rollback, EventMsg::ThreadRolledBack(_)),
+            "rollback failed: {rollback:?}",
+        );
+    }
     submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {

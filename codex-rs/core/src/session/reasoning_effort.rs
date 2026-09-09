@@ -1,7 +1,8 @@
 //! Cache-preserving effort updates and the request-effort baseline for a context window.
 //!
-//! Only trusted harness items establish overrides. Replay invalidates the runtime pin;
-//! successful compaction retires the overrides and allows a fresh request baseline.
+//! Only trusted harness items establish overrides. Replay and rollback preserve startup
+//! prewarm's baseline while it is retained; later rollback invalidates the runtime pin.
+//! Successful compaction retires the overrides and allows a fresh request baseline.
 
 use super::session::Session;
 use super::step_context::StepContext;
@@ -31,8 +32,8 @@ impl Session {
         let should_skip = {
             let mut state = self.state.lock().await;
             if matches!(state.reasoning_effort_pin, ReasoningEffortPin::Compacted) {
-                // Replay leaves the pin Unset. Only successful compaction allows the
-                // request baseline to establish the selection without another update.
+                // Only successful compaction allows the request baseline to establish
+                // the selection without another update.
                 state
                     .reasoning_effort_pin
                     .pin(&settings.model_info.slug, effort.clone());

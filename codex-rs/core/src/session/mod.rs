@@ -1636,8 +1636,6 @@ impl Session {
             state
                 .history
                 .restore_review_context(Some(&retained_context), guardian_history.as_ref());
-            // The next send supplies the selected effort. Refresh its trusted override too.
-            state.reasoning_effort_pin = ReasoningEffortPin::Unset;
             if let Some(world_state) = world_state_baseline {
                 state.history.set_world_state_baseline(world_state);
             }
