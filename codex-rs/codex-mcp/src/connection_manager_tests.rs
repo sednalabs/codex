@@ -2731,7 +2731,15 @@ async fn capture_binding_skips_pending_optional_servers_after_configured_shared_
     required_manager.required_servers = vec!["pending-selected".to_string()];
 
     let manager = Arc::new(manager);
-    assert!(manager.stable_catalog_revisions().await.is_none());
+    assert!(
+        manager
+            .stable_catalog_revisions(
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new()
+            )
+            .await
+            .is_none()
+    );
     let started = tokio::time::Instant::now();
     let binding = tokio::time::timeout(
         Duration::from_millis(500),
@@ -2887,9 +2895,25 @@ async fn stable_catalog_revisions_ignore_terminal_optional_server_failures() {
     assert!(failed.client().await.is_err());
     manager.insert_test_client("failed", failed);
 
-    assert!(manager.stable_catalog_revisions().await.is_some());
+    assert!(
+        manager
+            .stable_catalog_revisions(
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new()
+            )
+            .await
+            .is_some()
+    );
     manager.required_servers.push("failed".to_string());
-    assert!(manager.stable_catalog_revisions().await.is_none());
+    assert!(
+        manager
+            .stable_catalog_revisions(
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new()
+            )
+            .await
+            .is_none()
+    );
     manager.required_servers.clear();
 
     let binding = capture_binding(&Arc::new(manager)).await;
@@ -3840,7 +3864,15 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
     };
     let manager = Arc::new(manager);
 
-    assert!(manager.stable_catalog_revisions().await.is_none());
+    assert!(
+        manager
+            .stable_catalog_revisions(
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new()
+            )
+            .await
+            .is_none()
+    );
     let reconnect_finished_wait = reconnect_finished.notified();
     let tools = manager.list_all_tools().await;
     assert!(tools.is_empty());
@@ -3855,7 +3887,15 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
         vec!["drive_search"]
     );
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(manager.stable_catalog_revisions().await.is_some());
+    assert!(
+        manager
+            .stable_catalog_revisions(
+                /*required_servers*/ &[],
+                /*required_plugins*/ &HashSet::new()
+            )
+            .await
+            .is_some()
+    );
 
     let step = capture_binding(&manager).await;
     let prepared = step
