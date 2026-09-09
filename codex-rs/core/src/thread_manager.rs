@@ -247,6 +247,8 @@ pub struct StartThreadOptions {
     pub client_mcp_extensions: ClientMcpExtensions,
     /// Thread ID reserved before startup so the caller can associate host-owned state with it.
     pub reserved_thread_id: Option<ThreadId>,
+    /// Initial thread-owned plugin selection; omission restores persisted settings.
+    pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
 impl StartThreadOptions {
@@ -267,6 +269,7 @@ impl StartThreadOptions {
             thread_extension_init: ExtensionDataInit::default(),
             client_mcp_extensions: ClientMcpExtensions::default(),
             reserved_thread_id: None,
+            disabled_plugin_ids: None,
         }
     }
 }
@@ -1410,6 +1413,18 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        // Capture the source's settings before truncating its model history.
+        options.disabled_plugin_ids = Some(options.disabled_plugin_ids.unwrap_or_else(|| {
+            source_thread_id
+                .and_then(|thread_id| {
+                    codex_history::latest_disabled_plugin_ids(
+                        history.get_rollout_items(),
+                        thread_id,
+                    )
+                })
+                .map(<[String]>::to_vec)
+                .unwrap_or_default()
+        }));
         let multi_agent_version = self
             .state
             .effective_multi_agent_version_for_spawn(
@@ -1914,6 +1929,7 @@ impl ThreadManagerState {
             thread_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
+            disabled_plugin_ids,
         } = options;
         let inherited_environments = captured_environments.or(inherited_environments);
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
@@ -2041,6 +2057,7 @@ impl ThreadManagerState {
             code_mode_session_provider: Arc::clone(&self.code_mode_session_provider),
             extensions,
             conversation_history: initial_history,
+            disabled_plugin_ids,
             requested_history_mode: history_mode,
             fork_persistence,
             // Keep only the manager registration internal. The session and its saved

@@ -3768,23 +3768,19 @@ async fn code_mode_wait_uses_its_own_max_tokens_budget() -> Result<()> {
         let _ = config.features.enable(Feature::CodeMode);
     });
     let test = builder.build(&server).await?;
-    let completion_gate = test.workspace_path("code-mode-max-tokens.ready");
-    let completion_wait = wait_for_file_source(&completion_gate)?;
 
-    let code = format!(
-        r#"// @exec: {{"max_output_tokens": 100}}
+    // An explicit yield separates the output batches without a nested shell call.
+    let code = r#"// @exec: {"max_output_tokens": 100}
 text("phase 1");
 yield_control();
-{completion_wait}
 text("token one token two token three token four token five token six token seven");
-"#
-    );
+"#;
 
     responses::mount_sse_once(
         &server,
         sse(vec![
             ev_response_created("resp-1"),
-            ev_custom_tool_call("call-1", "exec", &code),
+            ev_custom_tool_call("call-1", "exec", code),
             ev_completed("resp-1"),
         ]),
     )
@@ -3802,11 +3798,10 @@ text("token one token two token three token four token five token six token seve
 
     let first_request = first_completion.single_request();
     let first_items = custom_tool_output_items(&first_request, "call-1");
-    assert_eq!(first_items.len(), 2);
+    assert_eq!(first_items.len(), 2, "exec output: {first_items:?}");
     assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
     let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
-    fs::write(&completion_gate, "ready")?;
     responses::mount_sse_once(
         &server,
         sse(vec![
@@ -3837,7 +3832,7 @@ text("token one token two token three token four token five token six token seve
 
     let second_request = second_completion.single_request();
     let second_items = function_tool_output_items(&second_request, "call-2");
-    assert_eq!(second_items.len(), 2);
+    assert_eq!(second_items.len(), 2, "wait output: {second_items:?}");
     assert_regex_match(
         concat!(
             r"(?s)\A",

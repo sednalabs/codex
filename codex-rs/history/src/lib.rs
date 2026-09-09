@@ -453,6 +453,34 @@ fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
     })
 }
 
+/// Returns a thread's latest plugin selection, with a turn-context fallback.
+///
+/// Forked history may contain ancestor snapshots, and compaction may append a
+/// frozen turn context after an update. Neither can replace thread-owned settings.
+/// Without an owned snapshot, only the latest turn context supplies the initial
+/// selection; a missing field must not resurrect a selection from an older turn.
+pub fn latest_disabled_plugin_ids(items: &[RolloutItem], thread_id: ThreadId) -> Option<&[String]> {
+    if let Some(ids) = items.iter().rev().find_map(|item| {
+        if let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = item
+            && event.thread_id == Some(thread_id)
+        {
+            Some(event.thread_settings.disabled_plugin_ids.as_slice())
+        } else {
+            None
+        }
+    }) {
+        return Some(ids);
+    }
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::TurnContext(context) => Some(context),
+            _ => None,
+        })
+        .and_then(|context| context.disabled_plugin_ids.as_deref())
+}
+
 fn multi_agent_version_from_items(
     items: &[RolloutItem],
     thread_id: Option<ThreadId>,
