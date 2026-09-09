@@ -14,6 +14,41 @@ use crate::composition::SectionOutput;
 
 pub const SECTION_COST_METRIC: &str = "codex.guardian.context.section_cost";
 pub const REQUEST_TOKENS_METRIC: &str = "codex.guardian.context.request_tokens";
+/// Fixed across reviewers and models so complete-request distributions align.
+pub const REQUEST_TOKENS_BOUNDARIES: &[f64] = &[
+    1_000.0,
+    4_000.0,
+    16_000.0,
+    32_000.0,
+    64_000.0,
+    128_000.0,
+    256_000.0,
+    400_000.0,
+    512_000.0,
+    1_000_000.0,
+    2_000_000.0,
+];
+/// One shared scale for the section metric's count, token and byte measurements.
+/// Buckets belong to the metric name, not its measurement tag.
+pub const SECTION_COST_BOUNDARIES: &[f64] = &[
+    0.0,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
+    16.0,
+    64.0,
+    256.0,
+    1_024.0,
+    4_096.0,
+    16_384.0,
+    65_536.0,
+    262_144.0,
+    1_048_576.0,
+    4_194_304.0,
+    8_388_608.0,
+    16_777_216.0,
+];
 // A conservative reservation matching the existing original-image patch ceiling.
 const IMAGE_TOKEN_RESERVATION: usize = 10_000;
 /// Conservative input ceiling when the model catalog has no authoritative window.

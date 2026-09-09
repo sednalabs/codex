@@ -302,9 +302,10 @@ impl LunaSampler {
                 ("new_input", total_tokens),
                 ("total", total_tokens),
             ] {
-                metrics.histogram(
+                metrics.histogram_with_boundaries(
                     codex_guardian_context::REQUEST_TOKENS_METRIC,
                     i64::try_from(tokens).unwrap_or(i64::MAX),
+                    codex_guardian_context::REQUEST_TOKENS_BOUNDARIES,
                     &[("target", "async"), ("component", component)],
                 );
             }

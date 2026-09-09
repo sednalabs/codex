@@ -358,6 +358,16 @@ impl RecordingMetrics {
 }
 
 impl ExtensionMetrics for RecordingMetrics {
+    fn histogram_with_boundaries(
+        &self,
+        name: &str,
+        value: i64,
+        _boundaries: &[f64],
+        tags: &[(&str, &str)],
+    ) {
+        self.histogram(name, value, tags);
+    }
+
     fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
         self.0.lock().unwrap().push(RecordedMetric::Counter(
             name.to_owned(),

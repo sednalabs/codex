@@ -1,6 +1,7 @@
 //! Measures the complete synchronous request after image admission and wire
 //! prefix assembly. Includes reused history, tool definitions and output format.
 
+use codex_guardian_context::REQUEST_TOKENS_BOUNDARIES;
 use codex_guardian_context::REQUEST_TOKENS_METRIC;
 use codex_protocol::protocol::TruncationPolicy;
 
@@ -24,9 +25,10 @@ pub(crate) fn observe(telemetry: &SessionTelemetry, request: &ResponsesApiReques
         .saturating_add(metadata);
     // The assembled input already includes inherited history and the current
     // review. Do not report a guessed old/new split after context injection.
-    telemetry.histogram(
+    telemetry.histogram_with_boundaries(
         REQUEST_TOKENS_METRIC,
         i64::try_from(total).unwrap_or(i64::MAX),
+        REQUEST_TOKENS_BOUNDARIES,
         &[("target", "sync"), ("component", "total")],
     );
     total

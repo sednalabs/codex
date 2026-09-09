@@ -603,9 +603,10 @@ impl GuardianV2Extension {
             if let Some(metrics) = metrics.as_deref() {
                 for (section, cost) in transcript.section_costs() {
                     for (measurement, value) in cost.measurements() {
-                        metrics.histogram(
+                        metrics.histogram_with_boundaries(
                             codex_guardian_context::SECTION_COST_METRIC,
                             i64::try_from(value).unwrap_or(i64::MAX),
+                            codex_guardian_context::SECTION_COST_BOUNDARIES,
                             &[
                                 ("target", "async"),
                                 ("section", section),

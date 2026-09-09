@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -179,7 +180,8 @@ struct MockResponsesState {
     allow_guardian_review: Notify,
     classification_completed: Notify,
     truncation_recorded: Notify,
-    sync_cost_recorded: Notify,
+    context_metric_bounds: Mutex<BTreeMap<(String, String), Option<f64>>>,
+    context_metrics_recorded: Notify,
     luna_score: f64,
     invalid_classification: bool,
     review_outcome: ReviewOutcome,
@@ -723,12 +725,22 @@ async fn guardian_v2_routes_scoped_tool_approvals(
                         for metric in payload["resourceMetrics"].as_array().into_iter().flatten()
                             .flat_map(|resource| resource["scopeMetrics"].as_array().into_iter().flatten())
                             .flat_map(|scope| scope["metrics"].as_array().into_iter().flatten())
-                            .filter(|metric| metric["name"] == "codex.guardian.context.request_tokens")
+                            .filter(|metric| matches!(metric["name"].as_str(), Some("codex.guardian.context.request_tokens" | "codex.guardian.context.section_cost")))
                         {
+                            let name = metric["name"].as_str().expect("context metric name");
                             for point in metric["histogram"]["dataPoints"].as_array().into_iter().flatten() {
                                 let attributes = point["attributes"].as_array().expect("metric attributes");
-                                if attributes.iter().any(|attr| attr["key"] == "target" && attr["value"]["stringValue"] == "sync") {
-                                    state.sync_cost_recorded.notify_one();
+                                for target in ["sync", "async"] {
+                                    if attributes.iter().any(|attr| attr["key"] == "target" && attr["value"]["stringValue"] == target) {
+                                        let mut bounds = state.context_metric_bounds.lock().expect("context metric bounds");
+                                        bounds.insert(
+                                            (name.to_owned(), target.to_owned()),
+                                            point["explicitBounds"].as_array().and_then(|bounds| bounds.last()).and_then(Value::as_f64),
+                                        );
+                                        if bounds.len() == 4 {
+                                            state.context_metrics_recorded.notify_one();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1342,9 +1354,24 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         }
     }
     if mixed_evidence {
-        timeout(TIMEOUT, responses_state.sync_cost_recorded.notified())
+        timeout(TIMEOUT, responses_state.context_metrics_recorded.notified())
             .await
-            .expect("sync request cost should be exported");
+            .expect("sync and async request/section metrics should all be exported");
+        let bounds = responses_state
+            .context_metric_bounds
+            .lock()
+            .expect("context metric bounds");
+        for ((metric, target), bound) in bounds.iter() {
+            assert_eq!(
+                *bound,
+                Some(if metric == "codex.guardian.context.request_tokens" {
+                    2_000_000.0
+                } else {
+                    16_777_216.0
+                }),
+                "{metric} ({target}) must export its context metric buckets"
+            );
+        }
     }
     if lifecycle.has_user_answer() {
         let reviews = responses_state
