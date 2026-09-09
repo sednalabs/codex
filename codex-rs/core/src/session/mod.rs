@@ -1932,6 +1932,18 @@ impl Session {
             config.mcp_optional_startup_grace = next_config.mcp_optional_startup_grace;
             config.mcp_oauth_credentials_store_mode = next_config.mcp_oauth_credentials_store_mode;
             if let Err(err) = config.features.set_enabled(
+                Feature::Mcp20260728,
+                next_config.features.enabled(Feature::Mcp20260728),
+            ) {
+                warn!("failed to refresh MCP protocol config: {err}");
+            }
+            if let Err(err) = config.features.set_enabled(
+                Feature::CodexAppsMcp20260728,
+                next_config.features.enabled(Feature::CodexAppsMcp20260728),
+            ) {
+                warn!("failed to refresh Codex Apps MCP protocol config: {err}");
+            }
+            if let Err(err) = config.features.set_enabled(
                 Feature::SecretAuthStorage,
                 next_config.features.enabled(Feature::SecretAuthStorage),
             ) {
@@ -1987,6 +1999,18 @@ impl Session {
         config.mcp_servers = next_config.mcp_servers;
         config.mcp_optional_startup_grace = next_config.mcp_optional_startup_grace;
         config.mcp_oauth_credentials_store_mode = next_config.mcp_oauth_credentials_store_mode;
+        if let Err(err) = config.features.set_enabled(
+            Feature::Mcp20260728,
+            next_config.features.enabled(Feature::Mcp20260728),
+        ) {
+            warn!("failed to refresh MCP protocol config: {err}");
+        }
+        if let Err(err) = config.features.set_enabled(
+            Feature::CodexAppsMcp20260728,
+            next_config.features.enabled(Feature::CodexAppsMcp20260728),
+        ) {
+            warn!("failed to refresh Codex Apps MCP protocol config: {err}");
+        }
         if let Err(err) = config.features.set_enabled(
             Feature::SecretAuthStorage,
             next_config.features.enabled(Feature::SecretAuthStorage),

@@ -106,7 +106,6 @@ impl McpConnectionSet {
             servers: HashMap::new(),
             event_stream_connection: None,
             disabled_servers: Vec::new(),
-            protocol_mode: crate::McpProtocolMode::Legacy,
             required_servers: Vec::new(),
             optional_startup_deadline: OnceLock::new(),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
@@ -132,6 +131,7 @@ impl McpConnectionSet {
             name,
             McpServerView {
                 tool_filter: ToolFilter::default(),
+                protocol_mode: crate::McpProtocolMode::Legacy,
                 connection: Arc::new(McpServerConnection {
                     identity: None,
                     client,
@@ -1986,6 +1986,97 @@ fn codex_apps_env_bearer_token_bypasses_shared_tools_cache() {
 }
 
 #[tokio::test]
+async fn hosted_apps_protocol_mode_is_independent_of_generic_mode() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let server_config: McpServerConfig =
+        serde_json::from_value(serde_json::json!({ "url": "http://127.0.0.1:1/ps/mcp" }))?;
+
+    for (generic_mode, hosted_mode) in [
+        (
+            crate::McpProtocolMode::Legacy,
+            crate::McpProtocolMode::V20260728,
+        ),
+        (
+            crate::McpProtocolMode::V20260728,
+            crate::McpProtocolMode::Legacy,
+        ),
+    ] {
+        let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+        config.protocol_mode = generic_mode;
+        config.host_owned_apps_protocol_mode = hosted_mode;
+        let mut catalog = crate::ResolvedMcpCatalog::builder();
+        catalog.register(crate::McpServerRegistration::from_hosted_apps(
+            "test-host",
+            /*contribution_order*/ 0,
+            server_config.clone(),
+        ));
+        catalog.register(crate::McpServerRegistration::from_config(
+            "third_party".to_string(),
+            server_config.clone(),
+        ));
+        config.mcp_server_catalog = catalog.build();
+
+        let startup_cancellation_token = CancellationToken::new();
+        startup_cancellation_token.cancel();
+        let manager = McpConnectionSet::new(
+            /*previous*/ None,
+            McpPublicationGate::already_published(),
+            McpRuntimeInput {
+                startup_policy: McpStartupPolicy::Eager,
+                config: Arc::new(config),
+                plugins_available: false,
+                ready_selected_capability_roots: Vec::new(),
+                mcp_servers: HashMap::from([
+                    (
+                        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                        EffectiveMcpServer::configured(server_config.clone()),
+                    ),
+                    (
+                        "third_party".to_string(),
+                        EffectiveMcpServer::configured(server_config.clone()),
+                    ),
+                ]),
+                submit_id: "protocol-mode-scope".to_string(),
+                tx_event: None,
+                startup_cancellation_token,
+                runtime_context: McpRuntimeContext::new(
+                    Arc::new(environment_manager_without_environments()),
+                    codex_home.path().to_path_buf(),
+                ),
+                codex_apps_tools_cache: ConnectorRuntimeManager::default(),
+                tool_catalog_cache: McpToolCatalogCache::default(),
+                codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(
+                    /*account_id*/ None, /*chatgpt_user_id*/ None,
+                ),
+                client_mcp_extensions: ClientMcpExtensions::default(),
+                auth: None,
+                auth_manager: None,
+                elicitation_reviewer: None,
+                elicitation_lifecycle: None,
+            },
+            ElicitationRequestRouter::default(),
+        )
+        .await;
+
+        assert_eq!(
+            manager.servers[CODEX_APPS_MCP_SERVER_NAME].protocol_mode,
+            hosted_mode
+        );
+        assert_eq!(manager.servers["third_party"].protocol_mode, generic_mode);
+        assert_eq!(
+            manager
+                .event_stream_connection
+                .as_ref()
+                .expect("hosted Apps event stream")
+                .protocol_mode,
+            hosted_mode
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn codex_apps_extension_does_not_share_host_owned_tools_cache() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let cache_key = ConnectorRuntimeContextKey::personal(
@@ -2005,6 +2096,7 @@ async fn codex_apps_extension_does_not_share_host_owned_tools_cache() -> anyhow:
     let server_config: McpServerConfig =
         serde_json::from_value(serde_json::json!({ "url": "http://127.0.0.1:1" }))?;
     let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+    config.host_owned_apps_protocol_mode = crate::McpProtocolMode::V20260728;
     let mut catalog = crate::ResolvedMcpCatalog::builder();
     catalog.register(crate::McpServerRegistration::from_extension(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
@@ -2049,6 +2141,11 @@ async fn codex_apps_extension_does_not_share_host_owned_tools_cache() -> anyhow:
     .await;
 
     let client = manager.test_client(CODEX_APPS_MCP_SERVER_NAME);
+    assert_eq!(
+        manager.servers[CODEX_APPS_MCP_SERVER_NAME].protocol_mode,
+        crate::McpProtocolMode::Legacy,
+        "an ordinary extension named codex_apps must not inherit the hosted protocol default"
+    );
     assert!(
         client.codex_apps_tools_cache_context.is_none(),
         "an extension must not receive the host-owned Apps cache"
@@ -4907,6 +5004,7 @@ async fn manager_with_reusable_ready_server(
     manager.servers.insert(
         "docs".to_string(),
         McpServerView {
+            protocol_mode: crate::McpProtocolMode::Legacy,
             connection: Arc::new(McpServerConnection {
                 identity: Some(reusable_server_identity("docs", config, runtime_context)),
                 client: create_ready_async_managed_client(tools).await,
@@ -5226,6 +5324,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
     previous.servers.insert(
         "docs".to_string(),
         McpServerView {
+            protocol_mode: crate::McpProtocolMode::Legacy,
             connection: Arc::new(McpServerConnection {
                 identity: Some(reusable_server_identity("docs", &config, &runtime_context)),
                 client: AsyncManagedClient {

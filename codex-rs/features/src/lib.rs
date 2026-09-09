@@ -209,6 +209,8 @@ pub enum Feature {
     EnableMcpApps,
     /// Enable MCP protocol version 2026-07-28 support.
     Mcp20260728,
+    /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
+    CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
     McpOAuthRefreshCoordination,
     /// Removed compatibility flag for the legacy Apps MCP path override.
@@ -1300,6 +1302,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Mcp20260728,
         key: "mcp_2026_07_28",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CodexAppsMcp20260728,
+        key: "codex_apps_mcp_2026_07_28",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

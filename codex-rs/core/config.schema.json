@@ -701,6 +701,9 @@
             "code_mode_prewarm": {
               "type": "boolean"
             },
+            "codex_apps_mcp_2026_07_28": {
+              "type": "boolean"
+            },
             "codex_git_commit": {
               "type": "boolean"
             },
@@ -6188,6 +6191,9 @@
           "type": "boolean"
         },
         "code_mode_prewarm": {
+          "type": "boolean"
+        },
+        "codex_apps_mcp_2026_07_28": {
           "type": "boolean"
         },
         "codex_git_commit": {

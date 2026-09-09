@@ -172,8 +172,10 @@ pub struct McpConfig {
     pub prefix_mcp_tool_names: bool,
     /// MCP servers whose model-visible tool namespaces omit the `mcp__` prefix.
     pub non_prefixed_mcp_tool_servers: Vec<String>,
-    /// Protocol compatibility policy captured when this MCP configuration is created.
+    /// Protocol mode for servers other than the host-owned Codex Apps registration.
     pub protocol_mode: McpProtocolMode,
+    /// Independent protocol mode for the trusted, HTTP Codex Apps registration.
+    pub host_owned_apps_protocol_mode: McpProtocolMode,
     /// Client-side elicitation capabilities advertised during MCP initialization.
     pub client_elicitation_capability: ElicitationCapability,
     /// Resolved MCP registrations keyed by logical server name.
