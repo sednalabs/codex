@@ -17,6 +17,7 @@ use anyhow::bail;
 use codex_exec_server::Environment;
 use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::NetworkProxy;
+use codex_network_proxy::brokered_credential_binding_env_keys;
 use codex_network_proxy::brokered_credential_dummy_env_keys;
 use codex_network_proxy::brokered_credential_env_keys;
 use codex_network_proxy::credential_broker_provider_context_env_keys;
@@ -77,8 +78,12 @@ pub(crate) struct ShellSnapshotFile {
 
 struct SnapshotCredentials {
     network_proxy: NetworkProxy,
+    broker_config_revision: u64,
     shell_environment_policy: ShellEnvironmentPolicy,
     credential_env: HashMap<String, String>,
+    context_env: HashMap<String, String>,
+    context_credential_keys: HashMap<String, Vec<String>>,
+    binding_context_credential_keys: HashMap<String, Vec<String>>,
 }
 
 struct SnapshotCredentialBroker {
@@ -316,6 +321,10 @@ impl ShellSnapshotFile {
     ) -> bool {
         self.credentials.as_ref().is_some_and(|credentials| {
             &credentials.shell_environment_policy == shell_environment_policy
+                && credentials.broker_config_revision
+                    == credentials
+                        .network_proxy
+                        .credential_broker_config_revision()
         })
     }
 
@@ -332,20 +341,72 @@ impl ShellSnapshotFile {
             return;
         };
 
-        // This snapshot belongs to one command and was captured under this exact policy.
-        if &credentials.shell_environment_policy != shell_environment_policy {
-            return;
-        }
-        let mut snapshot_env = credentials.credential_env.clone();
-        snapshot_env.insert(
+        let allowed_snapshot_env = create_env_from_vars(
+            credentials
+                .credential_env
+                .iter()
+                .chain(&credentials.context_env)
+                .map(|(key, value)| (key.clone(), value.clone())),
+            shell_environment_policy,
+            /*thread_id*/ None,
+        );
+        let explicit_env_overrides = &shell_environment_policy.r#set;
+        let mut snapshot_real_credentials = credentials.credential_env.clone();
+        snapshot_real_credentials.insert(
             CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
             "1".to_string(),
         );
         credentials
             .network_proxy
-            .restore_brokered_credentials(&mut snapshot_env, &mut []);
-        snapshot_env.remove(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
-        env.extend(snapshot_env);
+            .restore_brokered_credentials(&mut snapshot_real_credentials, &mut []);
+        let mut restored_credential_keys = Vec::new();
+        for (key, value) in &credentials.credential_env {
+            if explicit_env_overrides.contains_key(key) || !allowed_snapshot_env.contains_key(key) {
+                continue;
+            }
+            let current = env.entry(key.clone()).or_default();
+            if snapshot_real_credentials.get(key) != Some(current) {
+                current.clone_from(value);
+                restored_credential_keys.push(key);
+            }
+        }
+        for (key, value) in &credentials.context_env {
+            let Some(credential_keys) = credentials.context_credential_keys.get(key) else {
+                continue;
+            };
+            if explicit_env_overrides.contains_key(key)
+                || !allowed_snapshot_env.contains_key(key)
+                || !credential_keys
+                    .iter()
+                    .any(|credential_key| allowed_snapshot_env.contains_key(credential_key))
+            {
+                continue;
+            }
+            let restores_binding_context = credentials
+                .binding_context_credential_keys
+                .get(key)
+                .is_some_and(|binding_keys| {
+                    binding_keys
+                        .iter()
+                        .any(|credential_key| restored_credential_keys.contains(&credential_key))
+                });
+            if restores_binding_context || !env.contains_key(key) {
+                env.insert(key.clone(), value.clone());
+            }
+        }
+
+        let previous = env.insert(
+            CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
+            "1".to_string(),
+        );
+        credentials
+            .network_proxy
+            .restore_brokered_credentials(env, &mut []);
+        if let Some(previous) = previous {
+            env.insert(CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(), previous);
+        } else {
+            env.remove(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
+        }
     }
 }
 
@@ -394,6 +455,9 @@ async fn capture_snapshot(
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<(String, Option<SnapshotCredentials>)> {
+    let broker_config_revision = credential_broker
+        .map(|broker| broker.network_proxy.credential_broker_config_revision())
+        .unwrap_or_default();
     let shell_type = shell.shell_type;
     let shell_startup = if credential_broker.is_some_and(|broker| !broker.allow_login_shell) {
         SnapshotStartup::NonInteractive
@@ -509,17 +573,45 @@ async fn capture_snapshot(
     )
     .ok_or_else(|| anyhow!("shell snapshot contains a credential outside supported exports"))?;
 
-    let credential_env = brokered_credential_env_keys(&env)
-        .map(str::to_string)
-        .chain(allowed_brokered_keys)
-        .filter_map(|key| env.get(&key).map(|value| (key, value.clone())))
+    let credential_env = allowed_brokered_keys
+        .iter()
+        .filter_map(|key| env.get(key).map(|value| (key.clone(), value.clone())))
+        .collect();
+    let mut context_credential_keys = HashMap::<String, Vec<String>>::new();
+    let mut binding_context_credential_keys = HashMap::<String, Vec<String>>::new();
+    for key in &allowed_brokered_keys {
+        let mut provider_env = env.clone();
+        provider_env
+            .retain(|candidate, _| candidate == key || !allowed_brokered_keys.contains(candidate));
+        for context_key in brokered_credential_binding_env_keys(&provider_env) {
+            binding_context_credential_keys
+                .entry(context_key.to_string())
+                .or_default()
+                .push(key.clone());
+        }
+        for context_key in brokered_credential_env_keys(&provider_env)
+            .filter(|context_key| *context_key != key.as_str())
+        {
+            context_credential_keys
+                .entry(context_key.to_string())
+                .or_default()
+                .push(key.clone());
+        }
+    }
+    let context_env = context_credential_keys
+        .keys()
+        .filter_map(|key| env.get(key).map(|value| (key.clone(), value.clone())))
         .collect();
     Ok((
         snapshot,
         Some(SnapshotCredentials {
             network_proxy: credential_broker.network_proxy.clone(),
+            broker_config_revision,
             shell_environment_policy: policy.clone(),
             credential_env,
+            context_env,
+            context_credential_keys,
+            binding_context_credential_keys,
         }),
     ))
 }

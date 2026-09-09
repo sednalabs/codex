@@ -495,6 +495,10 @@ impl NetworkProxyState {
             .map(|(config, _)| config)
     }
 
+    pub(crate) fn credential_broker_config_revision(&self) -> u64 {
+        self.credential_broker.config_revision()
+    }
+
     pub(crate) async fn current_cfg_with_brokerage_provenance(
         &self,
     ) -> Result<(NetworkProxyConfig, bool)> {
@@ -524,19 +528,13 @@ impl NetworkProxyState {
     }
 
     pub async fn force_reload(&self) -> Result<()> {
-        let previous_cfg = {
-            let guard = self.state.read().await;
-            guard.config.clone()
-        };
-
         match self.reloader.reload_now().await {
             Ok(mut new_state) => {
-                self.credential_broker.configure(&new_state.config);
-                // Policy changes are operationally sensitive; logging diffs makes changes traceable
-                // without needing to dump full config blobs (which can include unrelated settings).
-                log_policy_changes(&previous_cfg, &new_state.config);
                 {
                     let mut guard = self.state.write().await;
+                    self.credential_broker.configure(&new_state.config);
+                    // Log policy diffs without dumping potentially sensitive config values.
+                    log_policy_changes(&guard.config, &new_state.config);
                     new_state.blocked = guard.blocked.clone();
                     *guard = new_state;
                 }
@@ -554,8 +552,8 @@ impl NetworkProxyState {
 
     pub async fn replace_config_state(&self, mut new_state: ConfigState) -> Result<()> {
         self.reload_if_needed().await?;
-        self.credential_broker.configure(&new_state.config);
         let mut guard = self.state.write().await;
+        self.credential_broker.configure(&new_state.config);
         log_policy_changes(&guard.config, &new_state.config);
         new_state.blocked = guard.blocked.clone();
         new_state.blocked_total = guard.blocked_total;
@@ -899,20 +897,12 @@ impl NetworkProxyState {
         match self.reloader.maybe_reload().await? {
             None => Ok(()),
             Some(mut new_state) => {
-                self.credential_broker.configure(&new_state.config);
-                let (previous_cfg, blocked, blocked_total) = {
-                    let guard = self.state.read().await;
-                    (
-                        guard.config.clone(),
-                        guard.blocked.clone(),
-                        guard.blocked_total,
-                    )
-                };
-                log_policy_changes(&previous_cfg, &new_state.config);
-                new_state.blocked = blocked;
-                new_state.blocked_total = blocked_total;
                 {
                     let mut guard = self.state.write().await;
+                    self.credential_broker.configure(&new_state.config);
+                    log_policy_changes(&guard.config, &new_state.config);
+                    new_state.blocked = guard.blocked.clone();
+                    new_state.blocked_total = guard.blocked_total;
                     *guard = new_state;
                 }
                 let source = self.reloader.source_label();

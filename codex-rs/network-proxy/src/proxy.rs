@@ -882,6 +882,11 @@ impl NetworkProxy {
         self.state.current_cfg().await
     }
 
+    /// Revision of credential configuration, excluding ordinary network policy changes.
+    pub fn credential_broker_config_revision(&self) -> u64 {
+        self.state.credential_broker_config_revision()
+    }
+
     /// Captures the static inputs needed to launch a matching executor-local proxy.
     pub async fn remote_launch_config(&self) -> Result<crate::RemoteNetworkProxyLaunchConfig> {
         let (mut config, brokerage_created_default_allowlist) =

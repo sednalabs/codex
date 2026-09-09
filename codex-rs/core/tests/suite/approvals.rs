@@ -3141,6 +3141,61 @@ GH_TOKEN = "{REAL_GITHUB_TOKEN}"
             output.contains("credential brokerage could not create a protected shell snapshot")
         );
         assert!(!output.contains(REAL_GITHUB_TOKEN));
+        if mode == "failed" {
+            fs::remove_file(test.home.path().join("shell_snapshots"))?;
+            let mut first_snapshot_paths = None;
+            for call_id in ["brokered-startup-retry", "brokered-startup-reuse"] {
+                let event = shell_event(
+                    call_id,
+                    "printenv GH_TOKEN",
+                    /*timeout_ms*/ 5_000,
+                    SandboxPermissions::UseDefault,
+                )?;
+                let retry = mount_sse_sequence(
+                    &server,
+                    vec![
+                        sse(vec![
+                            ev_response_created(call_id),
+                            event,
+                            ev_completed(call_id),
+                        ]),
+                        sse(vec![
+                            ev_response_created("resp-brokered-startup-done"),
+                            ev_assistant_message("msg-brokered-startup-done", "done"),
+                            ev_completed("resp-brokered-startup-done"),
+                        ]),
+                    ],
+                )
+                .await;
+                submit_turn_preserving_active_permission_profile(
+                    &test,
+                    "run the command after repairing snapshot storage",
+                    approval_policy,
+                )
+                .await?;
+                wait_for_completion_without_approval(&test).await;
+                let result = parse_result(&retry.requests()[1].function_call_output(call_id));
+                assert_eq!(
+                    result.exit_code,
+                    Some(0),
+                    "snapshot retry failed: {result:?}"
+                );
+                assert!(result.stdout.starts_with("ghp_"));
+                assert!(!result.stdout.contains(REAL_GITHUB_TOKEN));
+                let mut snapshot_paths = fs::read_dir(test.home.path().join("shell_snapshots"))?
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|extension| extension == "sh"))
+                    .collect::<Vec<_>>();
+                snapshot_paths.sort();
+                assert_eq!(snapshot_paths.len(), 1);
+                if let Some(first_snapshot_paths) = &first_snapshot_paths {
+                    assert_eq!(&snapshot_paths, first_snapshot_paths);
+                } else {
+                    first_snapshot_paths = Some(snapshot_paths);
+                }
+            }
+        }
         return Ok(());
     }
     let result = parse_result(&output);

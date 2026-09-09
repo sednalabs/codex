@@ -39,11 +39,22 @@ use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::future::Shared;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tracing::instrument;
 
 pub(crate) type ShellSnapshotTask = Shared<BoxFuture<'static, Option<Arc<ShellSnapshotFile>>>>;
+pub(crate) type ShellSnapshotCache =
+    Arc<Mutex<HashMap<ShellSnapshotCacheKey, Arc<ShellSnapshotFile>>>>;
+
+#[derive(Eq, Hash, PartialEq)]
+pub(crate) struct ShellSnapshotCacheKey {
+    cwd: AbsolutePathBuf,
+    shell_path: PathBuf,
+    allow_login_shell: bool,
+    sandbox: String,
+}
 
 #[derive(Clone)]
 pub(crate) struct TurnEnvironment {
@@ -59,6 +70,7 @@ pub(crate) struct TurnEnvironment {
     pub(crate) executor_platform_os: Option<String>,
     pub(crate) shell_snapshot: ShellSnapshotTask,
     pub(crate) shell_snapshot_builder: Option<Box<ShellSnapshot>>,
+    pub(crate) shell_snapshot_cache: ShellSnapshotCache,
     pub(crate) shell_snapshot_v2_supported: bool,
 }
 
@@ -80,6 +92,7 @@ impl TurnEnvironment {
             executor_platform_os: None,
             shell_snapshot: futures::future::ready(None).boxed().shared(),
             shell_snapshot_builder: None,
+            shell_snapshot_cache: Arc::default(),
             shell_snapshot_v2_supported: false,
         }
     }
@@ -127,20 +140,58 @@ impl TurnEnvironment {
         }
         if credential_broker_enabled {
             let sandbox = sandbox?;
-            self.shell_snapshot_builder
-                .as_ref()?
-                .as_ref()
-                .clone()
-                .build(
-                    Arc::clone(&self.environment),
-                    PathUri::from_abs_path(cwd),
-                    Some(shell.clone()),
-                    command[1] == "-lc",
-                    self.shell_environment_policy().clone(),
-                    Some(sandbox),
-                )
+            let use_login_shell = command[1] == "-lc";
+            let shell_snapshot_builder = self.shell_snapshot_builder.as_ref()?;
+            let key = ShellSnapshotCacheKey {
+                cwd: cwd.clone(),
+                shell_path: shell.shell_path.clone(),
+                allow_login_shell: use_login_shell,
+                sandbox: sandbox
+                    .cache_key()
+                    .inspect_err(|err| {
+                        tracing::warn!("Failed to identify shell snapshot sandbox: {err:?}");
+                    })
+                    .ok()?,
+            };
+            if let Some(snapshot) = self
+                .shell_snapshot_cache
+                .lock()
                 .await
-                .filter(|snapshot| snapshot.is_brokered_for(self.shell_environment_policy()))
+                .get(&key)
+                .filter(|snapshot| {
+                    snapshot.path().as_path().is_file()
+                        && snapshot.is_brokered_for(self.shell_environment_policy())
+                })
+                .cloned()
+            {
+                return Some(snapshot);
+            }
+            // Captures keep this command's cancellation token. Retry once if brokerage
+            // changes during startup, without retrying failed or cancelled captures.
+            for _ in 0..2 {
+                let snapshot = shell_snapshot_builder
+                    .as_ref()
+                    .clone()
+                    .build(
+                        Arc::clone(&self.environment),
+                        PathUri::from_abs_path(cwd),
+                        Some(shell.clone()),
+                        use_login_shell,
+                        self.shell_environment_policy().clone(),
+                        Some(sandbox.clone()),
+                    )
+                    .await?;
+                if !snapshot.is_brokered_for(self.shell_environment_policy()) {
+                    continue;
+                }
+                let mut snapshots = self.shell_snapshot_cache.lock().await;
+                if snapshots.len() >= 32 && !snapshots.contains_key(&key) {
+                    snapshots.clear();
+                }
+                snapshots.insert(key, Arc::clone(&snapshot));
+                return Some(snapshot);
+            }
+            None
         } else {
             self.shell_snapshot.peek()?.clone()
         }

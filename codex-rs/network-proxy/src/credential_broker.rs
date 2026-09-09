@@ -18,6 +18,7 @@ pub(crate) struct CredentialBroker {
 
 #[derive(Default)]
 struct CredentialBrokerState {
+    config_revision: u64,
     enabled: bool,
     openai_api_host: Option<String>,
     credentials: Vec<CredentialRecord>,
@@ -82,6 +83,11 @@ impl CredentialBroker {
 
     pub(crate) fn configure(&self, config: &NetworkProxyConfig) {
         let mut state = self.write_state();
+        if state.enabled != config.credential_broker
+            || state.openai_api_host != config.credential_broker_openai_host
+        {
+            state.config_revision += 1;
+        }
         if state.enabled != config.credential_broker {
             state.enabled = config.credential_broker;
             state.credentials.clear();
@@ -95,6 +101,10 @@ impl CredentialBroker {
                 .credentials
                 .retain(|credential| !credential.provider.reset_on_configuration_change);
         }
+    }
+
+    pub(crate) fn config_revision(&self) -> u64 {
+        self.read_state().config_revision
     }
 
     pub(crate) fn discover_parent_credentials(

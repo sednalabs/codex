@@ -4,8 +4,6 @@ use crate::config::NetworkProxySpec;
 #[cfg(unix)]
 use codex_network_proxy::NetworkProxyConfig;
 #[cfg(unix)]
-use codex_network_proxy::brokered_credential_binding_env_keys;
-#[cfg(unix)]
 use codex_protocol::config_types::EnvironmentVariablePattern;
 #[cfg(unix)]
 use codex_protocol::models::PermissionProfile;
@@ -132,6 +130,20 @@ fn snapshot_file_name_parser_supports_legacy_and_suffixed_names() {
 #[cfg(unix)]
 #[tokio::test]
 async fn inactive_profiles_keep_snapshots_but_active_brokers_require_sandbox() -> Result<()> {
+    use crate::config::PermissionProfileSnapshot;
+    use crate::environment_selection::ThreadEnvironments;
+    use crate::environment_selection::TurnEnvironmentSnapshot;
+    use crate::tools::sandboxing::SandboxAttempt;
+    use codex_exec_server::EnvironmentManager;
+    use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+    use codex_protocol::config_types::WindowsSandboxLevel;
+    use codex_protocol::protocol::EnvironmentConfig;
+    use codex_protocol::protocol::EnvironmentConfigState;
+    use codex_protocol::protocol::TurnEnvironmentSelection;
+    use codex_sandboxing::SandboxManager;
+    use codex_sandboxing::SandboxType;
+    use tokio_util::sync::CancellationToken;
+
     let dir = tempdir()?;
     std::fs::create_dir(dir.path().join(".codex"))?;
     std::fs::write(
@@ -156,7 +168,12 @@ async fn inactive_profiles_keep_snapshots_but_active_brokers_require_sandbox() -
         shell_path: PathBuf::from("/bin/bash"),
     };
     let permission_profile = PermissionProfile::workspace_write();
-    let mut network_config = NetworkProxyConfig::default();
+    let mut network_config = NetworkProxyConfig {
+        enabled: true,
+        proxy_url: "http://127.0.0.1:0".to_string(),
+        socks_url: "socks5://127.0.0.1:0".to_string(),
+        ..NetworkProxyConfig::default()
+    };
     network_config.set_credential_broker_enabled(/*enabled*/ true);
     let network_spec = NetworkProxySpec::from_config_and_constraints(
         network_config,
@@ -212,7 +229,299 @@ async fn inactive_profiles_keep_snapshots_but_active_brokers_require_sandbox() -
 
         assert_eq!(snapshot.is_some(), expect_snapshot);
     }
+
+    let (sender, _) = watch::channel(SnapshotCredentialBrokerState::Starting);
+    let snapshot_builder = ShellSnapshot::new(
+        dir.path().abs(),
+        session_id,
+        session_telemetry,
+        /*state_db*/ None,
+        Some(sender),
+        /*prefer_executor_snapshots*/ false,
+    );
+    let mut config = EnvironmentConfig {
+        allow_login_shell: false,
+        workspace_roots: Vec::new(),
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: true,
+        use_legacy_landlock: false,
+        permission_profile: PermissionProfileSnapshot::legacy(permission_profile),
+        shell_environment_policy: ShellEnvironmentPolicy::default(),
+        exec_policy: None,
+        mcp_policy: None,
+        network_policy: None,
+        selected_capability_roots: Vec::new(),
+    };
+    let manager = Arc::new(EnvironmentManager::default_for_tests());
+    let environments = ThreadEnvironments::new(
+        Arc::clone(&manager),
+        shell.clone(),
+        config.clone(),
+        snapshot_builder.clone(),
+        TurnEnvironmentSnapshot::default(),
+        /*non_blocking_snapshots*/ false,
+    );
+    environments.update_selections(
+        &[TurnEnvironmentSelection {
+            environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
+            cwd: PathUri::from_abs_path(&dir.path().abs()),
+            workspace_roots: Vec::new(),
+            config: EnvironmentConfigState::FromThread,
+        }],
+        &config,
+    );
+    for (state, expect_snapshot) in [
+        (SnapshotCredentialBrokerState::Starting, false),
+        (SnapshotCredentialBrokerState::Inactive, true),
+        (
+            SnapshotCredentialBrokerState::Ready(started_proxy.proxy()),
+            false,
+        ),
+        (SnapshotCredentialBrokerState::Inactive, true),
+    ] {
+        environments.set_snapshot_credential_broker(state.clone());
+        let turn = environments.snapshot().await;
+        let environment = turn.primary().expect("local environment");
+        let snapshot = timeout(SNAPSHOT_TIMEOUT, environment.shell_snapshot.clone()).await?;
+        assert_eq!(snapshot.is_some(), expect_snapshot);
+        assert_eq!(environment.shell_snapshot_v2_supported, expect_snapshot);
+
+        environments.set_snapshot_credential_broker(state.clone());
+        let next = environments.snapshot().await;
+        assert!(Arc::ptr_eq(
+            &environment.shell_snapshot_cache,
+            &next.primary().expect("next turn").shell_snapshot_cache,
+        ));
+        if matches!(state, SnapshotCredentialBrokerState::Ready(_)) {
+            config
+                .shell_environment_policy
+                .r#set
+                .insert("CORP_REGION".into(), "west".into());
+            environments.update_thread_config(&config);
+            let updated = environments.snapshot().await;
+            assert!(!Arc::ptr_eq(
+                &environment.shell_snapshot_cache,
+                &updated
+                    .primary()
+                    .expect("updated turn")
+                    .shell_snapshot_cache,
+            ));
+            let child = ThreadEnvironments::new(
+                Arc::clone(&manager),
+                shell.clone(),
+                config.clone(),
+                snapshot_builder.clone(),
+                updated.clone(),
+                /*non_blocking_snapshots*/ false,
+            );
+            let child = child.snapshot().await;
+            assert!(!Arc::ptr_eq(
+                &updated.primary().expect("parent turn").shell_snapshot_cache,
+                &child.primary().expect("child turn").shell_snapshot_cache,
+            ));
+        }
+    }
     assert!(!dir.path().join("startup-ran").exists());
+
+    // Identical concurrent captures must not share one command's cancellation.
+    fs::write(
+        dir.path().join(".codex/startup.sh"),
+        "export OPENAI_API_KEY=sk-snapshot-cache-test\nprintf started > capture-started\nwhile [ ! -f finish-startup ]; do sleep 0.01; done\n",
+    )
+    .await?;
+    config.shell_environment_policy.r#set.insert(
+        "BASH_ENV".into(),
+        dir.path().join(".codex/startup.sh").display().to_string(),
+    );
+    environments.set_snapshot_credential_broker(SnapshotCredentialBrokerState::Ready(
+        started_proxy.proxy(),
+    ));
+    environments.update_thread_config(&config);
+    let turn = environments.snapshot().await;
+    let environment = turn.primary().expect("brokered environment");
+    let mut tool_config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(dir.path().to_path_buf())
+        .build()
+        .await?;
+    tool_config
+        .features
+        .enable(codex_features::Feature::ShellSnapshot)?;
+    tool_config.permissions.network = Some(network_spec);
+    let cwd = dir.path().abs();
+    let cwd_uri = PathUri::from_abs_path(&cwd);
+    let manager = SandboxManager::new();
+    let permissions = PermissionProfile::Disabled;
+    let cancellation = CancellationToken::new();
+    let mut attempt = SandboxAttempt {
+        sandbox: SandboxType::None,
+        sandbox_requested: false,
+        permissions: &permissions,
+        exec_server_permissions: &permissions,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &cwd_uri,
+        workspace_roots: std::slice::from_ref(&cwd_uri),
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
+        network_denial_cancellation_token: Some(cancellation.clone()),
+        network_proxy: None,
+    };
+    let first_sandbox = ShellSnapshotSandbox::new(
+        &attempt,
+        /*network*/ None,
+        LOCAL_ENVIRONMENT_ID,
+        /*additional_permissions*/ None,
+    );
+    attempt.network_denial_cancellation_token = Some(CancellationToken::new());
+    let second_sandbox = ShellSnapshotSandbox::new(
+        &attempt,
+        /*network*/ None,
+        LOCAL_ENVIRONMENT_ID,
+        /*additional_permissions*/ None,
+    );
+    let command = shell.derive_exec_args("true", /*use_login_shell*/ false);
+    assert!(
+        environment
+            .shell_snapshot(&cwd, &command, &shell, &tool_config, /*sandbox*/ None)
+            .await
+            .is_none()
+    );
+    let first = async {
+        let snapshot = environment
+            .shell_snapshot(&cwd, &command, &shell, &tool_config, Some(first_sandbox))
+            .await;
+        fs::write(dir.path().join("finish-startup"), "").await?;
+        Ok::<_, anyhow::Error>(snapshot)
+    };
+    let second = environment.shell_snapshot(
+        &cwd,
+        &command,
+        &shell,
+        &tool_config,
+        Some(second_sandbox.clone()),
+    );
+    let cancel_after_startup = async {
+        while !dir.path().join("capture-started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        started_proxy
+            .proxy()
+            .add_allowed_domain("startup.example")
+            .await
+            .expect("startup network approval should not invalidate either capture");
+        cancellation.cancel();
+    };
+    let (first, second, ()) = timeout(SNAPSHOT_TIMEOUT * 2, async {
+        tokio::join!(biased; first, second, cancel_after_startup)
+    })
+    .await?;
+    assert!(first?.is_none(), "the cancelled capture must fail");
+    let second = second.context("the unrelated capture must succeed")?;
+    let reused = environment
+        .shell_snapshot(
+            &cwd,
+            &command,
+            &shell,
+            &tool_config,
+            Some(second_sandbox.clone()),
+        )
+        .await
+        .context("successful captures remain reusable")?;
+    assert!(Arc::ptr_eq(&second, &reused));
+
+    fs::remove_file(reused.path()).await?;
+    let rebuilt = environment
+        .shell_snapshot(
+            &cwd,
+            &command,
+            &shell,
+            &tool_config,
+            Some(second_sandbox.clone()),
+        )
+        .await
+        .context("a deleted cached snapshot must be rebuilt")?;
+    assert!(!Arc::ptr_eq(&reused, &rebuilt));
+    assert!(rebuilt.path().as_path().is_file());
+    let proxy = started_proxy.proxy();
+    let mut old_env = HashMap::new();
+    rebuilt.restore_credentials(&mut old_env, environment.shell_environment_policy());
+    proxy.apply_to_env(&mut old_env);
+
+    let original_config = proxy.current_cfg().await?;
+    let mut changed_config = original_config.clone();
+    changed_config.set_credential_broker_openai_base_url(Some("https://gateway.example/v1"));
+    for (config, remains_valid) in [
+        (original_config.clone(), true),
+        (changed_config, false),
+        (original_config, false),
+    ] {
+        proxy
+            .replace_config_state(codex_network_proxy::build_config_state(
+                config,
+                codex_network_proxy::NetworkProxyConstraints::default(),
+            )?)
+            .await?;
+        assert_eq!(
+            rebuilt.is_brokered_for(environment.shell_environment_policy()),
+            remains_valid
+        );
+    }
+    let refreshed = environment
+        .shell_snapshot(
+            &cwd,
+            &command,
+            &shell,
+            &tool_config,
+            Some(second_sandbox.clone()),
+        )
+        .await
+        .context("a changed broker configuration must invalidate cached snapshots")?;
+    assert!(!Arc::ptr_eq(&rebuilt, &refreshed));
+    let mut new_env = HashMap::new();
+    refreshed.restore_credentials(&mut new_env, environment.shell_environment_policy());
+    proxy.apply_to_env(&mut new_env);
+    assert_ne!(new_env["OPENAI_API_KEY"], old_env["OPENAI_API_KEY"]);
+    assert_ne!(new_env["OPENAI_API_KEY"], "sk-snapshot-cache-test");
+
+    // A credential change during capture should recapture once under the new configuration.
+    fs::remove_file(refreshed.path()).await?;
+    fs::remove_file(dir.path().join("finish-startup")).await?;
+    fs::remove_file(dir.path().join("capture-started")).await?;
+    fs::write(
+        dir.path().join(".codex/startup.sh"),
+        "export OPENAI_API_KEY=sk-snapshot-cache-test\nprintf x >> capture-started\nwhile [ ! -f finish-startup ]; do sleep 0.01; done\n",
+    )
+    .await?;
+    let capture =
+        environment.shell_snapshot(&cwd, &command, &shell, &tool_config, Some(second_sandbox));
+    let reconfigure = async {
+        while !dir.path().join("capture-started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut config = proxy.current_cfg().await?;
+        config.set_credential_broker_openai_base_url(Some("https://new-gateway.example/v1"));
+        proxy
+            .replace_config_state(codex_network_proxy::build_config_state(
+                config,
+                codex_network_proxy::NetworkProxyConstraints::default(),
+            )?)
+            .await?;
+        fs::write(dir.path().join("finish-startup"), "").await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (recaptured, updated) = timeout(SNAPSHOT_TIMEOUT * 2, async {
+        tokio::join!(capture, reconfigure)
+    })
+    .await?;
+    updated?;
+    let recaptured = recaptured.context("credential changes during startup must recapture")?;
+    assert!(recaptured.is_brokered_for(environment.shell_environment_policy()));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("capture-started")).await?,
+        "xx"
+    );
     Ok(())
 }
 
