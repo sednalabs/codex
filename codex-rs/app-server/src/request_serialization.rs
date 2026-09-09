@@ -158,6 +158,24 @@ pub(crate) struct RequestSerializationQueues {
 }
 
 impl RequestSerializationQueues {
+    /// Release requests whose connection closed while they waited in a queue.
+    pub(crate) async fn discard_closed(&self) {
+        let mut queues = self.inner.lock().await;
+        for queue in queues.values_mut() {
+            let previous_len = queue.requests.len();
+            queue.requests.retain(|request| {
+                !request
+                    .request
+                    .gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.is_closed())
+            });
+            if queue.requests.len() != previous_len {
+                queue.changed.notify_one();
+            }
+        }
+    }
+
     /// Enqueue app-owned work alongside RPCs that mutate the same serialized resource.
     pub(crate) async fn enqueue_background(
         &self,
@@ -473,6 +491,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_of_live_gate_skips_already_queued_requests() {
         let queues = RequestSerializationQueues::default();
+        let (queued_tx, mut queued_rx) = oneshot::channel::<()>();
         let key = RequestSerializationQueueKey::Global("test");
         let live_gate = gate();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -499,6 +518,7 @@ mod tests {
                     key,
                     RequestSerializationAccess::Exclusive,
                     QueuedInitializedRequest::new(live_gate.clone(), async move {
+                        let _queued_tx = queued_tx;
                         tx.send(SECOND_REQUEST_VALUE)
                             .expect("receiver should be open");
                     }),
@@ -512,6 +532,17 @@ mod tests {
                 .await
                 .expect("timed out waiting for first request"),
             Some(FIRST_REQUEST_VALUE)
+        );
+
+        assert_eq!(
+            queued_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+        live_gate.close().await;
+        queues.discard_closed().await;
+        assert_eq!(
+            queued_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
         );
 
         let gate_for_shutdown = Arc::clone(&live_gate);

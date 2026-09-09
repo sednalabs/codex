@@ -818,6 +818,7 @@ impl MessageProcessor {
         session_state: &ConnectionSessionState,
     ) {
         session_state.rpc_gate.close().await;
+        self.request_serialization_queues.discard_closed().await;
         self.outgoing
             .disconnect_user_verification_connection(connection_id)
             .await;
