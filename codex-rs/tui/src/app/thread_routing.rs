@@ -917,6 +917,7 @@ impl App {
                 let store = Arc::clone(&self.ensure_thread_channel(review_thread_id).store);
                 let mut store = store.lock().await;
                 store.set_active_turn_id(response.turn.id);
+                self.chat_widget.on_review_started();
                 Ok(true)
             }
             AppCommand::CleanBackgroundTerminals => {

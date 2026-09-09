@@ -994,6 +994,7 @@ pub(super) fn pending_steer(text: &str) -> PendingSteer {
         client_id: "test-submission".to_string(),
         user_message: UserMessage::from(text),
         history_record: UserMessageHistoryRecord::UserMessageText,
+        source: UserMessageSource::Prompt,
         compare_key: PendingSteerCompareKey {
             message: text.to_string(),
             image_count: 0,
