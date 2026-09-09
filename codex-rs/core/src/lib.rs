@@ -29,6 +29,10 @@ pub use responses_metadata::CodexResponsesMetadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
 mod compact_model_fallback;
+#[expect(
+    dead_code,
+    reason = "the unrouted v1 runner is removed in the follow-up"
+)]
 mod compact_remote;
 mod compact_remote_history;
 mod compact_remote_v2;

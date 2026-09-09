@@ -14,7 +14,6 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::routing::get;
-use axum::routing::post;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::GuardianApprovalReview;
@@ -184,12 +183,33 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
             get(luna_websocket).post({
                 let parent_requests = Arc::clone(&parent_requests);
                 let review_requests = Arc::clone(&review_requests);
+                let compact_requests = Arc::clone(&compact_requests);
+                let checkpoint = checkpoint.clone();
                 move |State(classifier): State<Arc<MockResponsesState>>,
                       Json(request): Json<Value>| {
                     let parent_requests = Arc::clone(&parent_requests);
                     let review_requests = Arc::clone(&review_requests);
+                    let compact_requests = Arc::clone(&compact_requests);
+                    let checkpoint = checkpoint.clone();
                     async move {
-                        let events = if request["model"] == "gpt-5.6-luna" {
+                        let events = if request["input"].as_array().is_some_and(|input| {
+                            input
+                                .iter()
+                                .any(|item| item["type"] == "compaction_trigger")
+                        }) {
+                            compact_requests
+                                .lock()
+                                .expect("request log lock")
+                                .push(request);
+                            vec![
+                                responses::ev_assistant_message("summary", SUMMARY),
+                                json!({
+                                    "type": "response.output_item.done",
+                                    "item": checkpoint,
+                                }),
+                                responses::ev_completed("compact"),
+                            ]
+                        } else if request["model"] == "gpt-5.6-luna" {
                             luna_response(&classifier, request).await
                         } else if request["client_metadata"]["x-openai-subagent"] == "guardian" {
                             review_requests
@@ -243,29 +263,6 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                 }
             }),
         )
-        .route(
-            "/v1/responses/compact",
-            post({
-                let compact_requests = Arc::clone(&compact_requests);
-                let checkpoint = checkpoint.clone();
-                move |Json(request): Json<Value>| {
-                    let compact_requests = Arc::clone(&compact_requests);
-                    let checkpoint = checkpoint.clone();
-                    async move {
-                        compact_requests
-                            .lock()
-                            .expect("request log lock")
-                            .push(request);
-                        Json(json!({"output": [
-                            {"type": "message", "role": "assistant", "content": [
-                                {"type": "output_text", "text": SUMMARY}
-                            ]},
-                            checkpoint
-                        ]}))
-                    }
-                }
-            }),
-        )
         .with_state(Arc::clone(&classifier));
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let responses_url = format!("http://{}", listener.local_addr()?);
@@ -288,7 +285,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
         .enable_feature(Feature::GuardianApproval)
         .enable_feature(Feature::GuardianReuseParentCompaction)
         .disable_feature(Feature::EnableRequestCompression)
-        .disable_feature(Feature::RemoteCompactionV2)
+        .enable_feature(Feature::RemoteCompactionV2)
         .disable_feature(Feature::TokenBudget)
         .with_extra_config(&format!(
             "[mcp_servers.{TEST_SERVER_NAME}]\nurl = \"{mcp_url}/mcp\"\ndefault_tools_approval_mode = \"prompt\"\n\n[features.guardianv2]\nenabled = true\nthread_context = {thread_context_enabled}\npersist_scores = true\nreuse_parent_compaction = {reuse_parent_compaction}\n\n[features.guardianv2.review_scope]\ncomputer_use_only = false"
@@ -616,9 +613,16 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                 let output = output["output"].as_str().expect("tool output text");
                 assert!(output.contains(&expected_output), "{output}");
             } else {
-                let parent_input = serde_json::to_string(&parent[index * 2 + 1]["input"])?;
-                assert!(!parent_input.contains(RESTRICTION));
+                let parent_items = parent[index * 2 + 1]["input"]
+                    .as_array()
+                    .expect("request input array");
+                let parent_input = serde_json::to_string(parent_items)?;
+                // V2 keeps bounded user history while replacing old tool output with a checkpoint.
+                assert_eq!(parent_input.contains(RESTRICTION), index <= 3);
                 assert!(!parent_input.contains(EVIDENCE));
+                assert!(!parent_items.iter().any(|item| {
+                    item["type"] == "function_call_output" && item["call_id"] == "inspect-1"
+                }));
                 if index <= 3 {
                     assert!(sync_text.contains(RESTRICTION));
                     if matches!(context_path, ContextPath::ThreadOwned) {
@@ -652,7 +656,7 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                         compact_output.contains(&expected_output),
                         "{compact_output}"
                     );
-                    assert!(parent_input.contains(SUMMARY));
+                    assert!(parent_items.contains(&checkpoint));
                     if matches!(context_path, ContextPath::ThreadOwned) {
                         assert!(
                             content.contains(RESTRICTION),
@@ -662,7 +666,8 @@ async fn guardians_retain_evidence_after_compaction_and_discard_it_after_rollbac
                             !transcript.contains(&expected_output),
                             "raw tool result must not survive the parent checkpoint"
                         );
-                        assert!(transcript.contains(SUMMARY));
+                        assert!(transcript.contains(RESTRICTION));
+                        assert!(!transcript.contains(SUMMARY));
                     } else {
                         assert!(
                             transcript.contains(RESTRICTION),

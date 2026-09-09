@@ -1088,28 +1088,20 @@ impl Session {
     ///
     /// `ModelClient` is session-scoped and intentionally does not depend on the full `Config`, so
     /// we precompute the comma-separated list of enabled experimental feature keys at session
-    /// creation time and thread it into the client.
+    /// creation time and thread it into the client. Remote compaction stays advertised unconditionally.
     fn build_model_client_beta_features_header(config: &Config) -> Option<String> {
-        let beta_features_header = FEATURES
-            .iter()
-            .filter_map(|spec| {
-                let advertise_in_model_client_header =
-                    spec.stage.experimental_menu_description().is_some()
-                        || spec.id == Feature::RemoteCompactionV2;
-                if advertise_in_model_client_header && config.features.enabled(spec.id) {
-                    Some(spec.key)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-
-        if beta_features_header.is_empty() {
-            None
-        } else {
-            Some(beta_features_header)
-        }
+        Some(
+            FEATURES
+                .iter()
+                .filter(|spec| {
+                    spec.id == Feature::RemoteCompactionV2
+                        || (spec.stage.experimental_menu_description().is_some()
+                            && config.features.enabled(spec.id))
+                })
+                .map(|spec| spec.key)
+                .collect::<Vec<_>>()
+                .join(","),
+        )
     }
 
     async fn start_managed_network_proxy(

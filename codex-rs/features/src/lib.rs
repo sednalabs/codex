@@ -588,7 +588,7 @@ impl Features {
                 "js_repl_tools_only" => {
                     continue;
                 }
-                "remote_control" => {
+                "remote_control" | "remote_compaction_v2" => {
                     continue;
                 }
                 "apply_patch_freeform" => {
@@ -1732,8 +1732,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteCompactionV2,
         key: "remote_compaction_v2",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CompactionImageBudget,

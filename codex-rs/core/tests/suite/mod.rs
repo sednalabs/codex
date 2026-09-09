@@ -56,7 +56,6 @@ mod codex_delegate;
 mod collaboration_instructions;
 mod compact;
 mod compact_remote;
-mod compact_remote_parity;
 mod compact_resume_fork;
 mod context_annotations;
 mod current_time_reminder;

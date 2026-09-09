@@ -1242,9 +1242,6 @@ await new Promise(() => {});
                     .disable(Feature::ExecutedToolCallMetadata)
                     .expect("tool call metadata should be disabled");
             }
-            if oversized {
-                let _ = config.features.disable(Feature::RemoteCompactionV2);
-            }
         })
         .await?;
 
@@ -1280,13 +1277,33 @@ await new Promise(() => {});
         let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
 
         if oversized {
-            responses::mount_compact_user_history_with_summary_once(&server, "compacted history")
-                .await;
+            let compact = responses::mount_sse_once(
+                &server,
+                responses::sse(vec![
+                    serde_json::json!({
+                        "type": "response.output_item.done",
+                        "item": {
+                            "type": "compaction",
+                            "encrypted_content": "compacted history",
+                        },
+                    }),
+                    responses::ev_completed("resp-compact"),
+                ]),
+            )
+            .await;
             test.codex.submit(Op::Compact).await?;
             wait_for_event(&test.codex, |event| {
                 matches!(event, EventMsg::TurnComplete(_))
             })
             .await;
+
+            assert_eq!(
+                compact
+                    .single_request()
+                    .inputs_of_type("compaction_trigger")
+                    .len(),
+                1
+            );
 
             let wait = responses::mount_function_call_agent_response(
                 &server,
@@ -4742,20 +4759,10 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
     const OTHER_NODE_REPL_RESULT: &str = "ECHOING: guardian-visible-other-tool-result";
     const UNRELATED_RESULT: &str = "ECHOING: guardian-hidden-unrelated-result";
     const PRIVATE_IMAGE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    const COMPACTION_SUMMARY: &str = "Guardian browser evidence summary";
     let server = responses::start_mock_server().await;
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
     let reviewer_compaction = reviewer_constraint == Some("compaction");
-    let compact = if reviewer_compaction {
-        Some(
-            responses::mount_compact_user_history_with_summary_once(
-                &server,
-                "Guardian browser evidence summary",
-            )
-            .await,
-        )
-    } else {
-        None
-    };
     let check_detail = enhanced_transcripts && transcript_images && reviewer_constraint.is_none();
     let mut large_image = Cursor::new(Vec::new());
     if check_detail {
@@ -4798,7 +4805,6 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
                 .enable(Feature::CodeMode)
                 .expect("enable Code Mode");
             if reviewer_compaction {
-                config.features.disable(Feature::RemoteCompactionV2).expect("use remote compaction");
                 config
                     .features
                     .enable(Feature::TokenBudget)
@@ -4877,9 +4883,8 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
     .replace("SNAPSHOT_PADDING", &snapshot_padding.to_string())
     .replace("REVIEWER_COMPACTION", &reviewer_compaction.to_string())
     .replace("LARGE_IMAGE", &check_detail.to_string());
-    let response_mock = responses::mount_sse_sequence(
-        &server,
-        vec![
+    let response_mock = responses::mount_sse_sequence(&server, {
+        let mut response_bodies = vec![
             sse(vec![
                 responses::ev_function_call_with_namespace(
                     "node-repl-call",
@@ -4913,13 +4918,25 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
                     ev_completed("resp-guardian")
                 },
             ]),
+        ];
+        if reviewer_compaction {
+            response_bodies.push(sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {"type": "compaction", "encrypted_content": COMPACTION_SUMMARY},
+                }),
+                ev_completed("resp-guardian-compact"),
+            ]));
+        }
+        response_bodies.extend([
             sse(vec![
                 ev_assistant_message("guardian-again", r#"{"outcome":"allow"}"#),
                 ev_completed("resp-guardian-again"),
             ]),
             sse(vec![ev_completed("resp-done")]),
-        ],
-    )
+        ]);
+        response_bodies
+    })
     .await;
     test.submit_text_turn(&format!("review a nested {repl_server} tool response"))
         .await?;
@@ -4928,6 +4945,7 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
         .iter()
         .filter(|request| {
             request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+                && request.inputs_of_type("compaction_trigger").is_empty()
         })
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 2);
@@ -5012,8 +5030,13 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
             reviewer_image_urls
         }
     );
-    if let Some(compact) = compact {
-        let compact_request = compact.single_request();
+    if reviewer_compaction {
+        let compact_requests = requests
+            .iter()
+            .filter(|request| !request.inputs_of_type("compaction_trigger").is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(compact_requests.len(), 1);
+        let compact_request = compact_requests[0];
         assert!(
             compact_request
                 .message_input_texts("user")
@@ -5022,7 +5045,7 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
         );
         assert_eq!(
             guardian_requests[1].inputs_of_type("compaction")[0]["encrypted_content"],
-            "Guardian browser evidence summary"
+            COMPACTION_SUMMARY
         );
         for request in &guardian_requests {
             assert!(!request.has_content_kinds(&["token_budget.context_window"]));

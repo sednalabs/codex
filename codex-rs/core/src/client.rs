@@ -1278,6 +1278,7 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    #[expect(dead_code, reason = "the v1-only accessor is removed in the follow-up")]
     pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
         Arc::clone(&self.turn_state)
     }

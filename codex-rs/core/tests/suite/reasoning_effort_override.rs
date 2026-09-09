@@ -502,28 +502,26 @@ async fn reasoning_effort_override_disabled_on_resume_retires_update_at_compacti
 -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
-    let mut mocks = Vec::new();
-    for (id, reply) in [
-        ("initial", "initial reply"),
-        ("resumed", "resumed reply"),
-        ("after", "after compaction reply"),
-    ] {
-        mocks.push(
-            responses::mount_sse_once(
-                &server,
-                responses::sse(vec![
-                    responses::ev_assistant_message(id, reply),
-                    responses::ev_completed(id),
-                ]),
-            )
-            .await,
-        );
-    }
-    let compact = responses::mount_compact_json_once(
+    let reply = |id, text| {
+        responses::sse(vec![
+            responses::ev_assistant_message(id, text),
+            responses::ev_completed(id),
+        ])
+    };
+    let mock = responses::mount_sse_sequence(
         &server,
-        serde_json::json!({
-            "output": [{"type": "compaction", "encrypted_content": "compacted-history"}]
-        }),
+        vec![
+            reply("initial", "initial reply"),
+            reply("resumed", "resumed reply"),
+            responses::sse(vec![
+                serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": {"type": "compaction", "encrypted_content": "compacted-history"},
+                }),
+                responses::ev_completed("compact"),
+            ]),
+            reply("after", "after compaction reply"),
+        ],
     )
     .await;
     let initial = override_builder().build_with_auto_env(&server).await?;
@@ -536,10 +534,6 @@ async fn reasoning_effort_override_disabled_on_resume_retires_update_at_compacti
                 .features
                 .disable(Feature::ReasoningEffortOverride)
                 .expect("disable overrides");
-            config
-                .features
-                .disable(Feature::RemoteCompactionV2)
-                .expect("disable remote compaction v2");
             config.model_reasoning_effort = Some(ReasoningEffort::High);
             config.chatgpt_base_url = chatgpt_base_url;
         })
@@ -553,12 +547,7 @@ async fn reasoning_effort_override_disabled_on_resume_retires_update_at_compacti
     .await;
     resumed.submit_text_turn("after compaction").await?;
 
-    let requests = [
-        mocks[0].single_request(),
-        mocks[1].single_request(),
-        compact.single_request(),
-        mocks[2].single_request(),
-    ];
+    let requests = mock.requests();
     assert_eq!(
         requests
             .iter()
@@ -832,125 +821,9 @@ async fn reasoning_effort_override_resume_refreshes_selected_effort(
     Ok(())
 }
 
-#[test_case(false; "success")]
-#[test_case(true; "failure")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_remote_v1_compaction_uses_pin(
-    fail_compaction: bool,
-) -> anyhow::Result<()> {
-    skip_if_no_network!(Ok(()));
-    let server = responses::start_mock_server().await;
-    let first = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![responses::ev_completed("first")]),
-    )
-    .await;
-    let after = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![responses::ev_completed("after")]),
-    )
-    .await;
-    let unchanged = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![responses::ev_completed("unchanged")]),
-    )
-    .await;
-    let changed = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![responses::ev_completed("changed")]),
-    )
-    .await;
-    let compact = responses::mount_compact_response_once(
-        &server,
-        if fail_compaction {
-            ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                "error": {"code": "invalid_request_error", "message": "compaction failed"}
-            }))
-        } else {
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "output": [{"type": "compaction", "encrypted_content": "compacted-history"}]
-            }))
-        },
-    )
-    .await;
-    let chatgpt_base_url = format!("{}/backend-api", server.uri());
-    let test = override_builder()
-        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(move |config| {
-            config.chatgpt_base_url = chatgpt_base_url;
-            config
-                .features
-                .disable(Feature::RemoteCompactionV2)
-                .expect("disable remote compaction v2");
-        })
-        .build_with_auto_env(&server)
-        .await?;
-    test.submit_text_turn("first").await?;
-    submit_thread_settings(
-        &test.codex,
-        ThreadSettingsOverrides {
-            effort: Some(Some(ReasoningEffort::High)),
-            ..Default::default()
-        },
-    )
-    .await?;
-    test.codex.submit(Op::Compact).await?;
-    if fail_compaction {
-        wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
-    }
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    test.submit_text_turn("after compaction").await?;
-    test.submit_text_turn("unchanged effort").await?;
-    submit_thread_settings(
-        &test.codex,
-        ThreadSettingsOverrides {
-            effort: Some(Some(ReasoningEffort::Low)),
-            ..Default::default()
-        },
-    )
-    .await?;
-    test.submit_text_turn("changed effort").await?;
-    let medium = effort_update(ReasoningEffort::Medium);
-    let after_updates = if fail_compaction {
-        vec![medium.clone(), effort_update(ReasoningEffort::High)]
-    } else {
-        Vec::new()
-    };
-    let mut changed_updates = after_updates.clone();
-    changed_updates.push(effort_update(ReasoningEffort::Low));
-    let after_effort = Value::from(if fail_compaction { "medium" } else { "high" });
-    assert_eq!(
-        [
-            first.single_request(),
-            compact.single_request(),
-            after.single_request(),
-            unchanged.single_request(),
-            changed.single_request(),
-        ]
-        .map(|request| (
-            request.body_json()["reasoning"]["effort"].clone(),
-            effort_updates(&request),
-        )),
-        [
-            (Value::from("medium"), vec![medium.clone()]),
-            (Value::from("medium"), vec![medium]),
-            (after_effort.clone(), after_updates.clone()),
-            (after_effort.clone(), after_updates),
-            (after_effort, changed_updates),
-        ],
-    );
-    Ok(())
-}
-
-#[test_case(false; "remote v1")]
-#[test_case(true; "remote v2")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort(
-    remote_v2: bool,
-) -> anyhow::Result<()> {
+async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort()
+-> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
     let first = responses::mount_sse_once(
@@ -969,30 +842,17 @@ async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort(
     let failure = ResponseTemplate::new(/*s*/ 400).set_body_json(serde_json::json!({
         "error": {"message": "previous model cannot compact this history"}
     }));
-    let compactions = if remote_v2 {
-        responses::mount_response_sequence(
-            &server,
-            vec![
-                failure,
-                responses::sse_response(responses::sse(vec![
-                    serde_json::json!({"type": "response.output_item.done", "item": compaction}),
-                    responses::ev_completed("fallback"),
-                ])),
-            ],
-        )
-        .await
-    } else {
-        responses::mount_compact_response_sequence(
-            &server,
-            vec![
-                failure,
-                ResponseTemplate::new(/*s*/ 200).set_body_json(serde_json::json!({
-                    "output": [compaction]
-                })),
-            ],
-        )
-        .await
-    };
+    let compactions = responses::mount_response_sequence(
+        &server,
+        vec![
+            failure,
+            responses::sse_response(responses::sse(vec![
+                serde_json::json!({"type": "response.output_item.done", "item": compaction}),
+                responses::ev_completed("fallback"),
+            ])),
+        ],
+    )
+    .await;
     let after = responses::mount_sse_once(
         &server,
         responses::sse(vec![responses::ev_completed("after")]),
@@ -1012,17 +872,6 @@ async fn reasoning_effort_override_compaction_fallback_uses_each_models_effort(
         .with_config(move |config| {
             config.chatgpt_base_url = chatgpt_base_url;
             config.model_provider.stream_max_retries = Some(0);
-            if remote_v2 {
-                config
-                    .features
-                    .enable(Feature::RemoteCompactionV2)
-                    .expect("enable remote compaction v2");
-            } else {
-                config
-                    .features
-                    .disable(Feature::RemoteCompactionV2)
-                    .expect("disable remote compaction v2");
-            }
         })
         .build_with_auto_env(&server)
         .await?;

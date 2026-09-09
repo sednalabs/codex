@@ -11314,7 +11314,7 @@ async fn make_remote_compaction_session(
 #[test_case(FirstAttempt::Succeeds; "primary succeeds")]
 #[test_case(FirstAttempt::Retries; "fallback executes")]
 #[tokio::test]
-async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAttempt) {
+async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: FirstAttempt) {
     let server = responses::start_mock_server().await;
     let (session, turn, events) = make_remote_compaction_session(&server.uri()).await;
     session
@@ -11360,9 +11360,15 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
         Some(Arc::as_ptr(&primary)),
     );
 
-    let success = ResponseTemplate::new(/*status*/ 200).set_body_json(json!({
-        "output": [{ "type": "compaction", "encrypted_content": "summary" }]
-    }));
+    let success = ResponseTemplate::new(/*status*/ 200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(responses::sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": { "type": "compaction", "encrypted_content": "summary" },
+            }),
+            responses::ev_completed("compact-response"),
+        ]));
     let replies = match first_attempt {
         FirstAttempt::Succeeds => vec![success],
         FirstAttempt::Retries => vec![
@@ -11371,12 +11377,13 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
             success,
         ],
     };
-    let requests = responses::mount_compact_response_sequence(&server, replies).await;
-    crate::compact_remote::run_inline_remote_auto_compact_task(
+    let requests = responses::mount_response_sequence(&server, replies).await;
+    let mut client_session = session.services.model_client.new_session();
+    crate::compact_remote_v2::run_inline_remote_auto_compact_task(
         Arc::clone(&session),
         Arc::clone(&primary),
         Some(Arc::clone(&fallback)),
-        Arc::new(OnceLock::new()),
+        &mut client_session,
         InitialContextInjection::DoNotInject,
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,
@@ -11404,6 +11411,12 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
             .map(|request| request.body_json()["model"].clone())
             .collect::<Vec<_>>(),
         models,
+    );
+    assert!(
+        requests
+            .requests()
+            .iter()
+            .all(|request| request.inputs_of_type("compaction_trigger").len() == 1),
     );
     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;

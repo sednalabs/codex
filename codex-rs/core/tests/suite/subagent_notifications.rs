@@ -1297,10 +1297,6 @@ async fn grandchild_full_fork_preserves_context_baseline(
                 config.update_plan_enabled = true;
                 // Use local compaction so the test controls the replacement history.
                 config.model_provider.name = "test-provider".to_string();
-                config
-                    .features
-                    .disable(Feature::RemoteCompactionV2)
-                    .expect("test config should allow feature update");
                 config.compact_prompt = Some(COMPACT_PROMPT.to_string());
                 config.model_auto_compact_token_limit = Some(200_000);
                 config.model_context_window = Some(1_000_000);
