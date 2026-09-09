@@ -208,6 +208,7 @@ pub(super) fn sampler_config(base_url: String) -> LunaSamplerConfig {
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     }
 }
@@ -490,6 +491,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     })
     .await?;
@@ -733,6 +735,7 @@ async fn sampler_returns_classification_token_before_terminal_response_events() 
         free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
+        max_input_tokens: codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS,
         metrics: None,
     })
     .await?;

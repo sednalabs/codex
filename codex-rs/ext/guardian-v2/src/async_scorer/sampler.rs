@@ -69,6 +69,8 @@ pub struct LunaSamplerConfig {
     pub service_tier: Option<String>,
     /// Luna model's host-resolved encrypted-compaction compatibility hash.
     pub luna_compaction_hash: Option<String>,
+    /// Complete input allowance resolved for the classifier model.
+    pub max_input_tokens: usize,
     /// Host-provided metrics capability with the owning session's attribution.
     pub metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
@@ -117,6 +119,9 @@ pub enum LunaSamplerError {
     /// The supplied parent checkpoint cannot be consumed by this Luna configuration.
     #[error("parent compaction is incompatible with Luna")]
     IncompatibleCompaction,
+    /// The complete classifier input exceeded the model allowance.
+    #[error("Luna input exceeds the complete request budget")]
+    InputTooLarge,
 }
 
 struct ActiveRequest {
@@ -224,6 +229,7 @@ impl LunaSampler {
             | LunaSamplerError::OutputTooLarge
             | LunaSamplerError::Superseded
             | LunaSamplerError::IncompatibleCompaction
+            | LunaSamplerError::InputTooLarge
             | LunaSamplerError::Api(
                 ApiError::Transport(TransportError::Build(_))
                 | ApiError::ContextWindowExceeded
@@ -309,6 +315,10 @@ impl LunaSampler {
                     &[("target", "async"), ("component", component)],
                 );
             }
+        }
+        // Oversized classifications defer to sync with the existing failure score.
+        if total_tokens > self.config.max_input_tokens.saturating_sub(/*rhs*/ 256) {
+            return Err(LunaSamplerError::InputTooLarge);
         }
         let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),

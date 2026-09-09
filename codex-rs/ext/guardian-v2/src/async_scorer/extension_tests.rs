@@ -3448,3 +3448,6 @@ fn review_scope(action: &serde_json::Value) -> Option<GuardianScope> {
         tool => GuardianScope::for_tool(&ToolName::plain(tool)),
     }
 }
+
+#[path = "budget_tests.rs"]
+mod budget;

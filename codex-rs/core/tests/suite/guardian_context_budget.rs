@@ -35,7 +35,7 @@ enum ReviewerResponse {
 #[test_case(1, ReviewerResponse::Decision; "required_context_fails_closed")]
 #[test_case(4_500, ReviewerResponse::ToolContinuation; "oversized_tool_continuation_compacts")]
 #[test_case(4_500, ReviewerResponse::UncompactableContinuation; "ineffective_compaction_fails_closed")]
-#[test_case(4_500, ReviewerResponse::NextReview; "incoming_review_compacts_existing_history")]
+#[test_case(6_000, ReviewerResponse::NextReview; "incoming_review_compacts_existing_history")]
 async fn review_respects_complete_context_budget(
     window: i64,
     reviewer_response: ReviewerResponse,
@@ -69,10 +69,6 @@ async fn review_respects_complete_context_budget(
                 .features
                 .enable(Feature::TokenBudget)
                 .expect("parent uses token-budget mode while Guardian uses summary compaction");
-            config
-                .features
-                .disable(Feature::RemoteCompactionV2)
-                .expect("test uses the legacy compact endpoint");
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
             config.approvals_reviewer = ApprovalsReviewer::AutoReview;
             config
@@ -118,12 +114,22 @@ async fn review_respects_complete_context_budget(
             sse(vec![
                 ev_response_created("review"),
                 match reviewer_response {
-                    ReviewerResponse::Decision | ReviewerResponse::NextReview => {
-                        ev_assistant_message(
-                            "decision",
-                            r#"{"risk_level":"low","user_authorization":"high","outcome":"allow"}"#,
-                        )
-                    }
+                    ReviewerResponse::Decision => ev_assistant_message(
+                        "decision",
+                        r#"{"risk_level":"low","user_authorization":"high","outcome":"allow"}"#,
+                    ),
+                    // V2 retains user review inputs. Give it assistant history to
+                    // discard so compaction makes room for the next review.
+                    ReviewerResponse::NextReview => ev_assistant_message(
+                        "decision",
+                        &json!({
+                            "risk_level": "low",
+                            "user_authorization": "high",
+                            "outcome": "allow",
+                            "rationale": "Previous review reasoning. ".repeat(/*n*/ 256),
+                        })
+                        .to_string(),
+                    ),
                     ReviewerResponse::ToolContinuation
                     | ReviewerResponse::UncompactableContinuation => ev_custom_tool_call(
                         "reviewer-inspect",
@@ -169,9 +175,7 @@ async fn review_respects_complete_context_budget(
             ]),
         ]);
     }
-    let compact = if matches!(reviewer_response, ReviewerResponse::Decision) {
-        None
-    } else {
+    if !matches!(reviewer_response, ReviewerResponse::Decision) {
         let summary = if matches!(
             reviewer_response,
             ReviewerResponse::UncompactableContinuation
@@ -180,20 +184,29 @@ async fn review_respects_complete_context_budget(
         } else {
             "Previous review evidence and inspection results.".to_owned()
         };
-        Some(
-            responses::mount_compact_json_once(
-                &server,
-                json!({"output": [{
-                    "type": "compaction", "encrypted_content": summary
-                }]}),
-            )
-            .await,
-        )
-    };
+        let index = if matches!(reviewer_response, ReviewerResponse::NextReview) {
+            4
+        } else {
+            2
+        };
+        events.insert(
+            index,
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {"type": "compaction", "encrypted_content": summary},
+                }),
+                ev_completed("review-compaction"),
+            ]),
+        );
+    }
     let responses = responses::mount_sse_sequence(&server, events).await;
     test.submit_text_turn("Run the command if the approval reviewer allows it.")
         .await?;
-    let requests = responses.requests();
+    let (compact_requests, requests): (Vec<_>, Vec<_>) = responses
+        .requests()
+        .into_iter()
+        .partition(|request| !request.inputs_of_type("compaction_trigger").is_empty());
     let guardian_requests = requests
         .iter()
         .filter(|request| {
@@ -215,10 +228,8 @@ async fn review_respects_complete_context_budget(
         assert_eq!(requests.len(), if recovered { 4 } else { 3 });
         assert_eq!(guardian_requests.len(), if recovered { 2 } else { 1 });
         if recovered {
-            let compact = compact
-                .as_ref()
-                .expect("scenario includes compaction")
-                .single_request();
+            assert_eq!(compact_requests.len(), 1);
+            let compact = &compact_requests[0];
             assert!(
                 compact
                     .body_json()
@@ -279,13 +290,22 @@ async fn review_respects_complete_context_budget(
                 "Retry the requested command.".to_owned()
             };
             test.submit_text_turn(&instruction).await?;
-            let requests = responses.requests();
-            assert_eq!(requests.len(), 6);
-            let compact = compact
-                .as_ref()
-                .map(responses::ResponseMock::single_request);
+            let (compact_requests, requests): (Vec<_>, Vec<_>) = responses
+                .requests()
+                .into_iter()
+                .partition(|request| !request.inputs_of_type("compaction_trigger").is_empty());
+            assert_eq!(
+                requests.len(),
+                6,
+                "parent resumed with: {}",
+                requests
+                    .last()
+                    .expect("parent resumes after the retry")
+                    .function_call_output("retry-command")
+            );
+            assert_eq!(compact_requests.len(), 1);
             if matches!(reviewer_response, ReviewerResponse::NextReview) {
-                let compact = compact.expect("scenario includes compaction");
+                let compact = &compact_requests[0];
                 assert!(
                     !compact
                         .body_json()
