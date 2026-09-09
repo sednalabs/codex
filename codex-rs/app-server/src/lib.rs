@@ -985,14 +985,22 @@ pub async fn run_main_with_transport_options(
         let mut remote_control_status = remote_control_status_rx.borrow().clone();
         let transport_shutdown_token = transport_shutdown_token.clone();
         async move {
-            // This process must never hand an earlier generation's candidates to
-            // its successor, including when the snapshot writer cannot start.
-            if managed_daemon
-                && let Err(err) = tokio::fs::remove_file(&recovery_file).await
-                && err.kind() != std::io::ErrorKind::NotFound
-            {
-                warn!("failed to clear stale daemon recovery file: {err}");
-            }
+            let recovery_task = if managed_daemon {
+                match daemon_thread_recovery::start_recovery(
+                    recovery_file.clone(),
+                    Arc::clone(&processor),
+                )
+                .await
+                {
+                    Ok(task) => Some(task),
+                    Err(err) => {
+                        warn!("failed to consume daemon recovery snapshot: {err}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let mut listen_for_threads = true;
             // Keep force signals and daemon control events responsive while saving.
             let mut snapshot = Box::pin(async {
@@ -1016,6 +1024,9 @@ pub async fn run_main_with_transport_options(
                     ShutdownAction::Finish
                 );
                 if ready_to_exit {
+                    if let Some(task) = &recovery_task {
+                        task.abort();
+                    }
                     let finished = snapshot_finished || shutdown_state.forced();
                     if finished {
                         transport_shutdown_token.cancel();
@@ -1275,6 +1286,9 @@ pub async fn run_main_with_transport_options(
                 }
             };
 
+            if let Some(task) = recovery_task {
+                task.abort();
+            }
             drop(snapshot);
             if !shutdown_state.forced() {
                 futures::future::join_all(connections.iter().map(

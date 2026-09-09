@@ -35,15 +35,20 @@ use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
-async fn managed_shutdown_saves_loaded_thread_after_active_turn() -> Result<()> {
+async fn managed_restart_resumes_loaded_threads_and_goal_without_client() -> Result<()> {
     let home = TempDir::new()?;
     let (release_response, response_gate) = oneshot::channel();
-    let (mock, _completions) =
-        start_streaming_sse_server(vec![vec![stream_chunk(Some(response_gate), "Done")?]]).await;
+    let (release_recovered, recovered_gate) = oneshot::channel();
+    let (mock, _completions) = start_streaming_sse_server(vec![
+        vec![stream_chunk(Some(response_gate), "Done")?],
+        vec![stream_chunk(Some(recovered_gate), "Recovered")?],
+    ])
+    .await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let socket_path = home.path().join("control/server.sock");
     let recovery_file = daemon_recovery_file_path(home.path());
-    daemon_recovery::write_candidates(&recovery_file, &["stale".into()].into_iter().collect())?;
+    std::fs::create_dir_all(recovery_file.parent().context("snapshot parent")?)?;
+    std::fs::write(&recovery_file, "invalid JSON")?;
     let mut server = spawn_server(home.path(), &socket_path)?;
     let mut client = connect_daemon_client(
         &socket_path,
@@ -83,16 +88,101 @@ async fn managed_shutdown_saves_loaded_thread_after_active_turn() -> Result<()> 
     ] {
         request(&mut client, id, method, params).await?;
     }
+    let idle = start_thread(&mut client, /*id*/ 7, json!({})).await?;
     start_turn(&mut client, /*id*/ 5, &thread.thread.id).await?;
     wait_for_requests(&mock, /*count*/ 1).await?;
+    request(
+        &mut client,
+        /*id*/ 6,
+        "thread/goal/set",
+        json!({
+            "threadId":thread.thread.id,"objective":"continue after restart"
+        }),
+    )
+    .await?;
     request_shutdown(&server, &socket_path).await?;
     assert_still_running(&mut server, "active turn must finish first").await;
     release_response.send(()).expect("response is waiting");
     wait_success(&mut server).await?;
     assert_eq!(
         daemon_recovery::read_candidates(&recovery_file)?,
-        [thread.thread.id].into_iter().collect()
+        [thread.thread.id.clone(), idle.thread.id.clone()]
+            .into_iter()
+            .collect()
     );
+    let mut saved = daemon_recovery::read_candidates(&recovery_file)?;
+    saved.insert("!missing".into());
+    daemon_recovery::write_candidates(&recovery_file, &saved)?;
+    let mut successor = spawn_server(home.path(), &socket_path)?;
+    // No client reconnects until the goal has made an inference request.
+    wait_for_requests(&mock, /*count*/ 2).await?;
+    let requests = mock.requests().await;
+    let recovered: serde_json::Value = serde_json::from_slice(&requests[1])?;
+    assert_eq!(recovered["model"], "gpt-5.2");
+    assert!(recovered["input"]
+        .as_array()
+        .context("recovered conversation")?
+        .iter()
+        .any(|item| item["role"] == "assistant" && item["content"].to_string().contains("Done")));
+    assert!(
+        recovered["tools"].to_string().contains("lookup_ticket"),
+        "{recovered}"
+    );
+    assert!(!recovery_file.exists());
+    let mut reconnected = connect_daemon_client(
+        &socket_path,
+        InitializeCapabilities {
+            experimental_api: true,
+            extensions: Some(std::collections::HashMap::from([(
+                "io.modelcontextprotocol/ui".into(),
+                json!({"mimeTypes":["text/html"]}),
+            )])),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let resumed = request(
+        &mut reconnected,
+        /*id*/ 2,
+        "thread/resume",
+        json!({
+            "threadId":thread.thread.id,"excludeTurns":true
+        }),
+    )
+    .await?;
+    assert_eq!(resumed["thread"]["id"], thread.thread.id);
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let loaded = request(
+                &mut reconnected,
+                /*id*/ 4,
+                "thread/loaded/list",
+                json!({}),
+            )
+            .await?;
+            if loaded["data"]
+                .as_array()
+                .context("loaded IDs")?
+                .contains(&json!(idle.thread.id))
+            {
+                return Ok::<(), anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await??;
+    request(
+        &mut reconnected,
+        /*id*/ 3,
+        "thread/goal/clear",
+        json!({"threadId":thread.thread.id}),
+    )
+    .await?;
+    release_recovered
+        .send(())
+        .expect("recovered goal is waiting");
+    request_shutdown(&successor, &socket_path).await?;
+    wait_success(&mut successor).await?;
     Ok(())
 }
 

@@ -46,6 +46,7 @@ use crate::request_processors::SearchRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
+use crate::request_processors::ThreadResumeTarget;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_processors::read_server_diagnostics;
@@ -763,6 +764,34 @@ impl MessageProcessor {
         self.thread_processor.daemon_recovery_candidates().await
     }
 
+    pub(crate) async fn restore_daemon_threads(
+        &self,
+        candidates: std::collections::BTreeSet<String>,
+    ) {
+        for thread_id in candidates {
+            let Ok(_permit) = self.turn_admission.admit() else {
+                break;
+            };
+            if let Err(err) = self
+                .thread_processor
+                .thread_resume(
+                    ThreadResumeTarget::DaemonRecovery,
+                    codex_app_server_protocol::ThreadResumeParams {
+                        thread_id,
+                        exclude_turns: true,
+                        ..Default::default()
+                    },
+                    /*app_server_client_name*/ None,
+                    /*app_server_client_version*/ None,
+                    ClientMcpExtensions::default(),
+                )
+                .await
+            {
+                tracing::warn!(code = err.code, "failed to restore saved daemon thread");
+            }
+        }
+    }
+
     pub(crate) async fn send_initialize_notifications_to_connection(
         &self,
         connection_id: ConnectionId,
@@ -1265,7 +1294,7 @@ impl MessageProcessor {
             ClientRequest::ThreadResume { params, .. } => {
                 self.thread_processor
                     .thread_resume(
-                        request_id.clone(),
+                        ThreadResumeTarget::Client(request_id.clone()),
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
