@@ -37,31 +37,36 @@ impl Session {
                     .reasoning_effort_pin
                     .pin(&settings.model_info.slug, effort.clone());
             }
-            let established_effort =
-                state
-                    .history
-                    .annotated_items()
-                    .iter()
-                    .rev()
-                    .find_map(|envelope| {
-                        if !envelope
-                            .metadata
-                            .as_ref()
-                            .is_some_and(|metadata| metadata.harness_authored_configuration)
-                        {
-                            return None;
+            let latest_override = state
+                .history
+                .annotated_items()
+                .iter()
+                .rev()
+                .enumerate()
+                .find_map(|(index, envelope)| {
+                    if !envelope
+                        .metadata
+                        .as_ref()
+                        .is_some_and(|metadata| metadata.harness_authored_configuration)
+                    {
+                        return None;
+                    }
+                    match &envelope.item {
+                        ResponseItem::ConfigurationUpdate { reasoning } => {
+                            Some((index, &reasoning.effort))
                         }
-                        match &envelope.item {
-                            ResponseItem::ConfigurationUpdate { reasoning } => {
-                                Some(&reasoning.effort)
-                            }
-                            _ => None,
-                        }
-                    });
-            state
-                .reasoning_effort_pin
-                .get(&settings.model_info.slug)
-                .is_some_and(|pinned| established_effort.unwrap_or(&pinned) == &effort)
+                        _ => None,
+                    }
+                });
+            // Recovery adds no user message. Reuse a matching trusted tail update even
+            // before this runtime establishes its pin, rather than append adjacent updates.
+            latest_override.is_some_and(|(index, established)| index == 0 && established == &effort)
+                || state
+                    .reasoning_effort_pin
+                    .get(&settings.model_info.slug)
+                    .is_some_and(|pinned| {
+                        latest_override.map_or(&pinned, |(_, established)| established) == &effort
+                    })
         };
         if should_skip {
             return;

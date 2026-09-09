@@ -1,5 +1,10 @@
 //! Trusted reasoning-effort updates follow surviving history and the next turn's selected settings.
 
+use codex_core::RecoverTurnRequest;
+use codex_core::StartIfIdleSubmission;
+use codex_core::SuspendTurnOutcome;
+use codex_core::TurnInputRequest;
+use codex_core::TurnInputSubmission;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -7,11 +12,13 @@ use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::skip_if_no_network;
@@ -63,6 +70,101 @@ fn message(role: &str, text: &str) -> Value {
         "role": role,
         "content": [{"type": "input_text", "text": text}],
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_effort_override_recovery_reuses_trusted_tail_update() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    // Keep the turn active without allowing any model output after the update.
+    responses::mount_response_once(
+        &server,
+        responses::sse_response(responses::sse(vec![responses::ev_completed("suspended")]))
+            .set_delay(Duration::from_secs(/*secs*/ 60)),
+    )
+    .await;
+    let builder = || {
+        override_builder().with_config(|config| {
+            config.model_reasoning_effort = Some(ReasoningEffort::High);
+            // Recovery must work without a prewarm establishing a runtime pin.
+            config.model_provider.supports_websockets = false;
+        })
+    };
+    let test = builder().build_with_auto_env(&server).await?;
+    let submission = test
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "recover this turn".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let TurnInputSubmission::Started { turn_id } = submission else {
+        panic!("expected a new turn");
+    };
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::RawResponseItem(raw)
+            if matches!(&raw.item, ResponseItem::ConfigurationUpdate { .. }))
+    })
+    .await;
+    let thread_settings = test.codex.restorable_thread_settings().await;
+    assert_eq!(
+        test.codex.suspend_turn_and_shutdown().await?,
+        SuspendTurnOutcome::Suspended {
+            turn_id: turn_id.clone(),
+        },
+    );
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+    test.thread_manager
+        .remove_thread(&test.session_configured.thread_id)
+        .await
+        .expect("unload suspended thread");
+
+    let recovery_server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_once(
+        &recovery_server,
+        responses::sse(vec![responses::ev_completed("recovered")]),
+    )
+    .await;
+    let cwd = test.config.cwd.clone();
+    let mut resume_builder = builder().with_config(move |config| config.cwd = cwd);
+    if let Some(url) = test.executor_environment().exec_server_url() {
+        resume_builder = resume_builder.with_exec_server_url(url);
+    }
+    let resumed = resume_builder
+        .resume(&recovery_server, Arc::clone(&test.home), rollout_path)
+        .await?;
+    resumed
+        .codex
+        .restore_thread_settings(thread_settings)
+        .await?;
+    assert_eq!(
+        resumed
+            .codex
+            .recover_turn_if_idle(RecoverTurnRequest {
+                turn_id: turn_id.clone(),
+                thread_settings: Default::default(),
+                trace: None,
+                cyber_access_program: None,
+            })
+            .await?,
+        StartIfIdleSubmission::Started { turn_id },
+    );
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = mock.single_request();
+    assert_eq!(
+        effort_updates(&request),
+        vec![effort_update(ReasoningEffort::High)]
+    );
+    assert_eq!(
+        request.input().last(),
+        Some(&effort_update(ReasoningEffort::High))
+    );
+    assert_eq!(request.body_json()["reasoning"]["effort"], "high");
+    Ok(())
 }
 
 #[test_case(ReasoningEffort::High; "high to persistent and back")]
