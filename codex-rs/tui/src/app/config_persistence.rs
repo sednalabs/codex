@@ -19,8 +19,10 @@ async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     error_context: String,
 ) -> Result<Config> {
-    match tokio::spawn(async move { builder.build().await }).await {
-        Ok(build_result) => build_result.wrap_err(error_context),
+    // Tokio stores the task output inline even when it boxes the future. Keep the large
+    // Config off the caller's stack while Tokio allocates the task during session switches.
+    match tokio::spawn(async move { builder.build().await.map(Box::new) }).await {
+        Ok(build_result) => build_result.map(|config| *config).wrap_err(error_context),
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
         Err(err) => Err(err).wrap_err_with(|| format!("{error_context} task failed")),
     }

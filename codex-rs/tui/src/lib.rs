@@ -1811,7 +1811,9 @@ async fn run_ratatui_app(
         Ok(StartupHooksReviewOutcome::OpenHooksBrowser(data)) => Some(data),
     };
 
-    let app_result = App::run(
+    // Keep the large event-loop future out of the enclosing startup futures so session
+    // transitions have enough stack headroom to rebuild configuration and the chat widget.
+    let app_result = Box::pin(App::run(
         &mut tui,
         app_server,
         config,
@@ -1834,7 +1836,7 @@ async fn run_ratatui_app(
         startup_hooks_browser,
         startup_draft,
         managed_worktree,
-    )
+    ))
     .await;
 
     terminal_restore_guard.restore_silently();
