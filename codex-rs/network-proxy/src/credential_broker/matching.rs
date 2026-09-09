@@ -170,6 +170,7 @@ pub(super) fn virtualize_text(
     let source_env = HashMap::new();
     let known = known_credential_matches(state, text, &source_env);
     let mut replacements = Replacements::default();
+    let binding_env = state.context.with_fallbacks(env);
     let mut allowed = true;
     for credential in &credentials {
         let ranges = known
@@ -321,7 +322,7 @@ pub(super) fn virtualize_text(
     }
 
     for provider in &state.configured_providers {
-        if provider.host_binding(env).is_none() {
+        if provider.host_binding(&binding_env).is_none() {
             continue;
         }
         let mut matches = provider

@@ -12,7 +12,58 @@ use super::providers;
 use super::registry::BrokeredCredentialProvider;
 use super::remove_env_value;
 use super::set_env_value;
+use crate::NetworkProxyConfig;
+use std::borrow::Cow;
 use std::collections::HashMap;
+
+/// Local destination hints retained by the broker, not added to child environments.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub struct CredentialBrokerContext(HashMap<String, String>);
+
+impl std::fmt::Debug for CredentialBrokerContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CredentialBrokerContext(<redacted>)")
+    }
+}
+
+impl CredentialBrokerContext {
+    pub(crate) fn capture(
+        config: &NetworkProxyConfig,
+        overrides: &HashMap<String, String>,
+    ) -> Self {
+        Self(
+            credential_broker_provider_context_env_keys()
+                .map(str::to_string)
+                .chain(
+                    config
+                        .credential_providers
+                        .values()
+                        .filter_map(|provider| provider.url_prefix_from_env.clone()),
+                )
+                .filter_map(|key| {
+                    env_value(overrides, &key)
+                        .map(str::to_string)
+                        .or_else(|| std::env::var(&key).ok())
+                        .map(|value| (key, value))
+                })
+                .collect(),
+        )
+    }
+
+    pub(super) fn with_fallbacks<'a>(
+        &self,
+        env: &'a HashMap<String, String>,
+    ) -> Cow<'a, HashMap<String, String>> {
+        let mut context = Cow::Borrowed(env);
+        for (key, value) in &self.0 {
+            // A present value, including an empty one, overrides the trusted fallback.
+            if env_value(&context, key).is_none() {
+                set_env_value(context.to_mut(), key, value.clone());
+            }
+        }
+        context
+    }
+}
 
 /// Trusted provider metadata and active credential bindings for one child environment.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -22,6 +73,7 @@ pub struct CredentialBrokerEnvironment {
     pub context_keys: Vec<String>,
     pub provider_keys: Vec<String>,
     pub provider_context_keys: Vec<String>,
+    pub configured_provider_context_keys: Vec<String>,
 }
 
 impl CredentialBrokerState {
@@ -42,6 +94,7 @@ impl CredentialBrokerState {
             if let Some(key) = provider.config.url_prefix_from_env.as_deref() {
                 push_unique_key(&mut metadata.provider_keys, key);
                 push_unique_key(&mut metadata.provider_context_keys, key);
+                push_unique_key(&mut metadata.configured_provider_context_keys, key);
             }
         }
 

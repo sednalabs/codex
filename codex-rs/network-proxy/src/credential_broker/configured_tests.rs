@@ -559,6 +559,91 @@ fn configured_provider_discovers_credentials_without_canonical_variables() {
 }
 
 #[test]
+fn configured_provider_uses_private_destination_context() {
+    let token = "pin_abcdefgh";
+    let destination = "https://api.vendor.example/v2";
+    let mut config = NetworkProxyConfig {
+        credential_broker: true,
+        credential_providers: BTreeMap::from([(
+            "vendor".to_string(),
+            CredentialProviderConfig {
+                env: vec!["VENDOR_PASSWORD".to_string()],
+                patterns: vec!["pin_[a-z]{8}".to_string()],
+                url_prefix_from_env: Some("VENDOR_HOST".to_string()),
+                ..CredentialProviderConfig::default()
+            },
+        )]),
+        ..NetworkProxyConfig::default()
+    };
+    config.configure_credential_broker_environment(&HashMap::from([
+        ("VENDOR_HOST".to_string(), destination.to_string()),
+        ("UNRELATED_SECRET".to_string(), token.to_string()),
+    ]));
+    assert!(!format!("{config:?}").contains(destination));
+    assert!(
+        !serde_json::to_string(&config)
+            .unwrap()
+            .contains(destination)
+    );
+    let broker = CredentialBroker::new(/*enabled*/ true);
+    broker.configure(&config);
+    let mut env = HashMap::from([
+        ("VENDOR_PASSWORD".to_string(), token.to_string()),
+        ("AUTH_HEADER".to_string(), format!("Bearer {token}")),
+    ]);
+
+    for environment_id in [None, Some("child")] {
+        broker.virtualize_child_env_for_environment(&mut env, environment_id);
+        assert!(!env.contains_key("VENDOR_HOST"));
+        assert!(!env.contains_key("UNRELATED_SECRET"));
+        assert_ne!(env["AUTH_HEADER"], format!("Bearer {token}"));
+        let dummy_header = env["AUTH_HEADER"].clone();
+        env.remove("VENDOR_PASSWORD");
+        broker.virtualize_child_env_for_environment(&mut env, environment_id);
+        assert_eq!(env["AUTH_HEADER"], dummy_header);
+        let mut snapshot = format!("export AUTH_HEADER='Bearer {token}'");
+        assert!(broker.virtualize_text(&mut snapshot, &env));
+        assert_eq!(snapshot, format!("export AUTH_HEADER='{dummy_header}'"));
+        for host in [destination, "https://other.example/v2"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&dummy_header).unwrap());
+            broker.inject_request_headers_for_environment(host, &mut headers, environment_id);
+            assert_eq!(
+                headers[AUTHORIZATION],
+                if host == destination {
+                    format!("Bearer {token}")
+                } else {
+                    dummy_header.clone()
+                }
+            );
+        }
+    }
+
+    for host in ["https://override.example/v3", "", "not a valid destination"] {
+        let mut env = HashMap::from([
+            ("VENDOR_PASSWORD".to_string(), token.to_string()),
+            ("VENDOR_HOST".to_string(), host.to_string()),
+        ]);
+        broker.virtualize_child_env(&mut env);
+        assert_eq!(env["VENDOR_HOST"], host);
+        assert_eq!(
+            env["VENDOR_PASSWORD"] == token,
+            !host.starts_with("https://")
+        );
+        let dummy_header = format!("Bearer {}", env["VENDOR_PASSWORD"]);
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&dummy_header).unwrap());
+        broker.inject_request_headers(destination, &mut headers);
+        assert_eq!(headers[AUTHORIZATION], format!("Bearer {token}"));
+        if host.starts_with("https://") {
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&dummy_header).unwrap());
+            broker.inject_request_headers(host, &mut headers);
+            assert_eq!(headers[AUTHORIZATION], format!("Bearer {token}"));
+        }
+    }
+}
+
+#[test]
 fn configured_provider_preserves_credentials_without_a_resolved_destination() {
     let token = "stripe_live_abcdefghijklmnopqrstuvwx";
     let broker = broker_for(CredentialProviderConfig {
@@ -793,6 +878,17 @@ fn configured_owner_keeps_prefixed_builtin_shaped_aliases_scoped() {
                                 .contains(&key.to_string())
                         );
                         assert_eq!(snapshot_alias, env[key]);
+                        assert!(
+                            broker
+                                .environment_for_text(&snapshot_alias, &env)
+                                .credential_keys
+                                .contains(&"VENDOR_KEY".to_string())
+                        );
+                        assert!(broker.source_matches_text(
+                            "VENDOR_KEY",
+                            &token,
+                            &original_env[key]
+                        ));
                         assert!(broker.child_alias_matches(
                             key,
                             &env[key],
@@ -1150,6 +1246,227 @@ fn discovered_credential_aliases_rebind_when_the_destination_changes() {
         } else {
             assert_eq!(unbound["AUTH_HEADER"], authorization_header);
             assert!(!broker.host_requires_mitm("api.github.com", /*port*/ 443));
+        }
+    }
+}
+
+#[test]
+fn credential_rotation_preserves_alias_destination_ownership() {
+    for (key, rotated_key, host_key, prefix, static_host) in [
+        (
+            "PROVIDER_TOKEN",
+            "PROVIDER_TOKEN",
+            "PROVIDER_URL",
+            "provider_",
+            None,
+        ),
+        (
+            "PROVIDER_TOKEN",
+            "PROVIDER_TOKEN_FALLBACK",
+            "PROVIDER_URL",
+            "provider_",
+            None,
+        ),
+        (
+            "PROVIDER_TOKEN",
+            "PROVIDER_TOKEN",
+            "PROVIDER_URL",
+            "provider_",
+            Some("static.example"),
+        ),
+        (
+            "GH_ENTERPRISE_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GH_HOST",
+            "ghp_",
+            None,
+        ),
+        (
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+            "GH_HOST",
+            "ghp_",
+            None,
+        ),
+        (
+            "OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "sk-proj-",
+            Some("api.openai.com"),
+        ),
+    ] {
+        for (environment, real_aliases, discover_parent) in [
+            ("parent", false, false),
+            ("child", false, false),
+            ("parent", true, false),
+            ("child", true, false),
+            ("parent", true, true),
+            ("child", true, true),
+        ] {
+            let broker = broker_for(CredentialProviderConfig {
+                env: vec![
+                    "PROVIDER_TOKEN".to_string(),
+                    "PROVIDER_TOKEN_FALLBACK".to_string(),
+                ],
+                patterns: vec!["^provider_[a-z]{36}$".to_string()],
+                url_prefixes: static_host
+                    .map(|host| format!("https://{host}"))
+                    .into_iter()
+                    .collect(),
+                url_prefix_from_env: Some("PROVIDER_URL".to_string()),
+                ..CredentialProviderConfig::default()
+            });
+            let suffix_len = if key == "OPENAI_API_KEY" { 64 } else { 36 };
+            let first = format!("{prefix}{}", "a".repeat(suffix_len));
+            let second = format!("{prefix}{}", "b".repeat(suffix_len));
+            let auxiliary = format!("{prefix}{}", "c".repeat(suffix_len));
+            let endpoint = |host: &str| {
+                if host_key == "GH_HOST" {
+                    host.to_string()
+                } else {
+                    format!("https://{host}/v1")
+                }
+            };
+            let mut env = HashMap::from([
+                (key.to_string(), first.clone()),
+                (host_key.to_string(), endpoint("first.example")),
+                ("AUTH_HEADER".to_string(), format!("Bearer {first}")),
+                (
+                    "SECOND_AUTH_HEADER".to_string(),
+                    format!("Bearer {auxiliary}"),
+                ),
+            ]);
+            let parent_env = env.clone();
+            broker.virtualize_child_env_for_environment(&mut env, Some("parent"));
+            let old_dummy = env[key].clone();
+            let alias_dummy = env["SECOND_AUTH_HEADER"]
+                .strip_prefix("Bearer ")
+                .unwrap()
+                .to_string();
+            assert_ne!(old_dummy, first);
+            assert_ne!(alias_dummy, auxiliary);
+            env.remove(key);
+            env.insert(rotated_key.to_string(), second.clone());
+            env.insert(host_key.to_string(), endpoint("second.example"));
+            if real_aliases {
+                env.insert("AUTH_HEADER".to_string(), format!("Bearer {first}"));
+                env.insert(
+                    "SECOND_AUTH_HEADER".to_string(),
+                    format!("Bearer {auxiliary}"),
+                );
+            }
+            if discover_parent {
+                broker.discover_parent_credentials_for_environment(
+                    &parent_env,
+                    &env,
+                    Some(environment),
+                );
+            }
+            broker.virtualize_child_env_for_environment(&mut env, Some(environment));
+            let new_dummy = env[rotated_key].clone();
+            assert_eq!(
+                env["AUTH_HEADER"],
+                format!("Bearer {old_dummy}"),
+                "{key}, {environment}, real_aliases={real_aliases}, discover_parent={discover_parent}"
+            );
+            assert_eq!(env["SECOND_AUTH_HEADER"], format!("Bearer {alias_dummy}"));
+            assert!(!env.values().any(|value| {
+                [&first, &second, &auxiliary]
+                    .iter()
+                    .any(|real| value.contains(real.as_str()))
+            }));
+            for (dummy, real, host, allowed) in [
+                (&old_dummy, &first, "second.example", false),
+                (&old_dummy, &first, "first.example", true),
+                (&alias_dummy, &auxiliary, "second.example", false),
+                (&alias_dummy, &auxiliary, "first.example", true),
+                (&new_dummy, &second, "first.example", false),
+                (&new_dummy, &second, "second.example", true),
+            ] {
+                let mut headers = HeaderMap::from_iter([(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {dummy}")).unwrap(),
+                )]);
+                broker.inject_request_headers_for_environment(
+                    &format!("https://{host}/v1"),
+                    &mut headers,
+                    Some(environment),
+                );
+                assert_eq!(
+                    headers[AUTHORIZATION],
+                    format!("Bearer {}", if allowed { real } else { dummy }),
+                    "{key}, {environment}, {host}, real_aliases={real_aliases}, discover_parent={discover_parent}"
+                );
+            }
+
+            env.insert(host_key.to_string(), String::new());
+            if real_aliases {
+                env.insert("AUTH_HEADER".to_string(), format!("Bearer {first}"));
+                env.insert(
+                    "SECOND_AUTH_HEADER".to_string(),
+                    format!("Bearer {auxiliary}"),
+                );
+            }
+            if discover_parent {
+                broker.discover_parent_credentials_for_environment(
+                    &parent_env,
+                    &env,
+                    Some(environment),
+                );
+            }
+            broker.virtualize_child_env_for_environment(&mut env, Some(environment));
+            for host in ["first.example", "second.example"]
+                .into_iter()
+                .chain(static_host)
+            {
+                for (dummy, real) in [
+                    (&old_dummy, &first),
+                    (&alias_dummy, &auxiliary),
+                    (&new_dummy, &second),
+                ] {
+                    let mut headers = HeaderMap::from_iter([(
+                        AUTHORIZATION,
+                        HeaderValue::from_str(&format!("Bearer {dummy}")).unwrap(),
+                    )]);
+                    broker.inject_request_headers_for_environment(
+                        &format!("https://{host}/v1"),
+                        &mut headers,
+                        Some(environment),
+                    );
+                    assert_eq!(
+                        headers[AUTHORIZATION],
+                        format!(
+                            "Bearer {}",
+                            if Some(host) == static_host {
+                                real
+                            } else {
+                                dummy
+                            }
+                        )
+                    );
+                }
+            }
+            let mut parent_headers = HeaderMap::from_iter([(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {old_dummy}")).unwrap(),
+            )]);
+            broker.inject_request_headers_for_environment(
+                "https://first.example/v1",
+                &mut parent_headers,
+                Some("parent"),
+            );
+            assert_eq!(
+                parent_headers[AUTHORIZATION],
+                format!(
+                    "Bearer {}",
+                    if environment == "child" {
+                        &first
+                    } else {
+                        &old_dummy
+                    }
+                )
+            );
         }
     }
 }
@@ -2315,8 +2632,9 @@ fn configured_provider_destination_history_is_scoped_to_the_environment() {
 }
 
 #[test]
-fn configured_provider_restores_credentials_when_the_dynamic_destination_disappears() {
+fn configured_provider_preserves_filtered_destinations_but_honors_explicit_overrides() {
     let token = "stripe_live_abcdefghijklmnopqrstuvwx";
+    let second_token = "stripe_live_zyxwvutsrqponmlkjihgfedc";
     let broker = broker_for(CredentialProviderConfig {
         env: vec!["STRIPE_API_KEY".to_string()],
         patterns: vec!["^stripe_live_[a-z]{24}$".to_string()],
@@ -2327,15 +2645,64 @@ fn configured_provider_restores_credentials_when_the_dynamic_destination_disappe
         ("STRIPE_API_KEY".to_string(), token.to_string()),
         ("STRIPE_HOST".to_string(), "first.example".to_string()),
         ("AUTH_HEADER".to_string(), format!("Bearer {token}")),
+        (
+            "SECOND_AUTH_HEADER".to_string(),
+            format!("Bearer {second_token}"),
+        ),
     ]);
     broker.virtualize_child_env_for_environment(&mut env, Some("environment"));
     let dummy = env["STRIPE_API_KEY"].clone();
 
+    let mut filtered_child = env.clone();
+    filtered_child.remove("STRIPE_HOST");
+    let expected = filtered_child.clone();
+    broker.virtualize_child_env_for_environment(&mut filtered_child, Some("filtered-child"));
+    assert_eq!(filtered_child, expected);
+    for (alias, real) in [("AUTH_HEADER", token), ("SECOND_AUTH_HEADER", second_token)] {
+        let mut headers = HeaderMap::from_iter([(
+            AUTHORIZATION,
+            HeaderValue::from_str(&filtered_child[alias]).unwrap(),
+        )]);
+        broker.inject_request_headers_for_environment(
+            "https://first.example/",
+            &mut headers,
+            Some("filtered-child"),
+        );
+        assert_eq!(headers[AUTHORIZATION], format!("Bearer {real}"));
+    }
+
+    let mut child_env = env.clone();
+    child_env.insert("STRIPE_HOST".to_string(), "child.example".to_string());
+    broker.virtualize_child_env_for_environment(&mut child_env, Some("child"));
+    child_env.remove("STRIPE_HOST");
     env.remove("STRIPE_HOST");
+    for (environment, destination, current_env) in [
+        ("environment", "first.example", &mut env),
+        ("child", "child.example", &mut child_env),
+    ] {
+        let expected = current_env.clone();
+        broker.virtualize_child_env_for_environment(current_env, Some(environment));
+        assert_eq!(*current_env, expected);
+        for (alias, real) in [("AUTH_HEADER", token), ("SECOND_AUTH_HEADER", second_token)] {
+            let mut headers = HeaderMap::from_iter([(
+                AUTHORIZATION,
+                HeaderValue::from_str(&current_env[alias]).unwrap(),
+            )]);
+            broker.inject_request_headers_for_environment(
+                &format!("https://{destination}/"),
+                &mut headers,
+                Some(environment),
+            );
+            assert_eq!(headers[AUTHORIZATION], format!("Bearer {real}"));
+        }
+    }
+
+    env.insert("STRIPE_HOST".to_string(), String::new());
     broker.virtualize_child_env_for_environment(&mut env, Some("environment"));
 
     assert_eq!(env["STRIPE_API_KEY"], token);
     assert_eq!(env["AUTH_HEADER"], format!("Bearer {token}"));
+    assert_eq!(env["SECOND_AUTH_HEADER"], format!("Bearer {second_token}"));
     let mut headers = HeaderMap::from_iter([(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {dummy}")).expect("valid dummy authentication"),
@@ -2640,6 +3007,10 @@ fn configured_provider_accepts_hostname_or_https_url_from_one_environment_key() 
                 assert!(broker.host_requires_mitm(host, /*port*/ 443));
                 assert_eq!(
                     broker.environment(&env).binding_keys,
+                    vec!["PROVIDER_HOST".to_string()]
+                );
+                assert_eq!(
+                    broker.environment(&env).configured_provider_context_keys,
                     vec!["PROVIDER_HOST".to_string()]
                 );
             }

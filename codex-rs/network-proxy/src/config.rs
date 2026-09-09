@@ -7,6 +7,7 @@ use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -143,6 +144,9 @@ pub struct NetworkProxyConfig {
     /// Trusted OpenAI endpoint derived from local configuration, never sent to remote executors.
     #[serde(skip)]
     pub credential_broker_openai_host: Option<String>,
+    /// Trusted local destination context, never sent to remote executors or child environments.
+    #[serde(skip)]
+    pub credential_broker_context: crate::CredentialBrokerContext,
     #[serde(default)]
     pub dangerously_allow_plaintext_credential_injection: bool,
     #[serde(default)]
@@ -168,6 +172,7 @@ impl Default for NetworkProxyConfig {
             credential_broker: false,
             credential_providers: BTreeMap::new(),
             credential_broker_openai_host: None,
+            credential_broker_context: crate::CredentialBrokerContext::default(),
             dangerously_allow_plaintext_credential_injection: false,
             mitm_hooks: Vec::new(),
         }
@@ -182,6 +187,52 @@ impl NetworkProxyConfig {
 
     pub fn set_credential_broker_openai_base_url(&mut self, base_url: Option<&str>) {
         self.credential_broker_openai_host = base_url.and_then(trusted_credential_broker_host);
+    }
+
+    /// Retains trusted destination context without changing child environment policy. Conflicting
+    /// case-insensitive provider overrides disable brokerage on Windows.
+    pub fn configure_credential_broker_environment(
+        &mut self,
+        environment: &HashMap<String, String>,
+    ) {
+        if cfg!(windows)
+            && self.credential_broker
+            && self.has_ambiguous_windows_credential_environment(environment)
+        {
+            warn!(
+                "credential brokerage disabled because shell environment overrides contain \
+                 conflicting case-insensitive provider keys"
+            );
+            self.set_credential_broker_enabled(/*enabled*/ false);
+        }
+        self.credential_broker_context = if self.credential_broker {
+            crate::CredentialBrokerContext::capture(self, environment)
+        } else {
+            crate::CredentialBrokerContext::default()
+        };
+    }
+
+    fn has_ambiguous_windows_credential_environment(
+        &self,
+        environment: &HashMap<String, String>,
+    ) -> bool {
+        environment.iter().any(|(key, value)| {
+            let is_provider_key =
+                crate::credential_broker::is_credential_broker_provider_env_key(key)
+                    || self.credential_providers.values().any(|provider| {
+                        provider
+                            .env
+                            .iter()
+                            .chain(provider.url_prefix_from_env.iter())
+                            .any(|candidate| key.eq_ignore_ascii_case(candidate))
+                    });
+            is_provider_key
+                && environment.iter().any(|(candidate, candidate_value)| {
+                    key != candidate
+                        && key.eq_ignore_ascii_case(candidate)
+                        && value != candidate_value
+                })
+        })
     }
 
     pub fn allowed_domains(&self) -> Option<Vec<String>> {
@@ -642,10 +693,41 @@ mod tests {
                 credential_broker: false,
                 credential_providers: BTreeMap::new(),
                 credential_broker_openai_host: None,
+                credential_broker_context: crate::CredentialBrokerContext::default(),
                 dangerously_allow_plaintext_credential_injection: false,
                 mitm_hooks: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_broker_context_accepts_non_unicode_environment() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        use std::process::Command;
+
+        const CHILD_ENV: &str = "CODEX_TEST_NON_UNICODE_BROKER_CONTEXT";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "config::tests::credential_broker_context_accepts_non_unicode_environment",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, OsString::from_vec(vec![0xff]))
+                .env(OsString::from_vec(vec![0xfe]), "unrelated")
+                .env("GH_HOST", OsString::from_vec(vec![0xff]))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            return;
+        }
+
+        let mut config = NetworkProxyConfig::default();
+        config.set_credential_broker_enabled(/*enabled*/ true);
+        config.configure_credential_broker_environment(&HashMap::new());
+        assert!(config.credential_broker);
     }
 
     #[test]

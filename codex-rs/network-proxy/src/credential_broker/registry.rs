@@ -3,10 +3,13 @@ use super::CredentialRecord;
 use super::MIN_EMBEDDED_CREDENTIAL_LENGTH;
 use super::configured::ConfiguredCredentialProvider;
 use super::env_entry;
+use super::env_key_matches;
 use super::env_value;
 use super::matching;
 use super::matching::is_operational_path_match;
 use super::providers;
+use super::source_accepts_credential;
+use super::source_tracks_credential;
 use base64::Engine;
 use rama_http::HeaderMap;
 use rama_http::HeaderName;
@@ -22,6 +25,7 @@ pub(super) enum BrokeredCredentialProvider {
     Configured(Arc<ConfiguredCredentialProvider>),
 }
 
+#[derive(Clone)]
 pub(super) struct ActiveCredentialSource {
     pub(super) provider: BrokeredCredentialProvider,
     pub(super) host_binding: providers::CredentialHostBinding,
@@ -310,10 +314,12 @@ pub(super) fn active_credential_sources(
     state: &CredentialBrokerState,
     env: &HashMap<String, String>,
 ) -> Vec<ActiveCredentialSource> {
+    let binding_env = state.context.with_fallbacks(env);
     let mut sources = Vec::new();
     for provider in providers::credential_providers() {
         for source in provider.sources() {
-            if let Some(host_binding) = (source.host_binding)(env, state.openai_api_host.as_deref())
+            if let Some(host_binding) =
+                (source.host_binding)(&binding_env, state.openai_api_host.as_deref())
             {
                 sources.push(ActiveCredentialSource {
                     provider: BrokeredCredentialProvider::Builtin(provider),
@@ -328,7 +334,7 @@ pub(super) fn active_credential_sources(
         }
     }
     for provider in &state.configured_providers {
-        if let Some(host_binding) = provider.host_binding(env) {
+        if let Some(host_binding) = provider.host_binding(&binding_env) {
             sources.push(ActiveCredentialSource {
                 provider: BrokeredCredentialProvider::Configured(provider.clone()),
                 host_binding,
@@ -339,10 +345,70 @@ pub(super) fn active_credential_sources(
     sources
 }
 
+pub(super) fn registered_credential_source(
+    credential: &CredentialRecord,
+    sources: &[ActiveCredentialSource],
+    env: &HashMap<String, String>,
+) -> Option<ActiveCredentialSource> {
+    let retained_env_vars = match &credential.provider {
+        BrokeredCredentialProvider::Builtin(provider) => provider
+            .sources()
+            .iter()
+            .find(|source| {
+                source
+                    .env_vars
+                    .iter()
+                    .any(|key| env_key_matches(key, &credential.env_var))
+                    && !source.binding_env_vars.is_empty()
+                    && source
+                        .binding_env_vars
+                        .iter()
+                        .all(|key| env_value(env, key).is_none())
+            })
+            .map(|source| {
+                source
+                    .env_vars
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect()
+            }),
+        BrokeredCredentialProvider::Configured(provider) => provider
+            .config
+            .url_prefix_from_env
+            .as_deref()
+            .filter(|key| env_value(env, key).is_none())
+            .map(|_| provider.config.env.clone()),
+    };
+    // Filtering a destination hint out of the child must not undo an existing
+    // registration or rebind it to the broker's ambient fallback.
+    if let Some(env_vars) = retained_env_vars {
+        Some(ActiveCredentialSource {
+            provider: credential.provider.clone(),
+            host_binding: credential.host_binding.clone(),
+            env_vars,
+        })
+    } else {
+        sources
+            .iter()
+            .find(|source| source_accepts_credential(source, credential))
+            .cloned()
+            .map(|mut source| {
+                // A new canonical token does not authorize an older alias at its destination.
+                if !credential.invalidates_host_binding(env)
+                    && !source_tracks_credential(&source, credential, env)
+                {
+                    source.host_binding = credential.host_binding.clone();
+                }
+                source
+            })
+    }
+}
+
 pub(super) fn prioritized_credentials<'a>(
     state: &'a CredentialBrokerState,
     env: &HashMap<String, String>,
 ) -> Vec<&'a CredentialRecord> {
+    let binding_env = state.context.with_fallbacks(env);
     let mut credentials = state.credentials.iter().collect::<Vec<_>>();
     credentials.sort_unstable_by_key(|credential| {
         let active = env_entry(env, &credential.env_var)
@@ -351,7 +417,7 @@ pub(super) fn prioritized_credentials<'a>(
             BrokeredCredentialProvider::Builtin(provider) => {
                 provider.sources().iter().any(|source| {
                     !source.binding_env_vars.is_empty()
-                        && (source.host_binding)(env, state.openai_api_host.as_deref())
+                        && (source.host_binding)(&binding_env, state.openai_api_host.as_deref())
                             .is_some_and(|binding| binding == credential.host_binding)
                 })
             }
@@ -360,9 +426,9 @@ pub(super) fn prioritized_credentials<'a>(
                 .url_prefix_from_env
                 .as_deref()
                 .is_some_and(|key| {
-                    env_value(env, key).is_some()
+                    env_value(&binding_env, key).is_some()
                         && provider
-                            .host_binding(env)
+                            .host_binding(&binding_env)
                             .is_some_and(|binding| binding == credential.host_binding)
                 }),
         };

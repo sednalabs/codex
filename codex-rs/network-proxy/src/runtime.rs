@@ -522,6 +522,24 @@ impl NetworkProxyState {
         self.credential_broker.environment(env)
     }
 
+    pub(crate) fn credential_broker_environment_for_text(
+        &self,
+        text: &str,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.credential_broker.environment_for_text(text, env)
+    }
+
+    pub(crate) fn credential_broker_source_matches_text(
+        &self,
+        source: &str,
+        source_value: &str,
+        text: &str,
+    ) -> bool {
+        self.credential_broker
+            .source_matches_text(source, source_value, text)
+    }
+
     pub(crate) fn credential_broker_sources_allowed(
         &self,
         value: &str,

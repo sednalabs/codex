@@ -896,6 +896,7 @@ impl NetworkProxy {
             enabled: config.enabled,
             credential_providers: config.credential_providers.clone(),
             credential_broker_openai_host: config.credential_broker_openai_host.clone(),
+            credential_broker_context: config.credential_broker_context.clone(),
             dangerously_allow_plaintext_credential_injection: config
                 .dangerously_allow_plaintext_credential_injection,
             ..config::NetworkProxyConfig::default()
@@ -1200,6 +1201,26 @@ impl NetworkProxy {
         env: &HashMap<String, String>,
     ) -> crate::CredentialBrokerEnvironment {
         self.state.credential_broker_environment(env)
+    }
+
+    /// Returns provider context for the dummy credentials contained in trusted text.
+    pub fn credential_broker_environment_for_text(
+        &self,
+        text: &str,
+        env: &HashMap<String, String>,
+    ) -> crate::CredentialBrokerEnvironment {
+        self.state.credential_broker_environment_for_text(text, env)
+    }
+
+    /// Checks whether a registered provider source occurs in trusted captured text.
+    pub fn credential_broker_source_matches_text(
+        &self,
+        source: &str,
+        source_value: &str,
+        text: &str,
+    ) -> bool {
+        self.state
+            .credential_broker_source_matches_text(source, source_value, text)
     }
 
     /// Checks whether recognized credentials originate from permitted provider variables.
@@ -2145,6 +2166,10 @@ mod tests {
             ..NetworkProxyConfig::default()
         };
         config.set_credential_broker_enabled(/*enabled*/ true);
+        config.configure_credential_broker_environment(&HashMap::from([(
+            "GH_HOST".to_string(),
+            "local-github.example".to_string(),
+        )]));
         let state = Arc::new(network_proxy_state_for_policy(config));
         let proxy = match NetworkProxy::builder().state(state).build().await {
             Ok(proxy) => proxy,
