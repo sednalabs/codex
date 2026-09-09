@@ -3670,13 +3670,10 @@ impl Session {
         });
         extension_data.insert(selected_plugins.clone());
         turn_context.extension_data.insert(selected_plugins);
-        // Tool availability still follows the admitted turn; the async message
-        // description comes from the captured step model.
         let tool_router = turn::built_tools(
             self.as_ref(),
             turn_context.as_ref(),
-            // TODO(CDXENT-441): use the step scoped model
-            turn_context.model_info(),
+            &settings.model_info,
             settings.model_info.model_messages.as_ref(),
             &environments,
             &mcp,
@@ -3685,8 +3682,7 @@ impl Session {
         )
         .or_cancel(cancellation_token)
         .await??;
-        // Publish inventory after planning rather than during finalization, so constructing
-        // additional candidate plans cannot overwrite turn-wide metadata.
+        // Publish inventory only after the step's tool plan has been finalized.
         if turn_context
             .config
             .tool_registry

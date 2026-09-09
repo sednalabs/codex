@@ -499,7 +499,7 @@ impl ToolRegistry {
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
-        let otel = invocation.turn.session_telemetry.clone();
+        let otel = invocation.step_context.session_telemetry.clone();
         // TODO(anp): Reconcile these tags with TurnEnvironment::sandbox_context
         // instead of reporting the thread-wide backend for environment-scoped tools.
         let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;
