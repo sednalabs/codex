@@ -111,6 +111,7 @@ fn assert_connection_metadata(
                 "turn_id": turn_id,
                 "parent_turn_id": parent_turn_id,
                 "thread_source": "guardian_classifier",
+                "turn_trigger": "guardian_classifier",
             },
         });
         if let Some(root_turn_id) = root_turn_id {

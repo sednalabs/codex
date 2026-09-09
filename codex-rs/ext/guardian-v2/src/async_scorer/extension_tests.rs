@@ -1958,6 +1958,7 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
             "parent_turn_id": "turn-1",
             "root_turn_id": "root-turn",
             "thread_source": "guardian_classifier",
+            "turn_trigger": "guardian_classifier",
         })
     );
     assert_eq!(request["client_metadata"]["x-openai-subagent"], "guardian");

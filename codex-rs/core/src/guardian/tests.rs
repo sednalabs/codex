@@ -2192,6 +2192,12 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
         Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
     ));
     let request = request_log.single_request();
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        &request
+            .header("x-codex-turn-metadata")
+            .expect("guardian turn metadata"),
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"], "guardian_review");
     let request_body = request.body_json();
     assert!(
         request_body.get("tools").is_none(),

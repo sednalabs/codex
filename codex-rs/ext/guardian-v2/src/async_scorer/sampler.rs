@@ -400,6 +400,7 @@ impl LunaSampler {
                 "turn_id": turn_id,
                 "parent_turn_id": parent_turn_id,
                 "thread_source": "guardian_classifier",
+                "turn_trigger": "guardian_classifier",
             });
             let mut client_metadata = HashMap::from([
                 ("session_id".to_owned(), self.config.session_id.clone()),
