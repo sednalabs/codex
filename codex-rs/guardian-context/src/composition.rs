@@ -270,7 +270,7 @@ impl ComposedContext {
     }
 }
 
-fn user_message(content: Vec<ContentItem>) -> ResponseItem {
+pub(super) fn user_message(content: Vec<ContentItem>) -> ResponseItem {
     ResponseItem::Message {
         id: None,
         role: "user".to_owned(),

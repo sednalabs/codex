@@ -179,6 +179,7 @@ struct MockResponsesState {
     allow_guardian_review: Notify,
     classification_completed: Notify,
     truncation_recorded: Notify,
+    sync_cost_recorded: Notify,
     luna_score: f64,
     invalid_classification: bool,
     review_outcome: ReviewOutcome,
@@ -717,6 +718,21 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             "/metrics",
             post(
                 |State(state): State<Arc<MockResponsesState>>, body: String| async move {
+                    if matches!(state.transcript_content, TranscriptContent::MixedEvidence) {
+                        let payload: Value = serde_json::from_str(&body).expect("OTLP JSON");
+                        for metric in payload["resourceMetrics"].as_array().into_iter().flatten()
+                            .flat_map(|resource| resource["scopeMetrics"].as_array().into_iter().flatten())
+                            .flat_map(|scope| scope["metrics"].as_array().into_iter().flatten())
+                            .filter(|metric| metric["name"] == "codex.guardian.context.request_tokens")
+                        {
+                            for point in metric["histogram"]["dataPoints"].as_array().into_iter().flatten() {
+                                let attributes = point["attributes"].as_array().expect("metric attributes");
+                                if attributes.iter().any(|attr| attr["key"] == "target" && attr["value"]["stringValue"] == "sync") {
+                                    state.sync_cost_recorded.notify_one();
+                                }
+                            }
+                        }
+                    }
                     if body.contains("codex.guardian_v2.classification") {
                         state.classification_completed.notify_one();
                     }
@@ -1324,6 +1340,11 @@ async fn guardian_v2_routes_scoped_tool_approvals(
             assert!(text.find(start) < text.find(end));
             assert!(text.contains("Planned action JSON:"));
         }
+    }
+    if mixed_evidence {
+        timeout(TIMEOUT, responses_state.sync_cost_recorded.notified())
+            .await
+            .expect("sync request cost should be exported");
     }
     if lifecycle.has_user_answer() {
         let reviews = responses_state

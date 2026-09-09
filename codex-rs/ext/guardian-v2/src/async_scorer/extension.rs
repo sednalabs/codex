@@ -600,6 +600,21 @@ impl GuardianV2Extension {
             drop(history);
             drop(node_repl_images);
             truncations.extend(std::mem::take(&mut transcript.truncations));
+            if let Some(metrics) = metrics.as_deref() {
+                for (section, cost) in transcript.section_costs() {
+                    for (measurement, value) in cost.measurements() {
+                        metrics.histogram(
+                            codex_guardian_context::SECTION_COST_METRIC,
+                            i64::try_from(value).unwrap_or(i64::MAX),
+                            &[
+                                ("target", "async"),
+                                ("section", section),
+                                ("measurement", measurement),
+                            ],
+                        );
+                    }
+                }
+            }
             let classification_input = transcript.into_messages();
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;

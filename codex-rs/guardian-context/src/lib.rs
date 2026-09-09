@@ -48,7 +48,15 @@ pub use verified_answers::render_verified_answers;
 mod retained_instructions;
 
 mod action;
+mod budget;
 mod composition;
+pub use budget::DEFAULT_MAX_INPUT_TOKENS;
+pub use budget::REQUEST_TOKENS_METRIC;
+pub use budget::RequestBudget;
+pub use budget::SECTION_COST_METRIC;
+pub use budget::SectionCost;
+pub use budget::effective_input_token_limit;
+pub use budget::estimate_input_tokens;
 mod profile;
 pub use composition::CollectedContext;
 pub use composition::ComposedContext;

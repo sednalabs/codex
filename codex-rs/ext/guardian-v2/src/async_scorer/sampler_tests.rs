@@ -276,14 +276,29 @@ async fn sampler_records_token_usage_after_returning_an_early_classification() -
 
     assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     tokio::time::timeout(Duration::from_secs(2), async {
-        while metrics.0.lock().unwrap().len() < 7 {
+        while metrics
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|metric| metric.0 == CLASSIFICATION_TOKEN_USAGE_METRIC)
+            .count()
+            < 7
+        {
             tokio::task::yield_now().await;
         }
     })
     .await?;
 
     assert_eq!(
-        *metrics.0.lock().unwrap(),
+        metrics
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|metric| metric.0 == CLASSIFICATION_TOKEN_USAGE_METRIC)
+            .cloned()
+            .collect::<Vec<_>>(),
         [
             ("total", 37),
             ("input", 37),
@@ -299,6 +314,27 @@ async fn sampler_records_token_usage_after_returning_an_early_classification() -
             vec![("token_type".to_owned(), token_type.to_owned())],
         ))
     );
+
+    let request = server
+        .wait_for_request(
+            /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+            /*request_index*/ 0,
+        )
+        .await
+        .body_json();
+    let input: Vec<ResponseItem> = serde_json::from_value(request["input"].clone())?;
+    let estimated = input
+        .iter()
+        .map(codex_guardian_context::estimate_input_tokens)
+        .sum::<usize>();
+    assert!(metrics.0.lock().unwrap().contains(&(
+        codex_guardian_context::REQUEST_TOKENS_METRIC.to_owned(),
+        i64::try_from(estimated)?,
+        vec![
+            ("target".to_owned(), "async".to_owned()),
+            ("component".to_owned(), "total".to_owned()),
+        ],
+    )));
 
     Ok(())
 }

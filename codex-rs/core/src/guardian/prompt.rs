@@ -210,9 +210,21 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     if transcript_entries.is_empty() {
         transcript.items.push(placeholder.to_owned());
     }
-    let items = sections
-        .compose(presentation, transcript)?
-        .into_user_inputs()?;
+    let context = sections.compose(presentation, transcript)?;
+    for (section, cost) in context.section_costs() {
+        for (measurement, value) in cost.measurements() {
+            session.services.session_telemetry.histogram(
+                codex_guardian_context::SECTION_COST_METRIC,
+                i64::try_from(value).unwrap_or(i64::MAX),
+                &[
+                    ("target", "sync"),
+                    ("section", section),
+                    ("measurement", measurement),
+                ],
+            );
+        }
+    }
+    let items = context.into_user_inputs()?;
     Ok(GuardianPromptItems {
         items,
         transcript_cursor,

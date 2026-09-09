@@ -292,6 +292,23 @@ impl LunaSampler {
                 item.set_id(Some(ResponseItemId::new(prefix)));
             }
         }
+        let total_tokens = input
+            .iter()
+            .map(codex_guardian_context::estimate_input_tokens)
+            .fold(0usize, usize::saturating_add);
+        if let Some(metrics) = self.config.metrics.as_deref() {
+            for (component, tokens) in [
+                ("existing_context", 0),
+                ("new_input", total_tokens),
+                ("total", total_tokens),
+            ] {
+                metrics.histogram(
+                    codex_guardian_context::REQUEST_TOKENS_METRIC,
+                    i64::try_from(tokens).unwrap_or(i64::MAX),
+                    &[("target", "async"), ("component", component)],
+                );
+            }
+        }
         let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),
             instructions: String::new(),

@@ -9,6 +9,8 @@ mod decision;
 mod feedback;
 mod metrics;
 mod prompt;
+mod request_budget;
+pub(crate) use request_budget::observe as observe_guardian_request;
 mod review;
 mod review_session;
 mod reviewer_config;
