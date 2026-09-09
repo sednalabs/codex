@@ -166,6 +166,15 @@ fn test_model_info(
     }
 }
 
+fn configure_model_switching_fixture(model: &mut ModelInfo) {
+    // Exercise model selection and history without changing the request transport,
+    // starting Code Mode, or compacting the mocked history on a model switch.
+    model.tool_mode = None;
+    model.multi_agent_version = None;
+    model.use_responses_lite = false;
+    model.comp_hash = None;
+}
+
 #[test_case(None; "model only")]
 #[test_case(Some(Personality::Pragmatic); "model and personality")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -177,14 +186,16 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
 
-    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
-        config
-            .features
-            .enable(Feature::Personality)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Personality)
+                .expect("test config should allow feature update");
+        });
     let test = builder.build_with_auto_env(&server).await?;
-    let next_model = "gpt-5.4";
+    let next_model = "gpt-5.5";
 
     submit_model_turn(
         &test.codex,
@@ -220,10 +231,10 @@ async fn first_turn_model_change_appends_model_instructions_developer_message(
     Ok(())
 }
 
-#[test_case(None, "gpt-5.2"; "model-generated base instructions and original model")]
-#[test_case(None, "gpt-5.4"; "model-generated base instructions and fork model")]
-#[test_case(Some("inherited custom base instructions"), "gpt-5.2"; "custom base instructions and original model")]
-#[test_case(Some("inherited custom base instructions"), "gpt-5.4"; "custom base instructions and fork model")]
+#[test_case(None, "gpt-5.6-terra"; "model-generated base instructions and original model")]
+#[test_case(None, "gpt-5.5"; "model-generated base instructions and fork model")]
+#[test_case(Some("inherited custom base instructions"), "gpt-5.6-terra"; "custom base instructions and original model")]
+#[test_case(Some("inherited custom base instructions"), "gpt-5.5"; "custom base instructions and fork model")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instructions(
     custom_base_instructions: Option<&'static str>,
@@ -234,9 +245,9 @@ async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instruction
     let server = MockServer::start().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-fork")).await;
 
-    let initial_model = "gpt-5.2";
+    let initial_model = "gpt-5.6-terra";
     let mut builder = test_codex()
-        .with_model(initial_model)
+        .with_model_info_override(initial_model, configure_model_switching_fixture)
         .with_config(move |config| {
             config.base_instructions = custom_base_instructions.map(str::to_string);
         });
@@ -260,7 +271,7 @@ async fn first_turn_after_empty_prefix_fork_preserves_inherited_base_instruction
     );
 
     let mut fork_config = test.config.clone();
-    fork_config.model = Some("gpt-5.4".to_string());
+    fork_config.model = Some("gpt-5.5".to_string());
     fork_config.base_instructions = None;
     let fork = test
         .thread_manager
@@ -337,13 +348,13 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
     )
     .await;
 
-    let initial_model = "gpt-5.2";
-    let switched_model = "gpt-5.4";
+    let initial_model = "gpt-5.6-terra";
+    let switched_model = "gpt-5.5";
     let rollback_ready = Arc::new(RollbackReady::default());
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.thread_lifecycle_contributor(rollback_ready.clone());
     let mut builder = test_codex()
-        .with_model(initial_model)
+        .with_model_info_override(initial_model, configure_model_switching_fixture)
         .with_extensions(Arc::new(extensions.build()));
     let test = builder.build_with_auto_env(&server).await?;
 
@@ -368,7 +379,9 @@ async fn rollback_first_turn_model_change_removes_its_instructions(
 
     let test = match followup {
         RollbackFollowup::ColdResume => {
-            let mut resume_builder = test_codex().with_model(switched_model);
+            let mut resume_builder = test_codex()
+                .with_model_info_override(initial_model, configure_model_switching_fixture)
+                .with_model(switched_model);
             resume_builder.restart(&server, &test).await?
         }
         RollbackFollowup::StartupModel | RollbackFollowup::SwitchedModel => test,
@@ -425,9 +438,10 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
     )
     .await;
 
-    let mut builder = test_codex().with_model("gpt-5.2");
+    let mut builder =
+        test_codex().with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture);
     let test = builder.build(&server).await?;
-    let next_model = "gpt-5.4";
+    let next_model = "gpt-5.5";
 
     test.codex
         .start_or_steer_turn(read_only_user_turn(
@@ -516,7 +530,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
     )
     .await;
 
-    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+    let mut builder = test_codex().with_model("gpt-5.5").with_config(|config| {
         config
             .features
             .enable(Feature::Personality)
@@ -624,16 +638,18 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
         ],
     )
     .await;
-    let mut builder = test_codex().with_model("gpt-5.2").with_config(|config| {
-        config
-            .features
-            .enable(Feature::DefaultModeRequestUserInput)
-            .expect("test config should allow feature update");
-        config.model_reasoning_effort = Some(ReasoningEffort::Low);
-        config.model_reasoning_summary = Some(ReasoningSummary::Concise);
-        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        config.approvals_reviewer = ApprovalsReviewer::User;
-    });
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.6-terra", configure_model_switching_fixture)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::DefaultModeRequestUserInput)
+                .expect("test config should allow feature update");
+            config.model_reasoning_effort = Some(ReasoningEffort::Low);
+            config.model_reasoning_summary = Some(ReasoningSummary::Concise);
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::User;
+        });
     let test = builder.build_with_auto_env(&server).await?;
 
     test.codex
@@ -651,7 +667,7 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
     core_test_support::submit_thread_settings(
         &test.codex,
         ThreadSettingsOverrides {
-            model: Some("gpt-5.4".to_string()),
+            model: Some("gpt-5.5".to_string()),
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
             service_tier: Some(Some(ServiceTier::Fast.request_value().to_string())),
@@ -701,19 +717,19 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
         request_settings,
         vec![
             json!({
-                "model": "gpt-5.2",
+                "model": "gpt-5.6-terra",
                 "reasoning": { "effort": "low", "summary": "concise" },
                 "service_tier": null,
                 "approval_policy_never": false,
             }),
             json!({
-                "model": "gpt-5.2",
+                "model": "gpt-5.6-terra",
                 "reasoning": { "effort": "low", "summary": "concise" },
                 "service_tier": null,
                 "approval_policy_never": false,
             }),
             json!({
-                "model": "gpt-5.4",
+                "model": "gpt-5.5",
                 "reasoning": { "effort": "high", "summary": "detailed" },
                 "service_tier": "priority",
                 "approval_policy_never": true,

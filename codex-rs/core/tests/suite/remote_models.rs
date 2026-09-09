@@ -76,8 +76,8 @@ async fn disabled_update_plan_preserves_custom_catalog_instructions() -> Result<
     let model = catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.2")
-        .expect("bundled gpt-5.2 model");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5 model");
     let messages = model
         .model_messages
         .as_mut()
@@ -85,7 +85,7 @@ async fn disabled_update_plan_preserves_custom_catalog_instructions() -> Result<
     messages.instructions_template = Some(INSTRUCTIONS.to_string());
     messages.instructions_variables = None;
     let test = test_codex()
-        .with_model("gpt-5.2")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             config.update_plan_enabled = false;
             config.model_catalog = Some(catalog);
@@ -544,7 +544,7 @@ async fn namespaced_model_slug_uses_catalog_metadata_without_fallback_warning() 
     skip_if_sandbox!(Ok(()));
 
     let server = MockServer::start().await;
-    let requested_model = "custom/gpt-5.2-codex";
+    let requested_model = "custom/gpt-5.5-codex";
     let response_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),

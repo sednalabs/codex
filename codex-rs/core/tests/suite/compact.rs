@@ -407,9 +407,12 @@ fn model_info_with_context_window(slug: &str, context_window: i64) -> ModelInfo 
     let mut model_info = models_response
         .models
         .into_iter()
-        .find(|model| model.slug == slug)
+        .find(|model| model.slug == "gpt-5.5")
         .expect("model missing from models.json");
+    model_info.slug = slug.to_string();
     model_info.context_window = Some(context_window);
+    model_info.max_context_window = Some(context_window);
+    model_info.comp_hash = None;
     model_info
 }
 

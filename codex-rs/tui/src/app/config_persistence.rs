@@ -1449,17 +1449,17 @@ mod tests {
             (ReasoningEffortConfig::Ultra, ReasoningEffortConfig::Medium),
         ] {
             let mut app = make_test_app().await;
-            app.config.model = Some("gpt-5.4".to_string());
+            app.config.model = Some("gpt-5.5".to_string());
             app.config.model_reasoning_effort = Some(configured_effort.clone());
             app.chat_widget
                 .set_reasoning_effort(Some(configured_effort));
 
             let default_effort =
-                app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+                app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
             let new_thread_config = app.fresh_session_config();
 
             assert_eq!(default_effort, Some(expected_default_effort.clone()));
-            assert_eq!(app.chat_widget.current_model(), "gpt-5.4");
+            assert_eq!(app.chat_widget.current_model(), "gpt-5.5");
             assert_eq!(
                 app.chat_widget.current_reasoning_effort(),
                 Some(ReasoningEffortConfig::Ultra)
@@ -1469,7 +1469,7 @@ mod tests {
                     new_thread_config.model.as_deref(),
                     new_thread_config.model_reasoning_effort,
                 ),
-                (Some("gpt-5.4"), Some(expected_default_effort))
+                (Some("gpt-5.5"), Some(expected_default_effort))
             );
         }
     }
@@ -1477,15 +1477,15 @@ mod tests {
     #[tokio::test]
     async fn conversation_reasoning_keeps_previous_default_for_ultra_only_model() {
         let mut app = make_test_app().await;
-        app.config.model = Some("gpt-5.4".to_string());
+        app.config.model = Some("gpt-5.5".to_string());
         app.config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
         let mut preset = app
             .model_catalog
             .try_list_models()
             .expect("model catalog is infallible")
             .into_iter()
-            .find(|preset| preset.model == "gpt-5.4")
-            .expect("gpt-5.4 preset");
+            .find(|preset| preset.model == "gpt-5.5")
+            .expect("gpt-5.5 preset");
         preset.model = "ultra-only".to_string();
         preset.default_reasoning_effort = ReasoningEffortConfig::Ultra;
         preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
@@ -1509,7 +1509,7 @@ mod tests {
                 new_thread_config.model.as_deref(),
                 new_thread_config.model_reasoning_effort,
             ),
-            (Some("gpt-5.4"), Some(ReasoningEffortConfig::Low))
+            (Some("gpt-5.5"), Some(ReasoningEffortConfig::Low))
         );
     }
 
@@ -1526,7 +1526,7 @@ mod tests {
             .handle_key_event(KeyEvent::from(KeyCode::BackTab));
 
         let default_effort =
-            app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+            app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
 
         assert_eq!(default_effort, Some(ReasoningEffortConfig::Low));
         assert_eq!(

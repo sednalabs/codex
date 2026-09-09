@@ -1749,7 +1749,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
     let model = models
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.4")
+        .find(|model| model.slug == "gpt-5.5")
         .expect("bundled model should exist");
     model.node_repl_auto_review_required = node_repl_auto_review_required;
     model.node_repl_disabled = node_repl_disabled;
@@ -1803,7 +1803,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
     let rmcp_test_server_bin = remote_aware_stdio_server_bin()?;
     let fixture = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             insert_mcp_server(
                 config,

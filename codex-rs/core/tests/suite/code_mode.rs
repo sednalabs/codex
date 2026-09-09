@@ -1384,10 +1384,10 @@ if (!tool) {
             let model = model_catalog
                 .models
                 .iter_mut()
-                .find(|model| model.slug == "gpt-5.4")
-                .expect("gpt-5.4 exists in bundled models.json");
+                .find(|model| model.slug == "gpt-5.5")
+                .expect("gpt-5.5 exists in bundled models.json");
             config.chatgpt_base_url = apps_base_url;
-            config.model = Some("gpt-5.4".to_string());
+            config.model = Some("gpt-5.5".to_string());
             model.supports_search_tool = true;
             config.model_catalog = Some(model_catalog);
         });
@@ -1879,7 +1879,7 @@ text(JSON.stringify([results[0].output.includes("code-alpha-ready"), results[1].
 
 // This model uses token-based tool-output truncation, giving the downstream
 // history assertions a stable `…N tokens truncated…` marker.
-const TOKEN_POLICY_TEST_MODEL: &str = "gpt-5.4";
+const TOKEN_POLICY_TEST_MODEL: &str = "gpt-5.5";
 
 // A nested `exec_command` limit applies to `result.output` inside JavaScript.
 // The outer code-mode and history budgets apply after the script calls `text`.
@@ -4079,7 +4079,7 @@ async fn code_mode_resizes_explicit_original_image() -> Result<()> {
         &server,
         "use exec to return a large original-detail image",
         &code,
-        "gpt-5.4",
+        "gpt-5.5",
         |_| {},
     )
     .await?;
@@ -4138,7 +4138,7 @@ image({{
         &server,
         "emit images with legacy detail arguments and MCP metadata",
         &code,
-        "gpt-5.4",
+        "gpt-5.5",
         |config| {
             let _ = config.features.enable(Feature::UnifiedImageBudget);
         },
@@ -4183,14 +4183,21 @@ async fn code_mode_unified_image_budget_preserves_legacy_contract_for_unsupporte
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
-        &server,
-        "emit an image on a legacy model",
-        r#"image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");"#,
-        "gpt-5.2",
-        |config| {
+    let builder = test_codex()
+        .with_model_info_override("image-budget-unsupported-model", |model| {
+            model.tool_mode = Some(ToolMode::CodeMode);
+            model.supports_image_detail_original = false;
+        })
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+            let _ = config.features.enable(Feature::ExecutedToolCallMetadata);
             let _ = config.features.enable(Feature::UnifiedImageBudget);
-        },
+        });
+    let (_test, second_mock) = run_code_mode_turn_with_builder(
+        &server,
+        "emit an image on a model without original-detail support",
+        r#"image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");"#,
+        builder,
     )
     .await?;
 
@@ -4219,7 +4226,7 @@ async fn code_mode_view_image_rejects_invalid_file_without_exposing_contents() -
 
     let server = responses::start_mock_server().await;
     let builder = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(|config| {
             let _ = config.features.enable(Feature::CodeMode);
         })
@@ -4268,7 +4275,7 @@ async fn code_mode_can_use_view_image_result_with_image_helper(
 
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
             if unified_image_budget {
@@ -4404,7 +4411,7 @@ image(imageItem);
         &server,
         "use exec to call the rmcp image scenario tool and emit its image output",
         code,
-        "gpt-5.4",
+        "gpt-5.5",
     )
     .await?;
 
