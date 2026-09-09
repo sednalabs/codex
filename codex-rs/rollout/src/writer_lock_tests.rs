@@ -7,7 +7,8 @@ use tempfile::TempDir;
 use super::COORDINATION_LOCK_FILE;
 use super::WRITER_LOCK_DIR;
 use super::WriterLockCoordinator;
-use crate::ThreadStoreError;
+use pretty_assertions::assert_eq;
+use std::io::ErrorKind;
 
 #[test]
 fn writer_locks_reject_competing_owners_and_release_their_files() {
@@ -28,7 +29,7 @@ fn writer_locks_reject_competing_owners_and_release_their_files() {
         Ok(_) => panic!("competing owner should fail"),
         Err(err) => err,
     };
-    assert!(matches!(err, ThreadStoreError::Conflict { .. }));
+    assert_eq!(err.kind(), ErrorKind::WouldBlock);
     let other_owner = secondary
         .acquire(other_thread_id)
         .expect("other thread should acquire its own lock");
@@ -74,8 +75,52 @@ fn first_acquisition_removes_stale_locks_without_removing_active_locks() {
         Ok(_) => panic!("active writer should survive cleanup"),
         Err(err) => err,
     };
-    assert!(matches!(err, ThreadStoreError::Conflict { .. }));
+    assert_eq!(err.kind(), ErrorKind::WouldBlock);
 
     drop(secondary_owner);
     drop(active_owner);
+}
+
+#[test]
+fn publication_skips_live_writers_and_keeps_coordination_locked() {
+    let home = TempDir::new().expect("temp dir");
+    let publisher = Arc::new(WriterLockCoordinator::new(home.path()));
+    let writer = Arc::new(WriterLockCoordinator::new(home.path()));
+    let thread_id = ThreadId::default();
+    let owner = writer.acquire(thread_id).expect("writer owns thread");
+    assert!(
+        publisher
+            .try_acquire_for_publication(thread_id)
+            .unwrap()
+            .is_none()
+    );
+    drop(owner);
+
+    let publication = publisher
+        .try_acquire_for_publication(thread_id)
+        .unwrap()
+        .unwrap();
+    let coordination = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(writer.directory.join(COORDINATION_LOCK_FILE))
+        .unwrap();
+    assert!(matches!(
+        coordination.try_lock(),
+        Err(fs::TryLockError::WouldBlock)
+    ));
+    drop(publication);
+    coordination
+        .try_lock()
+        .expect("publication releases coordination");
+    drop(coordination);
+    // An existing but unlocked file is also idle; file existence is not ownership.
+    fs::File::create(writer.directory.join(format!("{thread_id}.lock"))).unwrap();
+    drop(
+        publisher
+            .try_acquire_for_publication(thread_id)
+            .unwrap()
+            .expect("stale lock is idle"),
+    );
+    assert!(writer.acquire(thread_id).is_ok());
 }

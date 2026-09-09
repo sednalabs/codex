@@ -169,7 +169,7 @@ async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<(
     drop(open_log_file(&rollout_path)?);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
 
-    drop(open_rollout_for_append(&rollout_path).await?);
+    drop(open_rollout_for_append(&rollout_path, /*writer_lock*/ None).await?);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
     Ok(())
 }

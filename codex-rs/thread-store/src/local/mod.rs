@@ -22,8 +22,10 @@ mod thread_rollout_resolver;
 mod thread_sections;
 mod unarchive_thread;
 mod update_thread_metadata;
-mod writer_lock;
 
+#[cfg(test)]
+#[path = "compression_writer_tests.rs"]
+mod compression_writer_tests;
 #[cfg(test)]
 #[path = "daybreak_metadata_tests.rs"]
 mod daybreak_metadata_tests;
@@ -37,6 +39,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::StateDbHandle;
+use codex_rollout::WriterLockCoordinator;
 use codex_state::SqliteConfig;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -101,8 +104,6 @@ use crate::TurnPage;
 use crate::UpdateProjectParams;
 use crate::UpdateThreadMetadataParams;
 use crate::UpdatedProject;
-use crate::local::writer_lock::WriterLockCoordinator;
-use crate::local::writer_lock::WriterLockGuard;
 
 pub use rollout_migration::RolloutMigrationFailureReason;
 pub use rollout_migration::RolloutMigrationMode;
@@ -135,6 +136,8 @@ pub struct LocalThreadStore {
     state_db: Option<StateDbHandle>,
     thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,
 }
+
+type WriterLockGuard = Arc<codex_rollout::WriterLockGuard>;
 
 struct LiveRecorderEntry {
     recorder: RolloutRecorder,
@@ -304,6 +307,23 @@ impl LocalThreadStore {
         Ok(())
     }
 
+    fn acquire_writer_lock(&self, thread_id: ThreadId) -> ThreadStoreResult<WriterLockGuard> {
+        self.writer_lock_coordinator
+            .acquire(thread_id)
+            .map(Arc::new)
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::WouldBlock {
+                    ThreadStoreError::Conflict {
+                        message: err.to_string(),
+                    }
+                } else {
+                    ThreadStoreError::Internal {
+                        message: err.to_string(),
+                    }
+                }
+            })
+    }
+
     async fn acquire_writer_locks(
         &self,
         thread_ids: &[ThreadId],
@@ -313,7 +333,7 @@ impl LocalThreadStore {
             if self.live_recorders.lock().await.contains_key(&thread_id) {
                 continue;
             }
-            writer_locks.push(self.writer_lock_coordinator.acquire(thread_id)?);
+            writer_locks.push(self.acquire_writer_lock(thread_id)?);
         }
         Ok(writer_locks)
     }
@@ -1366,6 +1386,20 @@ mod tests {
                 .live_rollout_path(thread_id)
                 .await
                 .expect("load rollout path");
+            {
+                let recorder = store
+                    .live_recorders
+                    .lock()
+                    .await
+                    .get(&thread_id)
+                    .expect("live recorder")
+                    .recorder
+                    .clone();
+                recorder
+                    .record_canonical_items(&[user_message_item("deferred item to discard")])
+                    .await
+                    .expect("queue deferred item without materializing it");
+            }
             assert!(!rollout_path.exists());
 
             let lock_path = home

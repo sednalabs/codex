@@ -1,3 +1,6 @@
+//! Shared cross-process ownership for local thread writers and rollout publication.
+//! Thread lock-file creation and removal uses the existing home coordination lock.
+
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -11,36 +14,34 @@ use std::sync::atomic::Ordering;
 use codex_protocol::ThreadId;
 use tracing::warn;
 
-use crate::ThreadStoreError;
-use crate::ThreadStoreResult;
-
 const WRITER_LOCK_DIR: &str = "thread-writer-locks";
 const COORDINATION_LOCK_FILE: &str = ".coordination.lock";
 
-pub(super) struct WriterLockCoordinator {
+/// Coordinates writer ownership within one Codex home.
+pub struct WriterLockCoordinator {
     directory: PathBuf,
     cleanup_attempted: AtomicBool,
 }
 
-pub(super) struct WriterLockGuard {
+/// Keeps a thread owned until all file work has finished.
+pub struct WriterLockGuard {
     coordinator: Arc<WriterLockCoordinator>,
     path: PathBuf,
     file: Option<File>,
 }
 
 impl WriterLockCoordinator {
-    pub(super) fn new(codex_home: &Path) -> Self {
+    /// Uses the same lock namespace as existing local thread-store writers.
+    pub fn new(codex_home: &Path) -> Self {
         Self {
             directory: codex_home.join(WRITER_LOCK_DIR),
             cleanup_attempted: AtomicBool::new(false),
         }
     }
 
-    pub(super) fn acquire(
-        self: &Arc<Self>,
-        thread_id: ThreadId,
-    ) -> ThreadStoreResult<WriterLockGuard> {
-        let coordination_lock = self.lock_coordination()?;
+    /// Acquires exclusive writer ownership, returning `WouldBlock` for an active writer.
+    pub fn acquire(self: &Arc<Self>, thread_id: ThreadId) -> io::Result<WriterLockGuard> {
+        let _coordination_lock = self.lock_coordination()?;
         if !self.cleanup_attempted.swap(true, Ordering::Relaxed)
             && let Err(err) = self.remove_stale_thread_locks()
         {
@@ -54,31 +55,29 @@ impl WriterLockCoordinator {
             .create(true)
             .truncate(false)
             .open(&path)
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!(
+            .map_err(|err| {
+                io::Error::other(format!(
                     "failed to open thread writer lock {}: {err}",
                     path.display()
-                ),
+                ))
             })?;
 
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(ThreadStoreError::Conflict {
-                    message: format!("thread {thread_id} already has an active writer"),
-                });
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("thread {thread_id} already has an active writer"),
+                ));
             }
             Err(std::fs::TryLockError::Error(err)) => {
-                return Err(ThreadStoreError::Internal {
-                    message: format!(
-                        "failed to acquire thread writer lock {}: {err}",
-                        path.display()
-                    ),
-                });
+                return Err(io::Error::other(format!(
+                    "failed to acquire thread writer lock {}: {err}",
+                    path.display()
+                )));
             }
         }
 
-        drop(coordination_lock);
         Ok(WriterLockGuard {
             coordinator: Arc::clone(self),
             path,
@@ -86,31 +85,38 @@ impl WriterLockCoordinator {
         })
     }
 
-    fn lock_coordination(&self) -> ThreadStoreResult<File> {
-        fs::create_dir_all(&self.directory).map_err(|err| ThreadStoreError::Internal {
-            message: format!(
-                "failed to create thread writer lock directory {}: {err}",
-                self.directory.display()
-            ),
-        })?;
-        let path = self.directory.join(COORDINATION_LOCK_FILE);
+    /// Holds coordination through publication after probing that the thread is idle.
+    /// Every writer takes coordination before opening its thread lock, so the probe
+    /// itself can be released. Encoding and verification must finish before this call.
+    pub(crate) fn try_acquire_for_publication(
+        &self,
+        thread_id: ThreadId,
+    ) -> io::Result<Option<File>> {
+        let coordination_lock = self.lock_coordination()?;
+        let path = self.directory.join(format!("{thread_id}.lock"));
+        match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => match file.try_lock() {
+                Ok(()) => Ok(Some(coordination_lock)),
+                Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                Err(std::fs::TryLockError::Error(err)) => Err(err),
+            },
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(coordination_lock)),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn lock_coordination(&self) -> io::Result<File> {
+        fs::create_dir_all(&self.directory)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!(
-                    "failed to open thread writer coordination lock {}: {err}",
-                    path.display()
-                ),
-            })?;
-        file.lock().map_err(|err| ThreadStoreError::Internal {
-            message: format!(
-                "failed to acquire thread writer coordination lock {}: {err}",
-                path.display()
-            ),
+            .open(self.directory.join(COORDINATION_LOCK_FILE))?;
+        file.lock().map_err(|err| {
+            io::Error::other(format!(
+                "failed to acquire thread writer coordination lock: {err}"
+            ))
         })?;
         Ok(file)
     }

@@ -24,6 +24,7 @@ mod seekable_reader;
 pub(crate) mod session_index;
 mod sqlite_metrics;
 pub mod state_db;
+mod writer_lock;
 
 pub use codex_history::CompactedItem;
 pub use codex_history::InitialHistory;
@@ -104,7 +105,7 @@ pub use seekable_reader::rollout_contains_prefix;
 pub async fn materialize_rollout_for_reference(
     path: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
-    compression::materialize_rollout_for_append(path).await
+    compression::materialize_rollout_for_append(path, /*writer_lock*/ None).await
 }
 pub use config::Config;
 pub use config::RolloutConfig;
@@ -158,6 +159,8 @@ pub use session_index::find_thread_names_by_ids;
 pub use session_index::remove_thread_name_entries;
 pub use state_db::StateDbHandle;
 pub use state_db::sqlite_telemetry_recorder;
+pub use writer_lock::WriterLockCoordinator;
+pub use writer_lock::WriterLockGuard;
 
 #[cfg(test)]
 mod tests;

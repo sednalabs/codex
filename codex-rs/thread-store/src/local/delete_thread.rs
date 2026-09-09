@@ -166,7 +166,7 @@ fn referenced_thread_error(thread_id: codex_protocol::ThreadId) -> ThreadStoreEr
 async fn delete_thread_after_reference_check(
     store: &LocalThreadStore,
     mut thread_rollouts: ThreadRollouts,
-    writer_guards: &mut Vec<super::writer_lock::WriterLockGuard>,
+    writer_guards: &mut Vec<super::WriterLockGuard>,
 ) -> ThreadStoreResult<()> {
     let thread_id = thread_rollouts.thread_id;
     let thread_id_str = thread_id.to_string();
@@ -206,9 +206,17 @@ async fn delete_thread_after_reference_check(
         super::thread_history::delete_thread(store, rollout_id).await?;
     }
 
-    // Drop the recorder before removing files, but retain its writer lock until cleanup finishes.
-    if let Some(entry) = store.live_recorders.lock().await.remove(&thread_id) {
+    // Stop queued file work before removing files, retaining ownership until cleanup finishes.
+    let live_entry = store.live_recorders.lock().await.remove(&thread_id);
+    if let Some(entry) = live_entry {
         writer_guards.push(entry.writer_lock);
+        entry
+            .recorder
+            .discard()
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to stop thread writer before deletion: {err}"),
+            })?;
     }
     let found_rollout_path = !thread_rollouts.paths.is_empty();
     for rollout_path in thread_rollouts.paths {
@@ -546,8 +554,7 @@ mod tests {
             )
             .expect("child session file");
             let _owner_guard = owner
-                .writer_lock_coordinator
-                .acquire(child_thread_id)
+                .acquire_writer_lock(child_thread_id)
                 .expect("acquire child writer lock");
 
             let error = store
@@ -570,8 +577,7 @@ mod tests {
         let owner = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
         let thread_id = ThreadId::default();
         let _owner_guard = owner
-            .writer_lock_coordinator
-            .acquire(thread_id)
+            .acquire_writer_lock(thread_id)
             .expect("acquire writer lock before rollout exists");
 
         let error = store

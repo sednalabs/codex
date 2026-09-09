@@ -3411,8 +3411,10 @@ terminal_visualization_instructions = true
             _ => None,
         })
         .expect("browser should resolve a saved owner");
+    // Archive stops the writer; unarchive leaves a stored thread eligible for compression.
+    server.thread_archive(saved_owner.id).await?;
     let saved_path = server
-        .thread_read(saved_owner.id, /*include_turns*/ false)
+        .thread_unarchive(saved_owner.id)
         .await?
         .path
         .expect("saved rollout path");
