@@ -69,6 +69,7 @@ impl Session {
 
         self.record_annotated_conversation_items(
             step_context.turn.as_ref(),
+            &step_context.settings.model_info,
             vec![ResponseItemEnvelope {
                 item: ResponseItem::ConfigurationUpdate {
                     reasoning: ConfigurationReasoning { effort },

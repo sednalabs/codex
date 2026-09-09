@@ -248,6 +248,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -616,6 +617,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -783,6 +785,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -2129,6 +2132,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
@@ -2434,6 +2438,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -3392,7 +3397,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         );
         session
             .record_conversation_items(
-                turn.as_ref(),
+                turn.as_ref(), turn.model_info(),
                 &[
                     ResponseItem::Message {
                         id: None,
@@ -3468,7 +3473,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         );
         session
             .record_conversation_items(
-                turn.as_ref(),
+                turn.as_ref(), turn.model_info(),
                 &[
                     ResponseItem::Message {
                         id: None,

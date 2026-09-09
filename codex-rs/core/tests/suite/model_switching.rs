@@ -21,6 +21,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -942,14 +943,26 @@ async fn null_service_tier_override_is_omitted_from_http_turn_with_catalog_defau
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum MediaHistorySource {
+    Live,
+    Resume,
+    Fork,
+}
+
+#[test_case(MediaHistorySource::Live; "live history")]
+#[test_case(MediaHistorySource::Resume; "resumed history")]
+#[test_case(MediaHistorySource::Fork; "forked history")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Result<()> {
+async fn model_change_projects_media_without_changing_live_or_replayed_history(
+    source: MediaHistorySource,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
     let multimodal_model_slug = "test-multimodal-model";
     let text_model_slug = "test-text-only-model";
-    let multimodal_model = test_model_info(
+    let mut multimodal_model = test_model_info(
         multimodal_model_slug,
         "Test Multimodal Model",
         "supports image and audio input",
@@ -959,6 +972,7 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             InputModality::Audio,
         ],
     );
+    multimodal_model.supports_image_detail_original = true;
     let text_model = test_model_info(
         text_model_slug,
         "Test Text Model",
@@ -982,9 +996,13 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config.model = Some(multimodal_model_slug.to_string());
+            config.model = Some(text_model_slug.to_string());
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
     let models_manager = test.thread_manager.get_models_manager();
     let _ = models_manager
         .list_models(
@@ -992,8 +1010,10 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             codex_core::test_support::default_http_client_factory(),
         )
         .await;
-    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
-        .to_string();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(/*w*/ 2048, /*h*/ 2048)
+        .write_to(&mut png, image::ImageFormat::Png)?;
+    let image_url = codex_utils_image::data_url_from_bytes("image/png", &png.into_inner());
 
     test.codex
         .start_or_steer_turn(read_only_user_turn(
@@ -1069,6 +1089,60 @@ async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Re
             .any(|text| text == "audio content omitted because you do not support audio input"),
         "second request should include the audio-omitted placeholder text"
     );
+
+    let original = first_request
+        .inputs_of_type("message")
+        .into_iter()
+        .find(|item| {
+            item["content"]
+                .as_array()
+                .is_some_and(|content| content.iter().any(|part| part["type"] == "input_image"))
+        })
+        .expect("original media message");
+    if !matches!(source, MediaHistorySource::Live) {
+        test.codex.shutdown_and_wait().await?;
+    }
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+    let thread = match source {
+        MediaHistorySource::Live => Arc::clone(&test.codex),
+        MediaHistorySource::Resume => {
+            test.thread_manager
+                .resume_thread_from_rollout(
+                    test.config.clone(),
+                    rollout_path,
+                    test.thread_manager.auth_manager(),
+                    /*parent_trace*/ None,
+                    ClientMcpExtensions::default(),
+                )
+                .await?
+                .thread
+        }
+        MediaHistorySource::Fork => {
+            test.thread_manager
+                .fork_thread(
+                    ForkSnapshot::Interrupted,
+                    codex_core::StartThreadOptions::new(test.config.clone()),
+                    rollout_path,
+                )
+                .await?
+                .thread
+        }
+    };
+    let response = mount_sse_once(&server, sse_completed("resp-restored")).await;
+    submit_model_turn(
+        &thread,
+        multimodal_model_slug,
+        ThreadSettingsOverrides::default(),
+    )
+    .await?;
+    let restored = response
+        .single_request()
+        .inputs_of_type("message")
+        .into_iter()
+        .find(|item| item["id"] == original["id"]);
+    // Preserve the prepared media, item ID, turn ID, and creation timestamp together.
+    assert_eq!(restored.as_ref(), Some(&original));
+    thread.shutdown_and_wait().await?;
     Ok(())
 }
 

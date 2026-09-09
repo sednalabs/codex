@@ -1,6 +1,9 @@
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_config::McpServerConfig;
 use codex_core::CodexThread;
+use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
@@ -14,6 +17,7 @@ use codex_extension_api::PromptFragment;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::TurnContextContributionInput;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::manager::RefreshStrategy;
@@ -21,7 +25,12 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolResponse;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ApprovalMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
@@ -60,6 +69,9 @@ use codex_tools::ToolExecutorFuture;
 use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
+use codex_utils_image::data_url_from_bytes;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::truncate_text;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::recorded_apps_tool_calls;
 use core_test_support::responses::ResponsesRequest;
@@ -84,6 +96,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_mcp_server;
+use image::GenericImageView;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -269,6 +282,180 @@ fn request_turn_id(request: &ResponsesRequest) -> String {
         .as_str()
         .expect("request should include turn_id")
         .to_string()
+}
+
+// Dynamic tools return the original payload, so handler truncation cannot hide a recorder bug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_result_history_keeps_originating_model_across_switch() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mut test = step_settings_test()
+        .with_config(|config| {
+            for model in &mut config.model_catalog.as_mut().expect("models").models {
+                model.truncation_policy =
+                    TruncationPolicyConfig::tokens(if model.slug == MODEL_B { 400 } else { 100 });
+                model.supports_image_detail_original = model.slug == MODEL_B;
+                model.use_responses_lite = false;
+            }
+            config
+                .features
+                .enable(Feature::UnifiedImageBudget)
+                .expect("enable unified image budget");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let started = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: "diagnostics".to_string(),
+                description: "Returns diagnostic text and a screenshot.".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            })],
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    test.codex = started.thread;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-a"),
+                ev_function_call("call-a", "diagnostics", "{}"),
+                ev_completed("resp-a"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-b"),
+                ev_function_call("call-b", "diagnostics", "{}"),
+                ev_completed("resp-b"),
+            ]),
+            sse_completed("resp-done"),
+        ],
+    )
+    .await;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(/*w*/ 2048, /*h*/ 2048)
+        .write_to(&mut png, image::ImageFormat::Png)?;
+    let text = "diagnostic line\n".repeat(500);
+    let response = DynamicToolResponse {
+        content_items: vec![
+            DynamicToolCallOutputContentItem::InputText { text: text.clone() },
+            DynamicToolCallOutputContentItem::InputImage {
+                image_url: data_url_from_bytes("image/png", &png.into_inner()),
+            },
+        ],
+        success: true,
+    };
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "collect diagnostics".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut raw_outputs = Vec::new();
+    for call_id in ["call-a", "call-b"] {
+        let call = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(call.call_id, call_id);
+        if call_id == "call-a" {
+            // Apply B while A's result is pending in the same turn.
+            assert_eq!(
+                submit_turn_settings(
+                    &test.codex,
+                    &call.turn_id,
+                    TurnSettingsUpdate {
+                        model: Some(MODEL_B.to_string()),
+                        ..Default::default()
+                    },
+                )
+                .await?,
+                TurnSettingsUpdateOutcome::Applied
+            );
+        }
+        test.codex
+            .submit(Op::DynamicToolResponse {
+                id: call.call_id,
+                response: response.clone(),
+            })
+            .await?;
+        raw_outputs.push(
+            wait_for_event_match(&test.codex, |event| match event {
+                EventMsg::RawResponseItem(event)
+                    if matches!(&event.item, ResponseItem::FunctionCallOutput { .. }) =>
+                {
+                    Some(serde_json::to_value(&event.item).expect("raw output"))
+                }
+                _ => None,
+            })
+            .await,
+        );
+    }
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json()["model"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(MODEL_A), json!(MODEL_B), json!(MODEL_B)]
+    );
+    let turn_id = request_turn_id(&requests[0]);
+    for request in &requests[1..] {
+        assert_eq!(request_turn_id(request), turn_id);
+    }
+    for (index, (call_id, limit, dimensions)) in
+        [("call-a", 100, (1600, 1600)), ("call-b", 400, (2048, 2048))]
+            .into_iter()
+            .enumerate()
+    {
+        let raw = &raw_outputs[index];
+        assert_eq!(raw["output"][0]["text"], text);
+        assert!(raw["id"].is_string());
+        assert!(raw["internal_chat_message_metadata_passthrough"]["create_time"].is_number());
+        let url = raw["output"][1]["image_url"].as_str().expect("tool image");
+        let (_, data) = url.split_once(',').expect("image data URL");
+        assert_eq!(
+            image::load_from_memory(&BASE64_STANDARD.decode(data)?)?.dimensions(),
+            dimensions
+        );
+        let mut expected = raw.clone();
+        expected["output"][0]["text"] =
+            json!(truncate_text(&text, TruncationPolicy::Tokens(limit) * 1.2));
+        assert_eq!(requests[2].function_call_output(call_id), expected);
+    }
+    assert_eq!(
+        requests[1].function_call_output("call-a"),
+        requests[2].function_call_output("call-a")
+    );
+
+    // Persistence and raw notifications retain the prepared, untruncated payload in append order.
+    test.codex.shutdown_and_wait().await?;
+    let history = codex_rollout::RolloutRecorder::get_rollout_history(
+        &test.codex.rollout_path().expect("rollout path"),
+    )
+    .await?;
+    let saved_outputs = history
+        .get_rollout_items()
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope)
+                if matches!(&envelope.item, ResponseItem::FunctionCallOutput { .. }) =>
+            {
+                Some(serde_json::to_value(&envelope.item).expect("saved output"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(saved_outputs, raw_outputs);
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

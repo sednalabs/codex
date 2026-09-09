@@ -355,6 +355,7 @@ async fn default_turn_context_assigns_missing_response_item_ids() {
 
     let (items, _) = session.prepare_conversation_items_for_history(
         &turn_context,
+        turn_context.model_info(),
         std::slice::from_ref(&response_item),
     );
 
@@ -2275,7 +2276,11 @@ async fn record_conversation_items_stamps_missing_turn_id_and_preserves_existing
     existing_item.set_turn_id_if_missing("older-turn");
 
     session
-        .record_conversation_items(&turn_context, &[fresh_item.clone(), existing_item.clone()])
+        .record_conversation_items(
+            &turn_context,
+            turn_context.model_info(),
+            &[fresh_item.clone(), existing_item.clone()],
+        )
         .await;
 
     let history = session.clone_history().await;
@@ -2308,7 +2313,11 @@ async fn record_response_item_and_emit_turn_item_emits_hook_prompt_lifecycle() {
     let response_item_id = response_item.id().expect("hook prompt id").to_string();
 
     session
-        .record_response_item_and_emit_turn_item(&turn_context, response_item)
+        .record_response_item_and_emit_turn_item(
+            &turn_context,
+            turn_context.model_info(),
+            response_item,
+        )
         .await;
 
     let raw_response = rx.recv().await.expect("raw response item event");
@@ -2391,7 +2400,7 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     expected_item.set_turn_id_if_missing(&turn_context.sub_id);
 
     session
-        .record_inter_agent_communication(&turn_context, communication)
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
         .await;
 
     let recorded_history = session.clone_history().await;
@@ -2468,7 +2477,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 
     session
-        .record_inter_agent_communication(&turn_context, communication)
+        .record_inter_agent_communication(&turn_context, turn_context.model_info(), communication)
         .await;
 
     let live_history = session.clone_history().await;
@@ -2523,6 +2532,58 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     );
 }
 
+#[test_case::test_case(false; "plain items")]
+#[test_case::test_case(true; "annotated items")]
+#[tokio::test]
+async fn annotated_history_uses_explicit_model_without_a_step(retain_metadata: bool) {
+    let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config
+                .features
+                .enable(Feature::RetainClientDeveloperMessages)
+                .unwrap();
+        },
+    )
+    .await;
+    let mut model_info = turn_context.model_info().as_ref().clone();
+    model_info.truncation_policy =
+        codex_protocol::openai_models::TruncationPolicyConfig::tokens(/*limit*/ 4);
+    let text = "diagnostic line\n".repeat(50);
+    let mut item = ResponseItem::FunctionCallOutput {
+        id: Some(ResponseItemId::with_suffix("fco", "existing")),
+        call_id: Some("call-1".to_string()),
+        name: None,
+        namespace: None,
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(text.clone()),
+            success: Some(true),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    item.set_turn_id_if_missing("existing-turn");
+    item.set_create_time_if_missing(123.into());
+    let mut expected = ResponseItemEnvelope {
+        item,
+        metadata: retain_metadata.then_some(CodexHarnessMetadata {
+            client_authored: true,
+            ..Default::default()
+        }),
+    };
+    session
+        .record_annotated_conversation_items(&turn_context, &model_info, vec![expected.clone()])
+        .await;
+    let ResponseItem::FunctionCallOutput { output, .. } = &mut expected.item else {
+        unreachable!("fixture is a tool output");
+    };
+    output.body = FunctionCallOutputBody::Text(codex_utils_output_truncation::truncate_text(
+        &text,
+        codex_utils_output_truncation::TruncationPolicy::Tokens(4) * 1.2,
+    ));
+    assert_eq!(session.clone_history().await.annotated_items(), &[expected]);
+}
+
 #[tokio::test]
 async fn prepares_image_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
@@ -2556,7 +2617,11 @@ async fn prepares_image_failures_before_history_insertion() {
     };
 
     session
-        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&item))
+        .record_conversation_items(
+            turn_context.as_ref(),
+            turn_context.model_info(),
+            std::slice::from_ref(&item),
+        )
         .await;
 
     let history = session.state.lock().await.clone_history();
@@ -2948,7 +3013,11 @@ async fn recompute_token_usage_uses_session_base_instructions() {
 
     let item = user_message("hello");
     session
-        .record_conversation_items(&turn_context, std::slice::from_ref(&item))
+        .record_conversation_items(
+            &turn_context,
+            turn_context.model_info(),
+            std::slice::from_ref(&item),
+        )
         .await;
 
     let history = session.clone_history().await;
@@ -3956,7 +4025,7 @@ async fn thread_rollback_fails_without_persisted_thread_history() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
     let initial_context = build_initial_context(&sess, &tc).await;
-    sess.record_conversation_items(tc.as_ref(), &initial_context)
+    sess.record_conversation_items(tc.as_ref(), tc.model_info(), &initial_context)
         .await;
     let history_before_rollback = sess.clone_history().await;
 
@@ -4400,7 +4469,7 @@ async fn thread_rollback_fails_when_turn_in_progress() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
     let initial_context = build_initial_context(&sess, &tc).await;
-    sess.record_conversation_items(tc.as_ref(), &initial_context)
+    sess.record_conversation_items(tc.as_ref(), tc.model_info(), &initial_context)
         .await;
     let history_before_rollback = sess.clone_history().await;
 
@@ -4425,7 +4494,7 @@ async fn thread_rollback_fails_when_num_turns_is_zero() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
 
     let initial_context = build_initial_context(&sess, &tc).await;
-    sess.record_conversation_items(tc.as_ref(), &initial_context)
+    sess.record_conversation_items(tc.as_ref(), tc.model_info(), &initial_context)
         .await;
     let history_before_rollback = sess.clone_history().await;
 
@@ -10658,7 +10727,11 @@ async fn record_context_updates_and_set_reference_context_item_reinjects_full_co
         internal_chat_message_metadata_passthrough: None,
     };
     session
-        .record_conversation_items(&turn_context, std::slice::from_ref(&compacted_summary))
+        .record_conversation_items(
+            &turn_context,
+            turn_context.model_info(),
+            std::slice::from_ref(&compacted_summary),
+        )
         .await;
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
@@ -11414,7 +11487,11 @@ async fn legacy_compaction_retains_only_the_selected_step(first_attempt: FirstAt
     let server = responses::start_mock_server().await;
     let (session, turn, events) = make_remote_compaction_session(&server.uri()).await;
     session
-        .record_conversation_items(&turn, &[user_message("before compaction")])
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            &[user_message("before compaction")],
+        )
         .await;
     session
         .spawn_task(
@@ -11535,7 +11612,11 @@ async fn interrupting_compaction_fallback_retains_last_known_step_context() {
         }))
         .await;
     session
-        .record_conversation_items(&turn, &[user_message("before compaction")])
+        .record_conversation_items(
+            &turn,
+            turn.model_info(),
+            &[user_message("before compaction")],
+        )
         .await;
     session
         .spawn_task(turn, Vec::new(), crate::tasks::RegularTask::new())
@@ -11870,7 +11951,22 @@ async fn submit_steer_only(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input() {
-    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let (sess, mut tc, rx) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            config.features.enable(Feature::UnifiedImageBudget).unwrap();
+        },
+    )
+    .await;
+    update_turn_settings_for_test(
+        Arc::get_mut(&mut tc).expect("unshared context"),
+        |settings| {
+            let model = Arc::make_mut(&mut settings.model_info);
+            model.use_responses_lite = false;
+            model.supports_image_detail_original = false;
+        },
+    );
     let input = vec![TurnInput::UserInput {
         acceptance_order: None,
         content: vec![UserInput::Text {
@@ -11891,16 +11987,31 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
 
     while rx.try_recv().is_ok() {}
 
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(/*w*/ 8, /*h*/ 8)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .expect("encode image");
+    let image_url = codex_utils_image::data_url_from_bytes("image/png", &encoded.into_inner());
     let text_element = codex_protocol::user_input::TextElement::new(
         codex_protocol::user_input::ByteRange { start: 5, end: 12 },
         Some("pending marker".to_string()),
     );
-    let pending_user_input = vec![UserInput::Text {
-        text: "late pending input".to_string(),
-        text_elements: vec![text_element.clone()],
-    }];
+    let pending_user_input = vec![
+        UserInput::Text {
+            text: "late pending input".to_string(),
+            text_elements: vec![text_element.clone()],
+        },
+        UserInput::Image {
+            image_url: image_url.clone(),
+            detail: Some(ImageDetail::High),
+        },
+    ];
     let submission = submit_steer_only(&sess, pending_user_input.clone(), &tc.sub_id).await;
     assert!(matches!(submission, TurnInputSubmission::Steered { .. }));
+
+    let mut current = tc.initial_settings.as_ref().clone();
+    Arc::make_mut(&mut current.model_info).supports_image_detail_original = true;
+    tc.current_settings.store(Arc::new(current));
 
     sess.on_task_finished(Arc::clone(&tc), /*task_result*/ Ok(None))
         .await;
@@ -11909,16 +12020,22 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     let expected = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: "late pending input".to_string(),
-        }],
+        content: vec![
+            ContentItem::InputText {
+                text: "late pending input".to_string(),
+            },
+            ContentItem::InputImage {
+                image_url: image_url.clone(),
+                detail: Some(ImageDetail::Original),
+            },
+        ],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
     assert!(
         strip_response_item_ids(&strip_metadata_from_items(&raw_history_items(&history)))
             .contains(&expected),
-        "expected pending input to be persisted into history on turn completion"
+        "expected pending input to use the current model's image rules on turn completion"
     );
 
     let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -11965,7 +12082,7 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
             local_images,
             ..
         }) if message == "late pending input"
-            && images == Some(Vec::new())
+            && images == Some(vec![image_url])
             && text_elements == vec![text_element]
             && local_images.is_empty()
     ));
@@ -12427,7 +12544,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     };
     let mut ctx = HandleOutputCtx {
         sess: Arc::clone(&sess),
-        turn_context: Arc::clone(&tc),
+        step_context: StepContext::for_test(Arc::clone(&tc)),
         turn_store: Arc::new(codex_extension_api::ExtensionData::new(tc.sub_id.clone())),
         tool_runtime: test_tool_runtime(Arc::clone(&sess), Arc::clone(&tc)),
         cancellation_token: CancellationToken::new(),

@@ -49,7 +49,9 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
         "type": "function_call_output", "call_id": "prior-inspection", "output": EVIDENCE
     }))
     .unwrap();
-    parent.record_conversation_items(&turn, &[evidence]).await;
+    parent
+        .record_conversation_items(&turn, turn.model_info(), &[evidence])
+        .await;
     params.parent_history = parent.clone_history().await;
 
     // An idle, prewarmed reviewer is a normal manager state.

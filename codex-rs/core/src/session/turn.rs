@@ -93,6 +93,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
@@ -186,8 +187,14 @@ pub(crate) async fn run_turn(
     .await
     {
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                .await;
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
+            .await;
             return Err(err);
         }
         if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
@@ -217,8 +224,14 @@ pub(crate) async fn run_turn(
         {
             Ok(requirements) => requirements,
             Err(err) => {
-                run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                    .await;
+                run_hooks_and_record_inputs(
+                    &sess,
+                    &turn_context,
+                    &turn_context.capture_current_model_info(),
+                    &input,
+                    PersistContext::Standard,
+                )
+                .await;
                 return Err(err.into());
             }
         };
@@ -239,8 +252,14 @@ pub(crate) async fn run_turn(
     {
         Ok(step_context) => step_context,
         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                .await;
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
+            .await;
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -288,7 +307,15 @@ pub(crate) async fn run_turn(
         return Ok(None);
     }
     let mut can_drain_pending_input = input.is_empty();
-    if run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::TurnStart).await {
+    if run_hooks_and_record_inputs(
+        &sess,
+        &turn_context,
+        &first_step_context.settings.model_info,
+        &input,
+        PersistContext::TurnStart,
+    )
+    .await
+    {
         return Ok(None);
     }
 
@@ -310,8 +337,12 @@ pub(crate) async fn run_turn(
     }))
     .await;
     for response_item in injection_items {
-        sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
-            .await;
+        sess.record_conversation_items(
+            &turn_context,
+            &first_step_context.settings.model_info,
+            std::slice::from_ref(&response_item),
+        )
+        .await;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -348,6 +379,7 @@ pub(crate) async fn run_turn(
         if run_hooks_and_record_inputs(
             &sess,
             &turn_context,
+            &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::Standard,
         )
@@ -574,6 +606,7 @@ pub(crate) async fn run_turn(
                         {
                             sess.record_response_item_and_emit_turn_item(
                                 &turn_context,
+                                &step_context.settings.model_info,
                                 hook_prompt_message,
                             )
                             .await;
@@ -684,6 +717,7 @@ async fn turn_diff_display_roots(step_context: &StepContext) -> Vec<(String, Pat
 pub(crate) async fn run_hooks_and_record_inputs(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
@@ -701,6 +735,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
             record_pending_input(
                 sess,
                 turn_context,
+                model_info,
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 persist_context,
@@ -2175,13 +2210,14 @@ async fn emit_turn_item_in_plan_mode(
 /// Handle a completed assistant response item in plan mode, returning true if handled.
 async fn handle_assistant_item_done_in_plan_mode(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     turn_store: &codex_extension_api::ExtensionData,
     item: &ResponseItem,
     state: &mut PlanModeStreamState,
     previously_active_item: Option<&TurnItem>,
     last_agent_message: &mut Option<String>,
 ) -> bool {
+    let turn_context = &step_context.turn;
     if let ResponseItem::Message { role, .. } = item
         && role == "assistant"
     {
@@ -2212,7 +2248,7 @@ async fn handle_assistant_item_done_in_plan_mode(
 
         record_completed_response_item_with_finalized_facts(
             sess,
-            turn_context,
+            step_context,
             item,
             finalized_facts.as_ref(),
         )
@@ -2229,8 +2265,9 @@ async fn handle_assistant_item_done_in_plan_mode(
 async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<InFlightFuture<'static>>,
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    step_context: &StepContext,
 ) -> CodexResult<()> {
+    let turn_context = &step_context.turn;
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(envelope) => {
@@ -2240,8 +2277,12 @@ async fn drain_in_flight(
                     &envelope.item,
                 )
                 .await;
-                sess.record_annotated_conversation_items(&turn_context, vec![envelope])
-                    .await;
+                sess.record_annotated_conversation_items(
+                    turn_context,
+                    &step_context.settings.model_info,
+                    vec![envelope],
+                )
+                .await;
             }
             Err(err) => {
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));
@@ -2449,7 +2490,7 @@ async fn try_run_sampling_request(
                 if let Some(state) = plan_mode_state.as_mut()
                     && handle_assistant_item_done_in_plan_mode(
                         &sess,
-                        &turn_context,
+                        &step_context,
                         turn_store.as_ref(),
                         &item,
                         state,
@@ -2463,7 +2504,7 @@ async fn try_run_sampling_request(
 
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
-                    turn_context: turn_context.clone(),
+                    step_context: Arc::clone(&step_context),
                     turn_store: Arc::clone(&turn_store),
                     tool_runtime: tool_runtime.clone(),
                     cancellation_token: cancellation_token.child_token(),
@@ -2858,7 +2899,7 @@ async fn try_run_sampling_request(
     } else {
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
-    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    drain_in_flight(&mut in_flight, sess.clone(), &step_context).await?;
     drop(tool_blocking_timing_guard);
 
     if should_emit_token_count {
