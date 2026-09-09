@@ -759,6 +759,10 @@ impl MessageProcessor {
         self.thread_processor.thread_created_receiver()
     }
 
+    pub(crate) async fn persist_daemon_threads(&self) {
+        self.thread_processor.persist_daemon_threads().await
+    }
+
     pub(crate) async fn send_initialize_notifications_to_connection(
         &self,
         connection_id: ConnectionId,
@@ -951,7 +955,11 @@ impl MessageProcessor {
             | ClientRequest::ThreadFork { .. }
             | ClientRequest::ThreadResume { .. }
             | ClientRequest::ThreadRollback { .. }
-            | ClientRequest::ThreadRevert { .. } => (Some(self.turn_admission.admit()?), false),
+            | ClientRequest::ThreadRevert { .. }
+            | ClientRequest::ThreadSettingsUpdate { .. }
+            | ClientRequest::TurnSettingsUpdate { .. }
+            | ClientRequest::ThreadDelete { .. }
+            | ClientRequest::ThreadArchive { .. } => (Some(self.turn_admission.admit()?), false),
             ClientRequest::TurnStart { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }

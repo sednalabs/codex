@@ -25,6 +25,7 @@ mod connection_handling_websocket_unix;
 mod curated_mcp_sync;
 mod current_time;
 mod cyber_access_program;
+mod daemon_update_recovery;
 mod daybreak_access;
 mod dynamic_tools;
 mod environment_add;
