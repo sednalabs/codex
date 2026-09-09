@@ -29,8 +29,11 @@ use crate::transport::remote_control::enroll::preview_remote_control_response_bo
 use crate::transport::remote_control::enroll::update_persisted_remote_control_enrollment;
 use crate::transport::remote_control::host_device::REMOTE_CONTROL_HOST_DEVICE_KIND_HEADER;
 use crate::transport::remote_control::host_device::host_device_kind;
+use crate::transport::remote_control::server_api::RemoteControlServerRequestError;
 use crate::transport::remote_control::server_api::enroll_remote_control_server;
 use crate::transport::remote_control::server_api::refresh_remote_control_server;
+use crate::transport::remote_control::server_api::remote_control_retry_delay;
+use crate::transport::remote_control::server_api::retry_after_with_jitter;
 use axum::http::HeaderValue;
 use base64::Engine;
 use codex_app_server_protocol::RemoteControlConnectionStatus;
@@ -776,14 +779,20 @@ impl RemoteControlWebsocket {
                     if !self.desired_state_rx.borrow().is_enabled() {
                         return ConnectOutcome::Disabled;
                     }
+                    let server_retry_delay = remote_control_retry_delay(&err);
                     let reconnect_delay = if err.kind() == ErrorKind::WouldBlock {
-                        REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL
+                        server_retry_delay
+                            .map_or(REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL, |delay| {
+                                REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL.max(delay)
+                            })
                     } else {
                         self.status_publisher
                             .publish_status(RemoteControlConnectionStatus::Errored);
                         let reconnect_attempt = self.reconnect_attempt.saturating_add(1);
                         let (reconnect_delay, reconnect_backoff_reset) =
                             next_reconnect_delay(&mut self.reconnect_attempt);
+                        let reconnect_delay = server_retry_delay
+                            .map_or(reconnect_delay, |delay| reconnect_delay.max(delay));
                         let enrollment = self.current_enrollment.snapshot();
                         warn!(
                             websocket_url = %remote_control_target.websocket_url,
@@ -816,7 +825,8 @@ impl RemoteControlWebsocket {
                             }
                             return ConnectOutcome::Disabled;
                         }
-                        changed = self.auth_change_rx.changed() => {
+                        // Auth changes may shorten local backoff after the server deadline.
+                        changed = wait_for_auth_change(&mut self.auth_change_rx, server_retry_delay) => {
                             if changed.is_err() {
                                 return ConnectOutcome::Shutdown;
                             }
@@ -1309,6 +1319,16 @@ async fn build_remote_control_websocket_request(
     Ok(request)
 }
 
+async fn wait_for_auth_change(
+    auth_change_rx: &mut watch::Receiver<u64>,
+    server_retry_delay: Option<std::time::Duration>,
+) -> Result<(), watch::error::RecvError> {
+    if let Some(delay) = server_retry_delay {
+        tokio::time::sleep(delay).await;
+    }
+    auth_change_rx.changed().await
+}
+
 fn next_reconnect_delay(reconnect_attempt: &mut u64) -> (std::time::Duration, bool) {
     let reconnect_delay = backoff(*reconnect_attempt).min(REMOTE_CONTROL_RECONNECT_BACKOFF_CAP);
     let reconnect_backoff_reset = reconnect_delay == REMOTE_CONTROL_RECONNECT_BACKOFF_CAP;
@@ -1334,17 +1354,18 @@ pub(super) async fn connect_remote_control_websocket(
     ensure_rustls_crypto_provider();
 
     let (auth, enrollment) = {
-        let mut current_enrollment = current_enrollment.lock().await;
-        let auth = prepare_remote_control_enrollment(
+        let mut lease = current_enrollment.lock_for_request().await?;
+        let auth_result = prepare_remote_control_enrollment(
             remote_control_target,
             state_db,
             &mut auth_context,
-            &mut current_enrollment,
+            &mut lease,
             connect_options,
             status_publisher,
         )
-        .await?;
-        let enrollment = current_enrollment.as_ref().cloned().ok_or_else(|| {
+        .await;
+        let auth = current_enrollment.record_retry_after(auth_result)?;
+        let enrollment = lease.as_ref().cloned().ok_or_else(|| {
             io::Error::other("missing remote control enrollment after enrollment step")
         })?;
         (auth, enrollment)
@@ -1357,6 +1378,7 @@ pub(super) async fn connect_remote_control_websocket(
     )
     .await?;
 
+    current_enrollment.check_retry_after()?;
     let websocket_connect_result = tokio::time::timeout(
         REMOTE_CONTROL_WEBSOCKET_CONNECT_TIMEOUT,
         connect_async(request),
@@ -1416,6 +1438,24 @@ pub(super) async fn connect_remote_control_websocket(
                         response_body = %response_body,
                         "remote control websocket returned unrecognized HTTP 404; preserving enrollment before retry"
                     );
+                }
+                tungstenite::Error::Http(response)
+                    if matches!(response.status().as_u16(), 429 | 503) =>
+                {
+                    return current_enrollment.record_retry_after(Err(
+                        RemoteControlServerRequestError::io_error(
+                            format_remote_control_websocket_connect_error(
+                                &remote_control_target.websocket_url,
+                                &err,
+                            ),
+                            Some(response.status()),
+                            retry_after_with_jitter(
+                                response.headers(),
+                                time::OffsetDateTime::now_utc(),
+                            ),
+                            /*timed_out*/ false,
+                        ),
+                    ));
                 }
                 tungstenite::Error::Http(response)
                     if matches!(response.status().as_u16(), 401 | 403) =>
@@ -1669,23 +1709,24 @@ async fn replace_remote_control_enrollment_if_matches(
             "remote control requires sqlite state db",
         ));
     };
-    let mut current_enrollment = current_enrollment.lock().await;
-    if !current_enrollment
+    let mut lease = current_enrollment.lock_for_request().await?;
+    if !lease
         .as_ref()
         .is_some_and(|current| same_remote_control_enrollment(current, enrollment))
     {
         return Ok(());
     }
-    enroll_and_persist_remote_control_server(
+    let result = enroll_and_persist_remote_control_server(
         remote_control_target,
         state_db,
         auth_context,
-        &mut current_enrollment,
+        &mut lease,
         connect_options,
         status_publisher,
         RemoteControlEnrollmentSelection::ReplaceExisting,
     )
-    .await
+    .await;
+    current_enrollment.record_retry_after(result)
 }
 
 async fn clear_remote_control_server_token_if_matches(
@@ -1893,6 +1934,26 @@ mod tests {
         Arc::new(RemoteControlEnrollmentState::new(enrollment))
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn queued_auth_change_waits_for_server_delay() {
+        let (auth_change_tx, mut auth_change_rx) = watch::channel(0);
+        auth_change_tx.send_replace(1);
+        let started = tokio::time::Instant::now();
+        let auth_change = wait_for_auth_change(&mut auth_change_rx, Some(Duration::from_secs(5)));
+        tokio::pin!(auth_change);
+
+        assert!(
+            timeout(Duration::from_secs(4), auth_change.as_mut())
+                .await
+                .is_err()
+        );
+        timeout(Duration::from_secs(2), auth_change)
+            .await
+            .expect("queued credentials should be usable as soon as the server delay expires")
+            .expect("auth watch should remain open");
+        assert_eq!(started.elapsed(), Duration::from_secs(5));
+    }
+
     #[test]
     fn next_reconnect_delay_resets_after_cap() {
         let mut reconnect_attempt = 9;
@@ -2024,7 +2085,7 @@ mod tests {
         format!("http://{addr}/backend-api/")
     }
 
-    fn remote_control_auth_dot_json(access_token: &str) -> AuthDotJson {
+    pub(super) fn remote_control_auth_dot_json(access_token: &str) -> AuthDotJson {
         #[derive(serde::Serialize)]
         struct Header {
             alg: &'static str,
