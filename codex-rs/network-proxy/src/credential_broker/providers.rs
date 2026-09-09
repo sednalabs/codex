@@ -16,6 +16,10 @@ type TranslateRequestHeader = fn(&HeaderMap, &str, &str) -> Option<HeaderValue>;
 /// identities when deduplicating credential records.
 pub(super) struct CredentialProvider {
     pub(super) context_env_vars: &'static [&'static str],
+    pub(super) credential_prefixes: &'static [&'static str],
+    pub(super) ignored_credential_prefixes: &'static [&'static str],
+    pub(super) credential_watermark: Option<&'static str>,
+    pub(super) minimum_credential_len: usize,
     sources: &'static [CredentialSource],
     pub(super) reset_on_configuration_change: bool,
     dummy_value: fn(&str) -> String,

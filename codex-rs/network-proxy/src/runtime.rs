@@ -477,6 +477,10 @@ impl NetworkProxyState {
         self.credential_broker.virtualize_text(text, env)
     }
 
+    pub(crate) fn restore_brokered_text(&self, text: &mut String) -> bool {
+        self.credential_broker.restore_text(text)
+    }
+
     pub fn inject_request_credentials(&self, host: &str, headers: &mut rama_http::HeaderMap) {
         self.credential_broker.inject_request_headers(host, headers);
     }

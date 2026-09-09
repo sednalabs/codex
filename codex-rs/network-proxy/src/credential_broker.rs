@@ -1,3 +1,4 @@
+mod matching;
 mod providers;
 
 use crate::config::NetworkProxyConfig;
@@ -22,7 +23,13 @@ struct CredentialBrokerState {
     enabled: bool,
     openai_api_host: Option<String>,
     credentials: Vec<CredentialRecord>,
+    credential_owners: Vec<CredentialOwner>,
     credential_aliases: Vec<CredentialAlias>,
+}
+
+struct CredentialOwner {
+    env_var: String,
+    real_value: String,
 }
 
 struct CredentialRecord {
@@ -91,6 +98,7 @@ impl CredentialBroker {
         if state.enabled != config.credential_broker {
             state.enabled = config.credential_broker;
             state.credentials.clear();
+            state.credential_owners.clear();
             state.credential_aliases.clear();
         }
         if state.openai_api_host != config.credential_broker_openai_host {
@@ -116,6 +124,7 @@ impl CredentialBroker {
         if !state.enabled {
             return;
         }
+        state.observe_credential_owners(parent_env);
 
         for provider in providers::credential_providers() {
             for source in provider.sources() {
@@ -154,6 +163,7 @@ impl CredentialBroker {
             return;
         }
         set_env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY, "1".to_string());
+        state.observe_credential_owners(env);
 
         for provider in providers::credential_providers() {
             for source in provider.sources() {
@@ -164,6 +174,71 @@ impl CredentialBroker {
                 };
                 for env_var in source.env_vars {
                     virtualize_env_var(env, &mut state, env_var, provider, host_binding.clone());
+                }
+            }
+        }
+        for provider in providers::credential_providers() {
+            let Some((source, host_binding)) = provider.sources().iter().rev().find_map(|source| {
+                (source.host_binding)(env, state.openai_api_host.as_deref())
+                    .map(|binding| (source, binding))
+            }) else {
+                continue;
+            };
+            for (key, value) in env.iter() {
+                if key.eq_ignore_ascii_case("PATH") || key.to_ascii_uppercase().ends_with("_PATH") {
+                    continue;
+                }
+                for prefix in provider.credential_prefixes {
+                    for (start, _) in value.match_indices(prefix) {
+                        let credential =
+                            matching::builtin_credential_candidate(provider, value, start);
+                        if credential.len() < provider.minimum_credential_len
+                            || matching::is_operational_path_match(
+                                value,
+                                start,
+                                start + credential.len(),
+                            )
+                            || provider.ignored_credential_prefixes.iter().any(|ignored| {
+                                credential.starts_with(ignored)
+                                    && provider
+                                        .credential_watermark
+                                        .is_none_or(|watermark| !credential.contains(watermark))
+                            })
+                            || state.is_dummy_value(credential)
+                            || source.binding_env_vars.is_empty()
+                                && state.credential_owners.iter().any(|existing| {
+                                    !source
+                                        .env_vars
+                                        .iter()
+                                        .any(|key| env_key_matches(key, &existing.env_var))
+                                        && existing.real_value == credential
+                                })
+                            || state.credentials.iter().any(|existing| {
+                                std::ptr::eq(existing.provider, provider)
+                                    && existing.real_value == credential
+                            })
+                            || provider.sources().iter().any(|candidate| {
+                                candidate
+                                    .env_vars
+                                    .iter()
+                                    .any(|key| env_value(env, key) == Some(credential))
+                                    && (candidate.host_binding)(
+                                        env,
+                                        state.openai_api_host.as_deref(),
+                                    )
+                                    .is_none()
+                            })
+                            || provider.request_header_value(credential).is_none()
+                        {
+                            continue;
+                        }
+                        state.register(
+                            source.env_vars[0],
+                            provider,
+                            host_binding.clone(),
+                            credential,
+                        );
+                    }
                 }
             }
         }
@@ -282,45 +357,31 @@ impl CredentialBroker {
 
     pub(crate) fn virtualize_text(&self, text: &mut String, env: &HashMap<String, String>) -> bool {
         let state = self.read_state();
+        matching::virtualize_text(&state, text, env)
+    }
+
+    pub(crate) fn restore_text(&self, text: &mut String) -> bool {
+        let state = self.read_state();
         if !state.enabled {
-            return true;
+            return false;
         }
 
-        let allowed_keys = brokered_credential_dummy_env_keys(env);
-        let credentials = prioritized_credentials(&state, env);
-        let mut allowed = true;
-        for credential in &credentials {
-            let contains_real = text.as_str() == credential.real_value
-                || credential.real_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                    && text.contains(&credential.real_value);
-            let contains_dummy = text.as_str() == credential.dummy_value
-                || credential.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
-                    && text.contains(&credential.dummy_value);
-            if !contains_real && !contains_dummy {
-                continue;
-            }
-
-            let replacement = credentials.iter().copied().find(|candidate| {
-                std::ptr::eq(candidate.provider, credential.provider)
-                    && candidate.real_value == credential.real_value
-                    && allowed_keys.iter().any(|key| {
-                        env_key_matches(key, &candidate.env_var)
-                            && env_value(env, key) == Some(candidate.dummy_value.as_str())
-                    })
-            });
-            if replacement.is_none() {
-                allowed = false;
-            }
-            let replacement = replacement.map_or("", |candidate| candidate.dummy_value.as_str());
-            if contains_real {
-                *text = text.replace(&credential.real_value, replacement);
-            }
-            if contains_dummy && credential.dummy_value != replacement {
-                *text = text.replace(&credential.dummy_value, replacement);
+        let mut credentials = state.credentials.iter().collect::<Vec<_>>();
+        credentials
+            .sort_unstable_by_key(|credential| std::cmp::Reverse(credential.dummy_value.len()));
+        let mut restored = false;
+        for credential in credentials {
+            if text.as_str() == credential.dummy_value {
+                text.clone_from(&credential.real_value);
+                restored = true;
+            } else if credential.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                && text.contains(&credential.dummy_value)
+            {
+                *text = text.replace(&credential.dummy_value, &credential.real_value);
+                restored = true;
             }
         }
-
-        allowed
+        restored
     }
 
     pub(crate) fn inject_request_headers(&self, host: &str, headers: &mut HeaderMap) {
@@ -403,6 +464,32 @@ fn brokerable_credential_value<'a>(
 }
 
 impl CredentialBrokerState {
+    fn observe_credential_owners(&mut self, env: &HashMap<String, String>) {
+        // Ownership is known even when a destination is missing or invalid.
+        for provider in providers::credential_providers() {
+            for env_var in provider.sources().iter().flat_map(|source| source.env_vars) {
+                if let Some(real_value) =
+                    brokerable_credential_value(env, self, env_var, provider).map(str::to_string)
+                {
+                    self.remember_credential_owner(env_var, &real_value);
+                }
+            }
+        }
+    }
+
+    fn remember_credential_owner(&mut self, env_var: &str, real_value: &str) {
+        if !self
+            .credential_owners
+            .iter()
+            .any(|owner| env_key_matches(&owner.env_var, env_var) && owner.real_value == real_value)
+        {
+            self.credential_owners.push(CredentialOwner {
+                env_var: env_var.to_string(),
+                real_value: real_value.to_string(),
+            });
+        }
+    }
+
     fn register(
         &mut self,
         env_var: &str,
@@ -410,6 +497,7 @@ impl CredentialBrokerState {
         host_binding: providers::CredentialHostBinding,
         real_value: &str,
     ) -> String {
+        self.remember_credential_owner(env_var, real_value);
         if let Some(existing) = self.credentials.iter().find(|credential| {
             credential.env_var == env_var
                 && std::ptr::eq(credential.provider, provider)
@@ -586,6 +674,69 @@ pub fn brokered_credential_binding_env_keys(
 /// Returns environment keys used to bind registered credential providers to their destinations.
 pub fn credential_broker_provider_context_env_keys() -> impl Iterator<Item = &'static str> {
     providers::credential_providers().flat_map(|provider| provider.context_env_vars.iter().copied())
+}
+
+/// Checks whether each credential in a value has an allowed source environment key.
+pub fn credential_broker_provider_sources_allowed(
+    value: &str,
+    virtualized: &str,
+    source_env: &HashMap<String, String>,
+    is_allowed: impl Fn(&str) -> bool,
+) -> bool {
+    let mut recognized = false;
+    let allowed = providers::credential_providers()
+        .filter(move |provider| {
+            provider.credential_prefixes.iter().any(|prefix| {
+                value.match_indices(*prefix).any(|(start, _)| {
+                    matching::recognized_credential_match(provider, value, virtualized, start)
+                        .is_some()
+                })
+            })
+        })
+        .all(|provider| {
+            recognized = true;
+            let actual_sources = provider
+                .sources()
+                .iter()
+                .flat_map(|source| source.env_vars.iter().copied())
+                .filter(|source| {
+                    env_value(source_env, source).is_some_and(|source_value| {
+                        source_value.len() >= provider.minimum_credential_len
+                            && value.contains(source_value)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let unattributed = provider.credential_prefixes.iter().any(|prefix| {
+                value.match_indices(*prefix).any(|(start, _)| {
+                    matching::recognized_credential_match(provider, value, virtualized, start)
+                        .is_some_and(|credential| {
+                            !actual_sources.iter().any(|source| {
+                                env_value(source_env, source).is_some_and(|source_value| {
+                                    credential == source_value
+                                        || credential
+                                            .strip_prefix(source_value)
+                                            .is_some_and(|suffix| suffix.starts_with(['_', '-']))
+                                })
+                            })
+                        })
+                })
+            });
+            if actual_sources.is_empty() || unattributed {
+                provider
+                    .sources()
+                    .iter()
+                    .flat_map(|source| source.env_vars.iter().copied())
+                    .all(&is_allowed)
+            } else {
+                actual_sources.iter().all(|source| {
+                    actual_sources.iter().any(|equivalent| {
+                        env_value(source_env, source) == env_value(source_env, equivalent)
+                            && is_allowed(equivalent)
+                    })
+                })
+            }
+        });
+    allowed && recognized
 }
 
 /// Returns whether an environment key belongs to a supported credential provider.

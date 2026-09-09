@@ -32,6 +32,7 @@ pub(super) enum ValuePart {
 
 pub(super) enum Export<'a> {
     Captured(&'a str),
+    Alias { key: &'a str, value: Value },
     Assignment { declaration: &'a str, value: Value },
 }
 
@@ -63,6 +64,9 @@ pub(super) fn render(state: &str, aliases: &str, exports: &[Export<'_>]) -> Opti
     for export in exports {
         match export {
             Export::Captured(source) => output.push_str(source),
+            Export::Alias { key, value } => {
+                output.push_str(&format!("export {key}={}\n", value.render()?));
+            }
             Export::Assignment { declaration, value } => {
                 output.push_str(&format!("{declaration}={}\n", value.render()?));
             }

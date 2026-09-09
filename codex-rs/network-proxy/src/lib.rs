@@ -48,6 +48,7 @@ pub use credential_broker::brokered_credential_binding_env_keys;
 pub use credential_broker::brokered_credential_dummy_env_keys;
 pub use credential_broker::brokered_credential_env_keys;
 pub use credential_broker::credential_broker_provider_context_env_keys;
+pub use credential_broker::credential_broker_provider_sources_allowed;
 pub use credential_broker::is_credential_broker_provider_env_key;
 pub use environment_policy::EnvironmentNetworkPolicy;
 pub use mitm_hook::InjectedHeaderConfig;

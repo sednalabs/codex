@@ -21,6 +21,10 @@ const GITHUB_CLOUD_HOST_SUFFIXES: &[&str] = &[".ghe.com"];
 
 pub(super) static PROVIDER: CredentialProvider = CredentialProvider {
     context_env_vars: &[GH_HOST_ENV_VAR],
+    credential_prefixes: GITHUB_TOKEN_PREFIXES,
+    ignored_credential_prefixes: &[],
+    credential_watermark: None,
+    minimum_credential_len: GITHUB_TOKEN_MIN_LEN,
     sources: &[
         CredentialSource {
             env_vars: GITHUB_CLOUD_TOKEN_ENV_VARS,

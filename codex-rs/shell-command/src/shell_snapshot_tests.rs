@@ -698,3 +698,85 @@ fn captured_script(shell_type: ShellType, source: &str) -> Result<String> {
         CapturedSnapshot::parse(shell_type, source.as_bytes()).context("invalid native capture")?;
     Ok(captured.render_script())
 }
+
+#[test]
+fn brokered_bash_snapshot_preserves_exported_functions_and_redacts_heredocs() -> Result<()> {
+    let dir = tempdir()?;
+    let startup = dir.path().join("startup.sh");
+    let real = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
+    let dummy = "ghp_brokered_dummy_abcdefghijklmnopqrstuvwxyz0123";
+    let credential_shaped_function = "ghp_0123456789abcdefghijklmnopqrstuvwxyzABCD";
+    std::fs::write(
+        &startup,
+        format!(
+            "helper() {{\n  cat <<'EOF'\nexport LEGACY_SETTING=production\nAuthorization: {real}\nEOF\n}}\n{credential_shaped_function}() {{ printf UNEXPECTED_EXECUTION; }}\nexport -f helper\nexport GH_TOKEN='{real}'\n"
+        ),
+    )?;
+    let output = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(
+            snapshot_capture_script(
+                ShellType::Bash,
+                SnapshotCaptureOptions {
+                    startup: SnapshotStartup::NonInteractive,
+                    ..CAPTURE_ALL
+                },
+            )
+            .expect("bash supports snapshots"),
+        )
+        .env_clear()
+        .env("HOME", dir.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("BASH_ENV", &startup)
+        .output()?;
+    assert!(output.status.success());
+
+    let mut snapshot = String::from_utf8(output.stdout)?;
+    let original = HashMap::from([("GH_TOKEN".to_string(), real.to_string())]);
+    let discovered = HashMap::from([("GH_TOKEN".to_string(), dummy.to_string())]);
+    let brokered_keys = vec!["GH_TOKEN".to_string()];
+    rewrite_snapshot_credentials(
+        ShellType::Bash,
+        &mut snapshot,
+        SnapshotCredentialEnvironment {
+            original: &original,
+            restored: &original,
+            configured: &HashMap::new(),
+            discovered: &discovered,
+            allowed: &discovered,
+            is_allowed_unset: &|_| false,
+            brokered_keys: &brokered_keys,
+            brokered_alias_keys: &[],
+            allowed_brokered_keys: &brokered_keys,
+        },
+        |text| {
+            if text.contains(credential_shaped_function) {
+                *text = text.replace(credential_shaped_function, "");
+                return false;
+            }
+            *text = text.replace(real, dummy);
+            true
+        },
+    );
+    assert!(!snapshot.contains(real));
+    assert!(snapshot.contains(credential_shaped_function));
+    let path = dir.path().join("snapshot.sh");
+    std::fs::write(&path, snapshot)?;
+
+    let restored = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(". \"$1\"; exec /bin/bash -c helper")
+        .arg("snapshot")
+        .arg(&path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("GH_TOKEN", dummy)
+        .output()?;
+    assert!(restored.status.success());
+    assert_eq!(
+        String::from_utf8(restored.stdout)?,
+        format!("export LEGACY_SETTING=production\nAuthorization: {dummy}\n")
+    );
+
+    Ok(())
+}

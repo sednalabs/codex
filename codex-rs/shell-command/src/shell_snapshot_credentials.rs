@@ -136,7 +136,7 @@ pub fn prepare_snapshot_credentials(
     let mut alias_values = HashMap::new();
     let mut rejected_alias_keys = Vec::new();
     let mut invalid_export = false;
-    let exports = captured
+    let mut exports = captured
         .exports
         .iter()
         .filter_map(|export| {
@@ -185,7 +185,6 @@ pub fn prepare_snapshot_credentials(
             Some(Export::Captured(line))
         })
         .collect::<Vec<_>>();
-    let mut snapshot = render::render(captured.state, captured.aliases, &exports)?;
     if invalid_export {
         return None;
     }
@@ -193,19 +192,33 @@ pub fn prepare_snapshot_credentials(
     for (key, credential_keys) in credential_aliases {
         if !is_disallowed_credential_alias(key, &mut virtualize_text)
             && credential_alias_is_allowed(&credential_keys)
-            && let Some((_, value)) = allowed
+            && let Some((assignment, value)) = allowed
                 .get(key)
                 .and_then(|value| credential_alias_assignment(value, &credential_keys))
         {
-            // Native capture can deliberately omit readonly exports; retain only their metadata.
+            exports.push(Export::Alias {
+                key,
+                value: assignment,
+            });
             alias_values.insert(key.to_string(), value);
         } else {
             rejected_alias_keys.push(key.to_string());
         }
     }
 
-    if !virtualize_text(&mut snapshot) {
-        return None;
+    let mut snapshot = render::render(captured.state, captured.aliases, &exports)?;
+    let mut credential_values = original
+        .values()
+        .chain(restored.values())
+        .chain(configured.values())
+        .collect::<Vec<_>>();
+    credential_values.sort_unstable_by_key(|value| (std::cmp::Reverse(value.len()), *value));
+    credential_values.dedup();
+    for value in credential_values {
+        let mut replacement = value.clone();
+        if virtualize_text(&mut replacement) && replacement != *value {
+            snapshot = snapshot.replace(value, &replacement);
+        }
     }
 
     Some(PreparedSnapshot {

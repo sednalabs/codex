@@ -1153,6 +1153,11 @@ impl NetworkProxy {
         self.state.virtualize_brokered_text(text, env)
     }
 
+    /// Restores known dummy credentials in trusted text captured for fail-open execution.
+    pub fn restore_brokered_text(&self, text: &mut String) -> bool {
+        self.state.restore_brokered_text(text)
+    }
+
     pub fn apply_to_env_for_environment(
         &self,
         env: &mut HashMap<String, String>,
