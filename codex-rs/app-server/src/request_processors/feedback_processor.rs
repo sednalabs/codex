@@ -108,6 +108,7 @@ impl FeedbackRequestProcessor {
             None
         };
         apply_feedback_turn_metadata(&mut upload_tags, turn_metadata);
+        let prompt_hash = upload_tags.get("prompt_hash").cloned();
 
         if let Some(chatgpt_user_id) = auth
             .as_ref()
@@ -314,7 +315,10 @@ impl FeedbackRequestProcessor {
 
         upload_result
             .map_err(|err| internal_error(format!("failed to upload feedback: {err:#}")))?;
-        Ok(FeedbackUploadResponse { thread_id })
+        Ok(FeedbackUploadResponse {
+            thread_id,
+            prompt_hash,
+        })
     }
 
     async fn resolve_rollout_path(
