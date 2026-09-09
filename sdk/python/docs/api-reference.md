@@ -268,6 +268,23 @@ from openai_codex.types import (
 )
 ```
 
+### Notifications and generated models
+
+Known notifications have typed `Notification.payload` values, including
+authentication recovery, thread queue/project changes, thread reversion, and
+realtime item updates. The `Notification.payload` type covers every registered
+event. Unknown methods and payloads that fail validation still produce
+`UnknownNotification`, with the raw data in
+`.params`. When an event gains a typed payload, read its named fields instead
+of `.params`.
+
+Returned models include the current CLI's thread metadata, richer turn errors,
+and `functionCallOutput` history items. Code that imports generated
+`HookMetadata` directly must access the handler through `.root`, inspect its
+`handler_type`, and then read the fields for that handler. For example, only a
+`"command"` handler has a `command` field. This reflects the app-server's
+separate command, MCP tool, prompt, and agent hook variants.
+
 ## Retry + errors
 
 ```python

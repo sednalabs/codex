@@ -36,6 +36,9 @@ dev = [
   { include-group = "format" },
 ]
 
+[tool.codex.codegen]
+schema-dir = "../../codex-rs/app-server-protocol/schema/json"
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-import importlib
-import importlib.metadata
+import importlib.util
 import json
 import platform
 import re
@@ -41,13 +40,8 @@ def python_runtime_root() -> Path:
     return repo_root() / "sdk" / "python-runtime"
 
 
-def sdk_pyproject_path() -> Path:
-    """Return the SDK pyproject file that owns package pins and versions."""
-    return sdk_root() / "pyproject.toml"
-
-
 def schema_bundle_path(schema_dir: Path) -> Path:
-    """Return the aggregate v2 schema bundle emitted by the runtime binary."""
+    """Return the aggregate v2 app-server schema bundle."""
     return schema_dir / "codex_app_server_protocol.v2.schemas.json"
 
 
@@ -73,67 +67,6 @@ def run(cmd: list[str], cwd: Path) -> None:
 
 def run_python_module(module: str, args: list[str], cwd: Path) -> None:
     run([sys.executable, "-m", module, *args], cwd)
-
-
-def current_sdk_version() -> str:
-    match = re.search(
-        r'^version = "([^"]+)"$',
-        sdk_pyproject_path().read_text(),
-        flags=re.MULTILINE,
-    )
-    if match is None:
-        raise RuntimeError("Could not determine Python SDK version from pyproject.toml")
-    return match.group(1)
-
-
-def pinned_runtime_version() -> str:
-    """Read the exact runtime package pin used for schema generation."""
-    pyproject_text = sdk_pyproject_path().read_text()
-    match = re.search(r"(?ms)^dependencies = \[(.*?)\]$", pyproject_text)
-    if match is None:
-        raise RuntimeError("Could not find dependencies array in sdk/python/pyproject.toml")
-
-    pins = re.findall(
-        rf'"{re.escape(RUNTIME_DISTRIBUTION_NAME)}==([^"]+)"',
-        match.group(1),
-    )
-    if len(pins) != 1:
-        raise RuntimeError(
-            f"Expected exactly one {RUNTIME_DISTRIBUTION_NAME} dependency pin "
-            "in sdk/python/pyproject.toml"
-        )
-    return normalize_codex_version(pins[0])
-
-
-def pinned_runtime_codex_path() -> Path:
-    """Return the bundled Codex binary from the installed pinned runtime wheel."""
-    expected_version = pinned_runtime_version()
-    try:
-        installed_version = importlib.metadata.version(RUNTIME_DISTRIBUTION_NAME)
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"Install {RUNTIME_DISTRIBUTION_NAME}=={expected_version} before "
-            "generating Python SDK types."
-        ) from exc
-
-    normalized_installed_version = normalize_codex_version(installed_version)
-    if normalized_installed_version != expected_version:
-        raise RuntimeError(
-            f"Expected {RUNTIME_DISTRIBUTION_NAME}=={expected_version}, "
-            f"but found {installed_version}."
-        )
-
-    try:
-        from codex_cli_bin import bundled_codex_path
-    except ImportError as exc:
-        raise RuntimeError(
-            f"Installed {RUNTIME_DISTRIBUTION_NAME} package does not expose bundled_codex_path."
-        ) from exc
-
-    codex_path = bundled_codex_path()
-    if not codex_path.exists():
-        raise RuntimeError(f"Pinned Codex runtime binary not found at {codex_path}.")
-    return codex_path
 
 
 def _copy_package_tree(src: Path, dst: Path) -> None:
@@ -527,29 +460,25 @@ def _make_chatgpt_account_email_nullable(schema: dict[str, Any]) -> None:
     raise RuntimeError("Schema bundle is missing the ChatGPT account variant")
 
 
-def generate_schema_from_pinned_runtime(schema_dir: Path) -> Path:
-    """Generate app-server schemas by invoking the installed pinned runtime binary."""
-    codex_path = pinned_runtime_codex_path()
-    if schema_dir.exists():
-        shutil.rmtree(schema_dir)
-    schema_dir.mkdir(parents=True)
-    run(
-        [
-            str(codex_path),
-            "app-server",
-            "generate-json-schema",
-            "--out",
-            str(schema_dir),
-        ],
-        cwd=sdk_root(),
-    )
-    return schema_dir
+def _preserve_guardian_approval_path_wrappers(schema: dict[str, Any]) -> None:
+    """Preserve the path wrappers accepted by the existing Python API."""
+    definitions = schema.get("definitions", {})
+    if not isinstance(definitions, dict):
+        return
+    for variant in definitions.get("GuardianApprovalReviewAction", {}).get("oneOf", []):
+        properties = variant.get("properties", {})
+        kind = properties.get("type", {}).get("enum")
+        if kind in (["command"], ["applyPatch"]):
+            properties["cwd"] = {"$ref": "#/definitions/AbsolutePathBuf"}
+        if kind == ["applyPatch"]:
+            properties["files"]["items"] = {"$ref": "#/definitions/AbsolutePathBuf"}
 
 
 def _normalized_schema_bundle_text(schema_dir: Path) -> str:
     """Normalize the schema bundle before feeding it to the Python type generator."""
     schema = json.loads(schema_bundle_path(schema_dir).read_text())
     _make_chatgpt_account_email_nullable(schema)
+    _preserve_guardian_approval_path_wrappers(schema)
     definitions = schema.get("definitions", {})
     if isinstance(definitions, dict):
         for definition in definitions.values():
@@ -562,7 +491,7 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
 
 
 def generate_v2_all(schema_dir: Path) -> None:
-    """Regenerate the Pydantic v2 protocol model module from runtime schemas."""
+    """Regenerate the Pydantic v2 protocol model module from app-server schemas."""
     out_path = sdk_root() / "src" / "openai_codex" / "generated" / "v2_all.py"
     out_dir = out_path.parent
     old_package_dir = out_dir / "v2_all"
@@ -803,10 +732,12 @@ def _type_tuple_source(class_names: list[str]) -> str:
 
 
 def generate_notification_registry(schema_dir: Path) -> None:
-    """Regenerate notification dispatch metadata from the runtime notification schema."""
+    """Regenerate notification dispatch metadata from the app-server notification schema."""
     out = sdk_root() / "src" / "openai_codex" / "generated" / "notification_registry.py"
     specs = _notification_specs(schema_dir)
     class_names = sorted({class_name for _, class_name in specs})
+    if not class_names:
+        raise RuntimeError("Schema did not contain any supported notification payloads")
     direct_turn_id_types, nested_turn_types = _notification_turn_id_specs(
         schema_dir,
         specs,
@@ -818,6 +749,8 @@ def generate_notification_registry(schema_dir: Path) -> None:
         "",
         "from __future__ import annotations",
         "",
+        "from typing import TypeAlias",
+        "",
         "from pydantic import BaseModel",
         "",
     ]
@@ -827,7 +760,11 @@ def generate_notification_registry(schema_dir: Path) -> None:
     lines.extend(
         [
             "",
-            "NOTIFICATION_MODELS: dict[str, type[BaseModel]] = {",
+            "KnownNotificationPayload: TypeAlias = (",
+            "    " + "\n    | ".join(class_names),
+            ")",
+            "",
+            "NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {",
         ]
     )
     for method, class_name in specs:
@@ -871,6 +808,78 @@ FIELD_ANNOTATION_OVERRIDES: dict[str, str] = {
     # Keep public API typed without falling back to `Any`.
     "config": "JsonObject",
     "output_schema": "JsonObject",
+    "sandbox": "Sandbox",
+    "sandbox_policy": "Sandbox",
+}
+
+PUBLIC_FIELD_NAMES = {
+    "sandbox_policy": "sandbox",
+}
+
+# Adding a protocol field must not silently add a public SDK parameter. These
+# reviewed wire fields define the convenience API; protocol models stay complete.
+PUBLIC_METHOD_FIELDS = {
+    "ThreadStartParams": (
+        "base_instructions",
+        "config",
+        "cwd",
+        "developer_instructions",
+        "ephemeral",
+        "model",
+        "model_provider",
+        "personality",
+        "sandbox",
+        "service_name",
+        "service_tier",
+        "session_start_source",
+        "thread_source",
+    ),
+    "ThreadListParams": (
+        "archived",
+        "cursor",
+        "cwd",
+        "limit",
+        "model_providers",
+        "search_term",
+        "section_id",
+        "sort_direction",
+        "sort_key",
+        "source_kinds",
+        "use_state_db_only",
+    ),
+    "ThreadResumeParams": (
+        "base_instructions",
+        "config",
+        "cwd",
+        "developer_instructions",
+        "model",
+        "model_provider",
+        "personality",
+        "sandbox",
+        "service_tier",
+    ),
+    "ThreadForkParams": (
+        "base_instructions",
+        "config",
+        "cwd",
+        "developer_instructions",
+        "ephemeral",
+        "model",
+        "model_provider",
+        "sandbox",
+        "service_tier",
+        "thread_source",
+    ),
+    "TurnStartParams": (
+        "cwd",
+        "effort",
+        "model",
+        "output_schema",
+        "personality",
+        "sandbox_policy",
+        "service_tier",
+        "summary",
+    ),
 }
 
 
@@ -884,10 +893,9 @@ class PublicFieldSpec:
 
 @dataclass(frozen=True)
 class CliOps:
-    generate_types: Callable[[], None]
+    generate_types: Callable[[Path], None]
     stage_python_sdk_package: Callable[[Path, str], Path]
     stage_python_runtime_package: Callable[[Path, str, Path, str | None], Path]
-    current_sdk_version: Callable[[], str]
 
 
 def _annotation_to_source(annotation: Any) -> str:
@@ -926,20 +934,15 @@ def _camel_to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", head).lower()
 
 
-def _load_public_fields(
-    module_name: str, class_name: str, *, exclude: set[str] | None = None
-) -> list[PublicFieldSpec]:
-    """Load generated model fields used to render the ergonomic public methods."""
-    exclude = exclude or set()
-    if module_name == "openai_codex.generated.v2_all":
-        module = _load_generated_v2_all_module()
-    else:
-        module = importlib.import_module(module_name)
+def _load_public_fields(class_name: str) -> list[PublicFieldSpec]:
+    """Load only the protocol fields deliberately exposed by the public SDK."""
+    module = _load_generated_v2_all_module()
     model = getattr(module, class_name)
     fields: list[PublicFieldSpec] = []
-    for name, field in model.model_fields.items():
-        if name in exclude:
-            continue
+    for name in PUBLIC_METHOD_FIELDS[class_name]:
+        if name not in model.model_fields:
+            raise RuntimeError(f"Public SDK field {class_name}.{name} is missing from the schema")
+        field = model.model_fields[name]
         required = field.is_required()
         annotation = _annotation_to_source(field.annotation)
         override = FIELD_ANNOTATION_OVERRIDES.get(name)
@@ -948,12 +951,12 @@ def _load_public_fields(
         fields.append(
             PublicFieldSpec(
                 wire_name=name,
-                py_name=name,
+                py_name=PUBLIC_FIELD_NAMES.get(name, name),
                 annotation=annotation,
                 required=required,
             )
         )
-    return fields
+    return sorted(fields, key=lambda field: field.py_name)
 
 
 def _load_generated_v2_all_module() -> types.ModuleType:
@@ -1011,32 +1014,6 @@ def _model_arg_lines(fields: list[PublicFieldSpec], *, indent: str = "          
             arg = "_sandbox_policy(sandbox)"
         lines.append(f"{indent}{field.wire_name}={arg},")
     return lines
-
-
-def _replace_public_sandbox_field(
-    fields: list[PublicFieldSpec], *, wire_name: str
-) -> list[PublicFieldSpec]:
-    """Expose stable wire sandbox settings through one public enum parameter."""
-    public_fields: list[PublicFieldSpec] = []
-    replaced = False
-    for field in fields:
-        if field.wire_name != wire_name:
-            public_fields.append(field)
-            continue
-        if replaced:
-            raise RuntimeError(f"Found more than one generated sandbox field named {wire_name}")
-        public_fields.append(
-            PublicFieldSpec(
-                wire_name=wire_name,
-                py_name="sandbox",
-                annotation="Sandbox | None",
-                required=False,
-            )
-        )
-        replaced = True
-    if not replaced:
-        raise RuntimeError(f"Could not find generated sandbox field named {wire_name}")
-    return public_fields
 
 
 def _replace_generated_block(source: str, block_name: str, body: str) -> str:
@@ -1282,37 +1259,11 @@ def generate_public_api_flat_methods() -> None:
     if src_dir_str not in sys.path:
         sys.path.insert(0, src_dir_str)
 
-    approval_fields = {"approval_policy", "approvals_reviewer"}
-    thread_start_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
-        "ThreadStartParams",
-        exclude=approval_fields,
-    )
-    thread_start_fields = _replace_public_sandbox_field(thread_start_fields, wire_name="sandbox")
-    thread_list_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
-        "ThreadListParams",
-    )
-    thread_resume_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
-        "ThreadResumeParams",
-        exclude={"thread_id", *approval_fields},
-    )
-    thread_resume_fields = _replace_public_sandbox_field(thread_resume_fields, wire_name="sandbox")
-    thread_fork_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
-        "ThreadForkParams",
-        exclude={"thread_id", "last_turn_id", *approval_fields},
-    )
-    thread_fork_fields = _replace_public_sandbox_field(thread_fork_fields, wire_name="sandbox")
-    turn_start_fields = _load_public_fields(
-        "openai_codex.generated.v2_all",
-        "TurnStartParams",
-        # Keep the wire model current without exposing this app-server field
-        # through the ergonomic Python API yet.
-        exclude={"thread_id", "input", "client_user_message_id", *approval_fields},
-    )
-    turn_start_fields = _replace_public_sandbox_field(turn_start_fields, wire_name="sandbox_policy")
+    thread_start_fields = _load_public_fields("ThreadStartParams")
+    thread_list_fields = _load_public_fields("ThreadListParams")
+    thread_resume_fields = _load_public_fields("ThreadResumeParams")
+    thread_fork_fields = _load_public_fields("ThreadForkParams")
+    turn_start_fields = _load_public_fields("TurnStartParams")
 
     source = public_api_path.read_text()
     source = _replace_generated_block(
@@ -1357,22 +1308,22 @@ def generate_types_from_schema_dir(schema_dir: Path) -> None:
     generate_public_api_flat_methods()
 
 
-def generate_types() -> None:
-    """Generate schemas from the pinned runtime and then refresh SDK artifacts."""
-    with tempfile.TemporaryDirectory(prefix="codex-python-schema-") as td:
-        schema_dir = generate_schema_from_pinned_runtime(Path(td) / "schema")
-        generate_types_from_schema_dir(schema_dir)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Single SDK maintenance entrypoint")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("generate-types", help="Regenerate Python protocol-derived types")
+    generate_types_parser = subparsers.add_parser(
+        "generate-types", help="Regenerate Python types from the repository's app-server schemas"
+    )
+    generate_types_parser.add_argument(
+        "--schema-dir",
+        type=Path,
+        help="App-server JSON schema directory (defaults to tool.codex.codegen.schema-dir)",
+    )
 
     stage_sdk_parser = subparsers.add_parser(
         "stage-sdk",
-        help="Stage a releasable SDK package while preserving its reviewed runtime pin",
+        help="Stage a releasable SDK package from its reviewed generated files and runtime pin",
     )
     stage_sdk_parser.add_argument(
         "staging_dir",
@@ -1427,18 +1378,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def default_cli_ops() -> CliOps:
     return CliOps(
-        generate_types=generate_types,
+        generate_types=generate_types_from_schema_dir,
         stage_python_sdk_package=stage_python_sdk_package,
         stage_python_runtime_package=stage_python_runtime_package,
-        current_sdk_version=current_sdk_version,
     )
 
 
 def run_command(args: argparse.Namespace, ops: CliOps) -> None:
     if args.command == "generate-types":
-        ops.generate_types()
+        schema_dir = args.schema_dir
+        if schema_dir is None:
+            try:
+                import tomllib
+            except ModuleNotFoundError:
+                import tomli as tomllib
+
+            pyproject = tomllib.loads((sdk_root() / "pyproject.toml").read_text())
+            schema_dir = sdk_root() / pyproject["tool"]["codex"]["codegen"]["schema-dir"]
+        ops.generate_types(schema_dir.resolve())
     elif args.command == "stage-sdk":
-        ops.generate_types()
         ops.stage_python_sdk_package(
             args.staging_dir,
             normalize_codex_version(args.sdk_version),

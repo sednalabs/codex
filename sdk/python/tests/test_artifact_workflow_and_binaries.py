@@ -10,8 +10,12 @@ import urllib.error
 from pathlib import Path
 
 import pytest
-import tomllib
 from pydantic import ValidationError
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -378,38 +382,76 @@ def test_generate_types_wires_all_generation_steps() -> None:
     ]
 
 
-def _load_runtime_schema_bundle(tmp_path: Path) -> dict:
-    """Ask the pinned runtime package for a real schema bundle used by tests."""
+@pytest.mark.parametrize("schema_override", [None, "override-schema"])
+def test_generation_resolves_configured_schema_and_explicit_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_override: str | None
+) -> None:
     script = _load_update_script_module()
-    schema_dir = script.generate_schema_from_pinned_runtime(tmp_path / "schema")
+    sdk_dir = tmp_path / "sdk" / "python"
+    sdk_dir.mkdir(parents=True)
+    monkeypatch.setattr(script, "sdk_root", lambda: sdk_dir)
+    monkeypatch.chdir(tmp_path)
+    selected_schemas: list[Path] = []
+    monkeypatch.setattr(script, "generate_types_from_schema_dir", selected_schemas.append)
+    args = ["generate-types"]
+    if schema_override is None:
+        (sdk_dir / "pyproject.toml").write_text(
+            '[tool.codex.codegen]\nschema-dir = "../../configured-schema"\n'
+        )
+        expected_schema = tmp_path / "configured-schema"
+    else:
+        args.extend(["--schema-dir", schema_override])
+        expected_schema = tmp_path / schema_override
+
+    script.main(args)
+
+    assert selected_schemas == [expected_schema]
+
+
+def _load_repository_schema_bundle() -> dict:
+    """Read the repository app-server schema bundle used by generation."""
+    script = _load_update_script_module()
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    schema_dir = ROOT / pyproject["tool"]["codex"]["codegen"]["schema-dir"]
     return json.loads(script.schema_bundle_path(schema_dir).read_text())
 
 
-def test_schema_normalization_only_flattens_string_literal_oneofs(
-    tmp_path: Path,
-) -> None:
-    """Schema normalization should only flatten the enum-shaped oneOf variants."""
+def test_schema_normalization_flattens_string_literal_oneofs() -> None:
     script = _load_update_script_module()
-    schema = _load_runtime_schema_bundle(tmp_path)
-    definitions = schema["definitions"]
-    flattened = [
-        name
-        for name, definition in definitions.items()
-        if isinstance(definition, dict) and script._flatten_string_enum_one_of(definition.copy())
-    ]
+    definition = {
+        "title": "Mode",
+        "description": "Allowed modes.",
+        "oneOf": [
+            {"type": "string", "enum": ["first"]},
+            {"type": "string", "enum": ["second"]},
+        ],
+    }
 
-    assert sorted(flattened) == [
-        "AuthMode",
-        "AutoCompactTokenLimitScope",
-        "CommandExecOutputStream",
-        "ConsumeAccountRateLimitResetCreditOutcome",
-        "ExperimentalFeatureStage",
-        "InputModality",
-        "MessagePhase",
-        "PluginAvailability",
-        "ProcessOutputStream",
-        "TurnItemsView",
-    ]
+    assert script._flatten_string_enum_one_of(definition)
+    assert definition == {
+        "title": "Mode",
+        "description": "Allowed modes.",
+        "type": "string",
+        "enum": ["first", "second"],
+    }
+
+
+@pytest.mark.parametrize(
+    "branch",
+    [
+        {"type": "object", "properties": {"value": {"type": "string"}}},
+        {"type": "string", "enum": ["first", "second"]},
+        {"type": "string", "enum": [1]},
+        {"type": "string", "enum": ["second"], "minLength": 2},
+    ],
+)
+def test_schema_normalization_preserves_nonliteral_unions(branch: dict) -> None:
+    script = _load_update_script_module()
+    definition = {"oneOf": [{"type": "string", "enum": ["first"]}, branch]}
+    original = json.loads(json.dumps(definition))
+
+    assert not script._flatten_string_enum_one_of(definition)
+    assert definition == original
 
 
 def test_schema_normalization_makes_chatgpt_account_email_nullable() -> None:
@@ -438,12 +480,10 @@ def test_schema_normalization_makes_chatgpt_account_email_nullable() -> None:
     assert "email" in chatgpt_account["required"]
 
 
-def test_python_codegen_schema_annotation_adds_stable_variant_titles(
-    tmp_path: Path,
-) -> None:
+def test_python_codegen_schema_annotation_adds_stable_variant_titles() -> None:
     """Schema annotations should give generated protocol classes stable names."""
     script = _load_update_script_module()
-    schema = _load_runtime_schema_bundle(tmp_path)
+    schema = _load_repository_schema_bundle()
     script._annotate_schema(schema)
     definitions = schema["definitions"]
 
@@ -523,25 +563,6 @@ def test_runtime_distribution_name_is_consistent() -> None:
         "importlib.metadata.version('codex-cli-bin')"
         not in (ROOT / "_runtime_setup.py").read_text()
     )
-
-
-def test_source_sdk_template_pins_published_runtime() -> None:
-    """The source template should carry a development version and reviewed runtime pin."""
-    script = _load_update_script_module()
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
-
-    assert {
-        "sdk_template_version": pyproject["project"]["version"],
-        "runtime_pin": script.pinned_runtime_version(),
-        "dependencies": pyproject["project"]["dependencies"],
-    } == {
-        "sdk_template_version": "0.0.0-dev",
-        "runtime_pin": "0.147.0",
-        "dependencies": [
-            "pydantic>=2.12",
-            "openai-codex-cli-bin==0.147.0",
-        ],
-    }
 
 
 def test_source_sdk_package_declares_stable_documentation() -> None:
@@ -858,11 +879,24 @@ def test_runtime_package_layout_is_included_by_wheel_config(
     ]
 
 
-def test_stage_sdk_release_preserves_reviewed_runtime_pin(tmp_path: Path) -> None:
+def test_stage_sdk_release_packages_reviewed_artifacts(tmp_path: Path) -> None:
     script = _load_update_script_module()
-    staged = script.stage_python_sdk_package(
-        tmp_path / "sdk-stage",
-        "0.147.0",
+    staged = tmp_path / "sdk-stage"
+    source_project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    generated_paths = [
+        "src/openai_codex/generated/v2_all.py",
+        "src/openai_codex/generated/notification_registry.py",
+        "src/openai_codex/api.py",
+    ]
+    reviewed_artifacts = {path: (ROOT / path).read_bytes() for path in generated_paths}
+
+    script.main(
+        [
+            "stage-sdk",
+            str(staged),
+            "--sdk-version",
+            "0.153.0",
+        ]
     )
 
     pyproject = tomllib.loads((staged / "pyproject.toml").read_text())
@@ -872,12 +906,10 @@ def test_stage_sdk_release_preserves_reviewed_runtime_pin(tmp_path: Path) -> Non
         "dependencies": pyproject["project"]["dependencies"],
     } == {
         "name": "openai-codex",
-        "version": "0.147.0",
-        "dependencies": [
-            "pydantic>=2.12",
-            "openai-codex-cli-bin==0.147.0",
-        ],
+        "version": "0.153.0",
+        "dependencies": source_project["project"]["dependencies"],
     }
+    assert {path: (staged / path).read_bytes() for path in generated_paths} == reviewed_artifacts
     assert (
         '__version__ = "0.147.0"'
         not in (staged / "src" / "openai_codex" / "__init__.py").read_text()
@@ -933,48 +965,6 @@ def test_sdk_release_matches_stable_runtime(tmp_path: Path) -> None:
     }
 
 
-def test_stage_sdk_runs_type_generation_before_staging(tmp_path: Path) -> None:
-    script = _load_update_script_module()
-    calls: list[str] = []
-    args = script.parse_args(
-        [
-            "stage-sdk",
-            str(tmp_path / "sdk-stage"),
-            "--sdk-version",
-            "0.147.0",
-        ]
-    )
-
-    def fake_generate_types() -> None:
-        calls.append("generate_types")
-
-    def fake_stage_sdk_package(_staging_dir: Path, sdk_version: str) -> Path:
-        calls.append(f"stage_sdk:{sdk_version}")
-        return tmp_path / "sdk-stage"
-
-    def fake_stage_runtime_package(
-        _staging_dir: Path,
-        _runtime_version: str,
-        _package_dir: Path,
-        _platform_tag: str | None,
-    ) -> Path:
-        raise AssertionError("runtime staging should not run for stage-sdk")
-
-    def fake_current_sdk_version() -> str:
-        return "0.116.0a1"
-
-    ops = script.CliOps(
-        generate_types=fake_generate_types,
-        stage_python_sdk_package=fake_stage_sdk_package,
-        stage_python_runtime_package=fake_stage_runtime_package,
-        current_sdk_version=fake_current_sdk_version,
-    )
-
-    script.run_command(args, ops)
-
-    assert calls == ["generate_types", "stage_sdk:0.147.0"]
-
-
 def test_stage_runtime_stages_package_without_type_generation(tmp_path: Path) -> None:
     script = _load_update_script_module()
     package_archive = _write_fake_codex_package_archive(tmp_path, script)
@@ -991,7 +981,7 @@ def test_stage_runtime_stages_package_without_type_generation(tmp_path: Path) ->
         ]
     )
 
-    def fake_generate_types() -> None:
+    def fake_generate_types(_schema_dir: Path) -> None:
         calls.append("generate_types")
 
     def fake_stage_sdk_package(_staging_dir: Path, _codex_version: str) -> Path:
@@ -1006,14 +996,10 @@ def test_stage_runtime_stages_package_without_type_generation(tmp_path: Path) ->
         calls.append(f"stage_runtime:{codex_version}:{platform_tag}:{package_archive.name}")
         return tmp_path / "runtime-stage"
 
-    def fake_current_sdk_version() -> str:
-        return "0.116.0a1"
-
     ops = script.CliOps(
         generate_types=fake_generate_types,
         stage_python_sdk_package=fake_stage_sdk_package,
         stage_python_runtime_package=fake_stage_runtime_package,
-        current_sdk_version=fake_current_sdk_version,
     )
 
     script.run_command(args, ops)

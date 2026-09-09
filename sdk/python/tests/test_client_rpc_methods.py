@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 from openai_codex.client import CodexClient, _params_dict
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
+    AbsolutePathBuf,
     AccountRateLimitsUpdatedNotification,
     AccountUpdatedNotification,
     AgentMessageDeltaNotification,
+    ApplyPatchGuardianApprovalReviewAction,
     ApprovalsReviewer,
+    AuthRecoveryNotification,
+    CommandGuardianApprovalReviewAction,
     GetAccountResponse,
     PlanType,
     ReasoningEffort,
     ReasoningEffortOption,
     ThreadForkParams,
     ThreadListParams,
+    ThreadQueueChangedNotification,
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadTokenUsageUpdatedNotification,
@@ -28,6 +34,31 @@ from openai_codex.models import Notification, UnknownNotification
 from openai_codex.types import ThreadSource
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    ("model", "fields"),
+    [
+        (
+            CommandGuardianApprovalReviewAction,
+            {"type": "command", "command": "pwd", "source": "shell"},
+        ),
+        (
+            ApplyPatchGuardianApprovalReviewAction,
+            {"type": "applyPatch", "files": [AbsolutePathBuf("/workspace/file")]},
+        ),
+    ],
+)
+def test_approval_review_paths_preserve_existing_wrappers(model, fields) -> None:
+    action = model(cwd=AbsolutePathBuf("/workspace"), **fields)
+    expected = {
+        **fields,
+        "cwd": "/workspace",
+    }
+    if "files" in expected:
+        expected["files"] = ["/workspace/file"]
+    assert action.model_dump(mode="json") == expected
+    assert isinstance(action.cwd, AbsolutePathBuf)
 
 
 def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
@@ -207,6 +238,44 @@ def test_unknown_notifications_fall_back_to_unknown_payloads() -> None:
     assert event.method == "unknown/notification"
     assert isinstance(event.payload, UnknownNotification)
     assert event.payload.params["msg"] == {"type": "turn_aborted"}
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected"),
+    [
+        (
+            "modelProvider/authRecoveryCompleted",
+            {
+                "provider": "openai",
+                "message": "Authentication recovered",
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+            },
+            AuthRecoveryNotification(
+                provider="openai",
+                message="Authentication recovered",
+                thread_id="thread-1",
+                turn_id="turn-1",
+            ),
+        ),
+        (
+            "thread/queue/changed",
+            {"threadId": "thread-1"},
+            ThreadQueueChangedNotification(thread_id="thread-1"),
+        ),
+        ("warning", {"message": "heads up"}, WarningNotification(message="heads up")),
+        (
+            "future/notification",
+            {"newField": "value"},
+            UnknownNotification(params={"newField": "value"}),
+        ),
+    ],
+)
+def test_decoded_notifications_match_the_declared_payload_type(method, params, expected) -> None:
+    event = CodexClient()._coerce_notification(method, params)
+
+    assert event == Notification(method=method, payload=expected)
+    assert isinstance(event.payload, get_type_hints(Notification)["payload"])
 
 
 def test_invalid_notification_payload_falls_back_to_unknown() -> None:
