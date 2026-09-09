@@ -812,11 +812,15 @@ fn configured_owner_keeps_prefixed_builtin_shaped_aliases_scoped() {
                     retain_source.then_some(value)
                 );
                 assert_eq!(value != token, brokered);
-                assert!(!broker.host_requires_mitm_for_environment(
-                    "api.openai.com",
-                    /*port*/ 443,
-                    environment_id,
-                ));
+                assert!(
+                    !broker
+                        .host_protocols_for_environment(
+                            "api.openai.com",
+                            /*port*/ 443,
+                            environment_id,
+                        )
+                        .tls
+                );
                 let headers_for = |value: &str| {
                     HeaderMap::from_iter([(
                         AUTHORIZATION,
@@ -2623,11 +2627,11 @@ fn configured_provider_destination_history_is_scoped_to_the_environment() {
             translated("second-environment", host, &second_dummy),
             format!("Bearer {second_dummy}")
         );
-        assert!(!broker.host_requires_mitm_for_environment(
-            host,
-            /*port*/ 443,
-            Some("second-environment"),
-        ));
+        assert!(
+            !broker
+                .host_protocols_for_environment(host, /*port*/ 443, Some("second-environment"),)
+                .tls
+        );
     }
 }
 
@@ -2718,11 +2722,11 @@ fn configured_provider_preserves_filtered_destinations_but_honors_explicit_overr
             .and_then(|value| value.to_str().ok()),
         Some(format!("Bearer {dummy}").as_str())
     );
-    assert!(!broker.host_requires_mitm_for_environment(
-        "first.example",
-        /*port*/ 443,
-        Some("environment")
-    ));
+    assert!(
+        !broker
+            .host_protocols_for_environment("first.example", /*port*/ 443, Some("environment"))
+            .tls
+    );
 }
 
 #[test]

@@ -247,7 +247,7 @@ pub struct NetworkProxyState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HostMitmRequirement {
     None,
-    Tls,
+    Credential(crate::brokered_tunnel::BrokeredProtocols),
     Always,
 }
 
@@ -900,14 +900,15 @@ impl NetworkProxyState {
             let guard = self.state.read().await;
             guard.mitm_hooks.contains_key(&normalized_host)
         };
-        Ok(if host_has_mitm_hooks {
-            HostMitmRequirement::Always
-        } else if self.credential_broker.host_requires_mitm_for_environment(
+        let protocols = self.credential_broker.host_protocols_for_environment(
             &normalized_host,
             port,
             self.environment_id(),
-        ) {
-            HostMitmRequirement::Tls
+        );
+        Ok(if host_has_mitm_hooks {
+            HostMitmRequirement::Always
+        } else if protocols.tls {
+            HostMitmRequirement::Credential(protocols)
         } else {
             HostMitmRequirement::None
         })

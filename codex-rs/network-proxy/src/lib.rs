@@ -2,6 +2,7 @@
 
 mod attribution;
 mod authorization_path;
+mod brokered_tunnel;
 mod certs;
 mod config;
 mod connect_policy;

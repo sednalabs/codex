@@ -1082,24 +1082,27 @@ impl CredentialBroker {
 
     #[cfg(test)]
     pub(crate) fn host_requires_mitm(&self, host: &str, port: u16) -> bool {
-        self.host_requires_mitm_for_environment(host, port, /*environment_id*/ None)
+        self.host_protocols_for_environment(host, port, /*environment_id*/ None)
+            .tls
     }
 
-    pub(crate) fn host_requires_mitm_for_environment(
+    pub(crate) fn host_protocols_for_environment(
         &self,
         host: &str,
         port: u16,
         environment_id: Option<&str>,
-    ) -> bool {
+    ) -> crate::brokered_tunnel::BrokeredProtocols {
         let normalized_host = normalize_host(host);
         let state = self.read_state();
-        state.enabled
-            && state.credentials.iter().any(|credential| {
-                credential.belongs_to_environment(environment_id)
-                    && credential
-                        .host_bindings()
-                        .any(|binding| binding.requires_mitm(&normalized_host, port))
-            })
+        crate::brokered_tunnel::BrokeredProtocols {
+            tls: state.enabled
+                && state.credentials.iter().any(|credential| {
+                    credential.belongs_to_environment(environment_id)
+                        && credential
+                            .host_bindings()
+                            .any(|binding| binding.requires_mitm(&normalized_host, port))
+                }),
+        }
     }
 
     pub(crate) fn virtualize_text(&self, text: &mut String, env: &HashMap<String, String>) -> bool {

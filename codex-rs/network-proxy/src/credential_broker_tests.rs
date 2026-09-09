@@ -1097,11 +1097,13 @@ fn concurrent_commands_preserve_discovered_credential_destinations() {
                     "{key}, {environment_id}, {host}"
                 );
                 assert_eq!(
-                    broker.host_requires_mitm_for_environment(
-                        host,
-                        /*port*/ 443,
-                        Some(environment_id),
-                    ),
+                    broker
+                        .host_protocols_for_environment(
+                            host,
+                            /*port*/ 443,
+                            Some(environment_id),
+                        )
+                        .tls,
                     injected,
                     "{key}, {environment_id}, {host}"
                 );

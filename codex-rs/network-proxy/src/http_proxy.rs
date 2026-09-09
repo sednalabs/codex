@@ -89,7 +89,7 @@ use tracing::warn;
 enum ConnectMitmMode {
     Disabled,
     Enabled,
-    DetectTls,
+    DetectProtocol(crate::brokered_tunnel::BrokeredProtocols),
 }
 
 pub async fn run_http_proxy(
@@ -312,7 +312,9 @@ async fn http_connect_accept(
     } else {
         match host_mitm_requirement {
             HostMitmRequirement::None => ConnectMitmMode::Disabled,
-            HostMitmRequirement::Tls => ConnectMitmMode::DetectTls,
+            HostMitmRequirement::Credential(protocols) => {
+                ConnectMitmMode::DetectProtocol(protocols)
+            }
             HostMitmRequirement::Always => ConnectMitmMode::Enabled,
         }
     };
@@ -387,11 +389,17 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     let result: Result<(), OpaqueError> = match connect_mitm_mode {
         ConnectMitmMode::Disabled => forward_connect_tunnel(upgraded).await,
         ConnectMitmMode::Enabled => mitm_connect_tunnel(upgraded).await,
-        ConnectMitmMode::DetectTls => match mitm::peek_tls_prefix(upgraded).await {
-            Ok((true, stream)) => mitm_connect_tunnel(stream).await,
-            Ok((false, stream)) => forward_connect_tunnel(stream).await,
-            Err(err) => Err(OpaqueError::from_display(format!("detect TLS: {err:#}"))),
-        },
+        ConnectMitmMode::DetectProtocol(protocols) => {
+            match crate::brokered_tunnel::peek_protocol(upgraded, protocols).await {
+                Ok((crate::brokered_tunnel::TunnelProtocol::Tls, stream)) => {
+                    mitm_connect_tunnel(stream).await
+                }
+                Ok((crate::brokered_tunnel::TunnelProtocol::Opaque, stream)) => {
+                    forward_connect_tunnel(stream).await
+                }
+                Err(err) => Err(OpaqueError::from_display(format!("detect TLS: {err:#}"))),
+            }
+        }
     };
     if let Err(err) = result {
         warn!("CONNECT tunnel error: {err}");
@@ -1324,7 +1332,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             request.extensions().get::<ConnectMitmMode>().copied(),
-            Some(ConnectMitmMode::DetectTls)
+            Some(ConnectMitmMode::DetectProtocol(
+                crate::brokered_tunnel::BrokeredProtocols { tls: true }
+            ))
         );
     }
 
