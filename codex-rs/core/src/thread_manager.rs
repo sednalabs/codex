@@ -1308,31 +1308,21 @@ impl ThreadManager {
 
     /// Fork an existing thread by snapshotting rollout history according to
     /// `snapshot` and starting a new thread with identical configuration
-    /// (unless overridden by the caller's `config`). The new thread will have
-    /// a fresh id.
+    /// (unless overridden by the caller's options). The new thread has a fresh id.
+    /// Fork history replaces `options.initial_history`.
     pub async fn fork_thread<S>(
         &self,
         snapshot: S,
-        config: Config,
+        options: StartThreadOptions,
         path: PathBuf,
-        thread_source: Option<ThreadSource>,
-        parent_trace: Option<W3cTraceContext>,
     ) -> CodexResult<NewThread>
     where
         S: Into<ForkSnapshot>,
     {
         let snapshot = snapshot.into();
         let history = self.initial_history_from_rollout_path(path).await?;
-        self.fork_thread_from_history(
-            snapshot,
-            config,
-            history,
-            thread_source,
-            parent_trace,
-            ClientMcpExtensions::default(),
-            /*reserved_thread_id*/ None,
-        )
-        .await
+        self.fork_thread_from_history(snapshot, options, history)
+            .await
     }
 
     async fn initial_history_from_rollout_path(
@@ -1354,31 +1344,22 @@ impl ThreadManager {
     }
 
     /// Fork an existing thread from already-loaded store history.
-    #[allow(clippy::too_many_arguments)]
     pub async fn fork_thread_from_history<S>(
         &self,
         snapshot: S,
-        config: Config,
+        options: StartThreadOptions,
         history: InitialHistory,
-        thread_source: Option<ThreadSource>,
-        parent_trace: Option<W3cTraceContext>,
-        client_mcp_extensions: ClientMcpExtensions,
-        reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread>
     where
         S: Into<ForkSnapshot>,
     {
         self.fork_thread_with_initial_history(
-            config,
+            options,
             ForkHistory {
                 snapshot: snapshot.into(),
                 initial_history: history,
                 persistence: ForkPersistence::Copied,
             },
-            thread_source,
-            parent_trace,
-            client_mcp_extensions,
-            reserved_thread_id,
         )
         .await
     }
@@ -1386,12 +1367,8 @@ impl ThreadManager {
     /// Fork prepared reference-backed history using the same snapshot semantics as copied forks.
     pub async fn fork_prepared_thread(
         &self,
-        config: Config,
+        options: StartThreadOptions,
         prepared: PreparedFork,
-        thread_source: Option<ThreadSource>,
-        parent_trace: Option<W3cTraceContext>,
-        client_mcp_extensions: ClientMcpExtensions,
-        reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
         let history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: prepared.source_thread_id,
@@ -1404,16 +1381,12 @@ impl ThreadManager {
         };
         let result = self
             .fork_thread_with_initial_history(
-                config,
+                options,
                 ForkHistory {
                     snapshot: ForkSnapshot::Interrupted,
                     initial_history: history,
                     persistence: fork_persistence,
                 },
-                thread_source,
-                parent_trace,
-                client_mcp_extensions,
-                reserved_thread_id,
             )
             .await;
         drop(prepared);
@@ -1422,12 +1395,8 @@ impl ThreadManager {
 
     async fn fork_thread_with_initial_history(
         &self,
-        config: Config,
+        mut options: StartThreadOptions,
         fork_history: ForkHistory,
-        thread_source: Option<ThreadSource>,
-        parent_trace: Option<W3cTraceContext>,
-        client_mcp_extensions: ClientMcpExtensions,
-        reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
         let ForkHistory {
             snapshot,
@@ -1448,21 +1417,15 @@ impl ThreadManager {
                 /*session_source*/ None,
                 /*parent_thread_id*/ None,
                 source_thread_id,
-                &config,
+                &options.config,
             )
             .await;
-        let interrupted_marker =
-            InterruptedTurnHistoryMarker::from_config_and_version(&config, multi_agent_version);
-        let history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
-        let agent_control = self.agent_control_for_config(&config);
-        let options = StartThreadOptions {
-            initial_history: history,
-            thread_source,
-            parent_trace,
-            client_mcp_extensions,
-            reserved_thread_id,
-            ..StartThreadOptions::new(config)
-        };
+        let interrupted_marker = InterruptedTurnHistoryMarker::from_config_and_version(
+            &options.config,
+            multi_agent_version,
+        );
+        options.initial_history = fork_history_from_snapshot(snapshot, history, interrupted_marker);
+        let agent_control = self.agent_control_for_config(&options.config);
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
         request.forked_from_thread_id = source_thread_id;

@@ -15,7 +15,7 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_config::CloudConfigBundleLoader;
 use codex_core::CodexThread;
-use codex_core::StartThreadOptions;
+pub use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::TimeProvider;
 pub use codex_core::TurnInputRequest;

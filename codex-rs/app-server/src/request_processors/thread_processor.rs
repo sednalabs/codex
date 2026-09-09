@@ -574,13 +574,14 @@ impl ThreadRequestProcessor {
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_fork_inner(
+        // Keep the large fork future out of the shared request dispatcher's stack frame.
+        Box::pin(self.thread_fork_inner(
             request_id,
             params,
             app_server_client_name,
             app_server_client_version,
             client_mcp_extensions,
-        )
+        ))
         .await
         .map(|()| None)
     }
@@ -5162,31 +5163,27 @@ impl ThreadRequestProcessor {
             .await?
         };
 
+        let fork_options = StartThreadOptions {
+            thread_source,
+            parent_trace,
+            client_mcp_extensions,
+            reserved_thread_id,
+            ..StartThreadOptions::new(config)
+        };
         let new_thread = if let Some(prepared_fork) = prepared_fork {
             self.thread_manager
-                .fork_prepared_thread(
-                    config,
-                    prepared_fork,
-                    thread_source,
-                    parent_trace,
-                    client_mcp_extensions,
-                    reserved_thread_id,
-                )
+                .fork_prepared_thread(fork_options, prepared_fork)
                 .await
         } else {
             self.thread_manager
                 .fork_thread_from_history(
                     ForkSnapshot::Interrupted,
-                    config,
+                    fork_options,
                     InitialHistory::Resumed(ResumedHistory {
                         conversation_id: source_thread_id,
                         history: history_items,
                         rollout_path: source_thread.rollout_path.clone(),
                     }),
-                    thread_source,
-                    parent_trace,
-                    client_mcp_extensions,
-                    reserved_thread_id,
                 )
                 .await
         };
