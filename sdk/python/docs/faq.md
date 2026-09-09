@@ -37,6 +37,22 @@ Choose `run()` for most apps. Choose `stream()` for progress UIs, custom timeout
 
 If your app is not already async, stay with `Codex`.
 
+## Does `include_turns=False` remove the conversation's context?
+
+No. On `thread_resume(...)` and `thread_fork(...)`, it only skips loading turn
+history into the server's response. Omitting it preserves the server's
+existing default. Retrieve saved history with `thread.read(include_turns=True)`.
+
+## How do I change the service tier for just one turn?
+
+Pass `turn_service_tier=` to `thread.run(...)` or `thread.turn(...)`.
+`None` inherits the thread setting, and `"default"` selects standard speed.
+The override applies only when starting a new turn. Use `service_tier=` when
+you want to change the thread's setting for subsequent turns too.
+
+`source=` on those methods only labels what initiated the turn. It does not
+schedule work or grant authority, and it is ignored when joining an active turn.
+
 ## How do I log in?
 
 - `login_api_key(...)` authenticates immediately with an API key.

@@ -21,7 +21,12 @@ def main() -> None:
         harness.responses.enqueue_assistant_message("Installed SDK works")
         config = replace(harness.app_server_config(), codex_bin=None)
         with Codex(config=config) as codex:
-            result = codex.thread_start().run("Check the installed SDK")
+            thread = codex.thread_start()
+            result = thread.run(
+                "Check the installed SDK", turn_service_tier="default", source="automation"
+            )
+            codex.thread_resume(thread.id, include_turns=False)
+            codex.thread_fork(thread.id, include_turns=True)
         assert result.final_response == "Installed SDK works"
         assert harness.responses.single_request().message_input_texts("user")[-1:] == [
             "Check the installed SDK"

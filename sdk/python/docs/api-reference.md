@@ -67,8 +67,8 @@ Properties/methods:
 - `logout() -> None`
 - `thread_start(*, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, ephemeral=None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None) -> Thread`
 - `thread_list(*, archived=None, cursor=None, cwd=None, limit=None, model_providers=None, sort_key=None, source_kinds=None) -> ThreadListResponse`
-- `thread_resume(thread_id: str, *, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None) -> Thread`
-- `thread_fork(thread_id: str, *, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, model=None, model_provider=None, sandbox: Sandbox | None = None) -> Thread`
+- `thread_resume(thread_id: str, *, approval_mode=None, base_instructions=None, config=None, cwd=None, developer_instructions=None, include_turns: bool | None = None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None, service_tier=None) -> Thread`
+- `thread_fork(thread_id: str, *, approval_mode=None, base_instructions=None, config=None, cwd=None, developer_instructions=None, ephemeral=None, include_turns: bool | None = None, model=None, model_provider=None, sandbox: Sandbox | None = None, service_tier=None) -> Thread`
 - `thread_archive(thread_id: str) -> ThreadArchiveResponse`
 - `thread_unarchive(thread_id: str) -> Thread`
 - `models(*, include_hidden: bool = False) -> ModelListResponse`
@@ -79,6 +79,13 @@ Context manager:
 with Codex() as codex:
     ...
 ```
+
+`thread_resume(...)` and `thread_fork(...)` accept `include_turns` to control
+whether the server loads turn history into its response. `False` skips that
+work; `True` requests it. Omitting the option, or passing `None`, preserves the
+server's default behavior. This does not remove history from the model's
+context. Both methods return a thread handle; use `thread.read(include_turns=True)`
+to retrieve its history.
 
 ## AsyncCodex (async parity)
 
@@ -107,8 +114,8 @@ Properties/methods:
 - `logout() -> Awaitable[None]`
 - `thread_start(*, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, ephemeral=None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None) -> Awaitable[AsyncThread]`
 - `thread_list(*, archived=None, cursor=None, cwd=None, limit=None, model_providers=None, sort_key=None, source_kinds=None) -> Awaitable[ThreadListResponse]`
-- `thread_resume(thread_id: str, *, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None) -> Awaitable[AsyncThread]`
-- `thread_fork(thread_id: str, *, approval_mode=ApprovalMode.auto_review, base_instructions=None, config=None, cwd=None, developer_instructions=None, ephemeral=None, model=None, model_provider=None, sandbox: Sandbox | None = None) -> Awaitable[AsyncThread]`
+- `thread_resume(thread_id: str, *, approval_mode=None, base_instructions=None, config=None, cwd=None, developer_instructions=None, include_turns: bool | None = None, model=None, model_provider=None, personality=None, sandbox: Sandbox | None = None, service_tier=None) -> Awaitable[AsyncThread]`
+- `thread_fork(thread_id: str, *, approval_mode=None, base_instructions=None, config=None, cwd=None, developer_instructions=None, ephemeral=None, include_turns: bool | None = None, model=None, model_provider=None, sandbox: Sandbox | None = None, service_tier=None) -> Awaitable[AsyncThread]`
 - `thread_archive(thread_id: str) -> Awaitable[ThreadArchiveResponse]`
 - `thread_unarchive(thread_id: str) -> Awaitable[AsyncThread]`
 - `models(*, include_hidden: bool = False) -> Awaitable[ModelListResponse]`
@@ -150,23 +157,23 @@ attempt. API-key login completes synchronously and does not return a handle.
 
 ### Thread
 
-- `run(input: str | Input, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, summary=None) -> TurnResult`
-- `turn(input: str | Input, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, summary=None) -> TurnHandle`
+- `run(input: RunInput, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, source=None, summary=None, turn_service_tier=None) -> TurnResult`
+- `turn(input: RunInput, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, source=None, summary=None, turn_service_tier=None) -> TurnHandle`
 - `read(*, include_turns: bool = False) -> ThreadReadResponse`
 - `set_name(name: str) -> ThreadSetNameResponse`
 - `compact() -> ThreadCompactStartResponse`
 
 ### AsyncThread
 
-- `run(input: str | Input, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, summary=None) -> Awaitable[TurnResult]`
-- `turn(input: str | Input, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, summary=None) -> Awaitable[AsyncTurnHandle]`
+- `run(input: RunInput, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, source=None, summary=None, turn_service_tier=None) -> Awaitable[TurnResult]`
+- `turn(input: RunInput, *, approval_mode=None, cwd=None, effort=None, model=None, output_schema=None, personality=None, sandbox: Sandbox | None = None, service_tier=None, source=None, summary=None, turn_service_tier=None) -> Awaitable[AsyncTurnHandle]`
 - `read(*, include_turns: bool = False) -> Awaitable[ThreadReadResponse]`
 - `set_name(name: str) -> Awaitable[ThreadSetNameResponse]`
 - `compact() -> Awaitable[ThreadCompactStartResponse]`
 
-`run(...)` is the common-case convenience path. It accepts plain strings, starts
-the turn, consumes notifications until completion, and returns a small result
-object with:
+`run(...)` is the common-case convenience path. It accepts the same input and
+options as `turn(...)`, consumes notifications until completion, and returns a
+small result object with:
 
 - `id: str`
 - `status: TurnStatus`
@@ -183,6 +190,24 @@ phase-less assistant message item.
 
 Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 `interrupt()`) before collecting the turn result.
+
+### Turn options
+
+These options have the same behavior on sync and async `run(...)` and `turn(...)`:
+
+| Option | Behavior |
+| --- | --- |
+| `service_tier: str | None = None` | Sets the thread's service tier for this and subsequent turns. |
+| `turn_service_tier: str | None = None` | Overrides the tier for a newly started turn only. `None` inherits the thread setting; `"default"` selects standard speed. Does not change the thread default and is ignored when input joins an active turn. |
+| `source: str | None = None` | Labels the caller that initiated a new turn, such as `"review_ui"`. This is metadata; it does not schedule work or grant authority. Ignored when input joins an active turn. |
+
+`turn_service_tier`, `source`, and explicit `include_turns`
+on resume/fork require Codex CLI 0.151.0 or newer. The SDK raises `CodexError`
+before sending these options to an older runtime, which would otherwise ignore
+them. Published SDK releases install a matching runtime automatically; when
+using `CodexConfig.codex_bin`, choose a compatible executable. Unversioned local
+builds are checked lazily against their experimental schema before these options
+are sent. A custom `launch_args_override` must report a supported version.
 
 ## Sandbox
 

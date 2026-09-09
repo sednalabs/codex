@@ -637,7 +637,7 @@ def test_runtime_setup_reads_independent_runtime_pin_and_release_tags() -> None:
     } == {
         "package_name": "openai-codex-cli-bin",
         "sdk_template_version": "0.0.0-dev",
-        "runtime_pin": "0.147.0",
+        "runtime_pin": "0.153.4",
         "normalized_release_version": "0.116.0a1",
         "normalized_alpha_hotfix_version": "0.116.0a1.post2",
         "release_tag": "rust-v0.116.0-alpha.1",
@@ -955,17 +955,24 @@ def test_stage_sdk_release_packages_reviewed_artifacts(
     assert not any((staged / "src" / "openai_codex").glob("bin/**"))
 
 
+@pytest.mark.parametrize("source_runtime", ["0.147.0", "0.153.0"])
 @pytest.mark.parametrize("sdk_version", ["0.154.0", "0.2.0b1"])
 def test_built_sdk_uses_explicit_release_versions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_release_source: Path, sdk_version: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sdk_release_source: Path,
+    sdk_version: str,
+    source_runtime: str,
 ) -> None:
     script = _load_update_script_module()
     monkeypatch.setattr(script, "sdk_root", lambda: sdk_release_source)
-    source_project = (sdk_release_source / "pyproject.toml").read_bytes()
+    project_path = sdk_release_source / "pyproject.toml"
+    project_path.write_text(project_path.read_text().replace("==0.153.0", f"=={source_runtime}"))
+    source_project = project_path.read_bytes()
     expected_dependencies = {
         *tomllib.loads(source_project.decode())["project"]["dependencies"],
         "openai-codex-cli-bin==0.154.0",
-    } - {"openai-codex-cli-bin==0.153.0"}
+    } - {f"openai-codex-cli-bin=={source_runtime}"}
     reviewed_files = {
         path: (sdk_release_source / path).read_bytes()
         for path in (
@@ -1058,9 +1065,50 @@ def test_sdk_release_matches_stable_runtime(
         "runtime_version": "0.153.0",
         "sdk_dependencies": [
             "pydantic>=2.12",
+            "packaging>=26.2",
             "openai-codex-cli-bin==0.153.0",
         ],
     }
+
+
+@pytest.mark.parametrize("runtime_version", ["0.149.0", "0.151.0a1", "0.0.0", "unknown"])
+def test_sdk_release_rejects_unsupported_runtime_even_for_beta(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sdk_release_source: Path,
+    runtime_version: str,
+) -> None:
+    script = _load_update_script_module()
+    monkeypatch.setattr(script, "sdk_root", lambda: sdk_release_source)
+    project = sdk_release_source / "pyproject.toml"
+    project.write_text(project.read_text().replace("==0.153.0", f"=={runtime_version}"))
+
+    with pytest.raises(RuntimeError, match=r"Cannot package.*Codex CLI 0\.151\.0 or newer"):
+        script.stage_python_sdk_package(tmp_path / "sdk-stage", "0.1.0b1")
+
+
+def test_sdk_runtime_override_is_checked_after_stamping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_release_source: Path
+) -> None:
+    script = _load_update_script_module()
+    monkeypatch.setattr(script, "sdk_root", lambda: sdk_release_source)
+    with pytest.raises(RuntimeError, match=r"Cannot package.*Codex CLI 0\.151\.0 or newer"):
+        script.stage_python_sdk_package(tmp_path / "sdk-stage", "0.1.0b1", "0.149.0")
+
+
+def test_sdk_beta_can_use_a_supported_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk_release_source: Path
+) -> None:
+    script = _load_update_script_module()
+    monkeypatch.setattr(script, "sdk_root", lambda: sdk_release_source)
+
+    staged = script.stage_python_sdk_package(tmp_path / "sdk-stage", "0.1.0b1")
+
+    project = tomllib.loads((staged / "pyproject.toml").read_text())["project"]
+    assert (project["version"], project["dependencies"]) == (
+        "0.1.0b1",
+        ["pydantic>=2.12", "packaging>=26.2", "openai-codex-cli-bin==0.153.0"],
+    )
 
 
 def test_stage_runtime_stages_package_without_type_generation(tmp_path: Path) -> None:
@@ -1255,7 +1303,7 @@ def test_sdk_beta_can_pin_an_independent_runtime(tmp_path: Path) -> None:
     project = tomllib.loads((staged / "pyproject.toml").read_text())["project"]
     assert (project["version"], project["dependencies"]) == (
         "0.1.0b1",
-        ["pydantic>=2.12", "openai-codex-cli-bin==0.153.0"],
+        ["pydantic>=2.12", "packaging>=26.2", "openai-codex-cli-bin==0.153.0"],
     )
 
 
@@ -1297,6 +1345,7 @@ def test_sdk_release_matches_runtime(
         "runtime_version": package_version,
         "sdk_dependencies": [
             "pydantic>=2.12",
+            "packaging>=26.2",
             f"openai-codex-cli-bin=={package_version}",
         ],
     }

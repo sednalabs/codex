@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -13,8 +15,9 @@ from openai_codex.api import (
     Codex,
     Sandbox,
 )
-from openai_codex.generated.v2_all import TurnStartParams
-from openai_codex.models import InitializeResponse
+from openai_codex.client import _params_dict
+from openai_codex.generated.v2_all import TurnCompletedNotification, TurnStartParams
+from openai_codex.models import InitializeResponse, Notification
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,6 +127,97 @@ def test_async_codex_initializes_only_once_under_concurrency() -> None:
 
         assert start_calls == 1
         assert initialize_calls == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("api_type", [Codex, AsyncCodex])
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, {}),
+        ({"include_turns": None}, {}),
+        ({"include_turns": True}, {"excludeTurns": False}),
+        ({"include_turns": False}, {"excludeTurns": True}),
+    ],
+)
+def test_include_turns_preserves_omission_and_inverts_explicit_values(
+    api_type, options, expected
+) -> None:
+    async def scenario() -> None:
+        async_api = api_type is AsyncCodex
+        rpc = AsyncMock if async_api else Mock
+        thread_response = SimpleNamespace(thread=SimpleNamespace(id="thread-2"))
+        client = SimpleNamespace(
+            thread_resume=rpc(return_value=thread_response),
+            thread_fork=rpc(return_value=thread_response),
+        )
+        codex = api_type.__new__(api_type)
+        codex._client = client
+        codex._initialized = True
+
+        for method in ("thread_resume", "thread_fork"):
+            thread = getattr(codex, method)("thread-1", **options)
+            if async_api:
+                thread = await thread
+            assert thread.id == "thread-2"
+            assert _params_dict(getattr(client, method).call_args.args[1]) == {
+                "threadId": "thread-1",
+                **expected,
+            }
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("api_type", [Codex, AsyncCodex])
+@pytest.mark.parametrize("method", ["run", "turn"])
+def test_turn_inputs_and_options_reach_the_client(api_type, method) -> None:
+    """Turn options reach the client through both sync and async entry points."""
+
+    async def scenario() -> None:
+        async_api = api_type is AsyncCodex
+        rpc = AsyncMock if async_api else Mock
+        completed = Notification(
+            method="turn/completed",
+            payload=TurnCompletedNotification.model_validate(
+                {
+                    "threadId": "thread-1",
+                    "turn": {"id": "turn-1", "items": [], "status": "completed"},
+                }
+            ),
+        )
+        client = SimpleNamespace(
+            turn_start=rpc(return_value=SimpleNamespace(turn=SimpleNamespace(id="turn-1"))),
+            register_turn_notifications=Mock(),
+            unregister_turn_notifications=Mock(),
+            next_turn_notification=rpc(return_value=completed),
+        )
+        codex = api_type.__new__(api_type)
+        codex._client = client
+        codex._initialized = True
+        thread = (
+            public_api_module.AsyncThread(codex, "thread-1")
+            if async_api
+            else public_api_module.Thread(client, "thread-1")
+        )
+        input = "Continue."
+        turn = getattr(thread, method)(
+            input,
+            service_tier="priority",
+            turn_service_tier="default",
+            source="automation",
+        )
+        if async_api:
+            turn = await turn
+        assert turn.id == "turn-1"
+        expected_input = [{"type": "text", "text": "Continue.", "text_elements": []}]
+        assert _params_dict(client.turn_start.call_args.kwargs["params"]) == {
+            "threadId": "thread-1",
+            "input": expected_input,
+            "serviceTier": "priority",
+            "serviceTierForTurn": "default",
+            "turnTrigger": "automation",
+        }
 
     asyncio.run(scenario())
 
