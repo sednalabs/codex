@@ -759,8 +759,8 @@ impl MessageProcessor {
         self.thread_processor.thread_created_receiver()
     }
 
-    pub(crate) async fn persist_daemon_threads(&self) {
-        self.thread_processor.persist_daemon_threads().await
+    pub(crate) async fn daemon_recovery_candidates(&self) -> Vec<String> {
+        self.thread_processor.daemon_recovery_candidates().await
     }
 
     pub(crate) async fn send_initialize_notifications_to_connection(

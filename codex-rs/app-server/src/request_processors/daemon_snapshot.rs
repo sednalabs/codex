@@ -1,5 +1,5 @@
-//! Persists loaded persistent root threads before managed daemon shutdown.
-//! Failures are logged so other threads can still be saved.
+//! Selects persistent root threads for managed daemon recovery using normal resume semantics.
+//! Only threads successfully persisted through the existing thread store become candidates.
 
 use super::ThreadRequestProcessor;
 use codex_thread_store::PersistContext;
@@ -10,7 +10,8 @@ impl ThreadRequestProcessor {
         clippy::await_holding_invalid_type,
         reason = "snapshot selection must be serialized against pending unloads"
     )]
-    pub(crate) async fn persist_daemon_threads(&self) {
+    pub(crate) async fn daemon_recovery_candidates(&self) -> Vec<String> {
+        let mut ids = Vec::new();
         for thread_id in self.thread_manager.list_thread_ids().await {
             let pending_unloads = self.pending_thread_unloads.lock().await;
             if pending_unloads.contains(&thread_id) {
@@ -23,13 +24,18 @@ impl ThreadRequestProcessor {
             if !config.ephemeral
                 && config.parent_thread_id.is_none()
                 && !config.session_source.is_non_root_agent()
-                && let Err(err) = self
+            {
+                if let Err(err) = self
                     .thread_store
                     .persist_thread(thread_id, PersistContext::Standard)
                     .await
-            {
-                warn!(%thread_id, %err, "failed to persist thread during daemon shutdown");
+                {
+                    warn!(%thread_id, %err, "skipping daemon restore for thread that could not be persisted");
+                    continue;
+                }
+                ids.push(thread_id.to_string());
             }
         }
+        ids
     }
 }

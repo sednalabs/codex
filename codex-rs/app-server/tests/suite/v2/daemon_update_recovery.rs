@@ -1,4 +1,4 @@
-//! Best-effort thread persistence during managed app-server shutdown.
+//! Best-effort loaded-thread snapshots during managed app-server shutdown.
 
 use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
 use super::connection_handling_websocket::create_config_toml;
@@ -10,6 +10,8 @@ use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_transport::daemon_recovery;
+use codex_app_server_transport::daemon_recovery_file_path;
 use codex_uds::UnixStream;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -33,58 +35,76 @@ use tokio_tungstenite::client_async;
 use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::test]
-async fn managed_shutdown_persists_loaded_threads_after_active_turn() -> Result<()> {
+async fn managed_shutdown_saves_loaded_thread_after_active_turn() -> Result<()> {
     let home = TempDir::new()?;
     let (release_response, response_gate) = oneshot::channel();
     let (mock, _completions) =
         start_streaming_sse_server(vec![vec![stream_chunk(Some(response_gate), "Done")?]]).await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let socket_path = home.path().join("control/server.sock");
+    let recovery_file = daemon_recovery_file_path(home.path());
+    daemon_recovery::write_candidates(&recovery_file, &["stale".into()].into_iter().collect())?;
     let mut server = spawn_server(home.path(), &socket_path)?;
-    let mut client = connect_default_daemon_client(&socket_path).await?;
-    let active = start_thread(&mut client, /*id*/ 2, json!({})).await?;
-    let idle = start_thread(&mut client, /*id*/ 3, json!({})).await?;
-    start_turn(&mut client, /*id*/ 4, &active.thread.id).await?;
+    let mut client = connect_daemon_client(
+        &socket_path,
+        InitializeCapabilities {
+            experimental_api: true,
+            extensions: Some(std::collections::HashMap::from([(
+                "io.modelcontextprotocol/ui".into(),
+                json!({"mimeTypes":["text/html"]}),
+            )])),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(!recovery_file.exists());
+    let thread = start_thread(
+        &mut client,
+        /*id*/ 2,
+        json!({
+            "model":"gpt-5.2",
+            "developerInstructions":"Session-only instructions",
+            "dynamicTools":[{"name":"lookup_ticket","description":"Look up a ticket",
+                             "inputSchema":{"type":"object","properties":{}}}]
+        }),
+    )
+    .await?;
+    for (id, method, params) in [
+        (
+            3,
+            "skills/extraRoots/set",
+            json!({"extraRoots":[home.path()]}),
+        ),
+        (
+            4,
+            "experimentalFeature/enablement/set",
+            json!({"enablement":{"mcp_2026_07_28":true}}),
+        ),
+    ] {
+        request(&mut client, id, method, params).await?;
+    }
+    start_turn(&mut client, /*id*/ 5, &thread.thread.id).await?;
     wait_for_requests(&mock, /*count*/ 1).await?;
     request_shutdown(&server, &socket_path).await?;
     assert_still_running(&mut server, "active turn must finish first").await;
     release_response.send(()).expect("response is waiting");
     wait_success(&mut server).await?;
-
-    let mut successor = spawn_server(home.path(), &socket_path)?;
-    let mut reconnected = connect_default_daemon_client(&socket_path).await?;
-    for (id, thread) in [(2, &active.thread), (3, &idle.thread)] {
-        let resumed = request(
-            &mut reconnected,
-            id,
-            "thread/resume",
-            json!({"threadId":thread.id}),
-        )
-        .await?;
-        assert_eq!(resumed["thread"]["id"], thread.id);
-        if thread.id == active.thread.id {
-            assert!(
-                resumed["thread"]["turns"][0]["items"]
-                    .as_array()
-                    .context("recovered turn items")?
-                    .iter()
-                    .any(|item| item["type"] == "agentMessage" && item["text"] == "Done")
-            );
-        }
-    }
-    request_shutdown(&successor, &socket_path).await?;
-    wait_success(&mut successor).await?;
+    assert_eq!(
+        daemon_recovery::read_candidates(&recovery_file)?,
+        [thread.thread.id].into_iter().collect()
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn managed_force_shutdown_exits_with_active_work() -> Result<()> {
+async fn managed_force_shutdown_exits_without_snapshotting_active_work() -> Result<()> {
     let home = TempDir::new()?;
     let (_release_response, response_gate) = oneshot::channel();
     let (mock, _completions) =
         start_streaming_sse_server(vec![vec![stream_chunk(Some(response_gate), "Done")?]]).await;
     create_config_toml(home.path(), mock.uri(), "never")?;
     let socket_path = home.path().join("control/server.sock");
+    let recovery_file = daemon_recovery_file_path(home.path());
     let mut server = spawn_server(home.path(), &socket_path)?;
     let mut client = connect_default_daemon_client(&socket_path).await?;
     let thread = start_thread(&mut client, /*id*/ 2, json!({})).await?;
@@ -94,6 +114,104 @@ async fn managed_force_shutdown_exits_with_active_work() -> Result<()> {
     assert_still_running(&mut server, "graceful shutdown must wait").await;
     request_shutdown(&server, &socket_path).await?;
     wait_success(&mut server).await?;
+    assert!(!recovery_file.exists());
+    Ok(())
+}
+
+enum SnapshotScenario {
+    WriteFailure,
+    Ephemeral,
+    Archived,
+    Child,
+    Parented,
+}
+
+#[test_case::test_case(SnapshotScenario::WriteFailure)]
+#[test_case::test_case(SnapshotScenario::Ephemeral)]
+#[test_case::test_case(SnapshotScenario::Archived)]
+#[test_case::test_case(SnapshotScenario::Child)]
+#[test_case::test_case(SnapshotScenario::Parented)]
+#[tokio::test]
+async fn managed_shutdown_skips_nonpersistent_threads_and_tolerates_save_failure(
+    scenario: SnapshotScenario,
+) -> Result<()> {
+    let home = TempDir::new()?;
+    create_config_toml(home.path(), "http://127.0.0.1:1", "never")?;
+    let source = if matches!(scenario, SnapshotScenario::Child) {
+        codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id: codex_protocol::ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            },
+        )
+    } else {
+        codex_protocol::protocol::SessionSource::Cli
+    };
+    let stored = if matches!(scenario, SnapshotScenario::Parented) {
+        app_test_support::create_fake_parented_rollout_with_source(
+            home.path(),
+            "2026-09-01T12-00-00",
+            "2026-09-01T12:00:00Z",
+            "Saved task",
+            Some("mock_provider"),
+            /*git_info*/ None,
+            source,
+            codex_protocol::SessionId::new(),
+            codex_protocol::ThreadId::new(),
+        )?
+    } else {
+        app_test_support::create_fake_rollout_with_source(
+            home.path(),
+            "2026-09-01T12-00-00",
+            "2026-09-01T12:00:00Z",
+            "Saved task",
+            Some("mock_provider"),
+            /*git_info*/ None,
+            source,
+        )?
+    };
+    let socket_path = home.path().join("control/server.sock");
+    let mut server = spawn_server(home.path(), &socket_path)?;
+    let mut client = connect_default_daemon_client(&socket_path).await?;
+    if matches!(scenario, SnapshotScenario::Ephemeral) {
+        request(
+            &mut client,
+            /*id*/ 2,
+            "thread/start",
+            json!({"ephemeral":true}),
+        )
+        .await?;
+    } else {
+        request(
+            &mut client,
+            /*id*/ 2,
+            "thread/resume",
+            json!({"threadId":stored}),
+        )
+        .await?;
+    }
+    let path = daemon_recovery_file_path(home.path());
+    if matches!(scenario, SnapshotScenario::WriteFailure) {
+        std::fs::create_dir_all(&path)?;
+    } else if matches!(scenario, SnapshotScenario::Archived) {
+        request(
+            &mut client,
+            /*id*/ 3,
+            "thread/archive",
+            json!({"threadId":stored}),
+        )
+        .await?;
+    }
+    request_shutdown(&server, &socket_path).await?;
+    wait_success(&mut server).await?;
+    if matches!(scenario, SnapshotScenario::WriteFailure) {
+        assert!(path.is_dir());
+    } else {
+        assert_eq!(daemon_recovery::read_candidates(&path)?, Default::default());
+    }
     Ok(())
 }
 

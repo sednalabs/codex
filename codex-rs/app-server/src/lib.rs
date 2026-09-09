@@ -55,6 +55,7 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::TextPosition as AppTextPosition;
 use codex_app_server_protocol::TextRange as AppTextRange;
+use codex_app_server_transport::daemon_recovery_file_path;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLoadError;
 use codex_config::TextRange as CoreTextRange;
@@ -106,6 +107,7 @@ mod config_manager_service;
 mod connection_cleanup;
 mod connection_rpc_gate;
 mod current_time;
+mod daemon_thread_recovery;
 mod dynamic_tools;
 mod effective_plugin_change;
 mod error_code;
@@ -937,6 +939,7 @@ pub async fn run_main_with_transport_options(
         info!("outbound router task exited (channel closed)");
     });
 
+    let recovery_file = daemon_recovery_file_path(&config.codex_home);
     let processor_handle = tokio::spawn({
         let auth_manager = Arc::clone(&auth_manager);
         let analytics_events_client =
@@ -982,9 +985,24 @@ pub async fn run_main_with_transport_options(
         let mut remote_control_status = remote_control_status_rx.borrow().clone();
         let transport_shutdown_token = transport_shutdown_token.clone();
         async move {
+            // This process must never hand an earlier generation's candidates to
+            // its successor, including when the snapshot writer cannot start.
+            if managed_daemon
+                && let Err(err) = tokio::fs::remove_file(&recovery_file).await
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!("failed to clear stale daemon recovery file: {err}");
+            }
             let mut listen_for_threads = true;
             // Keep force signals and daemon control events responsive while saving.
-            let mut snapshot = Box::pin(processor.persist_daemon_threads());
+            let mut snapshot = Box::pin(async {
+                let loaded = processor.daemon_recovery_candidates().await;
+                if let Err(err) =
+                    daemon_thread_recovery::snapshot(recovery_file.clone(), loaded).await
+                {
+                    warn!("failed to save loaded threads during daemon shutdown: {err}");
+                }
+            });
             let mut snapshot_finished = !managed_daemon;
             let mut clients_disconnected = false;
             let mut shutdown_state = ShutdownState::default();
