@@ -163,11 +163,14 @@ pub(crate) struct McpStartupRequirements {
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<TurnInput>,
+    mut input: Vec<TurnInput>,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+        crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
+    }
     // Record results from hooks that finished after the previous turn before this turn's user prompt.
     drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
 
@@ -305,6 +308,34 @@ pub(crate) async fn run_turn(
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
     }
+    if crate::guardian::is_basic_session_source(&turn_context.session_source)
+        && let Err(error) =
+            crate::guardian::finalize_guardian_input(&sess, &first_step_context, &mut input).await
+    {
+        // Token-budget compaction resets history, which can discard the evidence
+        // referenced by a pending delta review. Leave budget failures unreusable.
+        if !matches!(error.details(), CodexErrorDetails::ContextWindowExceeded)
+            || turn_context.config.features.enabled(Feature::TokenBudget)
+        {
+            return Err(error);
+        }
+        // Incoming evidence can overflow even below the normal history
+        // threshold. Keep it pending while compacting, then select once more.
+        run_auto_compact(
+            &sess,
+            Arc::clone(&first_step_context),
+            /*fallback_step_context*/ None,
+            &mut client_session,
+            InitialContextInjection::DoNotInject,
+            CompactionReason::ContextLimit,
+            CompactionPhase::PreTurn,
+        )
+        .await?;
+        world_state = sess
+            .record_context_updates_and_set_reference_context_item(first_step_context.as_ref())
+            .await?;
+        crate::guardian::finalize_guardian_input(&sess, &first_step_context, &mut input).await?;
+    }
     let mut can_drain_pending_input = input.is_empty();
     if run_hooks_and_record_inputs(
         &sess,
@@ -362,6 +393,7 @@ pub(crate) async fn run_turn(
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
 
     let mut next_step_context = Some(first_step_context);
+    let mut guardian_budget_compacted = false;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -476,6 +508,7 @@ pub(crate) async fn run_turn(
         .await;
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
+                guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -644,6 +677,37 @@ pub(crate) async fn run_turn(
                 }
                 continue;
             }
+            Err(err)
+                if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
+                    && !guardian_budget_compacted
+                    && !turn_context.config.features.enabled(Feature::TokenBudget)
+                    && sess
+                        .services
+                        .thread_extension_data
+                        .get::<crate::guardian::ExhaustedReviewBudget>()
+                        .is_some() =>
+            {
+                // Tool continuations can also cross the complete-request limit.
+                // Only summarizing compaction preserves the action and evidence;
+                // token-budget resets must fail closed and retire the reviewer.
+                // Retry once per model step, so ineffective compaction cannot loop.
+                guardian_budget_compacted = true;
+                run_auto_compact(
+                    &sess,
+                    Arc::clone(&step_context),
+                    /*fallback_step_context*/ None,
+                    &mut client_session,
+                    InitialContextInjection::BeforeLastUserMessage {
+                        world_state: Arc::clone(&world_state),
+                        step_context: Arc::clone(&step_context),
+                    },
+                    CompactionReason::ContextLimit,
+                    CompactionPhase::MidTurn,
+                )
+                .await?;
+                can_drain_pending_input = false;
+                continue;
+            }
             Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
                 return Err(err);
             }
@@ -720,6 +784,16 @@ pub(crate) async fn run_hooks_and_record_inputs(
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    // Cancellation can reach this path before Guardian's tools and context are
+    // resolved. Only finalized evidence may enter reusable reviewer history.
+    if sess
+        .services
+        .thread_extension_data
+        .get::<crate::guardian::PendingReviewContext>()
+        .is_some()
+    {
+        return false;
+    }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
@@ -1480,6 +1554,15 @@ async fn run_sampling_request(
             step_context.as_ref(),
             base_instructions.clone(),
         );
+        if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+            crate::guardian::check_guardian_prompt_budget(
+                &sess,
+                &prompt,
+                &turn_context.config,
+                &step_context.settings.model_info,
+                responses_metadata,
+            )?;
+        }
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

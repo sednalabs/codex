@@ -757,7 +757,7 @@ impl ModelClient {
         }
     }
 
-    fn build_responses_request(
+    pub(crate) fn build_responses_request(
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,

@@ -423,7 +423,7 @@ async fn build_guardian_prompt_full_mode_preserves_initial_review_format() -> an
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(text.contains(">>> TRANSCRIPT END\n"));
@@ -464,7 +464,7 @@ async fn build_guardian_prompt_prefers_retry_reason_over_approval_reason() -> an
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Retry reason:\nThe sandbox blocked the initial command.\n\n"));
     assert!(!text.contains("A policy rule requires approval."));
 
@@ -506,8 +506,8 @@ async fn build_guardian_prompt_truncates_oversized_approval_reason() -> anyhow::
     )
     .await?;
 
-    let reason_item = prompt
-        .items
+    let items = prompt.context.into_user_inputs()?;
+    let reason_item = items
         .iter()
         .find_map(|item| match item {
             codex_protocol::user_input::UserInput::Text { text, .. }
@@ -600,7 +600,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("PARENT TURN PERMISSION CONTEXT START"));
     assert!(text.contains("do not approve escalation whose purpose is to read them"));
     assert!(text.contains(denied_root.to_string_lossy().as_ref()));
@@ -664,7 +664,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("added since your last approval assessment"));
     assert!(text.contains(">>> TRANSCRIPT DELTA START\n"));
     assert!(text.contains("[5] user: Please also push the second docs fix."));
@@ -705,7 +705,7 @@ async fn build_guardian_prompt_delta_mode_handles_empty_delta() -> anyhow::Resul
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains(">>> TRANSCRIPT DELTA START\n"));
     assert!(text.contains("<no retained transcript delta entries>"));
     assert!(text.contains(">>> TRANSCRIPT DELTA END\n"));
@@ -743,7 +743,7 @@ async fn build_guardian_prompt_stale_delta_cursor_falls_back_to_full_prompt() ->
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(!text.contains("TRANSCRIPT DELTA"));
@@ -832,7 +832,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(!text.contains("TRANSCRIPT DELTA"));
@@ -1239,7 +1239,7 @@ async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() 
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Assess the exact planned action below."));
     assert!(text.contains("Retry reason:\nRetry the authorized browser inspection."));
     assert!(text.contains("Planned action JSON:"));
@@ -1275,7 +1275,7 @@ async fn build_guardian_prompt_items_keeps_other_requests_generic() -> anyhow::R
         )
         .await?;
 
-        let text = guardian_prompt_text(&prompt.items);
+        let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
         assert!(text.contains("Assess the exact planned action below."));
         assert!(text.contains("Planned action JSON:"));
         assert!(!text.contains("Node REPL action JSON:"));
@@ -1360,7 +1360,7 @@ async fn build_guardian_prompt_items_explains_network_access_review_scope() -> a
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Below is a proposed network access request under review."));
     assert!(!text.contains("Network approval context:"));
     assert!(
@@ -2330,7 +2330,8 @@ async fn build_guardian_prompt_items_includes_parent_session_id() -> anyhow::Res
     )
     .await?;
     let prompt_text = prompt
-        .items
+        .context
+        .into_user_inputs()?
         .into_iter()
         .map(|item| match item {
             codex_protocol::user_input::UserInput::Text { text, .. } => text,

@@ -1,6 +1,7 @@
 use codex_extension_api::ConversationHistorySnapshot;
 use codex_guardian_context::Budgeted;
 use codex_guardian_context::CollectedContext;
+use codex_guardian_context::ComposedContext;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
 #[cfg(test)]
@@ -14,7 +15,6 @@ use codex_guardian_context::SectionHistory;
 use codex_guardian_context::SectionInput;
 use codex_guardian_context::default_registry;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::user_input::UserInput;
 
 use crate::context::GuardianReviewEvidence;
 use crate::context::NodeReplReviewEvidence;
@@ -37,7 +37,7 @@ const GUARDIAN_MAX_APPROVAL_REASON_TOKENS: usize = 512;
 pub(super) const GUARDIAN_TRANSCRIPT_START: &str = ">>> TRANSCRIPT START\n";
 
 pub(crate) struct GuardianPromptItems {
-    pub(crate) items: Vec<UserInput>,
+    pub(crate) context: ComposedContext,
     pub(crate) transcript_cursor: GuardianTranscriptCursor,
     pub(crate) node_repl_evidence_sequence: u64,
     pub(crate) reviewed_action_truncated: bool,
@@ -214,26 +214,8 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             .push(Budgeted::required(placeholder.to_owned()));
     }
     let context = sections.compose(presentation, transcript)?;
-    for (section, cost) in context.section_costs() {
-        for (measurement, value) in cost.measurements() {
-            session
-                .services
-                .session_telemetry
-                .histogram_with_boundaries(
-                    codex_guardian_context::SECTION_COST_METRIC,
-                    i64::try_from(value).unwrap_or(i64::MAX),
-                    codex_guardian_context::SECTION_COST_BOUNDARIES,
-                    &[
-                        ("target", "sync"),
-                        ("section", section),
-                        ("measurement", measurement),
-                    ],
-                );
-        }
-    }
-    let items = context.into_user_inputs()?;
     Ok(GuardianPromptItems {
-        items,
+        context,
         transcript_cursor,
         node_repl_evidence_sequence,
         reviewed_action_truncated: planned_action_json.truncated,

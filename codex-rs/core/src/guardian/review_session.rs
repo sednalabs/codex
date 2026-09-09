@@ -512,9 +512,9 @@ async fn run_review_on_session(
             .await?;
 
             if prompt_items
-                .items
-                .iter()
-                .any(|item| matches!(item, UserInput::Image { .. }))
+                .context
+                .section_costs()
+                .any(|(_, cost)| cost.image_count > 0)
             {
                 let reviewer_history = review_session.session.clone_history().await;
                 let reviewer_image_urls = reviewer_history
@@ -548,10 +548,7 @@ async fn run_review_on_session(
                     } else {
                         ImagePreparationMode::DetailBased
                     };
-                    prompt_items.items.retain_mut(|item| {
-                        let UserInput::Image { detail, .. } = item else {
-                            return true;
-                        };
+                    prompt_items.context.retain_images(|image_url, detail| {
                         *detail = match normalize_output_image_detail(&model_info, *detail) {
                             _ if mode == ImagePreparationMode::UnifiedBudget => {
                                 Some(ImageDetail::Original)
@@ -559,7 +556,13 @@ async fn run_review_on_session(
                             Some(ImageDetail::Low) => Some(ImageDetail::High),
                             detail => detail,
                         };
-                        let mut prepared = vec![ResponseInputItem::from(vec![item.clone()]).into()];
+                        let mut prepared = vec![
+                            ResponseInputItem::from(vec![UserInput::Image {
+                                image_url: image_url.to_owned(),
+                                detail: *detail,
+                            }])
+                            .into(),
+                        ];
                         prepare_response_items(
                             &mut prepared,
                             mode,
@@ -574,7 +577,8 @@ async fn run_review_on_session(
                         })
                     });
                     let prompt: ResponseItem =
-                        ResponseInputItem::from(prompt_items.items.clone()).into();
+                        ResponseInputItem::from(prompt_items.context.clone().into_user_inputs()?)
+                            .into();
                     let prompt_tokens = crate::context_manager::estimate_item_token_count(&prompt);
                     let base_instructions = review_session.session.get_base_instructions().await;
                     let history_tokens = reviewer_history
@@ -587,13 +591,12 @@ async fn run_review_on_session(
                     false
                 };
                 if !admit_images {
-                    prompt_items
-                        .items
-                        .retain(|item| !matches!(item, UserInput::Image { .. }));
+                    prompt_items.context.retain_images(|_, _| false);
                 }
             }
 
-            Ok::<_, anyhow::Error>(prompt_items)
+            let items = prompt_items.context.clone().into_user_inputs()?;
+            Ok::<_, anyhow::Error>((prompt_items, items))
         }),
     )
     .await;
@@ -601,7 +604,7 @@ async fn run_review_on_session(
         Ok(prompt_items) => prompt_items,
         Err(outcome) => return (outcome, false, analytics_result),
     };
-    let prompt_items = match prompt_items {
+    let (prompt_items, items) = match prompt_items {
         Ok(prompt_items) => prompt_items,
         Err(err) => {
             return (
@@ -652,8 +655,15 @@ async fn run_review_on_session(
         .unwrap_or_else(|| params.parent_context.turn().config.cwd.clone());
 
     let parent_turn = params.parent_context.turn();
+    review_session
+        .session
+        .services
+        .thread_extension_data
+        .insert(super::input_budget::PendingReviewContext(
+            prompt_items.context,
+        ));
     let submission = review_session.io.submit_turn_input(
-        TurnInputRequest::user_input(prompt_items.items)
+        TurnInputRequest::user_input(items)
             .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {
                 environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
                     parent_turn_legacy_fallback_cwd,
@@ -696,6 +706,13 @@ async fn run_review_on_session(
         Box::pin(submission),
     )
     .await;
+    if !matches!(&submit_result, Ok(Ok(TurnInputSubmission::Started { .. }))) {
+        review_session
+            .session
+            .services
+            .thread_extension_data
+            .remove::<super::input_budget::PendingReviewContext>();
+    }
     let child_turn_id = match submit_result {
         Ok(Ok(TurnInputSubmission::Started { turn_id })) => turn_id,
         Ok(Ok(submission)) => {
@@ -737,6 +754,11 @@ async fn run_review_on_session(
         &mut analytics_result,
     )
     .await;
+    review_session
+        .session
+        .services
+        .thread_extension_data
+        .remove::<super::input_budget::PendingReviewContext>();
     if matches!(outcome.0, GuardianReviewSessionOutcome::Completed(_)) {
         if outcome.2
             && let Some(total_token_usage) = review_session.session.total_token_usage().await
@@ -750,7 +772,14 @@ async fn run_review_on_session(
         state.prior_review_count = state.prior_review_count.saturating_add(1);
         state.last_reviewed_transcript_cursor = Some(transcript_cursor);
     }
-    (outcome.0, outcome.1, analytics_result)
+    let keep_review_session = outcome.1
+        && review_session
+            .session
+            .services
+            .thread_extension_data
+            .remove::<super::request_budget::ExhaustedReviewBudget>()
+            .is_none();
+    (outcome.0, keep_review_session, analytics_result)
 }
 
 async fn ensure_guardian_followup_reminder(review_session: &GuardianReviewSession) {

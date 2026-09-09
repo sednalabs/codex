@@ -71,6 +71,9 @@ mod external_auth;
 mod fork_thread;
 mod git_enrichment;
 mod guardian_authorization;
+// Uses the same command-approval harness as guardian_review below.
+#[cfg(not(target_os = "windows"))]
+mod guardian_context_budget;
 mod guardian_history;
 mod guardian_mcp_elicitation;
 mod guardian_retained_context;

@@ -4795,8 +4795,10 @@ async fn code_mode_node_repl_text_evidence_is_visible_only_to_guardian(
                     reviewer.input_modalities =
                         vec![codex_protocol::openai_models::InputModality::Text];
                 } else {
+                    // Fit the required text and request-only prefix, while leaving
+                    // insufficient room for the additional image reservation.
                     reviewer.context_window =
-                        (reviewer_constraint == Some("small")).then_some(10_000);
+                        (reviewer_constraint == Some("small")).then_some(20_000);
                     reviewer.max_context_window = reviewer.context_window;
                 }
             }
