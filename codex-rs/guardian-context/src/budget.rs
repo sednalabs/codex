@@ -57,6 +57,24 @@ pub struct SectionCost {
 }
 
 impl SectionCost {
+    fn add_content(mut self, item: &ContentItem) -> Self {
+        match item {
+            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                self.text_bytes = self.text_bytes.saturating_add(text.len());
+            }
+            ContentItem::InputImage { image_url, .. } => {
+                self.image_bytes = self.image_bytes.saturating_add(image_url.len());
+                self.image_count = self.image_count.saturating_add(1);
+            }
+            ContentItem::InputAudio { audio_url } => {
+                // Guardian currently has no audio contributor. Count a future opaque
+                // payload conservatively until its consumer supplies modality costs.
+                self.text_bytes = self.text_bytes.saturating_add(audio_url.len());
+            }
+        }
+        self
+    }
+
     pub fn measurements(self) -> [(&'static str, usize); 4] {
         [
             ("text_bytes", self.text_bytes),
@@ -83,38 +101,21 @@ impl ComposedContext {
     /// Stable section names and numeric costs; never exposes evidence in diagnostics.
     pub fn section_costs(&self) -> impl Iterator<Item = (&'static str, SectionCost)> + '_ {
         self.sections.iter().map(|section| {
-            let content = match &section.delivery {
-                SectionDelivery::UserContent(content) => content,
+            let cost = match &section.delivery {
+                SectionDelivery::UserContent(content) => content
+                    .iter()
+                    .map(|item| &item.content)
+                    .fold(SectionCost::default(), SectionCost::add_content),
                 SectionDelivery::Message(message) => match message.as_ref() {
-                    ResponseItem::Message { content, .. } => content,
-                    item => {
-                        return (
-                            section.id,
-                            SectionCost {
-                                text_bytes: ByteCount::item(item),
-                                ..SectionCost::default()
-                            },
-                        );
-                    }
+                    ResponseItem::Message { content, .. } => content
+                        .iter()
+                        .fold(SectionCost::default(), SectionCost::add_content),
+                    item => SectionCost {
+                        text_bytes: ByteCount::item(item),
+                        ..SectionCost::default()
+                    },
                 },
             };
-            let mut cost = SectionCost::default();
-            for item in content {
-                match item {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                        cost.text_bytes = cost.text_bytes.saturating_add(text.len());
-                    }
-                    ContentItem::InputImage { image_url, .. } => {
-                        cost.image_bytes = cost.image_bytes.saturating_add(image_url.len());
-                        cost.image_count = cost.image_count.saturating_add(1);
-                    }
-                    ContentItem::InputAudio { audio_url } => {
-                        // Guardian currently has no audio contributor. Count a future opaque
-                        // payload conservatively until its consumer supplies modality costs.
-                        cost.text_bytes = cost.text_bytes.saturating_add(audio_url.len());
-                    }
-                }
-            }
             (section.id, cost)
         })
     }
@@ -138,18 +139,20 @@ pub(super) fn content_tokens(item: &ContentItem) -> usize {
 
 pub(super) fn section_tokens(section: &SectionOutput) -> usize {
     match &section.delivery {
-        SectionDelivery::UserContent(content) if content.is_empty() => 0,
-        SectionDelivery::UserContent(content) => {
-            let separators =
-                TruncationPolicy::Bytes(content.len().saturating_sub(1)).token_budget();
-            content.iter().map(content_tokens).fold(
-                estimate_input_tokens(&crate::composition::user_message(Vec::new()))
-                    .saturating_add(separators),
-                usize::saturating_add,
-            )
-        }
+        SectionDelivery::UserContent(content) => content
+            .iter()
+            .map(|item| content_tokens(&item.content))
+            .fold(content_framing_tokens(content.len()), usize::saturating_add),
         SectionDelivery::Message(message) => estimate_input_tokens(message),
     }
+}
+
+pub(super) fn content_framing_tokens(item_count: usize) -> usize {
+    if item_count == 0 {
+        return 0;
+    }
+    estimate_input_tokens(&crate::composition::user_message(Vec::new()))
+        .saturating_add(TruncationPolicy::Bytes(item_count - 1).token_budget())
 }
 
 fn adjusted_tokens(mut bytes: usize, content: &[ContentItem]) -> usize {

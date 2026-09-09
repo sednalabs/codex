@@ -1,6 +1,7 @@
 //! Costs distinguish evidence payloads from complete model request estimates.
 
 use super::*;
+use crate::Budgeted;
 use crate::composition::SectionOutput;
 use crate::composition::user_message as message;
 use pretty_assertions::assert_eq;
@@ -12,13 +13,13 @@ fn section_costs_keep_multimodal_payloads_separate() {
             SectionOutput {
                 id: "transcript",
                 delivery: SectionDelivery::UserContent(vec![
-                    ContentItem::InputText {
+                    Budgeted::required(ContentItem::InputText {
                         text: "évidence".to_owned(),
-                    },
-                    ContentItem::InputImage {
+                    }),
+                    Budgeted::required(ContentItem::InputImage {
                         image_url: "data:image/png;base64,AAAA".to_owned(),
                         detail: None,
-                    },
+                    }),
                 ]),
             },
             SectionOutput {
@@ -76,9 +77,11 @@ fn section_estimate_bounds_the_delivered_message() {
                 sections: vec![SectionOutput {
                     id: "transcript",
                     delivery: SectionDelivery::UserContent(vec![
-                        ContentItem::InputText {
-                            text: text.to_owned(),
-                        };
+                        Budgeted::required(
+                            ContentItem::InputText {
+                                text: text.to_owned(),
+                            }
+                        );
                         count
                     ]),
                 }],

@@ -48,6 +48,10 @@ pub use verified_answers::render_verified_answers;
 mod retained_instructions;
 
 mod action;
+mod enforcement;
+pub(crate) use enforcement::BudgetPriority;
+pub use enforcement::Budgeted;
+pub(crate) use enforcement::Retention;
 mod budget;
 mod composition;
 pub use budget::DEFAULT_MAX_INPUT_TOKENS;

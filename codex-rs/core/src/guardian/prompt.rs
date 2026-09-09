@@ -1,4 +1,5 @@
 use codex_extension_api::ConversationHistorySnapshot;
+use codex_guardian_context::Budgeted;
 use codex_guardian_context::CollectedContext;
 use codex_guardian_context::ContextPresentation;
 use codex_guardian_context::ContextProfile;
@@ -208,7 +209,9 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
     let profile = ContextProfile::synchronous();
     let mut transcript = profile.render_transcript(transcript_entries, offset);
     if transcript_entries.is_empty() {
-        transcript.items.push(placeholder.to_owned());
+        transcript
+            .items
+            .push(Budgeted::required(placeholder.to_owned()));
     }
     let context = sections.compose(presentation, transcript)?;
     for (section, cost) in context.section_costs() {
@@ -267,11 +270,18 @@ pub(crate) fn render_guardian_transcript_entries(
     let mut transcript =
         ContextProfile::synchronous().render_transcript(entries, /*entry_number_offset*/ 0);
     if entries.is_empty() {
+        transcript.items.push(Budgeted::required(
+            "<no retained transcript entries>".to_owned(),
+        ));
+    }
+    (
         transcript
             .items
-            .push("<no retained transcript entries>".to_owned());
-    }
-    (transcript.items, transcript.omission_note)
+            .into_iter()
+            .map(|item| item.content)
+            .collect(),
+        transcript.omission_note,
+    )
 }
 
 /// Retains the human-readable conversation plus recent tool call / result
