@@ -11,6 +11,7 @@ use std::sync::RwLock;
 pub const CREDENTIAL_BROKER_ACTIVE_ENV_KEY: &str = "CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE";
 pub(crate) const BROKERED_CREDENTIALS_ENV_KEY: &str = "CODEX_NETWORK_PROXY_BROKERED_CREDENTIALS";
 const MIN_EMBEDDED_CREDENTIAL_LENGTH: usize = 16;
+const BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX: &str = "@alias:";
 
 #[derive(Clone)]
 pub(crate) struct CredentialBroker {
@@ -596,19 +597,37 @@ fn update_brokered_credentials_marker(
     state: &CredentialBrokerState,
     env: &mut HashMap<String, String>,
 ) {
-    let brokered = providers::credential_env_keys()
-        .filter_map(|key| {
-            let (actual_key, value) = env_entry(env, key)?;
-            state
-                .credentials
-                .iter()
-                .any(|credential| {
-                    env_key_matches(actual_key, &credential.env_var)
-                        && value == credential.dummy_value
-                })
-                .then_some((actual_key, value))
+    let mut brokered = state
+        .credentials
+        .iter()
+        .filter(|credential| {
+            env.iter().any(|(key, value)| {
+                !env_key_matches(key, CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+                    && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
+                    && (value == &credential.dummy_value
+                        || credential.dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                            && value.contains(&credential.dummy_value))
+            })
         })
+        .map(|credential| (credential.env_var.clone(), credential.dummy_value.clone()))
         .collect::<Vec<_>>();
+    let brokered_dummy_values = brokered
+        .iter()
+        .map(|(_, dummy_value)| dummy_value.clone())
+        .collect::<Vec<_>>();
+    brokered.extend(state.credential_aliases.iter().filter_map(|alias| {
+        let dummy_value = brokered_dummy_values.iter().find(|&dummy_value| {
+            alias.dummy_value == *dummy_value
+                || dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                    && alias.dummy_value.contains(dummy_value)
+        })?;
+        Some((
+            format!("{BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX}{}", alias.env_var),
+            dummy_value.clone(),
+        ))
+    }));
+    brokered.sort_unstable();
+    brokered.dedup();
     match serde_json::to_string(&brokered) {
         Ok(marker) => {
             set_env_value(env, BROKERED_CREDENTIALS_ENV_KEY, marker);
@@ -657,6 +676,77 @@ pub fn brokered_credential_dummy_env_keys(env: &HashMap<String, String>) -> Vec<
             .cmp(&context_bound(left))
             .then_with(|| left.cmp(right))
     });
+    keys
+}
+
+/// Returns canonical credential and known alias keys recorded for an active brokered child,
+/// including keys that are currently absent.
+pub fn brokered_credential_marker_env_keys(env: &HashMap<String, String>) -> Vec<String> {
+    if env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY) != Some("1") {
+        return Vec::new();
+    }
+    let entries = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
+        .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
+        .unwrap_or_default();
+    let dummy_values = entries
+        .iter()
+        .filter(|(key, _)| {
+            providers::credential_env_keys().any(|candidate| env_key_matches(key, candidate))
+        })
+        .map(|(_, dummy_value)| dummy_value.clone())
+        .collect::<Vec<_>>();
+    let mut keys = entries
+        .into_iter()
+        .filter_map(|(key, value)| {
+            if providers::credential_env_keys().any(|candidate| env_key_matches(&key, candidate)) {
+                return Some(key);
+            }
+            let alias_key = key.strip_prefix(BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX)?;
+            let known_alias = dummy_values.iter().any(|dummy_value| {
+                value == *dummy_value
+                    || dummy_value.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        && value.contains(dummy_value)
+            });
+            known_alias.then(|| alias_key.to_string())
+        })
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// Returns environment keys whose current values are brokered dummies or aliases containing them,
+/// including aliases retained after their canonical source variable was removed.
+pub fn brokered_credential_value_env_keys(env: &HashMap<String, String>) -> Vec<String> {
+    if env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY) != Some("1") {
+        return Vec::new();
+    }
+    let dummy_values = env_value(env, BROKERED_CREDENTIALS_ENV_KEY)
+        .and_then(|marker| serde_json::from_str::<Vec<(String, String)>>(marker).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(key, dummy_value)| {
+            providers::credential_env_keys()
+                .any(|candidate| env_key_matches(&key, candidate))
+                .then_some(dummy_value)
+        })
+        .collect::<Vec<_>>();
+    let mut keys = env
+        .iter()
+        .filter(|(key, _)| {
+            !env_key_matches(key, CREDENTIAL_BROKER_ACTIVE_ENV_KEY)
+                && !env_key_matches(key, BROKERED_CREDENTIALS_ENV_KEY)
+        })
+        .filter(|(_, value)| {
+            dummy_values.iter().any(|dummy| {
+                value.as_str() == dummy.as_str()
+                    || dummy.len() >= MIN_EMBEDDED_CREDENTIAL_LENGTH
+                        && value.contains(dummy.as_str())
+            })
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
     keys
 }
 

@@ -971,14 +971,16 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
         std::fs::write(
             &system_file,
             "model_instructions_file='./system.md'\n\
-             [shell_environment_policy.set]\nGH_HOST='github.stale.example'\n",
+             [shell_environment_policy.set]\nGH_HOST='github.stale.example'\n\
+             GH_ENTERPRISE_TOKEN='ghp_stale'\n",
         )
         .expect("write stale system GitHub host");
         std::fs::write(
             &user_file,
             format!(
                 "{}\n[features.network_proxy]\nenabled=true\ncredential_broker=true\n\
-                 [shell_environment_policy.set]\ngh_host='github.trusted.example'\n",
+                 [shell_environment_policy.set]\ngh_host='github.trusted.example'\n\
+                 gh_enterprise_token='ghp_trusted'\n",
                 user_config("trusted")
             ),
         )
@@ -1007,6 +1009,8 @@ async fn local_layers_keep_raw_paths_order_and_legacy_requirements() {
             Some("github.trusted.example")
         );
         assert!(!binding.contains_key("GH_HOST"));
+        assert!(!binding.contains_key("gh_enterprise_token"));
+        assert!(!binding.contains_key("GH_ENTERPRISE_TOKEN"));
     }
 
     std::fs::write(&user_file, user_config("untrusted")).expect("write user config");

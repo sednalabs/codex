@@ -119,6 +119,8 @@ pub enum ExecCapturePolicy {
     FullBuffer,
     /// Internal helpers that need complete output but must honor timeout and cancellation.
     FullBufferWithExpiration,
+    /// Full-buffer helpers that honor expiration and suppress unredacted sandbox diagnostics.
+    SensitiveFullBuffer,
 }
 
 fn select_process_exec_tool_sandbox_type(
@@ -268,7 +270,7 @@ impl ExecCapturePolicy {
     fn retained_bytes_cap(self) -> Option<usize> {
         match self {
             Self::ShellTool => Some(EXEC_OUTPUT_MAX_BYTES),
-            Self::FullBuffer | Self::FullBufferWithExpiration => None,
+            Self::FullBuffer | Self::FullBufferWithExpiration | Self::SensitiveFullBuffer => None,
         }
     }
 
@@ -278,7 +280,7 @@ impl ExecCapturePolicy {
 
     fn uses_expiration(self) -> bool {
         match self {
-            Self::ShellTool | Self::FullBufferWithExpiration => true,
+            Self::ShellTool | Self::FullBufferWithExpiration | Self::SensitiveFullBuffer => true,
             Self::FullBuffer => false,
         }
     }
@@ -470,7 +472,7 @@ pub(crate) async fn execute_exec_request(
     )
     .await;
     let duration = start.elapsed();
-    finalize_exec_result(raw_output_result, sandbox, duration)
+    finalize_exec_result(raw_output_result, sandbox, duration, capture_policy)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,6 +750,7 @@ fn finalize_exec_result(
     raw_output_result: std::result::Result<RawExecToolCallOutput, CodexErr>,
     sandbox_type: SandboxType,
     duration: Duration,
+    capture_policy: ExecCapturePolicy,
 ) -> Result<ExecToolCallOutput> {
     match raw_output_result {
         Ok(raw_output) => {
@@ -789,7 +792,9 @@ fn finalize_exec_result(
             }
 
             if is_likely_sandbox_denied(sandbox_type, &exec_output) {
-                record_filesystem_sandbox_violation(sandbox_type, &exec_output);
+                if capture_policy != ExecCapturePolicy::SensitiveFullBuffer {
+                    record_filesystem_sandbox_violation(sandbox_type, &exec_output);
+                }
                 return Err(CodexErr::Sandbox(SandboxErr::Denied {
                     output: Box::new(exec_output),
                     network_policy_decision: None,
@@ -1070,7 +1075,10 @@ async fn consume_output(
     let mut stdout_handle = stdout_handle;
     let mut stderr_handle = stderr_handle;
 
-    let (stdout, stderr) = if capture_policy == ExecCapturePolicy::FullBufferWithExpiration {
+    let (stdout, stderr) = if matches!(
+        capture_policy,
+        ExecCapturePolicy::FullBufferWithExpiration | ExecCapturePolicy::SensitiveFullBuffer
+    ) {
         let mut stdout_done = false;
         let mut stderr_done = false;
         let drain = async {

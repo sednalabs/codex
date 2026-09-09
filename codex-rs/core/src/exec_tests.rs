@@ -341,16 +341,20 @@ enum CaptureDrainFailure {
 }
 
 #[cfg(unix)]
-#[test_case("stdout", CaptureDrainFailure::Cancellation; "cancel_stdout")]
-#[test_case("stderr", CaptureDrainFailure::Cancellation; "cancel_stderr")]
-#[test_case("stdout", CaptureDrainFailure::Timeout; "timeout_stdout")]
-#[test_case("stderr", CaptureDrainFailure::Timeout; "timeout_stderr")]
-#[test_case("stdout", CaptureDrainFailure::DrainTimeout; "incomplete_stdout")]
-#[test_case("stderr", CaptureDrainFailure::DrainTimeout; "incomplete_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Cancellation, ExecCapturePolicy::FullBufferWithExpiration; "cancel_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stdout")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::FullBufferWithExpiration; "timeout_stderr")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stdout")]
+#[test_case("stderr", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::FullBufferWithExpiration; "incomplete_stderr")]
+#[test_case("stdout", CaptureDrainFailure::Cancellation, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_cancel")]
+#[test_case("stderr", CaptureDrainFailure::Timeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_timeout")]
+#[test_case("stdout", CaptureDrainFailure::DrainTimeout, ExecCapturePolicy::SensitiveFullBuffer; "sensitive_drain_timeout")]
 #[tokio::test]
 async fn full_buffer_expiration_cleans_up_after_leader_exit(
     pipe: &str,
     failure: CaptureDrainFailure,
+    capture_policy: ExecCapturePolicy,
 ) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let redirect = match pipe {
@@ -379,7 +383,7 @@ async fn full_buffer_expiration_cleans_up_after_leader_exit(
     let capture = consume_output(
         child,
         expiration,
-        ExecCapturePolicy::FullBufferWithExpiration,
+        capture_policy,
         /*stdout_stream*/ None,
     );
     let after_leader_exit = async {

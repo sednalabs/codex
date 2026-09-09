@@ -32,8 +32,20 @@ pub(super) enum ValuePart {
 
 pub(super) enum Export<'a> {
     Captured(&'a str),
-    Alias { key: &'a str, value: Value },
-    Assignment { declaration: &'a str, value: Value },
+    Assignment {
+        declaration: &'a str,
+        value: Value,
+    },
+    Array {
+        prefix: &'a str,
+        elements: Vec<Value>,
+        suffix: &'a str,
+    },
+    ArrayBinding {
+        key: &'a str,
+        declaration: &'a str,
+        suffix: &'a str,
+    },
 }
 
 impl Value {
@@ -64,11 +76,29 @@ pub(super) fn render(state: &str, aliases: &str, exports: &[Export<'_>]) -> Opti
     for export in exports {
         match export {
             Export::Captured(source) => output.push_str(source),
-            Export::Alias { key, value } => {
-                output.push_str(&format!("export {key}={}\n", value.render()?));
-            }
             Export::Assignment { declaration, value } => {
                 output.push_str(&format!("{declaration}={}\n", value.render()?));
+            }
+            Export::Array {
+                prefix,
+                elements,
+                suffix,
+            } => {
+                let elements = elements
+                    .iter()
+                    .map(Value::render)
+                    .collect::<Option<Vec<_>>>()?;
+                output.push_str(&format!("{prefix}({}){suffix}", elements.join(" ")));
+            }
+            Export::ArrayBinding {
+                key,
+                declaration,
+                suffix,
+            } => {
+                output.push_str(&format!(
+                    "if [ \"${{{key}+x}}\" = x ]; then\n{declaration}{}\nfi\n",
+                    suffix.trim_end()
+                ));
             }
         }
     }

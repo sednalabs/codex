@@ -1,6 +1,6 @@
 use crate::key_aliases::normalize_key_aliases;
 use crate::key_aliases::normalized_with_key_aliases;
-use codex_network_proxy::credential_broker_provider_context_env_keys;
+use codex_network_proxy::is_credential_broker_provider_env_key;
 use codex_network_proxy::normalize_host;
 use toml::Value as TomlValue;
 
@@ -109,10 +109,10 @@ fn merge_toml_values_at_path(base: &mut TomlValue, overlay: &TomlValue, path: &m
         if cfg!(windows)
             && matches!(path.as_slice(), [policy, field] if policy == "shell_environment_policy" && field == "set")
         {
-            for key in overlay_table.keys().filter(|key| {
-                credential_broker_provider_context_env_keys()
-                    .any(|binding_key| key.eq_ignore_ascii_case(binding_key))
-            }) {
+            for key in overlay_table
+                .keys()
+                .filter(|key| is_credential_broker_provider_env_key(key))
+            {
                 base_table.retain(|candidate, _| {
                     candidate == key || !candidate.eq_ignore_ascii_case(key)
                 });

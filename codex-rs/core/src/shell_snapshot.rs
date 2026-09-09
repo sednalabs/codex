@@ -20,7 +20,10 @@ use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::brokered_credential_binding_env_keys;
 use codex_network_proxy::brokered_credential_dummy_env_keys;
 use codex_network_proxy::brokered_credential_env_keys;
+use codex_network_proxy::brokered_credential_marker_env_keys;
+use codex_network_proxy::brokered_credential_value_env_keys;
 use codex_network_proxy::credential_broker_provider_context_env_keys;
+use codex_network_proxy::credential_broker_provider_sources_allowed;
 use codex_network_proxy::is_credential_broker_provider_env_key;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
@@ -80,8 +83,13 @@ struct SnapshotCredentials {
     network_proxy: NetworkProxy,
     broker_config_revision: u64,
     shell_environment_policy: ShellEnvironmentPolicy,
+    protected_startup_env: Option<String>,
     credential_env: HashMap<String, String>,
+    unset_credential_keys: Vec<String>,
+    // Retain discovered key identity even when policy replaces or removes its value.
+    startup_credential_keys: Vec<String>,
     context_env: HashMap<String, String>,
+    fail_open_aliases: HashMap<String, FailOpenAlias>,
     context_credential_keys: HashMap<String, Vec<String>>,
     binding_context_credential_keys: HashMap<String, Vec<String>>,
 }
@@ -90,6 +98,12 @@ struct SnapshotCredentialBroker {
     network_proxy: NetworkProxy,
     shell_environment_policy: ShellEnvironmentPolicy,
     allow_login_shell: bool,
+}
+
+struct FailOpenAlias {
+    value: String,
+    dummy_value: Option<String>,
+    authorized: bool,
 }
 
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -332,6 +346,18 @@ impl ShellSnapshotFile {
         self.path.clone()
     }
 
+    pub(crate) fn protected_startup_env(&self) -> Option<&str> {
+        self.credentials
+            .as_ref()
+            .and_then(|credentials| credentials.protected_startup_env.as_deref())
+    }
+
+    pub(crate) fn startup_credential_keys(&self) -> &[String] {
+        self.credentials.as_ref().map_or(&[], |credentials| {
+            credentials.startup_credential_keys.as_slice()
+        })
+    }
+
     pub(crate) fn restore_credentials(
         &self,
         env: &mut HashMap<String, String>,
@@ -341,7 +367,7 @@ impl ShellSnapshotFile {
             return;
         };
 
-        let allowed_snapshot_env = create_env_from_vars(
+        let mut allowed_snapshot_env = create_env_from_vars(
             credentials
                 .credential_env
                 .iter()
@@ -351,6 +377,12 @@ impl ShellSnapshotFile {
             /*thread_id*/ None,
         );
         let explicit_env_overrides = &shell_environment_policy.r#set;
+        for key in &credentials.unset_credential_keys {
+            if !contains_env_key(explicit_env_overrides, key) {
+                remove_env_value(env, key);
+                remove_env_value(&mut allowed_snapshot_env, key);
+            }
+        }
         let mut snapshot_real_credentials = credentials.credential_env.clone();
         snapshot_real_credentials.insert(
             CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(),
@@ -361,12 +393,13 @@ impl ShellSnapshotFile {
             .restore_brokered_credentials(&mut snapshot_real_credentials, &mut []);
         let mut restored_credential_keys = Vec::new();
         for (key, value) in &credentials.credential_env {
-            if explicit_env_overrides.contains_key(key) || !allowed_snapshot_env.contains_key(key) {
+            if contains_env_key(explicit_env_overrides, key)
+                || !contains_env_key(&allowed_snapshot_env, key)
+            {
                 continue;
             }
-            let current = env.entry(key.clone()).or_default();
-            if snapshot_real_credentials.get(key) != Some(current) {
-                current.clone_from(value);
+            if snapshot_real_credentials.get(key) != env_value(env, key) {
+                insert_env_value(env, key, value);
                 restored_credential_keys.push(key);
             }
         }
@@ -374,11 +407,11 @@ impl ShellSnapshotFile {
             let Some(credential_keys) = credentials.context_credential_keys.get(key) else {
                 continue;
             };
-            if explicit_env_overrides.contains_key(key)
-                || !allowed_snapshot_env.contains_key(key)
+            if contains_env_key(explicit_env_overrides, key)
+                || !contains_env_key(&allowed_snapshot_env, key)
                 || !credential_keys
                     .iter()
-                    .any(|credential_key| allowed_snapshot_env.contains_key(credential_key))
+                    .any(|credential_key| contains_env_key(&allowed_snapshot_env, credential_key))
             {
                 continue;
             }
@@ -390,8 +423,8 @@ impl ShellSnapshotFile {
                         .iter()
                         .any(|credential_key| restored_credential_keys.contains(&credential_key))
                 });
-            if restores_binding_context || !env.contains_key(key) {
-                env.insert(key.clone(), value.clone());
+            if restores_binding_context || !contains_env_key(env, key) {
+                insert_env_value(env, key, value);
             }
         }
 
@@ -406,6 +439,57 @@ impl ShellSnapshotFile {
             env.insert(CREDENTIAL_BROKER_ACTIVE_ENV_KEY.to_string(), previous);
         } else {
             env.remove(CREDENTIAL_BROKER_ACTIVE_ENV_KEY);
+        }
+    }
+
+    pub(crate) fn restore_fail_open_aliases(&self, env: &mut HashMap<String, String>) {
+        let Some(credentials) = self.credentials.as_ref() else {
+            return;
+        };
+        if env_value(env, CREDENTIAL_BROKER_ACTIVE_ENV_KEY).is_some_and(|active| active == "1") {
+            for (key, alias) in &credentials.fail_open_aliases {
+                let has_snapshot_dummy = alias
+                    .dummy_value
+                    .as_ref()
+                    .is_some_and(|dummy| env_value(env, key) == Some(dummy));
+                if has_snapshot_dummy {
+                    if !alias.authorized {
+                        remove_env_value(env, key);
+                    }
+                    continue;
+                }
+                if env_value(env, key).is_some_and(|value| {
+                    let mut virtualized = value.clone();
+                    !credentials
+                        .network_proxy
+                        .virtualize_brokered_text(&mut virtualized, env)
+                }) {
+                    remove_env_value(env, key);
+                }
+            }
+            return;
+        }
+
+        let policy = &credentials.shell_environment_policy;
+        for (key, alias) in &credentials.fail_open_aliases {
+            if contains_env_key(&policy.r#set, key)
+                || credentials.unset_credential_keys.contains(key)
+            {
+                continue;
+            }
+            let has_snapshot_dummy = alias
+                .dummy_value
+                .as_ref()
+                .is_some_and(|dummy| env_value(env, key) == Some(dummy));
+            if has_snapshot_dummy {
+                if alias.authorized {
+                    insert_env_value(env, key, &alias.value);
+                } else {
+                    remove_env_value(env, key);
+                }
+            } else if alias.authorized && !contains_env_key(env, key) {
+                insert_env_value(env, key, &alias.value);
+            }
         }
     }
 }
@@ -499,6 +583,11 @@ async fn capture_snapshot(
         .filter_map(|entry| entry.split_once('='))
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect::<HashMap<_, _>>();
+    // The inherited broker marker survives startup even when its credential variables do not.
+    let mut unset_credential_keys = brokered_credential_marker_env_keys(&original_env)
+        .into_iter()
+        .filter(|key| !contains_env_key(&original_env, key))
+        .collect::<Vec<_>>();
     let policy = &credential_broker.shell_environment_policy;
     let inherited_env = create_env_from_vars(std::env::vars(), policy, /*thread_id*/ None);
     let mut restored_env = original_env.clone();
@@ -512,11 +601,11 @@ async fn capture_snapshot(
         credential_broker_provider_context_env_keys(),
     );
     for (key, value) in &policy.r#set {
-        if !discovery_env.contains_key(key)
+        if !contains_env_key(&discovery_env, key)
             || credential_broker_provider_context_env_keys()
                 .any(|context_key| context_key.eq_ignore_ascii_case(key))
         {
-            discovery_env.insert(key.clone(), value.clone());
+            insert_env_value(&mut discovery_env, key, value);
         }
     }
     credential_broker
@@ -537,15 +626,128 @@ async fn capture_snapshot(
     );
     credential_broker.network_proxy.apply_to_env(&mut env);
     let allowed_brokered_keys = brokered_credential_dummy_env_keys(&env);
+    let unbrokered_credentials: HashMap<String, String> = env
+        .iter()
+        .filter(|(key, _)| {
+            is_credential_broker_provider_env_key(key)
+                && !credential_broker_provider_context_env_keys()
+                    .any(|context| context.eq_ignore_ascii_case(key))
+                && !allowed_brokered_keys.contains(key)
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let protected_startup_env = capture.startup_environment.as_ref().and_then(|startup| {
+        let startup_env = String::from_utf8_lossy(startup.environment)
+            .split('\0')
+            .filter_map(|entry| entry.split_once('='))
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect::<HashMap<_, _>>();
+        original_env
+            .iter()
+            .any(|(key, value)| {
+                env_value(&startup_env, key) != Some(value) && {
+                    let mut virtualized = value.clone();
+                    credential_broker
+                        .network_proxy
+                        .virtualize_brokered_text(&mut virtualized, &env);
+                    virtualized != *value
+                }
+            })
+            .then(|| startup.path.to_string())
+    });
+    let mut brokered_alias_keys = Vec::new();
+    let fail_open_aliases: HashMap<String, FailOpenAlias> = env
+        .iter()
+        .filter(|(key, _)| !is_credential_broker_provider_env_key(key))
+        .filter_map(|(key, value)| {
+            let mut real_value = env_value(&restored_env, key)
+                .or_else(|| env_value(&policy.r#set, key))?
+                .clone();
+            let restored_dummy = credential_broker
+                .network_proxy
+                .restore_brokered_text(&mut real_value);
+            let mut virtualized = real_value.clone();
+            let virtualized_allowed = credential_broker
+                .network_proxy
+                .virtualize_brokered_text(&mut virtualized, &env);
+            let has_brokered_source = brokered_keys.iter().any(|source| {
+                env_value(&restored_env, source)
+                    .or_else(|| env_value(&policy.r#set, source))
+                    .is_some_and(|source_value| {
+                        real_value == *source_value
+                            || source_value.len() >= 16 && real_value.contains(source_value)
+                    })
+            });
+            let brokered_alias = !has_brokered_source
+                && real_value != *value
+                && (restored_dummy || virtualized_allowed && virtualized == *value);
+            if !brokered_alias && virtualized_allowed {
+                return None;
+            }
+            if brokered_alias {
+                brokered_alias_keys.push(key.clone());
+            }
+
+            let authorized = credential_broker_provider_sources_allowed(
+                &real_value,
+                if brokered_alias { value } else { &virtualized },
+                &restored_env,
+                |source| {
+                    let allowed_sources = create_env_from_vars(
+                        std::iter::once((source.to_string(), "1".to_string())),
+                        policy,
+                        /*thread_id*/ None,
+                    );
+                    env_value(&allowed_sources, source)
+                        .is_some_and(|source_value| !source_value.is_empty())
+                        && env_value(&policy.r#set, source).is_none_or(|source_value| {
+                            env_value(&restored_env, source) == Some(source_value)
+                        })
+                },
+            );
+            Some((
+                key.clone(),
+                FailOpenAlias {
+                    value: real_value,
+                    dummy_value: brokered_alias.then(|| value.clone()),
+                    authorized,
+                },
+            ))
+        })
+        .collect();
+    // Known unbound credentials also need live source references for their aliases.
+    let mut snapshot_credential_keys = brokered_keys.clone();
+    snapshot_credential_keys.extend(
+        restored_env
+            .iter()
+            .filter(|&(key, value)| {
+                is_credential_broker_provider_env_key(key)
+                    && !credential_broker_provider_context_env_keys()
+                        .any(|context| context.eq_ignore_ascii_case(key))
+                    && !value.is_empty()
+            })
+            .map(|(key, _)| key.clone()),
+    );
+    snapshot_credential_keys.sort_unstable();
+    snapshot_credential_keys.dedup();
+    let mut allowed_snapshot_credential_keys = allowed_brokered_keys.clone();
+    allowed_snapshot_credential_keys.extend(
+        unbrokered_credentials
+            .iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, _)| key.clone()),
+    );
     let mut snapshot_env = env.clone();
     for key in credential_broker_provider_context_env_keys() {
-        if original_env.get(key) != env.get(key) {
-            snapshot_env.remove(key);
+        if env_value(&original_env, key) != env_value(&env, key) {
+            remove_env_value(&mut snapshot_env, key);
         }
     }
-    let PreparedSnapshot {
-        script: snapshot, ..
-    } = prepare_snapshot_credentials(
+    let Some(PreparedSnapshot {
+        script: snapshot,
+        aliases: mut credential_env,
+        rejected_alias_keys,
+    }) = prepare_snapshot_credentials(
         &capture,
         SnapshotCredentialEnvironment {
             original: &original_env,
@@ -561,9 +763,9 @@ async fn capture_snapshot(
                 )
                 .contains_key(key)
             },
-            brokered_keys: &brokered_keys,
-            brokered_alias_keys: &[],
-            allowed_brokered_keys: &allowed_brokered_keys,
+            brokered_keys: &snapshot_credential_keys,
+            brokered_alias_keys: &brokered_alias_keys,
+            allowed_brokered_keys: &allowed_snapshot_credential_keys,
         },
         |value| {
             credential_broker
@@ -571,12 +773,51 @@ async fn capture_snapshot(
                 .virtualize_brokered_text(value, &env)
         },
     )
-    .ok_or_else(|| anyhow!("shell snapshot contains a credential outside supported exports"))?;
+    else {
+        bail!("shell snapshot contains a brokered credential outside exported environment");
+    };
+    let mut startup_credential_keys = brokered_credential_value_env_keys(&discovery_env);
+    startup_credential_keys.extend(unbrokered_credentials.keys().cloned());
+    unset_credential_keys.extend(rejected_alias_keys.into_iter().filter(|key| {
+        startup_credential_keys.contains(key)
+            || env_value(&original_env, key).is_some_and(|value| {
+                snapshot_credential_keys.iter().any(|source| {
+                    !brokered_keys.contains(source)
+                        && env_value(&restored_env, source).is_some_and(|real| {
+                            value == real || real.len() >= 16 && value.contains(real)
+                        })
+                })
+            })
+    }));
 
-    let credential_env = allowed_brokered_keys
-        .iter()
-        .filter_map(|key| env.get(key).map(|value| (key.clone(), value.clone())))
-        .collect();
+    credential_env.extend(
+        allowed_brokered_keys
+            .iter()
+            .filter_map(|key| env_value(&env, key).map(|value| (key.clone(), value.clone()))),
+    );
+    credential_env.extend(unbrokered_credentials);
+    for key in &brokered_alias_keys {
+        if fail_open_aliases
+            .get(key)
+            .is_some_and(|alias| alias.authorized)
+            && let Some(value) = env_value(&env, key)
+        {
+            credential_env.insert(key.clone(), value.clone());
+        } else {
+            unset_credential_keys.push(key.clone());
+        }
+    }
+    unset_credential_keys.extend(
+        startup_credential_keys
+            .iter()
+            .filter(|key| !contains_env_key(&env, key))
+            .cloned(),
+    );
+    unset_credential_keys.sort_unstable();
+    unset_credential_keys.dedup();
+    startup_credential_keys.extend(unset_credential_keys.iter().cloned());
+    startup_credential_keys.sort_unstable();
+    startup_credential_keys.dedup();
     let mut context_credential_keys = HashMap::<String, Vec<String>>::new();
     let mut binding_context_credential_keys = HashMap::<String, Vec<String>>::new();
     for key in &allowed_brokered_keys {
@@ -600,7 +841,7 @@ async fn capture_snapshot(
     }
     let context_env = context_credential_keys
         .keys()
-        .filter_map(|key| env.get(key).map(|value| (key.clone(), value.clone())))
+        .filter_map(|key| env_value(&env, key).map(|value| (key.clone(), value.clone())))
         .collect();
     Ok((
         snapshot,
@@ -608,8 +849,12 @@ async fn capture_snapshot(
             network_proxy: credential_broker.network_proxy.clone(),
             broker_config_revision,
             shell_environment_policy: policy.clone(),
+            protected_startup_env,
             credential_env,
+            unset_credential_keys,
+            startup_credential_keys,
             context_env,
+            fail_open_aliases,
             context_credential_keys,
             binding_context_credential_keys,
         }),
@@ -622,10 +867,39 @@ fn replace_provider_context_with_inherited(
     context_keys: impl Iterator<Item = &'static str>,
 ) {
     for key in context_keys {
-        if let Some(value) = inherited_env.get(key) {
-            env.insert(key.to_string(), value.clone());
+        if let Some(value) = env_value(inherited_env, key) {
+            insert_env_value(env, key, value);
         }
     }
+}
+
+fn contains_env_key(env: &HashMap<String, String>, key: &str) -> bool {
+    env_value(env, key).is_some()
+}
+
+fn env_value<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+    env.get(key).or_else(|| {
+        cfg!(windows)
+            .then(|| {
+                env.iter().find_map(|(candidate, value)| {
+                    candidate.eq_ignore_ascii_case(key).then_some(value)
+                })
+            })
+            .flatten()
+    })
+}
+
+fn insert_env_value(env: &mut HashMap<String, String>, key: &str, value: &str) {
+    #[cfg(windows)]
+    env.retain(|candidate, _| !candidate.eq_ignore_ascii_case(key));
+    env.insert(key.to_string(), value.to_string());
+}
+
+fn remove_env_value(env: &mut HashMap<String, String>, key: &str) {
+    #[cfg(windows)]
+    env.retain(|candidate, _| !candidate.eq_ignore_ascii_case(key));
+    #[cfg(not(windows))]
+    env.remove(key);
 }
 
 #[derive(Clone, Copy)]
@@ -676,30 +950,10 @@ async fn run_script_with_timeout(
     let mut prepared_env = None;
     if let Some(credential_broker) = credential_broker {
         let policy = &credential_broker.shell_environment_policy;
-        let mut inherited_policy = policy.clone();
-        inherited_policy.r#set.clear();
-        let mut env =
-            create_env_from_vars(std::env::vars(), &inherited_policy, /*thread_id*/ None);
-        env.extend(
-            policy
-                .r#set
-                .iter()
-                .filter(|(key, _)| {
-                    (is_credential_broker_provider_env_key(key)
-                        || matches!(
-                            (shell.shell_type, key.as_str()),
-                            (ShellType::Zsh, "ZDOTDIR") | (ShellType::Bash, "BASH_ENV")
-                        ))
-                        && (policy.include_only.is_empty()
-                            || policy
-                                .include_only
-                                .iter()
-                                .any(|pattern| pattern.matches(key)))
-                })
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
+        let mut env = create_env_from_vars(std::env::vars(), policy, /*thread_id*/ None);
         if suppress_startup_files {
             env.remove("BASH_ENV");
+            env.remove("ENV");
         }
         credential_broker.network_proxy.apply_to_env(&mut env);
         prepared_env = Some(env);

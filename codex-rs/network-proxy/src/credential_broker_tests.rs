@@ -766,6 +766,54 @@ fn brokered_credential_env_keys_only_include_registered_credentials() {
 }
 
 #[test]
+fn brokered_credential_value_env_keys_include_dummy_aliases() {
+    let broker = CredentialBroker::new(/*enabled*/ true);
+    let real = "sk-proj-abcdefghijklmnopqrstuvwxyz";
+    let alias = format!("Bearer {real}");
+    let mut env = env_map([("OPENAI_API_KEY", real), ("AUTH_HEADER", alias.as_str())]);
+
+    broker.virtualize_child_env(&mut env);
+
+    let marker: Vec<(String, String)> =
+        serde_json::from_str(&env[BROKERED_CREDENTIALS_ENV_KEY]).unwrap();
+    assert_eq!(
+        marker,
+        vec![
+            (
+                "@alias:AUTH_HEADER".to_string(),
+                env["OPENAI_API_KEY"].clone()
+            ),
+            ("OPENAI_API_KEY".to_string(), env["OPENAI_API_KEY"].clone()),
+        ]
+    );
+
+    assert_eq!(
+        brokered_credential_value_env_keys(&env),
+        vec!["AUTH_HEADER".to_string(), "OPENAI_API_KEY".to_string()]
+    );
+
+    let mut absent_alias_env = env.clone();
+    absent_alias_env.remove("AUTH_HEADER");
+    broker.virtualize_child_env(&mut absent_alias_env);
+    assert_eq!(
+        brokered_credential_marker_env_keys(&absent_alias_env),
+        vec!["AUTH_HEADER".to_string(), "OPENAI_API_KEY".to_string()]
+    );
+
+    env.remove("OPENAI_API_KEY");
+    broker.virtualize_child_env(&mut env);
+    assert!(brokered_credential_dummy_env_keys(&env).is_empty());
+    assert_eq!(
+        brokered_credential_marker_env_keys(&env),
+        vec!["AUTH_HEADER".to_string(), "OPENAI_API_KEY".to_string()]
+    );
+    assert_eq!(
+        brokered_credential_value_env_keys(&env),
+        vec!["AUTH_HEADER".to_string()]
+    );
+}
+
+#[test]
 fn virtualize_child_env_uses_fresh_dummy_capabilities() {
     let mut first_env = env_map([("OPENAI_API_KEY", "sk-proj-abcdefghijklmnopqrstuvwxyz")]);
     let mut second_env = first_env.clone();

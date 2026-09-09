@@ -197,7 +197,7 @@ impl ShellSnapshotSandbox {
             request,
             ExecOptions {
                 expiration,
-                capture_policy: ExecCapturePolicy::FullBufferWithExpiration,
+                capture_policy: ExecCapturePolicy::SensitiveFullBuffer,
             },
             workspace_roots,
         )
