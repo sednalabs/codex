@@ -17,7 +17,7 @@ Requirements:
 - An existing Codex account session, or one of the login flows below
 
 The SDK installs its matching `openai-codex-cli-bin` runtime dependency
-automatically. SDK release versions track the corresponding Codex CLI release.
+automatically. Stable SDK releases track the corresponding stable Codex CLI release.
 
 ## 2. Authenticate When Needed
 

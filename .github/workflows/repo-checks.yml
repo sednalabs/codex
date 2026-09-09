@@ -31,6 +31,9 @@ jobs:
         with:
           version: "0.11.3"
 
+      - name: Test downstream Python release resolution
+        run: python3 -m unittest discover -s .github/scripts -p 'test_resolve_python_cli_release.py'
+
       - name: Test PyPI release verification
         run: uv run --no-project --with packaging==26.2 python -m unittest discover -s .github/scripts -p 'test_verify_pypi_release.py'
 

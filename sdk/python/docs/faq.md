@@ -7,8 +7,11 @@
 
 ## Why does the SDK install a runtime package?
 
-The SDK version tracks the corresponding Codex CLI release. Each SDK release
-pins and installs its matching runtime dependency automatically.
+Stable CLI releases publish the SDK with the same version and an exact runtime
+pin. CLI prereleases do not trigger Python package publishing. Independent SDK
+beta releases can still be published manually with a different version number,
+but must pin a compatible runtime. The dependency is installed automatically.
+See [Python SDK releases](../RELEASING.md) for publishing and retry instructions.
 
 ## Thread vs turn
 

@@ -3,6 +3,10 @@ name: python-sdk-build
 on:
   workflow_call:
     inputs:
+      source_ref:
+        description: "Source revision to build; defaults to the calling workflow revision."
+        required: false
+        type: string
       sdk_version:
         description: "Python SDK version to build."
         required: true
@@ -24,6 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
 
       - name: Setup Python
