@@ -508,6 +508,9 @@ pub(crate) enum AppEvent {
         name: Option<String>,
     },
 
+    /// Clear history queued by the previous thread before the new thread's replay events.
+    ResetTranscriptForThreadSwitch,
+
     /// Re-render the transcript using the selected scrollback rendering mode.
     RawOutputModeChanged {
         enabled: bool,
