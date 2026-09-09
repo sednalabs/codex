@@ -1394,6 +1394,16 @@ jobs:
           path: codex-rs/dist/${{ matrix.target }}/*
           if-no-files-found: error
 
+  # Separate opt-in candidates never enter the normal release download patterns.
+  provisioned-macos-candidate:
+    needs: finalize-macos
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/rust-v') && vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/rust-release-provisioned-macos.yml
+    secrets: inherit
+
   build-windows:
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
