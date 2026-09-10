@@ -279,7 +279,7 @@ print(json.dumps({{"systemMessage": "root stop complete"}}))
                 }]
             }],
             "SubagentStart": [{
-                "matcher": "worker",
+                "matcher": "worker|default",
                 "hooks": [{
                     "type": "command",
                     "command": format!("python3 {}", start_script_path.display()),
@@ -607,20 +607,29 @@ async fn spawned_agent_uses_multi_agent_reasoning_effort_for_requests(
     Ok(())
 }
 
+#[test_case(false; "fresh context")]
+#[test_case(true; "forked context")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn subagent_start_replaces_session_start_and_injects_context() -> Result<()> {
+async fn subagent_start_replaces_session_start_and_injects_context(
+    fork_context: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
+    let agent_type = (!fork_context).then_some("worker");
+    let expected_agent_type = agent_type.unwrap_or("default");
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
         "task_name": "child",
-        "agent_type": "worker",
+        "agent_type": agent_type,
+        "fork_context": fork_context,
     }))?;
 
     mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_1_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
         sse(vec![
             ev_response_created("resp-turn1-1"),
             ev_function_call_with_namespace(
@@ -640,7 +649,6 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
             body_contains(req, CHILD_PROMPT)
                 && body_contains(req, SUBAGENT_START_CONTEXT)
                 && !body_contains(req, "<subagent_notification>")
-                && !body_contains(req, SPAWN_CALL_ID)
         },
         sse(vec![
             ev_response_created("resp-child-1"),
@@ -652,7 +660,9 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
 
     let _turn1_followup = mount_sse_once_match(
         &server,
-        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID) && !body_contains(req, SUBAGENT_START_CONTEXT)
+        },
         sse(vec![
             ev_response_created("resp-turn1-2"),
             ev_assistant_message("msg-turn1-2", "parent done"),
@@ -673,6 +683,7 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
                 .enable(Feature::Collab)
                 .expect("test config should allow feature update");
         })
+        // Command hooks run on the host and require a host-native working directory.
         .build(&server)
         .await?;
 
@@ -686,7 +697,10 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
     )
     .await?;
     assert_eq!(start_inputs.len(), 1);
-    assert_eq!(start_inputs[0]["agent_type"].as_str(), Some("worker"));
+    assert_eq!(
+        start_inputs[0]["agent_type"].as_str(),
+        Some(expected_agent_type)
+    );
     let spawned_id = wait_for_spawned_thread_id(&test).await?;
     assert_eq!(
         start_inputs[0]["agent_id"].as_str(),
@@ -714,7 +728,10 @@ async fn subagent_start_replaces_session_start_and_injects_context() -> Result<(
         child_prompt_input["agent_id"].as_str(),
         Some(spawned_id.as_str())
     );
-    assert_eq!(child_prompt_input["agent_type"].as_str(), Some("worker"));
+    assert_eq!(
+        child_prompt_input["agent_type"].as_str(),
+        Some(expected_agent_type)
+    );
 
     let session_start_inputs = wait_for_hook_log(
         test.codex_home_path(),

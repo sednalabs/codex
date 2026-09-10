@@ -127,14 +127,14 @@ pub(crate) async fn run_pending_session_start_hooks(
     turn_context: &Arc<TurnContext>,
 ) -> bool {
     while let Some(session_start_source) = sess.take_pending_session_start_source().await {
-        // Pending session-start hooks are reused to dispatch thread-spawn subagent
-        // starts. Other subagent sessions are internal/system work and do not run
-        // start hooks.
+        // Spawned subagents can start fresh or fork their parent's history, so both
+        // sources dispatch SubagentStart. Internal/system subagents skip start hooks.
         let target = match &turn_context.session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. })
                 if matches!(
                     session_start_source,
                     codex_hooks::SessionStartSource::Startup
+                        | codex_hooks::SessionStartSource::Fork
                 ) =>
             {
                 let context = subagent_hook_context(sess, agent_role);
