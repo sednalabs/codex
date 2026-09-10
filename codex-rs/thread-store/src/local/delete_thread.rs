@@ -1,8 +1,9 @@
 //! Local hard-delete support for persisted threads.
 //!
 //! Existing rollout files are deleted before this operation reports success. A rollout file that
-//! vanishes after discovery counts as already deleted. The app-server deletes main state DB rows
-//! after every associated rollout is removed; this module deletes local history projection rows.
+//! vanishes after discovery counts as already deleted. Main state DB rows are deleted after every
+//! associated rollout is removed, under the same lifecycle lock, so queued artifact mutations cannot
+//! use deleted thread metadata.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -72,7 +73,19 @@ pub(super) async fn delete_thread(
     let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
     ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
     let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
-    delete_thread_after_reference_check(store, thread_rollouts, &mut writer_guards).await
+    let found_rollout =
+        match delete_thread_after_reference_check(store, thread_rollouts, &mut writer_guards).await
+        {
+            Ok(()) => true,
+            Err(ThreadStoreError::ThreadNotFound { .. }) => false,
+            Err(err) => return Err(err),
+        };
+    let deleted_state_rows = delete_state_rows(store, &[thread_id]).await?;
+    if found_rollout || deleted_state_rows > 0 {
+        Ok(())
+    } else {
+        Err(ThreadStoreError::ThreadNotFound { thread_id })
+    }
 }
 
 pub(super) async fn delete_threads(
@@ -111,7 +124,24 @@ pub(super) async fn delete_threads(
             Err(err) => return Err(err),
         }
     }
+    // Retain the complete retry graph until every rollout has been removed.
+    delete_state_rows(store, &thread_ids).await?;
     Ok(())
+}
+
+async fn delete_state_rows(
+    store: &LocalThreadStore,
+    thread_ids: &[codex_protocol::ThreadId],
+) -> ThreadStoreResult<u64> {
+    let Some(state_db) = store.state_db.as_ref() else {
+        return Ok(0);
+    };
+    state_db
+        .delete_threads_strict(thread_ids)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to delete thread state: {err}"),
+        })
 }
 
 fn ensure_no_external_references(

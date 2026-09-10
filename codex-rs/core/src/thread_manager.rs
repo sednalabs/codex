@@ -422,7 +422,9 @@ pub fn thread_store_from_config(
             }
             store
         }
-        ThreadStoreConfig::InMemory { id } => InMemoryThreadStore::for_id(id),
+        ThreadStoreConfig::InMemory { id } => {
+            Arc::new(InMemoryThreadStore::for_id(id).with_state_db(state_db))
+        }
     }
 }
 
