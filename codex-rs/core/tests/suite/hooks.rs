@@ -1672,10 +1672,8 @@ print(json.dumps({"hookSpecificOutput": {
         .thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(1),
-            test.config.clone(),
+            StartThreadOptions::new(test.config.clone()),
             test.codex.rollout_path().expect("parent rollout path"),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await?
         .thread;
