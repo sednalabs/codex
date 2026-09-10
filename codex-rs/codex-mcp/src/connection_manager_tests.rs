@@ -125,7 +125,11 @@ impl McpConnectionSet {
         }
     }
 
-    fn insert_test_client(&mut self, name: impl Into<String>, client: AsyncManagedClient) {
+    pub(crate) fn insert_test_client(
+        &mut self,
+        name: impl Into<String>,
+        client: AsyncManagedClient,
+    ) {
         let name = name.into();
         self.servers.insert(
             name,
@@ -540,7 +544,7 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
     assert!(format!("{error:#}").contains("timed out awaiting tools/call after 1s"));
 }
 
-async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
+pub(crate) async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
     AsyncManagedClient {
         client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
             create_test_managed_client(tools).await,
