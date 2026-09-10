@@ -511,7 +511,7 @@ pub(crate) fn guardian_reviewed_action(
             ..
         } => GuardianReviewedAction::UnifiedExec {
             sandbox_permissions: *sandbox_permissions,
-            additional_permissions: additional_permissions.clone(),
+            additional_permissions: additional_permissions.as_ref().map(Into::into),
             tty: *tty,
         },
         GuardianApprovalRequest::WriteStdin { tty, .. } => {
@@ -520,13 +520,11 @@ pub(crate) fn guardian_reviewed_action(
         #[cfg(unix)]
         GuardianApprovalRequest::Execve {
             source,
-            program,
             additional_permissions,
             ..
         } => GuardianReviewedAction::Execve {
             source: *source,
-            program: program.clone(),
-            additional_permissions: additional_permissions.clone(),
+            additional_permissions: additional_permissions.as_ref().map(Into::into),
         },
         GuardianApprovalRequest::ApplyPatch { .. } => GuardianReviewedAction::ApplyPatch {},
         GuardianApprovalRequest::NetworkAccess { protocol, port, .. } => {
