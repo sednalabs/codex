@@ -180,7 +180,6 @@ pub(super) struct AgentsOverviewView {
     project_groups: Vec<AgentsOverviewProjectGroup>,
     selected: usize,
     state: Arc<Mutex<AgentsOverviewViewState>>,
-    exit_on_cancel: bool,
     app_event_tx: AppEventSender,
     keymap: ListKeymap,
     agents_keymap: AgentsKeymap,
@@ -192,7 +191,6 @@ impl AgentsOverviewView {
     pub(super) fn new(
         rows: Vec<AgentsOverviewRow>,
         selected_thread_id: Option<ThreadId>,
-        exit_on_cancel: bool,
         worktrees_enabled: bool,
         app_event_tx: AppEventSender,
         keymap: RuntimeKeymap,
@@ -223,7 +221,6 @@ impl AgentsOverviewView {
             project_groups,
             selected,
             state,
-            exit_on_cancel,
             app_event_tx,
             keymap: keymap.list,
             agents_keymap: keymap.agents,
@@ -650,7 +647,9 @@ impl BottomPaneView for AgentsOverviewView {
             return;
         }
 
-        if self.state().connection_notice.is_some() && !self.agents_keymap.new_task.is_pressed(key)
+        if self.state().connection_notice.is_some()
+            && !self.agents_keymap.new_task.is_pressed(key)
+            && self.keymap.action_for(key) != Some(ListAction::Cancel)
         {
             match self.keymap.action_for(key) {
                 Some(ListAction::MoveUp) => self.move_selection(/*forward*/ false),
@@ -727,11 +726,7 @@ impl BottomPaneView for AgentsOverviewView {
                         state.input.clear();
                         state.renaming = false;
                     } else {
-                        if self.exit_on_cancel {
-                            self.app_event_tx
-                                .send(AppEvent::Exit(crate::app::ExitMode::Immediate));
-                        }
-                        state.completion = Some(ViewCompletion::Cancelled);
+                        state.focus_composer();
                     }
                 }
                 ListAction::PageUp | ListAction::PageDown => {

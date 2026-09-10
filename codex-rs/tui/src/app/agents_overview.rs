@@ -284,7 +284,6 @@ impl App {
         AgentsOverviewView::new(
             rows,
             selected_thread_id,
-            self.primary_thread_id.is_none(),
             self.config.features.enabled(Feature::Worktrees)
                 && !crate::uses_remote_workspace_or_environment(
                     &self.app_server_target,

@@ -59,6 +59,7 @@ async fn older_server_notice_falls_back_in_short_overview() {
         .collect::<String>();
     insta::assert_snapshot!(header.trim_end(), @"  Old srv");
 }
+use crate::app::agents_overview_view::AgentsOverviewFocus;
 use crate::app::test_support::make_test_app;
 use crate::app_event::AgentsOverviewThreadRefresh;
 use crate::bottom_pane::BottomPaneView;
@@ -104,6 +105,66 @@ fn overview_draft(app: &App) -> (String, usize) {
     let state = app.agents_overview.view_state.lock().unwrap();
     let composer = state.composer.as_ref().unwrap();
     (composer.current_text_with_pending(), composer.cursor())
+}
+
+#[tokio::test]
+async fn overview_escape_returns_from_list_to_composer() {
+    for (vim, offline) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut app = make_test_app().await;
+        app.config.disable_paste_burst = true;
+        if vim {
+            app.chat_widget.toggle_vim_mode_and_notify();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.app_event_tx = AppEventSender::new(tx);
+        let view = app.agents_overview_view(
+            vec![overview_thread(
+                ThreadId::new(),
+                /*parent_thread_id*/ None,
+                "Existing task",
+                ThreadStatus::Idle,
+            )],
+            /*selected_thread_id*/ None,
+        );
+        app.chat_widget.show_bottom_pane_view(Box::new(view));
+        app.chat_widget.handle_paste("task draft".into());
+        app.chat_widget.handle_key_event(KeyCode::Home.into());
+        let draft = overview_draft(&app);
+        if offline {
+            app.agents_overview
+                .view_state
+                .lock()
+                .unwrap()
+                .connection_notice = Some("Reconnecting");
+        }
+        if vim {
+            app.chat_widget.handle_key_event(KeyCode::Esc.into());
+        }
+        app.chat_widget.handle_key_event(KeyCode::Esc.into());
+        assert!(matches!(
+            app.agents_overview.view_state.lock().unwrap().focus,
+            AgentsOverviewFocus::List
+        ));
+        app.chat_widget.handle_key_event(KeyCode::Down.into());
+        app.chat_widget.handle_key_event(KeyCode::Esc.into());
+
+        assert!(matches!(
+            app.agents_overview.view_state.lock().unwrap().focus,
+            AgentsOverviewFocus::Composer
+        ));
+        assert_eq!(
+            app.chat_widget
+                .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
+            Some(0)
+        );
+        assert_eq!(overview_draft(&app), draft);
+        assert!(rx.try_recv().is_err());
+        if !vim && !offline {
+            insta::assert_snapshot!(render_bottom_popup(&app.chat_widget, /*width*/ 80).lines().last().unwrap(), @"   enter create task    ctrl+j newline    esc tasks");
+        }
+        app.chat_widget.handle_key_event(KeyCode::Char('!').into());
+        assert_eq!(overview_draft(&app).0, "!task draft");
+    }
 }
 
 #[tokio::test]
@@ -658,7 +719,7 @@ async fn shared_overview_seeds_once_and_retains_locally_resumed_history() -> Res
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     finish_overview_refresh(&mut app, &app_server, &mut event_rx).await;
     let retained: HashSet<_> = app.agents_overview.threads.keys().copied().collect();
     assert_eq!(retained, expected);
@@ -1164,7 +1225,6 @@ async fn shared_overview_shows_only_root_sessions() {
     let mut action_view = AgentsOverviewView::new(
         view.rows.clone(),
         Some(first_root),
-        /*exit_on_cancel*/ false,
         /*worktrees_enabled*/ false,
         crate::app_event_sender::AppEventSender::new(event_tx),
         app.keymap.clone(),
@@ -1282,7 +1342,7 @@ async fn shared_overview_shows_only_root_sessions() {
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let view = app.agents_overview_view(threads, /*selected_thread_id*/ None);
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96);
@@ -1304,7 +1364,7 @@ async fn shared_overview_shows_only_root_sessions() {
         .expect("render full-screen dashboard");
     assert_eq!(tui.terminal.viewport_area.height, screen_size.height);
     app.chat_widget
-        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     app.render_chat_widget_frame(&mut tui, screen_size)
         .expect("restore conversation after closing dashboard");
     assert!(tui.terminal.viewport_area.height < screen_size.height);
@@ -1406,7 +1466,6 @@ async fn filtered_dashboard_actions_use_configured_shortcuts() {
         )
         .rows,
         Some(first),
-        /*exit_on_cancel*/ false,
         /*worktrees_enabled*/ false,
         crate::app_event_sender::AppEventSender::new(event_tx),
         app.keymap.clone(),
