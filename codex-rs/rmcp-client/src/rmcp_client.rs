@@ -846,7 +846,7 @@ impl RmcpClient {
                         });
                     if modern_session {
                         rmcp_params.meta = meta;
-                        return service.call_tool(rmcp_params).await;
+                        return crate::tool_input::call_tool(&service, rmcp_params).await;
                     }
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
@@ -1661,6 +1661,10 @@ async fn create_oauth_transport_and_runtime(
         oauth_runtime: runtime,
     })
 }
+
+#[cfg(test)]
+#[path = "tool_input_tests.rs"]
+mod tool_input_tests;
 
 #[cfg(test)]
 #[path = "user_verification_cancellation_tests.rs"]

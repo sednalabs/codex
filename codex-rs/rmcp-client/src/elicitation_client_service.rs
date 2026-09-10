@@ -268,24 +268,8 @@ impl Service<RoleClient> for ElicitationClientService {
                 if request.method == OPENAI_ELICITATION_METHOD
                     && self.supports_openai_elicitation_form =>
             {
-                let params = request
-                    .params_as::<OpenAiElicitationRequestParams>()
-                    .map_err(|err| {
-                        rmcp::ErrorData::invalid_params(err.to_string(), /*data*/ None)
-                    })?
-                    .ok_or_else(|| {
-                        rmcp::ErrorData::invalid_params("missing params", /*data*/ None)
-                    })?;
-                let OpenAiElicitationRequestParams::Form(params) = params;
                 let response = self
-                    .create_elicitation(
-                        Elicitation::OpenAiElicitationForm {
-                            meta: params.meta,
-                            message: params.message,
-                            requested_schema: params.requested_schema,
-                        },
-                        context,
-                    )
+                    .create_elicitation(openai_elicitation_form(request)?, context)
                     .await?;
                 Ok(ClientResult::CustomResult(elicitation_response_result(
                     response,
@@ -365,6 +349,21 @@ fn openai_form_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::
         .map_err(|err| rmcp::ErrorData::invalid_params(err.to_string(), None))?
         .ok_or_else(|| rmcp::ErrorData::invalid_params("missing params", None))?;
     Ok(Elicitation::OpenAiForm {
+        meta: params.meta,
+        message: params.message,
+        requested_schema: params.requested_schema,
+    })
+}
+
+pub(crate) fn openai_elicitation_form(
+    request: CustomRequest,
+) -> Result<Elicitation, rmcp::ErrorData> {
+    let params = request
+        .params_as::<OpenAiElicitationRequestParams>()
+        .map_err(|err| rmcp::ErrorData::invalid_params(err.to_string(), /*data*/ None))?
+        .ok_or_else(|| rmcp::ErrorData::invalid_params("missing params", /*data*/ None))?;
+    let OpenAiElicitationRequestParams::Form(params) = params;
+    Ok(Elicitation::OpenAiElicitationForm {
         meta: params.meta,
         message: params.message,
         requested_schema: params.requested_schema,
