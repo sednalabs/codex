@@ -1,0 +1,44 @@
+name: browser-session-conformance
+
+on:
+  pull_request:
+    paths:
+      - "codex-rs/browser-computer-use/**"
+      - ".github/workflows/browser-session-conformance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-session-conformance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  browser-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Browser provider regression tests
+        run: node --test codex-rs/browser-computer-use/src/*_test.mjs
+      # Temporary readback during the remote-first implementation engagement.
+      # Only tracked public source is archived; no .git, credentials or runtime data.
+      - name: Capture exact source generation
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/browser-source"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/browser-source/generation.txt"
+          git ls-tree -r -z HEAD > "$RUNNER_TEMP/browser-source/objects.nul"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/browser-source/source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-source-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/browser-source/
+          retention-days: 1
