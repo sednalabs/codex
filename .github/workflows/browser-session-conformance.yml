@@ -1,6 +1,8 @@
 name: browser-session-conformance
 
 on:
+  push:
+    branches: ["codex/browser-session-foundation-20260913"]
   pull_request:
     paths:
       - "codex-rs/browser-computer-use/**"
@@ -10,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: browser-session-conformance-${{ github.event.pull_request.number }}
+  group: browser-session-conformance-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +41,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: browser-source-${{ github.event.pull_request.head.sha }}
+          name: browser-source-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/browser-source/
           retention-days: 1
