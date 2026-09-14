@@ -25,7 +25,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
@@ -116,8 +116,40 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 ACTIVE_RUN_STATES = {"queued", "in_progress", "waiting", "requested", "pending"}
 
 
+@dataclass(frozen=True)
+class GitFailureDiagnostic:
+    operation: str
+    exit_code: int
+    stderr_bytes: int
+    stderr_sha256: str
+    category: str
+
+
 class PublicationError(RuntimeError):
-    """A fail-closed publication rejection."""
+    """A fail-closed publication rejection with optional safe diagnostics."""
+
+    def __init__(self, message: str, *, diagnostics: Sequence[GitFailureDiagnostic] = ()) -> None:
+        super().__init__(message)
+        self.diagnostics = tuple(diagnostics)
+
+
+def git_failure(operation: str, error: subprocess.CalledProcessError) -> PublicationError:
+    """Fingerprint stderr without publishing its text, command or environment."""
+    operation = operation if operation in {"push", "ls-remote", "cat-file", "rev-parse", "fsck"} else "git"
+    raw = error.stderr or b""
+    category = "unclassified"
+    for marker, label in (
+        (b"without `workflows` permission", "workflow-permission-message"),
+        (b"pre-receive hook declined", "receive-hook-rejection"),
+        (b"(stale info)", "stale-lease-message"),
+        (b"does not support --atomic push", "atomic-unsupported-message"),
+        (b"Authentication failed", "authentication-message"),
+    ):
+        if marker in raw:
+            category = label
+            break
+    diagnostic = GitFailureDiagnostic(operation, error.returncode, len(raw), hashlib.sha256(raw).hexdigest(), category)
+    return PublicationError(f"git {operation} failed; see diagnostic fingerprint", diagnostics=(diagnostic,))
 
 
 class Api(Protocol):
@@ -874,20 +906,19 @@ def record_live_preflight(manifest: dict, *, api_dir: Path, output: Path) -> Non
 
 def git(repo: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
     try:
-        return subprocess.check_output(["git", "-C", str(repo), *args], text=True, stderr=subprocess.PIPE, env=env)
+        return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE, env=env).decode("utf-8")
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "git command failed").strip()[-2000:]
-        raise PublicationError(detail) from exc
+        raise git_failure(args[0] if args else "git", exc) from None
 
 
 def advertised_refs(remote_url: str, *, env: Mapping[str, str] | None = None) -> dict[str, str]:
     try:
         raw = subprocess.check_output(
             ["git", "ls-remote", "--refs", remote_url, "refs/heads/*", "refs/tags/*"],
-            text=True, stderr=subprocess.PIPE, env=env,
-        )
+            stderr=subprocess.PIPE, env=env,
+        ).decode("utf-8")
     except subprocess.CalledProcessError as exc:
-        raise PublicationError(f"remote advertised-ref read failed: {(exc.stderr or '').strip()[-2000:]}") from exc
+        raise git_failure("ls-remote", exc) from None
     result = {}
     for line in raw.splitlines():
         fields = line.split("\t")
@@ -1057,6 +1088,7 @@ class PublicationResult:
     reason: str
     after_refs: Mapping[str, str]
     final_state: Mapping[str, object] | None = None
+    diagnostics: tuple[GitFailureDiagnostic, ...] = ()
 
 
 def resolve_push_failure(output: Mapping[str, str], error: PublicationError, readback) -> PublicationResult:
@@ -1064,10 +1096,15 @@ def resolve_push_failure(output: Mapping[str, str], error: PublicationError, rea
     try:
         after = dict(readback())
     except PublicationError as read_error:
-        raise PublicationError(f"ambiguous atomic push; authoritative readback failed: {read_error}") from error
+        raise PublicationError(
+            "ambiguous atomic push; authoritative readback unavailable",
+            diagnostics=error.diagnostics + read_error.diagnostics,
+        ) from None
     if after != output:
-        return PublicationResult("ambiguous", str(error), after)
-    return PublicationResult("success", "transport exception resolved by exact full-namespace readback", after)
+        return PublicationResult("ambiguous", "atomic push failed; authoritative readback differs from approved output", after,
+                                 diagnostics=error.diagnostics)
+    return PublicationResult("success", "transport exception resolved by exact full-namespace readback", after,
+                             diagnostics=error.diagnostics)
 
 
 def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, manifest_sha256: str,
@@ -1093,13 +1130,15 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
         args.extend(f"--force-with-lease={name}:{selected[name]}" for name in sorted(selected))
         args.append(remote_url)
         args.extend(f"{output[name]}:{name}" for name in sorted(output))
+        diagnostics = ()
         try:
             git(repo, *args, env=env)
         except PublicationError as push_error:
             resolved = resolve_push_failure(output, push_error, lambda: advertised_refs(remote_url, env=env))
             if resolved.outcome != "success":
-                return PublicationResult(resolved.outcome, resolved.reason, resolved.after_refs, final_state)
+                return PublicationResult(resolved.outcome, resolved.reason, resolved.after_refs, final_state, resolved.diagnostics)
             after, reason = dict(resolved.after_refs), resolved.reason
+            diagnostics = resolved.diagnostics
         else:
             after = advertised_refs(remote_url, env=env)
             if after != output:
@@ -1120,7 +1159,7 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
         final = advertised_refs(remote_url, env=env)
         if final != output:
             raise PublicationError("remote changed during clean-fetch verification")
-        return PublicationResult("success", reason + "; full readback and clean fetch verified", final, final_state)
+        return PublicationResult("success", reason + "; full readback and clean fetch verified", final, final_state, diagnostics)
     finally:
         if credential_root is not None:
             shutil.rmtree(credential_root, ignore_errors=True)
@@ -1638,8 +1677,9 @@ def main() -> int:
             receipt["publisher"] = publisher
             write_json(ns.receipt, receipt)
         elif ns.command == "publish":
-            manifest = load_object(ns.manifest, "manifest")
+            publisher = None
             try:
+                manifest = load_object(ns.manifest, "manifest")
                 if ns.fixture_api is not None:
                     if os.environ.get("HISTORY_REWRITE_PUBLICATION_FIXTURE") != "1" or ns.remote_url.startswith(("http://", "https://")):
                         raise PublicationError("fixture API is restricted to an explicit local-remote fixture")
@@ -1662,17 +1702,19 @@ def main() -> int:
                     token=os.environ.get("GH_TOKEN"),
                     handoff=load_object(ns.handoff) if ns.handoff is not None else None,
                 )
-                write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": result.outcome,
-                                       "reason": result.reason, "manifest_sha256": ns.manifest_sha256, "after_refs": result.after_refs,
-                                       "after_refs_sha256": digest(result.after_refs), "final_state": result.final_state,
-                                       "publisher": publisher,
-                                       "external_administrator_intervention_risk": "controls or refs may still change after final readback; atomic ref leases prevent stale ref updates but do not lock administrative controls"})
-                if result.outcome != "success":
-                    raise PublicationError("atomic push outcome is ambiguous")
             except PublicationError as exc:
                 write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": "failed-or-ambiguous",
-                                       "reason_sha256": hashlib.sha256(str(exc).encode()).hexdigest(), "manifest_sha256": ns.manifest_sha256})
+                                       "reason_sha256": hashlib.sha256(str(exc).encode()).hexdigest(), "manifest_sha256": ns.manifest_sha256,
+                                       "diagnostics": [asdict(item) for item in exc.diagnostics], "after_refs_status": "unavailable",
+                                       "publisher": publisher})
                 raise
+            write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": result.outcome,
+                                   "reason": result.reason, "manifest_sha256": ns.manifest_sha256, "after_refs": result.after_refs,
+                                   "after_refs_sha256": digest(result.after_refs), "after_refs_status": "observed", "final_state": result.final_state,
+                                   "publisher": publisher, "diagnostics": [asdict(item) for item in result.diagnostics],
+                                   "external_administrator_intervention_risk": "controls or refs may still change after final readback; atomic ref leases prevent stale ref updates but do not lock administrative controls"})
+            if result.outcome != "success":
+                raise PublicationError("atomic push outcome is ambiguous; receipt preserved")
         else:
             if ns.fixture_api is not None:
                 if os.environ.get("HISTORY_REWRITE_PUBLICATION_FIXTURE") != "1":

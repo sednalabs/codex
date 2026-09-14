@@ -46,6 +46,25 @@ proof set, performs the real `git push --atomic` command with one explicit
 heads/tags namespace, object types, and a clean isolated fetch. A rejected
 pre-receive hook proves that an atomic failure leaves every ref unchanged.
 
+The rejected push also passes through the actual publisher CLI subprocess.
+Its final receipt must retain the nonsuccess result, observed complete ref map
+and digest, manifest, publisher identity and final-state evidence after exit.
+A current failure replaces any stale success receipt; receipt existence is
+never evidence that the current attempt succeeded. The disposable rejecting
+hook records exactly one push attempt, and an injected subsequent ref-read
+failure must retain separate push and readback fingerprints without inventing
+an observed after-map. The normal positive CLI path remains required.
+
+Git diagnostics publish only a fixed operation, exit code, stderr byte count,
+SHA-256 and an allowlisted message category. Unknown messages remain
+`unclassified`; a recognized message is diagnostic evidence, not proof of a
+permission grant or authority to change it. Raw subprocess stderr, command
+arguments, URLs and environment values are not copied into those diagnostics.
+The hosted fixture emits a non-UTF-8 secret canary from its rejecting remote
+and checks that CLI stdout, stderr, receipts and emitted evidence do not expose
+it. These controlled transport failures do not qualify real GitHub permissions
+or authorize a publication retry.
+
 The companion API-shaped fixtures cover immutable manifest and SHA-256 proof
 binding, empty/extra/missing/zero-ref rejection, stale backup ordering, exact
 environment and approval identities, mandatory writer identities, one-read

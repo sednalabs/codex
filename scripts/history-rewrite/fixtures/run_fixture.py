@@ -721,6 +721,91 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         if rejected.returncode == 0 or publication_module.advertised_refs(str(remote)) != selected:
             raise SystemExit("publisher identity rejection failed to preserve the disposable remote")
     write_json(fixture_api, api_documents)
+    # Exercise the real CLI error boundary, not only publish_repository().
+    # This wrapper records disposable stderr privately so the public receipt's
+    # fingerprint can be checked independently, including non-UTF-8 bytes.
+    canary = b"fixture-secret-canary-do-not-publish-94c8\xff"
+    attempts = root / "push-attempts"
+    push_stderr = root / "push-stderr.private"
+    read_stderr = root / "read-stderr.private"
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text(
+        f"#!{sys.executable}\nimport os, sys\n"
+        "with open(os.environ['FIXTURE_PUBLICATION_ATTEMPTS'], 'ab') as stream:\n"
+        "    stream.write(b'attempt\\n')\n"
+        f"sys.stderr.buffer.write({canary!r} + b'\\n')\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o700)
+    wrapper_root = root / "fixture-git-bin"; wrapper_root.mkdir()
+    wrapper = wrapper_root / "git"
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise SystemExit("publication CLI fixture cannot resolve Git")
+    wrapper.write_text(
+        f"#!{sys.executable}\nimport os, subprocess, sys\nfrom pathlib import Path\n"
+        f"real = {real_git!r}\nargs = sys.argv[1:]\n"
+        "if args and args[0] == 'ls-remote' and os.environ.get('FIXTURE_READBACK_FAILURE') == '1' "
+        "and Path(os.environ['FIXTURE_PUBLICATION_ATTEMPTS']).exists():\n"
+        f"    raw = b'fixture readback unavailable: ' + {canary!r} + b'\\n'\n"
+        f"    Path({str(read_stderr)!r}).write_bytes(raw)\n"
+        "    sys.stderr.buffer.write(raw)\n    sys.exit(73)\n"
+        "if len(args) > 2 and args[0] == '-C' and args[2] == 'push':\n"
+        "    result = subprocess.run([real, *args], capture_output=True)\n"
+        f"    Path({str(push_stderr)!r}).write_bytes(result.stderr)\n"
+        "    sys.stdout.buffer.write(result.stdout)\n    sys.stderr.buffer.write(result.stderr)\n"
+        "    sys.exit(result.returncode)\n"
+        "os.execv(real, [real, *args])\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    reject_environment = dict(environment, PATH=str(wrapper_root) + os.pathsep + environment.get("PATH", ""),
+                              FIXTURE_PUBLICATION_ATTEMPTS=str(attempts))
+    receipt_path = root / "publication-receipt.json"
+    failure_evidence = {}
+
+    def diagnostic(operation: str, status: int, path: Path, category: str) -> dict:
+        raw = path.read_bytes()
+        return {"operation": operation, "exit_code": status, "stderr_bytes": len(raw),
+                "stderr_sha256": hashlib.sha256(raw).hexdigest(), "category": category}
+
+    def assert_private_result(result: subprocess.CompletedProcess) -> dict:
+        receipt_bytes = receipt_path.read_bytes()
+        # Check the ASCII prefix as well as the complete invalid-UTF-8 canary.
+        if any(canary[:-1] in data for data in (result.stdout, result.stderr, receipt_bytes)):
+            raise SystemExit("publication CLI leaked disposable diagnostic canary")
+        if result.returncode != 1 or attempts.read_bytes() != b"attempt\n":
+            raise SystemExit("publication CLI rejection exit or single-attempt contract failed")
+        return json.loads(receipt_bytes)
+
+    rejected = subprocess.run(publish_command, capture_output=True, env=reject_environment)
+    failed_receipt = assert_private_result(rejected)
+    if (publication_module.advertised_refs(str(remote)) != selected
+            or failed_receipt.get("outcome") != "ambiguous"
+            or failed_receipt.get("manifest_sha256") != publication_module.digest(manifest)
+            or failed_receipt.get("after_refs") != selected
+            or failed_receipt.get("after_refs_sha256") != publication_module.digest(selected)
+            or failed_receipt.get("after_refs_status") != "observed"
+            or not failed_receipt.get("publisher") or not failed_receipt.get("final_state")
+            or failed_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "receive-hook-rejection")]):
+        raise SystemExit("publication CLI overwrote or misbound the actual rejected-push result")
+    failure_evidence["real_cli_rejection_preserves_result_and_canary"] = publication_module.digest(failed_receipt)
+
+    attempts.unlink()
+    double_failed = subprocess.run(publish_command, capture_output=True,
+                                   env=dict(reject_environment, FIXTURE_READBACK_FAILURE="1"))
+    double_receipt = assert_private_result(double_failed)
+    if (publication_module.advertised_refs(str(remote)) != selected
+            or double_receipt.get("outcome") != "failed-or-ambiguous"
+            or double_receipt.get("manifest_sha256") != publication_module.digest(manifest)
+            or double_receipt.get("after_refs_status") != "unavailable"
+            or "after_refs" in double_receipt or "after_refs_sha256" in double_receipt
+            or not double_receipt.get("publisher")
+            or double_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "receive-hook-rejection"),
+                                                      diagnostic("ls-remote", 73, read_stderr, "unclassified")]):
+        raise SystemExit("publication CLI lost separate push/readback failure fingerprints")
+    failure_evidence["real_cli_double_failure_preserves_both_fingerprints"] = publication_module.digest(double_receipt)
+    hook.unlink()
     published = subprocess.run(publish_command, text=True, capture_output=True, env=environment)
     require_driver_success("production_publication_push", published)
     if publication_module.advertised_refs(str(remote)) != output:
@@ -728,7 +813,25 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
     receipt = json.loads((root / "publication-receipt.json").read_text(encoding="utf-8"))
     if receipt.get("outcome") != "success" or receipt.get("after_refs") != output:
         raise SystemExit("production publication receipt does not bind the exact disposable after-map")
-    return hashlib.sha256((root / "publication-receipt.json").read_bytes()).hexdigest()
+    failure_evidence["real_cli_positive_control"] = publication_module.digest(receipt)
+    # A new pre-result failure must replace, not reuse, the actual success above.
+    invalid = copy.deepcopy(api_documents)
+    invalid["publisher_viewer"]["data"]["viewer"].update(login="github-actions[bot]")
+    write_json(fixture_api, invalid)
+    stale = subprocess.run(publish_command, capture_output=True, env=environment)
+    stale_receipt = json.loads(receipt_path.read_bytes())
+    if (stale.returncode != 1 or publication_module.advertised_refs(str(remote)) != output
+            or stale_receipt.get("outcome") != "failed-or-ambiguous"
+            or stale_receipt.get("manifest_sha256") != publication_module.digest(manifest)
+            or stale_receipt.get("publisher") is not None or stale_receipt.get("diagnostics") != []
+            or "after_refs" in stale_receipt or "after_refs_sha256" in stale_receipt):
+        raise SystemExit("publication CLI reused stale success evidence on pre-result failure")
+    failure_evidence["real_cli_pre_result_failure_replaces_stale_success"] = publication_module.digest(stale_receipt)
+    safe_evidence = json.dumps(failure_evidence, sort_keys=True).encode("utf-8")
+    if canary[:-1] in safe_evidence:
+        raise SystemExit("publication fixture evidence leaked disposable diagnostic canary")
+    print(safe_evidence.decode("utf-8"))
+    return hashlib.sha256(safe_evidence).hexdigest()
 
 
 def main() -> None:
