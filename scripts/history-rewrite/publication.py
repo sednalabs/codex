@@ -949,10 +949,11 @@ def advertised_refs(remote_url: str, *, env: Mapping[str, str] | None = None,
     return result
 
 
-def _object_types(repo: Path, refs: Mapping[str, str]) -> dict[str, str]:
+def _object_types(repo: Path, refs: Mapping[str, str], *, capture: ReceiveCapture | None = None,
+                  env: Mapping[str, str] | None = None) -> dict[str, str]:
     result = {}
     for name, oid in refs.items():
-        kind = git(repo, "cat-file", "-t", oid).strip()
+        kind = git(repo, "cat-file", "-t", oid, env=env, capture=capture).strip()
         if kind not in {"commit", "tag"}:
             raise PublicationError(f"ref object has unsupported type {kind}: {name}")
         result[name] = kind
@@ -1145,7 +1146,9 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
             raise PublicationError("remote changed after preparation; refusing stale publication")
         if capture is not None and capture.snapshot()["status"] != "complete":
             raise PublicationError("encrypted capture unavailable before ref mutation")
-        _object_types(repo, output)
+        _object_types(repo, output, env=env, capture=capture)
+        if capture is not None and capture.snapshot()["status"] != "complete":
+            raise PublicationError("encrypted capture unavailable before ref mutation")
         if handoff is not None:
             from protected_handoff import require_fresh_gate
             require_fresh_gate(handoff, manifest)
@@ -1173,10 +1176,10 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
             refspecs = [f"{name}:refs/verification/{hashlib.sha256(name.encode()).hexdigest()}" for name in sorted(output)]
             git(clean, "fetch", "--atomic", "--no-tags", "--no-write-fetch-head", remote_url, *refspecs, env=env, capture=capture)
             fetched = {
-                name: git(clean, "rev-parse", f"refs/verification/{hashlib.sha256(name.encode()).hexdigest()}").strip()
+                name: git(clean, "rev-parse", f"refs/verification/{hashlib.sha256(name.encode()).hexdigest()}", env=env, capture=capture).strip()
                 for name in output
             }
-            if fetched != output or _object_types(clean, fetched) != _object_types(repo, output):
+            if fetched != output or _object_types(clean, fetched, env=env, capture=capture) != _object_types(repo, output, env=env, capture=capture):
                 raise PublicationError("clean isolated fetch identity or object-type proof failed")
             git(clean, "fsck", "--full", "--no-reflogs", capture=capture)
         final = advertised_refs(remote_url, env=env, capture=capture)

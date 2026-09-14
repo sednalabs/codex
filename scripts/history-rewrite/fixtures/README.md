@@ -83,6 +83,10 @@ successful ref transaction whose capture fails. In the last case the receipt
 must still say that the transaction succeeded while the command fails for
 incomplete custody. Capture failure never triggers a second push and never
 prevents the authoritative readback or ordinary writer-restoration path.
+Object-type preflight failures and clean-fetch ref-resolution failures also
+cross this capture boundary; hosted CLI cases decrypt both diagnostic streams
+and prove zero pushes before preflight rejection or exactly one push before a
+post-publication verification failure.
 
 A hard-killed runner can lose in-memory bytes before encryption or upload.
 Missing ciphertext or receipts are incomplete custody, never proof that a push

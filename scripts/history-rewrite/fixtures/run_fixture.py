@@ -774,6 +774,10 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
     wrapper.write_text(
         f"#!{sys.executable}\nimport os, subprocess, sys\nfrom pathlib import Path\n"
         f"real = {real_git!r}\nargs = sys.argv[1:]\n"
+        "if len(args) > 2 and args[0] == '-C' and args[2] == os.environ.get('FIXTURE_METADATA_FAILURE') "
+        "and (args[2] == 'cat-file' or 'history-rewrite-clean-fetch-' in args[1]):\n"
+        f"    sys.stdout.buffer.write(b'metadata stdout: ' + {canary!r})\n"
+        f"    sys.stderr.buffer.write(b'metadata stderr: ' + {canary!r})\n    sys.exit(72)\n"
         "if args and args[0] == 'ls-remote' and os.environ.get('FIXTURE_READBACK_FAILURE') == '1' "
         "and Path(os.environ['FIXTURE_PUBLICATION_ATTEMPTS']).exists():\n"
         f"    raw = b'fixture readback unavailable: ' + {canary!r} + b'\\n'\n"
@@ -905,6 +909,40 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         raise SystemExit("capture readiness failure did not stop before push")
     failure_evidence["real_cli_capture_readiness_failure_prevents_push"] = publication_module.digest(json.loads(receipt_path.read_bytes()))
     hook.unlink()
+
+    def assert_metadata_failure(result: subprocess.CompletedProcess, operation: str, expected_pushes: int) -> dict:
+        receipt = json.loads(receipt_path.read_bytes())
+        if (result.returncode != 1 or any(canary[:-1] in data for data in (result.stdout, result.stderr, receipt_path.read_bytes()))
+                or receipt["receive_capture"]["status"] != "complete"):
+            raise SystemExit("metadata failure leaked or lost encrypted diagnostics")
+        records = receipt["receive_capture"]["records"]
+        if len([item for item in records if item["operation"] == "push"]) != expected_pushes:
+            raise SystemExit("metadata failure violated the single-push contract")
+        record = records[-1]
+        if record["operation"] != operation or record["exit_code"] != 72:
+            raise SystemExit("metadata failure capture omitted the causal operation")
+        for stream in ("stdout", "stderr"):
+            recovered = subprocess.run(
+                [str(age), "-d", "-i", str(identity), str(capture_root / record[stream]["encrypted"]["file"])], capture_output=True,
+            )
+            if recovered.returncode or recovered.stdout != b"metadata " + stream.encode() + b": " + canary:
+                raise SystemExit("metadata failure byte-exact capture mismatch")
+        return receipt
+
+    type_failed = invoke_publish(env=dict(reject_environment, FIXTURE_METADATA_FAILURE="cat-file"))
+    type_receipt = assert_metadata_failure(type_failed, "cat-file", 0)
+    if publication_module.advertised_refs(str(remote)) != selected:
+        raise SystemExit("object-type preflight failure mutated the remote")
+    failure_evidence["real_cli_object_type_failure_encrypted_before_push"] = publication_module.digest(type_receipt)
+    metadata_remote = root / "metadata-failure.git"
+    cloned = subprocess.run([real_git, "clone", "--bare", "--no-local", str(remote), str(metadata_remote)], capture_output=True)
+    if cloned.returncode:
+        raise SystemExit("disposable metadata fixture setup failed")
+    metadata_failed = invoke_publish(env=dict(reject_environment, FIXTURE_METADATA_FAILURE="rev-parse"), remote_override=metadata_remote)
+    metadata_receipt = assert_metadata_failure(metadata_failed, "rev-parse", 1)
+    if publication_module.advertised_refs(str(metadata_remote)) != output:
+        raise SystemExit("clean-fetch metadata failure lost the actual published refs")
+    failure_evidence["real_cli_clean_fetch_ref_failure_encrypted_without_retry"] = publication_module.digest(metadata_receipt)
     successful_remote = root / "successful-capture-failure.git"
     cloned = subprocess.run([real_git, "clone", "--bare", "--no-local", str(remote), str(successful_remote)], capture_output=True)
     if cloned.returncode:

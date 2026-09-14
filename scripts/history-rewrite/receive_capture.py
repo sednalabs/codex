@@ -78,7 +78,7 @@ class ReceiveCapture:
             self.receipt_available = False
 
     def record(self, operation: str, exit_code: int, stdout: bytes, stderr: bytes) -> None:
-        operation = operation if operation in {"push", "ls-remote", "init", "fetch", "rev-parse", "fsck"} else "git"
+        operation = operation if operation in {"push", "ls-remote", "init", "fetch", "cat-file", "rev-parse", "fsck"} else "git"
         sequence = len(self.records) + 1
         record = {"sequence": sequence, "operation": operation, "exit_code": exit_code}
         # Seal both untouched byte streams before the caller classifies or decodes them.
