@@ -317,6 +317,8 @@ def validate_manifest(manifest: Mapping[str, object], *, frozen_sha: str, frozen
 
 
 def staged_plan(manifest: dict) -> dict | None:
+    if "publication_plan" not in manifest and "publication_plan_sha256" not in manifest:
+        return None
     required = (set(PROTECTED_REFS) | {f"refs/heads/{PUBLICATION_BRANCH}"}) & set(manifest["selected_refs"])
     try:
         return staged.validated_plan(manifest, required_final_refs=required)
