@@ -320,6 +320,17 @@ jobs:
           pathlib.Path("git_filter_repo-2.47.0-py3-none-any.whl").write_bytes(data)
           PY
           python3 -m pip install --disable-pip-version-check --no-warn-script-location --user --no-deps git_filter_repo-2.47.0-py3-none-any.whl
+      - name: Install pinned encryption tools for disposable capture fixtures
+        run: |
+          set -euo pipefail; umask 077
+          tool="$RUNNER_TEMP/history-rewrite-capture-tool"
+          mkdir -m 700 "$tool"
+          curl --fail --location --silent --show-error --retry 3 --output "$tool/age.tar.gz" \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+          test "$(stat -c '%s' "$tool/age.tar.gz")" = 19405817
+          test "$(sha256sum "$tool/age.tar.gz" | cut -d' ' -f1)" = cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+          tar -xzf "$tool/age.tar.gz" -C "$tool" age/age age/age-keygen
+          printf 'HISTORY_REWRITE_CAPTURE_AGE=%s\nHISTORY_REWRITE_CAPTURE_KEYGEN=%s\n' "$tool/age/age" "$tool/age/age-keygen" >> "$GITHUB_ENV"
       - name: Exercise production drivers and receipt mismatch fixtures
         run: scripts/history-rewrite/fixtures/run_fixture.sh > fixture-evidence.txt
       - name: Exercise protected handoff and candidate-only transport
@@ -444,6 +455,17 @@ jobs:
           pathlib.Path("output/filter-repo-provenance.txt").write_text(f"version=2.47.0\nfilename=git_filter_repo-2.47.0-py3-none-any.whl\nsha256={expected}\nurl={url}\n", encoding="utf-8")
           PY
           python3 -m pip install --disable-pip-version-check --no-warn-script-location --user --no-deps work/git_filter_repo-2.47.0-py3-none-any.whl
+      - name: Install pinned encryption tools for disposable capture fixtures
+        run: |
+          set -euo pipefail; umask 077
+          tool="$RUNNER_TEMP/history-rewrite-capture-tool"
+          mkdir -m 700 "$tool"
+          curl --fail --location --silent --show-error --retry 3 --output "$tool/age.tar.gz" \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+          test "$(stat -c '%s' "$tool/age.tar.gz")" = 19405817
+          test "$(sha256sum "$tool/age.tar.gz" | cut -d' ' -f1)" = cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+          tar -xzf "$tool/age.tar.gz" -C "$tool" age/age age/age-keygen
+          printf 'HISTORY_REWRITE_CAPTURE_AGE=%s\nHISTORY_REWRITE_CAPTURE_KEYGEN=%s\n' "$tool/age/age" "$tool/age/age-keygen" >> "$GITHUB_ENV"
       - name: Re-exercise production driver against synthetic fixtures
         run: scripts/history-rewrite/fixtures/run_fixture.sh > output/fixture-evidence.txt
       - name: Fetch only frozen objects into isolated refs
@@ -797,6 +819,22 @@ jobs:
           root="$RUNNER_TEMP/history-rewrite-publication"
           python3 scripts/history-rewrite/protected_handoff.py import --root "$root"
           cp "$root/prepared/manifest.json" "$root/manifest.json"
+      - name: Prepare encrypted receive capture before publisher credentials
+        if: inputs.mode == 'publication'
+        env:
+          CAPTURE_RECIPIENT: age12ztscspsycnd6a8r98zl6qjhmgzt832a6yv8yy2gx6txxvn72fvsjjcucd
+        run: |
+          set -euo pipefail; umask 077
+          tool="$RUNNER_TEMP/history-rewrite-capture-tool"
+          mkdir -m 700 "$tool"
+          curl --fail --location --silent --show-error --retry 3 --output "$tool/age.tar.gz" \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+          test "$(stat -c '%s' "$tool/age.tar.gz")" = 19405817
+          test "$(sha256sum "$tool/age.tar.gz" | cut -d' ' -f1)" = cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+          tar -xzf "$tool/age.tar.gz" -C "$tool" age/age
+          python3 scripts/history-rewrite/receive_capture.py \
+            --root "$RUNNER_TEMP/history-rewrite-publication/capture-readiness" \
+            --age "$tool/age/age" --recipient "$CAPTURE_RECIPIENT"
       - name: Mint repository-scoped protection observer
         id: protection_observer
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
@@ -895,7 +933,9 @@ jobs:
             --preflight "$root/preflight/preflight.json" --control-plan "$root/preflight/control-plan.json" \
             --intent "$root/publication-restoration-intent.json" --current-run-id "$GITHUB_RUN_ID" \
             --repo "$root/prepared/repo.git" --remote-url "$REPO_URL" --handoff "$root/handoff.json" \
-            --receipt "$root/publication-receipt.json"
+            --receipt "$root/publication-receipt.json" --capture-root "$root/receive-capture" \
+            --capture-age "$RUNNER_TEMP/history-rewrite-capture-tool/age/age" \
+            --capture-recipient age12ztscspsycnd6a8r98zl6qjhmgzt832a6yv8yy2gx6txxvn72fvsjjcucd
       - name: Restore captured release workflow states
         if: ${{ always() && steps.release_publisher_token.outputs.token != '' }}
         env:
@@ -910,6 +950,17 @@ jobs:
             --frozen-sha "$HARNESS_SHA" --frozen-tree "$HARNESS_TREE" --manifest-sha256 "$MANIFEST_SHA256" \
             --preflight "$root/preflight/preflight.json" --control-plan "$root/preflight/control-plan.json" \
             --intent "$root/publication-restoration-intent.json" --receipt "$root/control-restoration.json"
+      - name: Persist encrypted receive streams independently of transaction outcome
+        if: ${{ always() && inputs.mode == 'publication' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: history-rewrite-receive-capture-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/history-rewrite-publication/receive-capture/*.age
+            ${{ runner.temp }}/history-rewrite-publication/receive-capture/capture.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
       - name: Persist publication and restoration receipts
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0

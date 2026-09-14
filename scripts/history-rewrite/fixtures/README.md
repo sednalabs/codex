@@ -65,6 +65,30 @@ and checks that CLI stdout, stderr, receipts and emitted evidence do not expose
 it. These controlled transport failures do not qualify real GitHub permissions
 or authorize a publication retry.
 
+The publisher additionally encrypts both untouched byte streams before
+classification or decoding, using the pinned `age` binary and the approved
+recipient. Plaintext never becomes a diagnostic artifact. An isolated readiness
+check runs before publisher credentials, and the CLI checks readiness again
+before ref mutation. Capture records bind the manifest, source, tree, run,
+operation, exit status, raw lengths/digests and ciphertext identities. A separate
+`always()` artifact step retains only ciphertext and safe capture metadata;
+successful upload and artifact readback remain distinct custody gates.
+
+The actual CLI fixtures use a disposable encryption identity. They recover and
+compare the exact stdout and stderr bytes from a multi-ref rejection larger
+than 136,876 bytes, containing a decisive fixed rule marker, NUL bytes and a
+non-UTF-8 canary. Separate cases cover encrypted failed-readback diagnostics,
+encryption failure after rejection, readiness failure before any push, and a
+successful ref transaction whose capture fails. In the last case the receipt
+must still say that the transaction succeeded while the command fails for
+incomplete custody. Capture failure never triggers a second push and never
+prevents the authoritative readback or ordinary writer-restoration path.
+
+A hard-killed runner can lose in-memory bytes before encryption or upload.
+Missing ciphertext or receipts are incomplete custody, never proof that a push
+was not attempted. Resolve that case through the existing independent recovery
+and authoritative-ref-readback procedure; do not infer an automatic retry.
+
 The companion API-shaped fixtures cover immutable manifest and SHA-256 proof
 binding, empty/extra/missing/zero-ref rejection, stale backup ordering, exact
 environment and approval identities, mandatory writer identities, one-read

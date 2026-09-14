@@ -30,6 +30,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
+from receive_capture import CaptureError, ReceiveCapture
+
 
 REPOSITORY = "sednalabs/codex"
 PUBLICATION_BRANCH = "repair/history-rewrite-publication-w13828"
@@ -139,6 +141,8 @@ def git_failure(operation: str, error: subprocess.CalledProcessError) -> Publica
     raw = error.stderr or b""
     category = "unclassified"
     for marker, label in (
+        (b"GH013:", "repository-rule-rejection"),
+        (b"GH006:", "protected-branch-rejection"),
         (b"without `workflows` permission", "workflow-permission-message"),
         (b"pre-receive hook declined", "receive-hook-rejection"),
         (b"(stale info)", "stale-lease-message"),
@@ -904,21 +908,38 @@ def record_live_preflight(manifest: dict, *, api_dir: Path, output: Path) -> Non
     })
 
 
-def git(repo: Path, *args: str, env: Mapping[str, str] | None = None) -> str:
+def git_output(command: list[str], operation: str, *, env: Mapping[str, str] | None = None,
+               capture: ReceiveCapture | None = None) -> bytes:
     try:
-        return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE, env=env).decode("utf-8")
-    except subprocess.CalledProcessError as exc:
-        raise git_failure(args[0] if args else "git", exc) from None
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    except OSError:
+        raise PublicationError("Git process could not be started") from None
+    if capture is not None:
+        capture.record(operation, result.returncode, result.stdout, result.stderr)
+    if result.returncode:
+        raise git_failure(operation, subprocess.CalledProcessError(
+            result.returncode, command, output=result.stdout, stderr=result.stderr,
+        )) from None
+    return result.stdout
 
 
-def advertised_refs(remote_url: str, *, env: Mapping[str, str] | None = None) -> dict[str, str]:
+def git(repo: Path, *args: str, env: Mapping[str, str] | None = None,
+        capture: ReceiveCapture | None = None) -> str:
+    raw = git_output(["git", "-C", str(repo), *args], args[0] if args else "git", env=env, capture=capture)
     try:
-        raw = subprocess.check_output(
-            ["git", "ls-remote", "--refs", remote_url, "refs/heads/*", "refs/tags/*"],
-            stderr=subprocess.PIPE, env=env,
-        ).decode("utf-8")
-    except subprocess.CalledProcessError as exc:
-        raise git_failure("ls-remote", exc) from None
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PublicationError("Git metadata output is not UTF-8") from None
+
+
+def advertised_refs(remote_url: str, *, env: Mapping[str, str] | None = None,
+                    capture: ReceiveCapture | None = None) -> dict[str, str]:
+    output = git_output(["git", "ls-remote", "--refs", remote_url, "refs/heads/*", "refs/tags/*"],
+                        "ls-remote", env=env, capture=capture)
+    try:
+        raw = output.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PublicationError("remote advertisement is not UTF-8") from None
     result = {}
     for line in raw.splitlines():
         fields = line.split("\t")
@@ -1110,7 +1131,7 @@ def resolve_push_failure(output: Mapping[str, str], error: PublicationError, rea
 def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, manifest_sha256: str,
                        preflight_path: Path, control_plan: Path, intent_path: Path, read_api: Api, observer_api: Api,
                        current_run_id: int, repo: Path, remote_url: str, token: str | None = None,
-                       handoff: dict | None = None) -> PublicationResult:
+                       handoff: dict | None = None, capture: ReceiveCapture | None = None) -> PublicationResult:
     selected, output = validate_phase_bindings(
         manifest, frozen_sha=frozen_sha, frozen_tree=frozen_tree, manifest_sha256=manifest_sha256,
         preflight_path=preflight_path, control_plan=control_plan, intent_path=intent_path,
@@ -1119,9 +1140,11 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
                                                current_run_id=current_run_id, handoff=handoff)
     env, credential_root = credential_environment(remote_url, token)
     try:
-        before = advertised_refs(remote_url, env=env)
+        before = advertised_refs(remote_url, env=env, capture=capture)
         if before != selected:
             raise PublicationError("remote changed after preparation; refusing stale publication")
+        if capture is not None and capture.snapshot()["status"] != "complete":
+            raise PublicationError("encrypted capture unavailable before ref mutation")
         _object_types(repo, output)
         if handoff is not None:
             from protected_handoff import require_fresh_gate
@@ -1132,31 +1155,31 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
         args.extend(f"{output[name]}:{name}" for name in sorted(output))
         diagnostics = ()
         try:
-            git(repo, *args, env=env)
+            git_output(["git", "-C", str(repo), *args], "push", env=env, capture=capture)
         except PublicationError as push_error:
-            resolved = resolve_push_failure(output, push_error, lambda: advertised_refs(remote_url, env=env))
+            resolved = resolve_push_failure(output, push_error, lambda: advertised_refs(remote_url, env=env, capture=capture))
             if resolved.outcome != "success":
                 return PublicationResult(resolved.outcome, resolved.reason, resolved.after_refs, final_state, resolved.diagnostics)
             after, reason = dict(resolved.after_refs), resolved.reason
             diagnostics = resolved.diagnostics
         else:
-            after = advertised_refs(remote_url, env=env)
+            after = advertised_refs(remote_url, env=env, capture=capture)
             if after != output:
                 raise PublicationError("push returned success but full remote namespace differs from approved output")
             reason = "atomic leased push completed"
         with tempfile.TemporaryDirectory(prefix="history-rewrite-clean-fetch-") as temporary:
             clean = Path(temporary) / "repo.git"
-            subprocess.run(["git", "init", "--bare", str(clean)], check=True, stdout=subprocess.DEVNULL)
+            git_output(["git", "init", "--bare", str(clean)], "init", capture=capture)
             refspecs = [f"{name}:refs/verification/{hashlib.sha256(name.encode()).hexdigest()}" for name in sorted(output)]
-            subprocess.run(["git", "-C", str(clean), "fetch", "--atomic", "--no-tags", "--no-write-fetch-head", remote_url, *refspecs], check=True, env=env)
+            git(clean, "fetch", "--atomic", "--no-tags", "--no-write-fetch-head", remote_url, *refspecs, env=env, capture=capture)
             fetched = {
                 name: git(clean, "rev-parse", f"refs/verification/{hashlib.sha256(name.encode()).hexdigest()}").strip()
                 for name in output
             }
             if fetched != output or _object_types(clean, fetched) != _object_types(repo, output):
                 raise PublicationError("clean isolated fetch identity or object-type proof failed")
-            git(clean, "fsck", "--full", "--no-reflogs")
-        final = advertised_refs(remote_url, env=env)
+            git(clean, "fsck", "--full", "--no-reflogs", capture=capture)
+        final = advertised_refs(remote_url, env=env, capture=capture)
         if final != output:
             raise PublicationError("remote changed during clean-fetch verification")
         return PublicationResult("success", reason + "; full readback and clean fetch verified", final, final_state, diagnostics)
@@ -1617,6 +1640,9 @@ def main() -> int:
     publish.add_argument("--current-run-id", type=int, required=True)
     publish.add_argument("--fixture-api", type=Path)
     publish.add_argument("--handoff", type=Path)
+    publish.add_argument("--capture-root", type=Path, required=True)
+    publish.add_argument("--capture-age", type=Path, required=True)
+    publish.add_argument("--capture-recipient", required=True)
     phase_arguments(publish, include_intent=True)
     restore_artifact = sub.add_parser("restore-intent-artifact")
     restore_artifact.add_argument("--artifact-zip", type=Path, required=True); restore_artifact.add_argument("--artifact-api-json", type=Path, required=True)
@@ -1678,7 +1704,14 @@ def main() -> int:
             write_json(ns.receipt, receipt)
         elif ns.command == "publish":
             publisher = None
+            capture = None
             try:
+                try:
+                    capture = ReceiveCapture(ns.capture_root, age=ns.capture_age, recipient=ns.capture_recipient,
+                                             binding={"manifest_sha256": ns.manifest_sha256, "head_sha": ns.frozen_sha,
+                                                      "tree": ns.frozen_tree, "run_id": ns.current_run_id})
+                except CaptureError as exc:
+                    raise PublicationError(str(exc)) from None
                 manifest = load_object(ns.manifest, "manifest")
                 if ns.fixture_api is not None:
                     if os.environ.get("HISTORY_REWRITE_PUBLICATION_FIXTURE") != "1" or ns.remote_url.startswith(("http://", "https://")):
@@ -1701,20 +1734,25 @@ def main() -> int:
                     current_run_id=ns.current_run_id, repo=ns.repo, remote_url=ns.remote_url,
                     token=os.environ.get("GH_TOKEN"),
                     handoff=load_object(ns.handoff) if ns.handoff is not None else None,
+                    capture=capture,
                 )
             except PublicationError as exc:
                 write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": "failed-or-ambiguous",
                                        "reason_sha256": hashlib.sha256(str(exc).encode()).hexdigest(), "manifest_sha256": ns.manifest_sha256,
                                        "diagnostics": [asdict(item) for item in exc.diagnostics], "after_refs_status": "unavailable",
-                                       "publisher": publisher})
+                                       "publisher": publisher,
+                                       "receive_capture": capture.snapshot() if capture is not None else {"status": "unavailable"}})
                 raise
             write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": result.outcome,
                                    "reason": result.reason, "manifest_sha256": ns.manifest_sha256, "after_refs": result.after_refs,
                                    "after_refs_sha256": digest(result.after_refs), "after_refs_status": "observed", "final_state": result.final_state,
                                    "publisher": publisher, "diagnostics": [asdict(item) for item in result.diagnostics],
+                                   "receive_capture": capture.snapshot(),
                                    "external_administrator_intervention_risk": "controls or refs may still change after final readback; atomic ref leases prevent stale ref updates but do not lock administrative controls"})
             if result.outcome != "success":
                 raise PublicationError("atomic push outcome is ambiguous; receipt preserved")
+            if capture.snapshot()["status"] != "complete":
+                raise PublicationError("ref transaction succeeded but encrypted capture is incomplete; receipt preserved")
         else:
             if ns.fixture_api is not None:
                 if os.environ.get("HISTORY_REWRITE_PUBLICATION_FIXTURE") != "1":

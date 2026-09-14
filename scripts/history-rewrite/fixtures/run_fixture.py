@@ -711,13 +711,37 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         "--fixture-api", str(fixture_api),
         "--remote-url", str(remote), "--receipt", str(root / "publication-receipt.json"),
     ]
+    age = Path(os.environ["HISTORY_REWRITE_CAPTURE_AGE"])
+    keygen = Path(os.environ["HISTORY_REWRITE_CAPTURE_KEYGEN"])
+    identity = root / "disposable-capture-identity"
+    generated = subprocess.run([str(keygen), "-o", str(identity)], capture_output=True)
+    if generated.returncode != 0:
+        raise SystemExit("disposable capture identity generation failed")
+    public = subprocess.run([str(keygen), "-y", str(identity)], capture_output=True)
+    if public.returncode != 0:
+        raise SystemExit("disposable capture recipient derivation failed")
+    recipient = public.stdout.decode("ascii").strip()
+    invocation = 0
+    capture_root = root / "not-invoked"
+
+    def invoke_publish(*, env: dict, text: bool = False, capture_age: Path = age,
+                       remote_override: Path = remote) -> subprocess.CompletedProcess:
+        nonlocal invocation, capture_root
+        invocation += 1
+        capture_root = root / f"receive-capture-{invocation}"
+        arguments = list(publish_command)
+        arguments[arguments.index("--remote-url") + 1] = str(remote_override)
+        arguments.extend(["--capture-root", str(capture_root), "--capture-age", str(capture_age),
+                          "--capture-recipient", recipient])
+        return subprocess.run(arguments, capture_output=True, text=text, env=env)
+
     for change in (
         lambda state: state["publisher_viewer"]["data"]["viewer"].update(login="github-actions[bot]"),
         lambda state: state["publisher_repositories"]["repositories"][0].update(full_name="other/repository"),
     ):
         invalid = copy.deepcopy(api_documents); change(invalid)
         write_json(fixture_api, invalid)
-        rejected = subprocess.run(publish_command, text=True, capture_output=True, env=environment)
+        rejected = invoke_publish(text=True, env=environment)
         if rejected.returncode == 0 or publication_module.advertised_refs(str(remote)) != selected:
             raise SystemExit("publisher identity rejection failed to preserve the disposable remote")
     write_json(fixture_api, api_documents)
@@ -726,6 +750,7 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
     # fingerprint can be checked independently, including non-UTF-8 bytes.
     canary = b"fixture-secret-canary-do-not-publish-94c8\xff"
     attempts = root / "push-attempts"
+    push_stdout = root / "push-stdout.private"
     push_stderr = root / "push-stderr.private"
     read_stderr = root / "read-stderr.private"
     hook = remote / "hooks" / "pre-receive"
@@ -733,7 +758,11 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         f"#!{sys.executable}\nimport os, sys\n"
         "with open(os.environ['FIXTURE_PUBLICATION_ATTEMPTS'], 'ab') as stream:\n"
         "    stream.write(b'attempt\\n')\n"
-        f"sys.stderr.buffer.write({canary!r} + b'\\n')\nsys.exit(1)\n",
+        "updates = sys.stdin.buffer.read().splitlines()\n"
+        "if len(updates) < 2: sys.exit(97)\n"
+        "sys.stderr.buffer.write(b'unrelated multi-ref diagnostic\\n' * 8192)\n"
+        f"sys.stderr.buffer.write(b'GH013: Repository rule violations found\\n' + {canary!r} + b'\\x00\\n')\n"
+        "sys.exit(1)\n",
         encoding="utf-8",
     )
     hook.chmod(0o700)
@@ -752,8 +781,10 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         "    sys.stderr.buffer.write(raw)\n    sys.exit(73)\n"
         "if len(args) > 2 and args[0] == '-C' and args[2] == 'push':\n"
         "    result = subprocess.run([real, *args], capture_output=True)\n"
+        f"    stdout = result.stdout + b'binary stdout: ' + {canary!r} + b'\\x00\\n'\n"
+        f"    Path({str(push_stdout)!r}).write_bytes(stdout)\n"
         f"    Path({str(push_stderr)!r}).write_bytes(result.stderr)\n"
-        "    sys.stdout.buffer.write(result.stdout)\n    sys.stderr.buffer.write(result.stderr)\n"
+        "    sys.stdout.buffer.write(stdout)\n    sys.stderr.buffer.write(result.stderr)\n"
         "    sys.exit(result.returncode)\n"
         "os.execv(real, [real, *args])\n",
         encoding="utf-8",
@@ -778,7 +809,41 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
             raise SystemExit("publication CLI rejection exit or single-attempt contract failed")
         return json.loads(receipt_bytes)
 
-    rejected = subprocess.run(publish_command, capture_output=True, env=reject_environment)
+    def assert_capture(receipt: dict, *, incomplete: bool = False) -> None:
+        capture = receipt["receive_capture"]
+        if capture != json.loads((capture_root / "capture.json").read_bytes()):
+            raise SystemExit("capture side receipt differs from transaction receipt")
+        if capture["status"] != ("incomplete" if incomplete else "complete"):
+            raise SystemExit("capture availability is incorrect")
+        if capture["binding"] != {"manifest_sha256": publication_module.digest(manifest),
+                                  "head_sha": manifest["harness_sha"], "tree": manifest["harness_tree"], "run_id": 99}:
+            raise SystemExit("capture binding is incorrect")
+        pushes = [item for item in capture["records"] if item["operation"] == "push"]
+        if len(pushes) != 1:
+            raise SystemExit("capture does not bind exactly one push")
+        for stream, path in (("stdout", push_stdout), ("stderr", push_stderr)):
+            item = pushes[0][stream]
+            raw = path.read_bytes()
+            if item["bytes"] != len(raw) or item["sha256"] != hashlib.sha256(raw).hexdigest():
+                raise SystemExit("captured push fingerprint mismatch")
+            encrypted = item["encrypted"]
+            if incomplete:
+                if encrypted["status"] != "unavailable":
+                    raise SystemExit("encryption failure reported false custody")
+                continue
+            cipher = capture_root / encrypted["file"]
+            cipher_bytes = cipher.read_bytes()
+            if (len(cipher_bytes) != encrypted["bytes"] or hashlib.sha256(cipher_bytes).hexdigest() != encrypted["sha256"]
+                    or canary[:-1] in cipher_bytes):
+                raise SystemExit("encrypted push artifact mismatch or plaintext leak")
+            decrypted = subprocess.run([str(age), "-d", "-i", str(identity), str(cipher)], capture_output=True)
+            if decrypted.returncode != 0 or decrypted.stdout != raw:
+                raise SystemExit("encrypted push did not retain byte-exact raw stream")
+        for path in capture_root.iterdir():
+            if path.suffix not in {".age", ".json"} or canary[:-1] in path.read_bytes():
+                raise SystemExit("capture directory contains plaintext or an unexpected file")
+
+    rejected = invoke_publish(env=reject_environment)
     failed_receipt = assert_private_result(rejected)
     if (publication_module.advertised_refs(str(remote)) != selected
             or failed_receipt.get("outcome") != "ambiguous"
@@ -787,13 +852,14 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
             or failed_receipt.get("after_refs_sha256") != publication_module.digest(selected)
             or failed_receipt.get("after_refs_status") != "observed"
             or not failed_receipt.get("publisher") or not failed_receipt.get("final_state")
-            or failed_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "receive-hook-rejection")]):
+            or failed_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "repository-rule-rejection")]
+            or len(push_stderr.read_bytes()) < 136876):
         raise SystemExit("publication CLI overwrote or misbound the actual rejected-push result")
+    assert_capture(failed_receipt)
     failure_evidence["real_cli_rejection_preserves_result_and_canary"] = publication_module.digest(failed_receipt)
 
     attempts.unlink()
-    double_failed = subprocess.run(publish_command, capture_output=True,
-                                   env=dict(reject_environment, FIXTURE_READBACK_FAILURE="1"))
+    double_failed = invoke_publish(env=dict(reject_environment, FIXTURE_READBACK_FAILURE="1"))
     double_receipt = assert_private_result(double_failed)
     if (publication_module.advertised_refs(str(remote)) != selected
             or double_receipt.get("outcome") != "failed-or-ambiguous"
@@ -801,12 +867,58 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
             or double_receipt.get("after_refs_status") != "unavailable"
             or "after_refs" in double_receipt or "after_refs_sha256" in double_receipt
             or not double_receipt.get("publisher")
-            or double_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "receive-hook-rejection"),
+            or double_receipt.get("diagnostics") != [diagnostic("push", 1, push_stderr, "repository-rule-rejection"),
                                                       diagnostic("ls-remote", 73, read_stderr, "unclassified")]):
         raise SystemExit("publication CLI lost separate push/readback failure fingerprints")
+    assert_capture(double_receipt)
+    readback_record = double_receipt["receive_capture"]["records"][-1]
+    if readback_record["operation"] != "ls-remote" or readback_record["exit_code"] != 73:
+        raise SystemExit("capture omitted failed authoritative readback")
+    recovered_readback = subprocess.run(
+        [str(age), "-d", "-i", str(identity), str(capture_root / readback_record["stderr"]["encrypted"]["file"])],
+        capture_output=True,
+    )
+    if recovered_readback.returncode or recovered_readback.stdout != read_stderr.read_bytes():
+        raise SystemExit("capture lost exact readback rejection bytes")
     failure_evidence["real_cli_double_failure_preserves_both_fingerprints"] = publication_module.digest(double_receipt)
+
+    failing_age = root / "disposable-failing-age"
+    failing_age.write_text(
+        f"#!{sys.executable}\nimport subprocess, sys\nraw = sys.stdin.buffer.read()\n"
+        f"if {canary[:-1]!r} in raw:\n    sys.stderr.buffer.write({canary!r})\n    sys.exit(23)\n"
+        f"result = subprocess.run([{str(age)!r}, *sys.argv[1:]], input=raw, capture_output=True)\n"
+        "sys.stdout.buffer.write(result.stdout)\nsys.stderr.buffer.write(result.stderr)\nsys.exit(result.returncode)\n",
+        encoding="utf-8",
+    )
+    failing_age.chmod(0o700)
+    attempts.unlink()
+    encryption_failed = invoke_publish(env=reject_environment, capture_age=failing_age)
+    encryption_receipt = assert_private_result(encryption_failed)
+    assert_capture(encryption_receipt, incomplete=True)
+    if (encryption_receipt["outcome"] != "ambiguous" or encryption_receipt["after_refs"] != selected
+            or publication_module.advertised_refs(str(remote)) != selected):
+        raise SystemExit("capture failure erased the rejected transaction readback")
+    failure_evidence["real_cli_encryption_failure_preserves_rejected_transaction"] = publication_module.digest(encryption_receipt)
+    attempts.unlink()
+    not_ready = invoke_publish(env=reject_environment, capture_age=root / "missing-age")
+    if not_ready.returncode != 1 or attempts.exists() or publication_module.advertised_refs(str(remote)) != selected:
+        raise SystemExit("capture readiness failure did not stop before push")
+    failure_evidence["real_cli_capture_readiness_failure_prevents_push"] = publication_module.digest(json.loads(receipt_path.read_bytes()))
     hook.unlink()
-    published = subprocess.run(publish_command, text=True, capture_output=True, env=environment)
+    successful_remote = root / "successful-capture-failure.git"
+    cloned = subprocess.run([real_git, "clone", "--bare", "--no-local", str(remote), str(successful_remote)], capture_output=True)
+    if cloned.returncode:
+        raise SystemExit("disposable success/custody fixture setup failed")
+    success_without_custody = invoke_publish(env=reject_environment, capture_age=failing_age, remote_override=successful_remote)
+    success_receipt = json.loads(receipt_path.read_bytes())
+    if (success_without_custody.returncode != 1 or success_receipt["outcome"] != "success"
+            or success_receipt["after_refs"] != output or publication_module.advertised_refs(str(successful_remote)) != output
+            or success_receipt["receive_capture"]["status"] != "incomplete"
+            or len([entry for entry in success_receipt["receive_capture"]["records"] if entry["operation"] == "push"]) != 1
+            or any(canary[:-1] in data for data in (success_without_custody.stdout, success_without_custody.stderr, receipt_path.read_bytes()))):
+        raise SystemExit("successful transaction was hidden by incomplete encrypted custody")
+    failure_evidence["real_cli_success_with_encryption_failure_retains_success_and_fails_job"] = publication_module.digest(success_receipt)
+    published = invoke_publish(text=True, env=environment)
     require_driver_success("production_publication_push", published)
     if publication_module.advertised_refs(str(remote)) != output:
         raise SystemExit("production publication CLI did not produce the approved complete remote map")
@@ -818,7 +930,7 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
     invalid = copy.deepcopy(api_documents)
     invalid["publisher_viewer"]["data"]["viewer"].update(login="github-actions[bot]")
     write_json(fixture_api, invalid)
-    stale = subprocess.run(publish_command, capture_output=True, env=environment)
+    stale = invoke_publish(env=environment)
     stale_receipt = json.loads(receipt_path.read_bytes())
     if (stale.returncode != 1 or publication_module.advertised_refs(str(remote)) != output
             or stale_receipt.get("outcome") != "failed-or-ambiguous"
@@ -827,6 +939,17 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
             or "after_refs" in stale_receipt or "after_refs_sha256" in stale_receipt):
         raise SystemExit("publication CLI reused stale success evidence on pre-result failure")
     failure_evidence["real_cli_pre_result_failure_replaces_stale_success"] = publication_module.digest(stale_receipt)
+    workflow = (ROOT.parents[1] / ".github/workflows/history-rewrite-candidate.yml").read_text(encoding="utf-8")
+    block = workflow.split("\n  publication:\n", 1)[1].split("\n  supplemental:\n", 1)[0]
+    if (block.index("Prepare encrypted receive capture before publisher credentials")
+            > block.index("Mint release publisher App token after environment approval and preflight")
+            or "--capture-root" not in block or "--capture-age" not in block or "--capture-recipient" not in block):
+        raise SystemExit("production capture is not wired before publisher credentials")
+    upload = block.split("      - name: Persist encrypted receive streams independently of transaction outcome\n", 1)[1].split("      - name:", 1)[0]
+    if ("always()" not in upload or "receive-capture/*.age" not in upload
+            or "receive-capture/capture.json" not in upload or "if-no-files-found: error" not in upload):
+        raise SystemExit("encrypted capture upload is not independently fail closed")
+    failure_evidence["production_capture_readiness_and_always_upload_contract"] = hashlib.sha256(upload.encode()).hexdigest()
     safe_evidence = json.dumps(failure_evidence, sort_keys=True).encode("utf-8")
     if canary[:-1] in safe_evidence:
         raise SystemExit("publication fixture evidence leaked disposable diagnostic canary")
