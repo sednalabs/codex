@@ -392,3 +392,18 @@ retention alone is never proof. This is finite hosted escrow, not indefinite
 archival storage. A separately selected durable destination remains required
 before its recorded archival deadline. Original artifact IDs/digests are not
 replaced by the new wrapper's ID/digest, and source archives are not deleted.
+# Explicit staged publication coverage
+
+`staged_publication_fixtures.py` runs in the existing hosted synthetic job. It
+checks deterministic batch boundaries, the useful canary and late coupled set,
+schema/digest rejection, exact prefix recovery and data-only reverse leases.
+The state-machine matrix distinguishes approval expiry, unchanged rejection,
+response loss, missing capture/checkpoint, unavailable readback and foreign refs.
+
+Actual publisher CLI cases use disposable bare Git remotes and immutable
+run/attempt-shaped approval/intent evidence. They prove a successful push with
+a lost response is not repeated; a killed publisher with a deleted checkpoint
+resumes from its actual prefix under a new run and approval; and wrong intent
+identity or a foreign namespace causes zero pushes. Successful completion also
+runs the production clean-fetch/object-type/fsck verification. All fixtures
+use hosted compute; they do not mutate a production repository.

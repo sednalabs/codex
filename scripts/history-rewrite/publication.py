@@ -4,9 +4,10 @@
 The workflow prepares a candidate-only bundle without maintenance or a write
 credential. Its protected handoff then binds actual administrator approval,
 independent observable controls, the recovery receipt and approved manifest
-before minting the narrowly scoped publisher App token. ``publish`` performs
-one atomic push with an explicit lease for every ref and resolves transport
-ambiguity by readback; it never retries a push.
+before minting the narrowly scoped publisher App token. ``publish`` defaults to
+one atomic push. An explicitly approved staged plan instead advances exact
+whole-namespace prefixes using atomic batches. Both modes use explicit leases
+and resolve transport ambiguity by readback; neither retries a push.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,7 +32,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
+if __name__ == "__main__":
+    # The protected handoff imports this module; keep exception/type identity
+    # shared when the public CLI is the entrypoint.
+    sys.modules["publication"] = sys.modules[__name__]
+
 from receive_capture import CaptureError, ReceiveCapture
+import staged_publication as staged
 
 
 REPOSITORY = "sednalabs/codex"
@@ -304,7 +312,85 @@ def validate_manifest(manifest: Mapping[str, object], *, frozen_sha: str, frozen
     expected_plan = plan_maintenance(plan.get("administrator_before"), plan.get("read_token_before"))
     if plan != expected_plan or snapshot != plan["read_token_after"]:
         raise PublicationError("maintenance plan changes more than the exact approved transition")
+    staged_plan(manifest)
     return selected, output
+
+
+def staged_plan(manifest: dict) -> dict | None:
+    required = (set(PROTECTED_REFS) | {f"refs/heads/{PUBLICATION_BRANCH}"}) & set(manifest["selected_refs"])
+    try:
+        return staged.validated_plan(manifest, required_final_refs=required)
+    except staged.PlanError as exc:
+        raise PublicationError(str(exc)) from None
+
+
+def staged_intent(manifest: dict, handoff: dict, preflight_path: Path, control_plan: Path, intent_path: Path) -> dict:
+    if staged_plan(manifest) is None:
+        raise PublicationError("staged intent requires an explicit approved staged plan")
+    return staged.mutation_intent(manifest, handoff["binding"], preflight_sha256=file_digest(preflight_path),
+                                  control_plan_sha256=file_digest(control_plan),
+                                  restoration_intent_sha256=file_digest(intent_path))
+
+
+def verify_staged_intent_artifact(manifest: dict, handoff: dict, *, preflight_path: Path, control_plan: Path,
+                                  intent_path: Path, artifact_id: int | None, api: Api,
+                                  fixture_zip: Path | None = None) -> dict | None:
+    """Read back immutable global intent before admitting any staged mutation."""
+    if staged_plan(manifest) is None:
+        return None
+    artifact_id = _positive_int(artifact_id, "staged intent artifact id")
+    binding = handoff.get("binding", {})
+    run_id = _positive_int(binding.get("run_id"), "staged intent run")
+    expected = staged_intent(manifest, handoff, preflight_path, control_plan, intent_path)
+    metadata = api.get(f"/repos/{REPOSITORY}/actions/artifacts/{artifact_id}")
+    if not isinstance(metadata, dict):
+        raise PublicationError("staged intent artifact metadata is unavailable")
+    size = _positive_int(metadata.get("size_in_bytes"), "staged intent artifact size")
+    api_digest = metadata.get("digest")
+    workflow = metadata.get("workflow_run", {})
+    if (metadata.get("id") != artifact_id or metadata.get("name") != f"history-rewrite-publication-intent-{run_id}"
+            or metadata.get("expired") is not False or not isinstance(workflow, dict)
+            or workflow.get("id") != run_id or workflow.get("head_sha") != manifest["harness_sha"]
+            or workflow.get("repository_id") != REPOSITORY_ID or size > 4 * 1024 * 1024
+            or not isinstance(api_digest, str) or not api_digest.startswith("sha256:")):
+        raise PublicationError("staged intent artifact identity, expiry or bound mismatch")
+    _sha256(api_digest[7:], "staged intent artifact digest")
+    expected_objects = {"manifest.json": manifest,
+                        "preflight.json": load_object(preflight_path),
+                        "control-plan.json": load_object(control_plan),
+                        "publication-restoration-intent.json": load_object(intent_path),
+                        "publication-staged-intent.json": expected}
+    with tempfile.TemporaryDirectory(prefix="staged-intent-readback-") as temporary:
+        archive_path = Path(temporary) / "intent.zip"
+        if fixture_zip is None:
+            download_custody_zip(artifact_id, archive_path, size)
+        else:
+            if os.environ.get("HISTORY_REWRITE_PUBLICATION_FIXTURE") != "1":
+                raise PublicationError("local staged intent is restricted to the fixture boundary")
+            shutil.copyfile(fixture_zip, archive_path)
+        if archive_path.stat().st_size != size or file_digest(archive_path) != api_digest[7:]:
+            raise PublicationError("staged intent archive bytes differ from API evidence")
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                entries = archive.infolist()
+                names = [Path(entry.filename).name for entry in entries]
+                if len(names) != len(expected_objects) or set(names) != set(expected_objects):
+                    raise PublicationError("staged intent archive domain is missing, extra or duplicated")
+                for entry in entries:
+                    path = Path(entry.filename)
+                    if (path.is_absolute() or any(part in {".", ".."} for part in path.parts)
+                            or entry.is_dir() or stat.S_ISLNK(entry.external_attr >> 16) or entry.flag_bits & 1
+                            or not 0 < entry.file_size <= 1024 * 1024):
+                        raise PublicationError("staged intent archive member shape is invalid")
+                    expected_bytes = canonical_json(expected_objects[path.name]) + b"\n"
+                    if entry.file_size != len(expected_bytes) or archive.read(entry) != expected_bytes:
+                        raise PublicationError("staged intent archive content differs from exact approved transaction")
+        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+            raise PublicationError("staged intent archive could not be verified") from None
+    return {"schema": "history-rewrite-durable-staged-intent-v1", "artifact_id": artifact_id,
+            "artifact_api_digest": api_digest, "run_id": run_id, "run_attempt": binding["run_attempt"],
+            "manifest_sha256": digest(manifest), "publication_plan_sha256": manifest["publication_plan_sha256"],
+            "intent_sha256": digest(expected), "status": "verified-before-mutation"}
 
 
 def validate_environment(environment: object, policies: object) -> None:
@@ -1111,6 +1197,7 @@ class PublicationResult:
     after_refs: Mapping[str, str]
     final_state: Mapping[str, object] | None = None
     diagnostics: tuple[GitFailureDiagnostic, ...] = ()
+    progress: Mapping[str, object] | None = None
 
 
 def resolve_push_failure(output: Mapping[str, str], error: PublicationError, readback) -> PublicationResult:
@@ -1132,44 +1219,96 @@ def resolve_push_failure(output: Mapping[str, str], error: PublicationError, rea
 def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, manifest_sha256: str,
                        preflight_path: Path, control_plan: Path, intent_path: Path, read_api: Api, observer_api: Api,
                        current_run_id: int, repo: Path, remote_url: str, token: str | None = None,
-                       handoff: dict | None = None, capture: ReceiveCapture | None = None) -> PublicationResult:
+                       handoff: dict | None = None, capture: ReceiveCapture | None = None,
+                       intent_artifact_id: int | None = None, checkpoint_path: Path | None = None,
+                       fixture_intent_zip: Path | None = None) -> PublicationResult:
     selected, output = validate_phase_bindings(
         manifest, frozen_sha=frozen_sha, frozen_tree=frozen_tree, manifest_sha256=manifest_sha256,
         preflight_path=preflight_path, control_plan=control_plan, intent_path=intent_path,
     )
-    final_state = verify_live_publication_state(manifest, read_api, observer_api=observer_api,
-                                               current_run_id=current_run_id, handoff=handoff)
+    plan = staged_plan(manifest)
+    final_state = None
+    durable_intent = None
+    if plan is None:
+        final_state = verify_live_publication_state(manifest, read_api, observer_api=observer_api,
+                                                   current_run_id=current_run_id, handoff=handoff)
+    else:
+        if not isinstance(handoff, dict) or not isinstance(handoff.get("binding"), dict) or checkpoint_path is None:
+            raise PublicationError("staged publication requires a protected handoff and checkpoint path")
+        if handoff.get("binding", {}).get("run_id") != current_run_id:
+            raise PublicationError("staged publication handoff belongs to another run")
+        durable_intent = verify_staged_intent_artifact(
+            manifest, handoff, preflight_path=preflight_path, control_plan=control_plan,
+            intent_path=intent_path, artifact_id=intent_artifact_id, api=read_api, fixture_zip=fixture_intent_zip)
     env, credential_root = credential_environment(remote_url, token)
     try:
         before = advertised_refs(remote_url, env=env, capture=capture)
-        if before != selected:
+        if plan is None and before != selected:
             raise PublicationError("remote changed after preparation; refusing stale publication")
+        if plan is not None:
+            try:
+                staged.locate_prefix(staged.prefix_maps(plan, selected, output), before)
+            except staged.PlanError as exc:
+                raise PublicationError(str(exc)) from None
         if capture is not None and capture.snapshot()["status"] != "complete":
             raise PublicationError("encrypted capture unavailable before ref mutation")
         _object_types(repo, output, env=env, capture=capture)
         if capture is not None and capture.snapshot()["status"] != "complete":
             raise PublicationError("encrypted capture unavailable before ref mutation")
-        if handoff is not None:
-            from protected_handoff import require_fresh_gate
-            require_fresh_gate(handoff, manifest)
-        args = ["push", "--atomic"]
-        args.extend(f"--force-with-lease={name}:{selected[name]}" for name in sorted(selected))
-        args.append(remote_url)
-        args.extend(f"{output[name]}:{name}" for name in sorted(output))
         diagnostics = ()
-        try:
-            git_output(["git", "-C", str(repo), *args], "push", env=env, capture=capture)
-        except PublicationError as push_error:
-            resolved = resolve_push_failure(output, push_error, lambda: advertised_refs(remote_url, env=env, capture=capture))
-            if resolved.outcome != "success":
-                return PublicationResult(resolved.outcome, resolved.reason, resolved.after_refs, final_state, resolved.diagnostics)
-            after, reason = dict(resolved.after_refs), resolved.reason
-            diagnostics = resolved.diagnostics
+        progress = None
+        if plan is not None:
+            def check_gate(*, observe: bool) -> None:
+                nonlocal final_state
+                from protected_handoff import require_fresh_gate
+                require_fresh_gate(handoff, manifest)
+                if observe:
+                    final_state = verify_live_publication_state(manifest, read_api, observer_api=observer_api,
+                                                               current_run_id=current_run_id, handoff=handoff)
+
+            def push_batch(batch: dict, expected_before: dict, expected_after: dict) -> None:
+                args = ["git", "-C", str(repo), "push", "--atomic"]
+                args.extend(f"--force-with-lease={name}:{expected_before[name]}" for name in batch["refs"])
+                args.append(remote_url)
+                args.extend(f"{expected_after[name]}:{name}" for name in batch["refs"])
+                git_output(args, "push", env=env, capture=capture)
+
+            try:
+                result = staged.run_batches(
+                    plan, selected, output, read_refs=lambda: advertised_refs(remote_url, env=env, capture=capture),
+                    push=push_batch, check_gate=check_gate,
+                    capture_complete=lambda: capture is not None and capture.snapshot()["status"] == "complete",
+                    checkpoint=lambda value: staged.write_checkpoint(checkpoint_path, {
+                        **value, "manifest_sha256": manifest_sha256, "durable_intent": durable_intent}),
+                    error_type=PublicationError)
+            except staged.PlanError as exc:
+                raise PublicationError(str(exc)) from None
+            progress = {**result.progress, "durable_intent": durable_intent}
+            if result.outcome != "success":
+                return PublicationResult(result.outcome, result.reason, result.after_refs, final_state,
+                                         result.diagnostics, progress)
+            after, reason, diagnostics = result.after_refs, result.reason, result.diagnostics
         else:
-            after = advertised_refs(remote_url, env=env, capture=capture)
-            if after != output:
-                raise PublicationError("push returned success but full remote namespace differs from approved output")
-            reason = "atomic leased push completed"
+            if handoff is not None:
+                from protected_handoff import require_fresh_gate
+                require_fresh_gate(handoff, manifest)
+            args = ["push", "--atomic"]
+            args.extend(f"--force-with-lease={name}:{selected[name]}" for name in sorted(selected))
+            args.append(remote_url)
+            args.extend(f"{output[name]}:{name}" for name in sorted(output))
+            try:
+                git_output(["git", "-C", str(repo), *args], "push", env=env, capture=capture)
+            except PublicationError as push_error:
+                resolved = resolve_push_failure(output, push_error, lambda: advertised_refs(remote_url, env=env, capture=capture))
+                if resolved.outcome != "success":
+                    return PublicationResult(resolved.outcome, resolved.reason, resolved.after_refs, final_state, resolved.diagnostics)
+                after, reason = dict(resolved.after_refs), resolved.reason
+                diagnostics = resolved.diagnostics
+            else:
+                after = advertised_refs(remote_url, env=env, capture=capture)
+                if after != output:
+                    raise PublicationError("push returned success but full remote namespace differs from approved output")
+                reason = "atomic leased push completed"
         with tempfile.TemporaryDirectory(prefix="history-rewrite-clean-fetch-") as temporary:
             clean = Path(temporary) / "repo.git"
             git_output(["git", "init", "--bare", str(clean)], "init", capture=capture)
@@ -1185,7 +1324,7 @@ def publish_repository(manifest: dict, *, frozen_sha: str, frozen_tree: str, man
         final = advertised_refs(remote_url, env=env, capture=capture)
         if final != output:
             raise PublicationError("remote changed during clean-fetch verification")
-        return PublicationResult("success", reason + "; full readback and clean fetch verified", final, final_state, diagnostics)
+        return PublicationResult("success", reason + "; full readback and clean fetch verified", final, final_state, diagnostics, progress)
     finally:
         if credential_root is not None:
             shutil.rmtree(credential_root, ignore_errors=True)
@@ -1256,6 +1395,8 @@ class FixtureApi:
         self.principal = principal
 
     def get(self, path: str) -> object:
+        if path in self.state.get("responses", {}):
+            return self.state["responses"][path]
         if path == OBSERVER_REPOSITORIES_PATH:
             return self.state[f"{self.principal}_repositories"]
         if path == f"/apps/{OBSERVER_APP_SLUG}":
@@ -1391,7 +1532,8 @@ def restore_from_intent_artifact(*, artifact_zip: Path, artifact_api_json: Path,
         with zipfile.ZipFile(artifact_zip) as archive, tempfile.TemporaryDirectory(prefix="history-rewrite-restore-") as temporary:
             files = [name for name in archive.namelist() if not name.endswith("/")]
             basenames = [Path(name).name for name in files]
-            if set(basenames) != expected_names or len(basenames) != len(expected_names):
+            if (set(basenames) not in (expected_names, expected_names | {"publication-staged-intent.json"})
+                    or len(basenames) != len(set(basenames))):
                 raise PublicationError("restoration-intent artifact has an unexpected or duplicate file domain")
             root = Path(temporary)
             for name in files:
@@ -1405,6 +1547,22 @@ def restore_from_intent_artifact(*, artifact_zip: Path, artifact_api_json: Path,
                 preflight_path=root / "preflight.json", control_plan=root / "control-plan.json",
                 intent_path=root / "publication-restoration-intent.json",
             )
+            plan = staged_plan(manifest)
+            if (plan is not None) != ("publication-staged-intent.json" in basenames):
+                raise PublicationError("restoration intent lacks the bound staged contract")
+            if plan is not None:
+                durable = load_object(root / "publication-staged-intent.json")
+                binding = durable.get("binding")
+                if (not isinstance(binding, dict) or binding.get("run_id") != run_id
+                        or binding.get("harness_sha") != frozen_sha or binding.get("harness_tree") != frozen_tree
+                        or binding.get("manifest_sha256") != manifest_sha256
+                        or binding.get("publication_mode") != "staged"
+                        or binding.get("publication_plan_sha256") != manifest["publication_plan_sha256"]):
+                    raise PublicationError("staged restoration intent target binding mismatch")
+                expected = staged_intent(manifest, {"binding": binding}, root / "preflight.json",
+                                         root / "control-plan.json", root / "publication-restoration-intent.json")
+                if durable != expected:
+                    raise PublicationError("staged restoration intent differs from approved global plan")
             publisher = validate_publisher_identity(api)
             receipt = set_controls(load_object(root / "control-plan.json"), manifest, api, restore=True)
     except (OSError, zipfile.BadZipFile) as exc:
@@ -1635,6 +1793,7 @@ def main() -> int:
     phase_arguments(prepare, include_intent=False)
     controls = sub.add_parser("controls")
     controls.add_argument("operation", choices=("suppress", "restore")); controls.add_argument("manifest", type=Path)
+    controls.add_argument("--intent-artifact-id", type=int)
     controls.add_argument("--receipt", type=Path, required=True); controls.add_argument("--api-url", default="https://api.github.com")
     controls.add_argument("--handoff", type=Path)
     phase_arguments(controls, include_intent=True)
@@ -1643,6 +1802,9 @@ def main() -> int:
     publish.add_argument("--current-run-id", type=int, required=True)
     publish.add_argument("--fixture-api", type=Path)
     publish.add_argument("--handoff", type=Path)
+    publish.add_argument("--intent-artifact-id", type=int)
+    publish.add_argument("--checkpoint", type=Path)
+    publish.add_argument("--fixture-intent-zip", type=Path)
     publish.add_argument("--capture-root", type=Path, required=True)
     publish.add_argument("--capture-age", type=Path, required=True)
     publish.add_argument("--capture-recipient", required=True)
@@ -1700,6 +1862,11 @@ def main() -> int:
                 if ns.handoff is None:
                     raise PublicationError("publisher effects require the protected handoff")
                 require_fresh_gate(load_object(ns.handoff), manifest)
+                if staged_plan(manifest) is not None:
+                    verify_staged_intent_artifact(manifest, load_object(ns.handoff), preflight_path=ns.preflight,
+                        control_plan=ns.control_plan, intent_path=ns.intent, artifact_id=ns.intent_artifact_id,
+                        api=GitHubApi(os.environ.get("GH_TOKEN", "")))
+                    require_fresh_gate(load_object(ns.handoff), manifest)
             api = publisher_api_from_environment(ns.api_url)
             publisher = validate_publisher_identity(api)
             receipt = set_controls(plan, manifest, api, restore=ns.operation == "restore")
@@ -1724,6 +1891,8 @@ def main() -> int:
                     read_api = FixtureApi(fixture_state, principal="workflow")
                     observer_api = FixtureApi(fixture_state, principal="observer")
                 else:
+                    if ns.fixture_intent_zip is not None:
+                        raise PublicationError("fixture intent archives are forbidden for live publication")
                     if ns.handoff is None:
                         raise PublicationError("publication requires the protected handoff")
                     publisher_api = publisher_api_from_environment()
@@ -1738,6 +1907,9 @@ def main() -> int:
                     token=os.environ.get("GH_TOKEN"),
                     handoff=load_object(ns.handoff) if ns.handoff is not None else None,
                     capture=capture,
+                    intent_artifact_id=ns.intent_artifact_id,
+                    checkpoint_path=ns.checkpoint or ns.receipt.with_name("staged-checkpoint.json"),
+                    fixture_intent_zip=ns.fixture_intent_zip,
                 )
             except PublicationError as exc:
                 write_json(ns.receipt, {"schema": "history-rewrite-publication-receipt-v1", "outcome": "failed-or-ambiguous",
@@ -1750,8 +1922,12 @@ def main() -> int:
                                    "reason": result.reason, "manifest_sha256": ns.manifest_sha256, "after_refs": result.after_refs,
                                    "after_refs_sha256": digest(result.after_refs), "after_refs_status": "observed", "final_state": result.final_state,
                                    "publisher": publisher, "diagnostics": [asdict(item) for item in result.diagnostics],
+                                   "staged_progress": result.progress,
                                    "receive_capture": capture.snapshot(),
                                    "external_administrator_intervention_risk": "controls or refs may still change after final readback; atomic ref leases prevent stale ref updates but do not lock administrative controls"})
+            if result.outcome == "checkpointed":
+                print("staged publication checkpointed; reconcile the exact prefix before a newly approved continuation", file=sys.stderr)
+                return 2
             if result.outcome != "success":
                 raise PublicationError("atomic push outcome is ambiguous; receipt preserved")
             if capture.snapshot()["status"] != "complete":

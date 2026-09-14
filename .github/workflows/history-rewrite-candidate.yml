@@ -337,6 +337,7 @@ jobs:
         run: |
           python3 scripts/history-rewrite/fixtures/protected_handoff_fixtures.py >> fixture-evidence.txt
           python3 scripts/history-rewrite/fixtures/candidate_bundle_fixtures.py >> fixture-evidence.txt
+          python3 scripts/history-rewrite/fixtures/staged_publication_fixtures.py >> fixture-evidence.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: history-rewrite-synthetic-${{ github.run_id }}
@@ -857,6 +858,7 @@ jobs:
           python3 scripts/history-rewrite/protected_handoff.py gate --root "$RUNNER_TEMP/history-rewrite-publication"
       - name: Persist pre-mutation recovery intent
         if: inputs.mode == 'publication'
+        id: publication_intent
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: history-rewrite-publication-intent-${{ github.run_id }}
@@ -865,8 +867,17 @@ jobs:
             ${{ runner.temp }}/history-rewrite-publication/manifest.json
             ${{ runner.temp }}/history-rewrite-publication/preflight/control-plan.json
             ${{ runner.temp }}/history-rewrite-publication/preflight/preflight.json
+            ${{ runner.temp }}/history-rewrite-publication/publication-staged-intent.json
           if-no-files-found: error
           retention-days: 30
+      - name: Verify durable staged intent before publisher credentials
+        if: inputs.mode == 'publication'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTENT_ARTIFACT_ID: ${{ steps.publication_intent.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/history-rewrite/protected_handoff.py verify-intent --root "$RUNNER_TEMP/history-rewrite-publication"
       - name: Check release publisher App configuration after all pre-publication gates
         if: inputs.mode == 'publication'
         env:
@@ -914,8 +925,8 @@ jobs:
             --frozen-sha "$HARNESS_SHA" --frozen-tree "$HARNESS_TREE" --manifest-sha256 "$MANIFEST_SHA256" \
             --preflight "$root/preflight/preflight.json" --control-plan "$root/preflight/control-plan.json" \
             --intent "$root/publication-restoration-intent.json" --receipt "$root/control-suppression.json" \
-            --handoff "$root/handoff.json"
-      - name: Publish explicit refs once with atomic per-ref leases
+            --handoff "$root/handoff.json" --intent-artifact-id "${{ steps.publication_intent.outputs.artifact-id }}"
+      - name: Publish explicit refs with approved atomic boundaries
         if: inputs.mode == 'publication'
         env:
           GH_TOKEN: ${{ steps.release_publisher_token.outputs.token }}
@@ -935,6 +946,8 @@ jobs:
             --repo "$root/prepared/repo.git" --remote-url "$REPO_URL" --handoff "$root/handoff.json" \
             --receipt "$root/publication-receipt.json" --capture-root "$root/receive-capture" \
             --capture-age "$RUNNER_TEMP/history-rewrite-capture-tool/age/age" \
+            --intent-artifact-id "${{ steps.publication_intent.outputs.artifact-id }}" \
+            --checkpoint "$root/staged-checkpoint.json" \
             --capture-recipient age12ztscspsycnd6a8r98zl6qjhmgzt832a6yv8yy2gx6txxvn72fvsjjcucd
       - name: Restore captured release workflow states
         if: ${{ always() && steps.release_publisher_token.outputs.token != '' }}
@@ -975,6 +988,9 @@ jobs:
             ${{ runner.temp }}/history-rewrite-publication/control-restoration.json
             ${{ runner.temp }}/history-rewrite-publication/handoff.json
             ${{ runner.temp }}/history-rewrite-publication/observer-error.json
+            ${{ runner.temp }}/history-rewrite-publication/publication-staged-intent.json
+            ${{ runner.temp }}/history-rewrite-publication/durable-staged-intent.json
+            ${{ runner.temp }}/history-rewrite-publication/staged-checkpoint.json
           if-no-files-found: warn
           retention-days: 30
       - name: Remove publication staging and credentials

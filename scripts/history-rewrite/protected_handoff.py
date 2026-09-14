@@ -108,12 +108,16 @@ def observe(api, *, error_path: Path | None = None) -> ObserverScalars:
 
 
 def approval_binding(manifest: dict, prepared: dict, artifact: dict, *, run_id: int, attempt: int, phase: str) -> dict:
-    return {"schema": "history-rewrite-administrator-witness-v1", "repository": p.REPOSITORY,
+    binding = {"schema": "history-rewrite-administrator-witness-v1", "repository": p.REPOSITORY,
             "repository_id": p.REPOSITORY_ID, "run_id": run_id, "run_attempt": attempt, "phase": phase,
             "harness_sha": manifest["harness_sha"], "harness_tree": manifest["harness_tree"],
             "manifest_sha256": p.digest(manifest), "selected_refs_sha256": manifest["selected_refs_sha256"],
             "output_refs_sha256": manifest["output_refs_sha256"], "prepared_artifact": artifact,
             "prepared_sha256": p.digest(prepared)}
+    if "publication_plan" in manifest or "publication_plan_sha256" in manifest:
+        p.staged_plan(manifest)
+        binding.update(publication_mode="staged", publication_plan_sha256=manifest["publication_plan_sha256"])
+    return binding
 
 
 def expected_snapshot(manifest: dict, phase: str) -> dict:
@@ -205,11 +209,15 @@ def verify_current(manifest: dict, binding: dict, read_api, observer_api, *, now
 
 
 def require_fresh_gate(receipt: dict, manifest: dict) -> None:
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("binding"), dict):
+        raise p.PublicationError("protected gate receipt or binding is malformed")
     binding = receipt.get("binding", {})
     fields = {"phase": "publication", "manifest_sha256": p.digest(manifest),
               "harness_sha": manifest["harness_sha"], "harness_tree": manifest["harness_tree"],
               "selected_refs_sha256": manifest["selected_refs_sha256"], "output_refs_sha256": manifest["output_refs_sha256"],
               "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"])}
+    if p.staged_plan(manifest) is not None:
+        fields.update(publication_mode="staged", publication_plan_sha256=manifest["publication_plan_sha256"])
     now = datetime.now(timezone.utc)
     if (receipt.get("schema") != "history-rewrite-protected-gate-v1"
             or any(binding.get(key) != value for key, value in fields.items())
@@ -220,7 +228,7 @@ def require_fresh_gate(receipt: dict, manifest: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "import", "gate", "describe", "freshness", "qualification-prepare"))
+    parser.add_argument("command", choices=("prepare", "import", "gate", "describe", "freshness", "verify-intent", "qualification-prepare"))
     parser.add_argument("--root", type=Path, required=True)
     ns = parser.parse_args()
     root = ns.root
@@ -291,6 +299,16 @@ def main() -> None:
         raise p.PublicationError("protected manifest digest/phase mismatch")
     if phase == "publication":
         p.validate_manifest(manifest, frozen_sha=sha, frozen_tree=tree)
+    if ns.command == "verify-intent":
+        handoff = p.load_object(root / "handoff.json")
+        require_fresh_gate(handoff, manifest)
+        receipt = p.verify_staged_intent_artifact(manifest, handoff,
+            preflight_path=root / "preflight/preflight.json", control_plan=root / "preflight/control-plan.json",
+            intent_path=root / "publication-restoration-intent.json", api=api,
+            artifact_id=int(os.environ["INTENT_ARTIFACT_ID"]))
+        if receipt is not None:
+            p.write_json(root / "durable-staged-intent.json", receipt)
+        return
     p.validate_environment(api.get(f"/repos/{p.REPOSITORY}/environments/{p.ENVIRONMENT_NAME}"),
         api.get(f"/repos/{p.REPOSITORY}/environments/{p.ENVIRONMENT_NAME}/deployment-branch-policies?per_page=100"))
     observer = p.observer_api_from_environment()
@@ -309,6 +327,10 @@ def main() -> None:
         p.record_live_preflight(manifest, api_dir=api_dir, output=root / "preflight")
         p.write_restoration_intent(manifest, preflight_path=root / "preflight/preflight.json",
                                   control_plan=root / "preflight/control-plan.json", intent_path=root / "publication-restoration-intent.json")
+        if p.staged_plan(manifest) is not None:
+            p.write_json(root / "publication-staged-intent.json", p.staged_intent(manifest, receipt,
+                root / "preflight/preflight.json", root / "preflight/control-plan.json",
+                root / "publication-restoration-intent.json"))
 
 
 if __name__ == "__main__":

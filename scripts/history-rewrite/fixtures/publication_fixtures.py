@@ -901,7 +901,7 @@ def main() -> None:
     if re.findall(r"permission-([a-z-]+): ([a-z]+)", publisher_block) != [("actions", "write"), ("contents", "write"), ("metadata", "read")]:
         raise SystemExit("publisher token request differs from its admitted exact permissions")
     for step_name in ("Verify minted publisher App identity", "Suppress only manifest-authorised release writers",
-                      "Publish explicit refs once with atomic per-ref leases", "Restore captured release workflow states"):
+                      "Publish explicit refs with approved atomic boundaries", "Restore captured release workflow states"):
         block = workflow.split(f"      - name: {step_name}\n", 1)[1].split("      - name:", 1)[0]
         for key, output in (("GH_TOKEN", "token"), ("HISTORY_REWRITE_PUBLISHER_INSTALLATION_ID", "installation-id"),
                             ("HISTORY_REWRITE_PUBLISHER_APP_SLUG", "app-slug")):
@@ -910,6 +910,16 @@ def main() -> None:
     if "gh api installation " in workflow or "publication.py publisher-identity" not in workflow:
         raise SystemExit("workflow bypasses the common documented publisher identity validator")
     evidence.append("publisher_token_scope_and_all_consumer_bindings")
+    ordered_steps = ["Persist pre-mutation recovery intent", "Verify durable staged intent before publisher credentials",
+                     "Check release publisher App configuration after all pre-publication gates",
+                     "Mint release publisher App token after environment approval and preflight",
+                     "Suppress only manifest-authorised release writers", "Publish explicit refs with approved atomic boundaries"]
+    offsets = [workflow.index(f"      - name: {name}\n") for name in ordered_steps]
+    if offsets != sorted(offsets) or "id: publication_intent" not in workflow or "publication-staged-intent.json" not in workflow:
+        raise SystemExit("durable staged intent no longer precedes credential and mutation consumers")
+    if '--intent-artifact-id "${{ steps.publication_intent.outputs.artifact-id }}"' not in workflow:
+        raise SystemExit("staged mutation consumer lost immutable intent output binding")
+    evidence.append("durable_staged_intent_precedes_all_publisher_effects")
     evidence.extend(observer_fixtures())
     evidence.extend(publisher_fixtures())
     evidence.extend(custody_fixtures())
