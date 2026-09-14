@@ -87,6 +87,9 @@ Object-type preflight failures and clean-fetch ref-resolution failures also
 cross this capture boundary; hosted CLI cases decrypt both diagnostic streams
 and prove zero pushes before preflight rejection or exactly one push before a
 post-publication verification failure.
+An exit-zero object-type response carrying unexpected bytes is rejected with a
+fixed public error, not an interpolation of the subprocess output; the exact
+stdout and stderr remain available only in encrypted custody.
 
 A hard-killed runner can lose in-memory bytes before encryption or upload.
 Missing ciphertext or receipts are incomplete custody, never proof that a push

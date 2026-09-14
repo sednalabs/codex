@@ -955,7 +955,7 @@ def _object_types(repo: Path, refs: Mapping[str, str], *, capture: ReceiveCaptur
     for name, oid in refs.items():
         kind = git(repo, "cat-file", "-t", oid, env=env, capture=capture).strip()
         if kind not in {"commit", "tag"}:
-            raise PublicationError(f"ref object has unsupported type {kind}: {name}")
+            raise PublicationError("ref object has an unsupported type; see encrypted capture")
         result[name] = kind
     return result
 

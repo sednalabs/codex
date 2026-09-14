@@ -776,6 +776,9 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
         f"real = {real_git!r}\nargs = sys.argv[1:]\n"
         "if len(args) > 2 and args[0] == '-C' and args[2] == os.environ.get('FIXTURE_METADATA_FAILURE') "
         "and (args[2] == 'cat-file' or 'history-rewrite-clean-fetch-' in args[1]):\n"
+        "    if os.environ.get('FIXTURE_METADATA_SUCCESS_CANARY') == '1':\n"
+        f"        sys.stdout.buffer.write({canary[:-1]!r})\n"
+        f"        sys.stderr.buffer.write({canary!r})\n        sys.exit(0)\n"
         f"    sys.stdout.buffer.write(b'metadata stdout: ' + {canary!r})\n"
         f"    sys.stderr.buffer.write(b'metadata stderr: ' + {canary!r})\n    sys.exit(72)\n"
         "if args and args[0] == 'ls-remote' and os.environ.get('FIXTURE_READBACK_FAILURE') == '1' "
@@ -934,6 +937,24 @@ def publication_pipeline_fixture(root: Path, remote: Path, source_sha: str, rewr
     if publication_module.advertised_refs(str(remote)) != selected:
         raise SystemExit("object-type preflight failure mutated the remote")
     failure_evidence["real_cli_object_type_failure_encrypted_before_push"] = publication_module.digest(type_receipt)
+    type_success_canary = invoke_publish(env=dict(reject_environment, FIXTURE_METADATA_FAILURE="cat-file", FIXTURE_METADATA_SUCCESS_CANARY="1"))
+    type_canary_receipt = json.loads(receipt_path.read_bytes())
+    if (type_success_canary.returncode != 1
+            or any(canary[:-1] in data for data in (type_success_canary.stdout, type_success_canary.stderr, receipt_path.read_bytes()))
+            or type_canary_receipt["receive_capture"]["status"] != "complete"
+            or any(item["operation"] == "push" for item in type_canary_receipt["receive_capture"]["records"])
+            or publication_module.advertised_refs(str(remote)) != selected):
+        raise SystemExit("exit-zero object-type canary leaked or reached publication")
+    type_record = type_canary_receipt["receive_capture"]["records"][-1]
+    if type_record["operation"] != "cat-file" or type_record["exit_code"] != 0:
+        raise SystemExit("exit-zero object-type capture identity is incorrect")
+    for stream, expected in (("stdout", canary[:-1]), ("stderr", canary)):
+        recovered = subprocess.run(
+            [str(age), "-d", "-i", str(identity), str(capture_root / type_record[stream]["encrypted"]["file"])], capture_output=True,
+        )
+        if recovered.returncode or recovered.stdout != expected:
+            raise SystemExit("exit-zero object-type canary custody is not byte exact")
+    failure_evidence["real_cli_exit_zero_object_type_canary_is_never_interpolated"] = publication_module.digest(type_canary_receipt)
     metadata_remote = root / "metadata-failure.git"
     cloned = subprocess.run([real_git, "clone", "--bare", "--no-local", str(remote), str(metadata_remote)], capture_output=True)
     if cloned.returncode:
