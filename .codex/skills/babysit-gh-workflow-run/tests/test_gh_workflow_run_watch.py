@@ -36,6 +36,114 @@ def temp_cwd(path):
 
 
 class GeminiWatcherTests(unittest.TestCase):
+    def test_log_collection_uses_aggregate_only_without_job_logs(self):
+        job = {"databaseId": 7, "name": "Tests", "conclusion": "failure"}
+        run = {"databaseId": 42, "jobs": [job]}
+        overview = {
+            "kind": "failed_jobs_overview", "label": "run 42 failed jobs overview",
+            "job_id": None, "job_name": None, "retrieved_via": "run metadata",
+            "text": "overview",
+        }
+        for log, aggregate, expected_log in (
+            ("job failure", "unused", {
+                "kind": "failed_job_log", "label": "Tests", "job_id": 7,
+                "job_name": "Tests", "retrieved_via": "job endpoint", "text": "focused job failure",
+            }),
+            ("", "aggregate failure", {
+                "kind": "run_log_failed", "label": "run 42 --log-failed",
+                "job_id": None, "job_name": None, "retrieved_via": "gh run view --log-failed",
+                "text": "focused aggregate failure",
+            }),
+            ("", "", None),
+        ):
+            with self.subTest(log=log, aggregate=aggregate), patch.object(
+                MODULE, "_render_failed_jobs_overview", return_value="overview"
+            ), patch.object(MODULE, "_load_job_log_text", return_value=(log, "job endpoint")) as job_read, patch.object(
+                MODULE, "_focus_job_log_text", side_effect=lambda job, text: "focused " + text
+            ), patch.object(MODULE, "_excerpt_around_failure", side_effect=lambda text, **kw: "focused " + text), patch.object(
+                MODULE, "gh_text", return_value=aggregate
+            ) as aggregate_read:
+                result = MODULE._collect_log_sources("owner/repo", run)
+            self.assertEqual(result, [overview] + ([expected_log] if expected_log else []))
+            job_read.assert_called_once_with("owner/repo", 7)
+            self.assertEqual(aggregate_read.call_args_list, [] if log else [
+                call(["run", "view", "42", "--log-failed"], repo="owner/repo")
+            ])
+
+    def test_log_collection_fallback_survives_summary_and_unavailable_aggregate(self):
+        run = {"databaseId": 42, "jobs": [{"databaseId": 7, "name": "Tests", "conclusion": "failure"}]}
+        for aggregate in ("aggregate failure", MODULE.GhCommandError("logs unavailable")):
+            with self.subTest(aggregate=type(aggregate).__name__), patch.object(
+                MODULE, "_render_failed_jobs_overview", return_value="overview"
+            ), patch.object(MODULE, "_focused_validation_summary_text", return_value="summary"), patch.object(
+                MODULE, "_load_job_log_text", return_value=("", "")
+            ), patch.object(MODULE, "gh_text", side_effect=[aggregate]) as aggregate_read:
+                result = MODULE._collect_log_sources("owner/repo", run, validation_summary={"present": True})
+            aggregate_read.assert_called_once_with(["run", "view", "42", "--log-failed"], repo="owner/repo")
+            self.assertEqual([source["kind"] for source in result], ["failed_jobs_overview", "validation_summary"] + (
+                ["run_log_failed"] if isinstance(aggregate, str) else []
+            ))
+
+    def test_log_collection_without_selected_jobs_keeps_aggregate_text_once(self):
+        with patch.object(MODULE, "gh_text", return_value="aggregate failure"), patch.object(
+            MODULE, "_render_failed_jobs_overview", return_value=""
+        ), patch.object(MODULE, "_load_job_log_text") as job_read:
+            result = MODULE._collect_log_sources("owner/repo", {"databaseId": 42, "jobs": []})
+        job_read.assert_not_called()
+        self.assertEqual(result, [{
+            "kind": "run_log_failed", "label": "run 42 --log-failed",
+            "job_id": None, "job_name": None, "retrieved_via": "gh run view --log-failed",
+            "text": "aggregate failure",
+        }])
+
+    def test_large_log_focus_reuses_full_parse_with_identical_evidence(self):
+        text = "\n".join(f"Tests\tRun tests\t2026-01-01T00:00:00Z\tok {i} - passing TAP case" for i in range(2000))
+        text += "\nTests\tRun tests\t2026-01-01T00:00:00Z\ttest suite::example ... FAILED\n"
+        text += "Tests\tRun tests\t2026-01-01T00:00:00Z\tassertion failed: expected success\n"
+        job = {"name": "Tests", "conclusion": "failure", "failed_steps": ["Run tests", "Missing step"]}
+        parser = MODULE._parse_gh_log_entries
+        with patch.object(MODULE, "_parse_gh_log_entries", wraps=parser) as parsed:
+            focused = MODULE._focus_job_log_text(job, text)
+        self.assertEqual(sum(args.args == (text,) for args in parsed.call_args_list), 1)
+        self.assertIn("suite::example", focused)
+        # Exercise the same selection logic without the shared-entry optimization.
+        helpers = ("_excerpt_for_failed_step", "_excerpt_around_terms", "_excerpt_around_failure",
+                   "_extract_structured_failure_signals", "_collect_failure_highlight_lines")
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for name in helpers:
+                original = getattr(MODULE, name)
+                def fresh(*args, _original=original, **kwargs):
+                    kwargs.pop("entries", None)
+                    return _original(*args, **kwargs)
+                stack.enter_context(patch.object(MODULE, name, side_effect=fresh))
+            stack.enter_context(patch.object(MODULE, "_parse_gh_log_entries", wraps=parser))
+            self.assertEqual(MODULE._focus_job_log_text(job, text), focused)
+
+    @unittest.skipUnless(os.environ.get("GH_WORKFLOW_BASELINE_MODULE_PATH"), "hosted baseline comparison")
+    def test_hosted_baseline_focus_equivalence_and_parse_counts(self):
+        spec = importlib.util.spec_from_file_location("watcher_baseline", os.environ["GH_WORKFLOW_BASELINE_MODULE_PATH"])
+        baseline = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(baseline)
+        for name, steps, text in (
+            ("Tests", ["Run tests"], "\n".join(f"ok {i} - passing" for i in range(10000)) + "\ntest suite::x ... FAILED\n"),
+            ("Tests", ["Run tests", "Other"], "Tests\tRun tests\t2026-01-01T00:00:00Z\tassertion failed: nope\n"),
+            ("CI results", [], "error: tests failed\n"),
+            ("Tests", ["Missing"], ""),
+            ("Tests", [], "ordinary output\n"),
+        ):
+            job = {"name": name, "conclusion": "failure", "failed_steps": steps}
+            with self.subTest(name=name, chars=len(text)), patch.object(
+                baseline, "_parse_gh_log_entries", wraps=baseline._parse_gh_log_entries
+            ) as old_parse, patch.object(MODULE, "_parse_gh_log_entries", wraps=MODULE._parse_gh_log_entries) as new_parse:
+                self.assertEqual(MODULE._focus_job_log_text(job, text), baseline._focus_job_log_text(job, text))
+            if len(text) > 100000:
+                old_full = sum(item.args == (text,) for item in old_parse.call_args_list)
+                new_full = sum(item.args == (text,) for item in new_parse.call_args_list)
+                print(f"full_log_parse_calls: baseline={old_full} candidate={new_full}; chars={len(text)}")
+                self.assertGreater(old_full, new_full)
+                self.assertEqual(new_full, 1)
+
     def test_target_display_key_includes_head_sha(self):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,

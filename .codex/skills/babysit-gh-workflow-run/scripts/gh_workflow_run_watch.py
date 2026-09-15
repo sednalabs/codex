@@ -1459,8 +1459,9 @@ def _find_failure_index(lines):
     return best_index
 
 
-def _excerpt_around_failure(text, *, max_lines=180, context_lines=30):
-    entries = _parse_gh_log_entries(text)
+def _excerpt_around_failure(text, *, max_lines=180, context_lines=30, entries=None):
+    if entries is None:
+        entries = _parse_gh_log_entries(text)
     if not entries:
         return ""
 
@@ -1475,8 +1476,9 @@ def _excerpt_around_failure(text, *, max_lines=180, context_lines=30):
     return _truncate_middle(excerpt, max_lines * 120)
 
 
-def _excerpt_around_terms(text, terms, *, max_lines=180, context_lines=24):
-    entries = _parse_gh_log_entries(text)
+def _excerpt_around_terms(text, terms, *, max_lines=180, context_lines=24, entries=None):
+    if entries is None:
+        entries = _parse_gh_log_entries(text)
     if not entries:
         return ""
     lowered_terms = [str(term).strip().lower() for term in terms if str(term).strip()]
@@ -1488,13 +1490,15 @@ def _excerpt_around_terms(text, terms, *, max_lines=180, context_lines=24):
                 end = min(len(entries), idx + context_lines + 1)
                 excerpt = _render_entry_excerpt(entries, start, end)
                 return _truncate_middle(excerpt, max_lines * 120)
-    return _excerpt_around_failure(text, max_lines=max_lines, context_lines=context_lines)
+    return _excerpt_around_failure(text, max_lines=max_lines, context_lines=context_lines, entries=entries)
 
 
-def _collect_failure_highlight_lines(text, *, limit=10):
+def _collect_failure_highlight_lines(text, *, limit=10, entries=None):
+    if entries is None:
+        entries = _parse_gh_log_entries(text)
     highlights = []
     fallback = []
-    for entry in _parse_gh_log_entries(text):
+    for entry in entries:
         message = (entry.get("message") or "").strip()
         if not message:
             continue
@@ -1508,8 +1512,9 @@ def _collect_failure_highlight_lines(text, *, limit=10):
     return highlights or fallback[:limit]
 
 
-def _excerpt_for_failed_step(text, step_name, *, max_lines=120, context_lines=18):
-    entries = _parse_gh_log_entries(text)
+def _excerpt_for_failed_step(text, step_name, *, max_lines=120, context_lines=18, entries=None):
+    if entries is None:
+        entries = _parse_gh_log_entries(text)
     normalized_step = str(step_name or "").strip().casefold()
     if not entries or not normalized_step:
         return ""
@@ -1535,7 +1540,9 @@ def _excerpt_for_failed_step(text, step_name, *, max_lines=120, context_lines=18
     return _truncate_middle(excerpt, max_lines * 120)
 
 
-def _extract_structured_failure_signals(text, *, limit=4):
+def _extract_structured_failure_signals(text, *, limit=4, entries=None):
+    if entries is None:
+        entries = _parse_gh_log_entries(text)
     failing_tests = []
     assertions = []
     failure_locations = []
@@ -1545,7 +1552,7 @@ def _extract_structured_failure_signals(text, *, limit=4):
     seen_locations = set()
     seen_lines = set()
 
-    for entry in _parse_gh_log_entries(text):
+    for entry in entries:
         message = (entry.get("message") or "").strip()
         if not message or _line_is_noise(message):
             continue
@@ -1822,6 +1829,9 @@ def _render_failed_jobs_overview(failed_jobs, selected_job_ids):
 
 
 def _focus_job_log_text(job, text):
+    # Share one immutable observation across the full-log scans. Excerpts still
+    # parse their own smaller text so their evidence-selection semantics match.
+    entries = _parse_gh_log_entries(text)
     failed_steps = job.get("failed_steps") or []
     is_meta_job = _is_meta_job_name(job.get("name"))
     char_budget = GEMINI_META_JOB_CHAR_BUDGET if is_meta_job else GEMINI_PRIMARY_JOB_CHAR_BUDGET
@@ -1836,6 +1846,7 @@ def _focus_job_log_text(job, text):
                 step_name,
                 max_lines=80 if is_meta_job else 120,
                 context_lines=12 if is_meta_job else 18,
+                entries=entries,
             )
             if not excerpt:
                 excerpt = _excerpt_around_terms(
@@ -1843,6 +1854,7 @@ def _focus_job_log_text(job, text):
                     [step_name],
                     max_lines=80 if is_meta_job else 120,
                     context_lines=12 if is_meta_job else 18,
+                    entries=entries,
                 )
             if not excerpt:
                 continue
@@ -1858,11 +1870,12 @@ def _focus_job_log_text(job, text):
         text,
         max_lines=90 if is_meta_job else 140,
         context_lines=12 if is_meta_job else 22,
+        entries=entries,
     )
     if failure_excerpt:
         sections.append(f"== Failure excerpt ==\n{failure_excerpt}")
 
-    signals = _extract_structured_failure_signals(text)
+    signals = _extract_structured_failure_signals(text, entries=entries)
     signal_lines = []
     if signals.get("failing_tests"):
         signal_lines.append("failing_tests=" + json.dumps(signals["failing_tests"], ensure_ascii=True))
@@ -1873,12 +1886,12 @@ def _focus_job_log_text(job, text):
     if signal_lines:
         sections.append("== Extracted failure signals ==\n" + "\n".join(signal_lines))
 
-    highlights = _collect_failure_highlight_lines(text, limit=5 if is_meta_job else 8)
+    highlights = _collect_failure_highlight_lines(text, limit=5 if is_meta_job else 8, entries=entries)
     if highlights:
         sections.append("== Failure highlights ==\n" + "\n".join(f"- {line}" for line in highlights))
 
     if not sections:
-        return _excerpt_around_failure(text, max_lines=160, context_lines=26)
+        return _excerpt_around_failure(text, max_lines=160, context_lines=26, entries=entries)
 
     deduped_sections = []
     seen_section_bodies = set()
@@ -2013,22 +2026,6 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
             }
         )
 
-    try:
-        run_failed_log = gh_text(["run", "view", str(run_id), "--log-failed"], repo=repo).strip()
-    except GhCommandError:
-        run_failed_log = ""
-    if run_failed_log and not selected_jobs:
-        sources.append(
-            {
-                "kind": "run_log_failed",
-                "label": f"run {run_id} --log-failed",
-                "job_id": None,
-                "job_name": None,
-                "retrieved_via": "gh run view --log-failed",
-                "text": run_failed_log,
-            }
-        )
-
     for job in selected_jobs:
         text, retrieved_via = _load_job_log_text(repo, job["id"])
         if not text:
@@ -2044,7 +2041,15 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
             }
         )
 
-    if run_failed_log and len(sources) <= 1:
+    # The aggregate command can download and process the same large logs again.
+    # Metadata/summary sources alone do not replace unavailable job-log evidence.
+    if any(source["kind"] == "failed_job_log" for source in sources):
+        return sources
+    try:
+        run_failed_log = gh_text(["run", "view", str(run_id), "--log-failed"], repo=repo).strip()
+    except GhCommandError:
+        run_failed_log = ""
+    if run_failed_log:
         sources.append(
             {
                 "kind": "run_log_failed",
@@ -2052,7 +2057,10 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
                 "job_id": None,
                 "job_name": None,
                 "retrieved_via": "gh run view --log-failed",
-                "text": _excerpt_around_failure(run_failed_log, max_lines=160, context_lines=24),
+                "text": (
+                    _excerpt_around_failure(run_failed_log, max_lines=160, context_lines=24)
+                    if selected_jobs else run_failed_log
+                ),
             }
         )
 
