@@ -4,7 +4,8 @@
 The helper accepts only immutable 40-hex commit IDs and fetches them only from
 the two named public repositories.  It never writes a ref, working tree, or
 merge commit.  Its JSON intentionally excludes Git's human conflict messages,
-file contents, and path names.
+file contents, raw history content, and host paths; safe public
+repository-relative paths are emitted as exact metadata for conflict allocation.
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -184,10 +184,14 @@ def serialise_repo_path(path: bytes) -> dict[str, str]:
     """
     if not path or path.startswith((b"/", b"\\")):
         raise PreviewError("unsafe merge-tree repository path")
-    components = path.split(b"/")
+    # Validate on normalized separators only.  The original byte sequence is
+    # retained below, so a valid repository path is never reinterpreted or
+    # rewritten for output.
+    validation_path = path.replace(b"\\", b"/")
+    components = validation_path.split(b"/")
     if any(component in (b"", b".", b"..") for component in components):
         raise PreviewError("unsafe merge-tree repository path")
-    if len(path) >= 3 and path[0:1].isalpha() and path[1:2] == b":" and path[2:3] in (b"/", b"\\"):
+    if len(path) >= 2 and path[0:1].isalpha() and path[1:2] == b":":
         raise PreviewError("unsafe merge-tree repository path")
     try:
         return {"encoding": "utf-8", "value": path.decode("utf-8", "strict")}
@@ -301,6 +305,8 @@ def _incomplete(requested: dict[str, str], reason: str, repo: Path | None = None
         try:
             result["observer"] = _observer(repo)
         except PreviewError:
+            # Intentionally suppress observer-only failure: the diagnostic
+            # result remains safe and complete enough to fail closed.
             result["observer"] = {"program": "upstream-merge-preview", "format": "2", "code_sha256": code_sha256(), "git_version": "unavailable"}
     return result
 

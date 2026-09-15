@@ -227,7 +227,19 @@ class ParserAndCapabilityTests(unittest.TestCase):
             preview.serialise_repo_path(b"src/\xff-name"),
             {"encoding": "hex", "value": "7372632fff2d6e616d65"},
         )
-        for unsafe in (b"/private/host-path", b"../traversal", b"src/../traversal", b"C:\\host-path"):
+        self.assertEqual(
+            preview.serialise_repo_path(b"dir\\literal-name"),
+            {"encoding": "utf-8", "value": "dir\\literal-name"},
+        )
+        for unsafe in (
+            b"/private/host-path",
+            b"../traversal",
+            b"src/../traversal",
+            b"..\\file",
+            b"dir\\..\\file",
+            b"C:\\host-path",
+            b"C:../file",
+        ):
             with self.assertRaises(preview.PreviewError):
                 preview.serialise_repo_path(unsafe)
 
