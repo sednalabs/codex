@@ -58,6 +58,12 @@ class GitFixture(unittest.TestCase):
         self.git("checkout", "--quiet", "-B", branch, base)
         return self.commit(message, files, remove)
 
+    def assert_preview_status(self, result: dict[str, object], expected: str) -> None:
+        # The helper's reason values are fixed categories and intentionally do
+        # not contain subprocess output, paths, content, or history.  Include
+        # it as a concise common-seam failure context for hosted fixtures.
+        self.assertEqual(result.get("status"), expected, {"status": result.get("status"), "reason": result.get("reason")})
+
 
 class RealMergeTreeFixtures(GitFixture):
     def test_clean_merge_is_real_and_metadata_only(self) -> None:
@@ -65,7 +71,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", base, "downstream", {"downstream.txt": "d\n"})
         upstream = self.branch_commit("upstream", base, "upstream", {"upstream.txt": "u\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "clean")
+        self.assert_preview_status(result, "clean")
         self.assertEqual(result["requested"]["downstream"], result["actual"]["downstream"])
         self.assertEqual(result["base_contract"]["mode"], "direct-unique-common-base")
         self.assertEqual(result["merge"]["staged_paths"], [])
@@ -76,7 +82,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", base, "downstream", {"shared.txt": "downstream\n"})
         upstream = self.branch_commit("upstream", base, "upstream", {"shared.txt": "upstream\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "conflicts")
+        self.assert_preview_status(result, "conflicts")
         self.assertGreater(result["merge"]["conflict_record_count"], 0)
         self.assertGreater(result["merge"]["staged_path_count"], 0)
         self.assertTrue(all(path["encoding"] == "utf-8" for path in result["merge"]["staged_paths"]))
@@ -87,7 +93,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", base, "downstream hunk", {"shared.txt": "one\ndownstream-two\nthree\nfour\nfive\nsix\nseven\n"})
         upstream = self.branch_commit("upstream", base, "upstream hunk", {"shared.txt": "one\ntwo\nthree\nfour\nfive\nupstream-six\nseven\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "clean")
+        self.assert_preview_status(result, "clean")
         self.assertEqual(result["merge"]["conflict_record_count"], 0)
         self.assertIn("Auto-merging", [record["type"] for record in result["merge"]["informational_records"]])
 
@@ -98,7 +104,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.commit("rename", {})
         upstream = self.branch_commit("upstream", base, "delete", {}, ("old.txt",))
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "conflicts")
+        self.assert_preview_status(result, "conflicts")
         self.assertTrue(any(entry["type"].startswith("CONFLICT (") for entry in result["merge"]["conflict_types"]))
 
     def test_non_content_directory_file_conflict_is_not_clean_when_paths_are_sparse(self) -> None:
@@ -106,7 +112,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", base, "file", {"node": "file\n"})
         upstream = self.branch_commit("upstream", base, "directory", {"node/child.txt": "child\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "conflicts")
+        self.assert_preview_status(result, "conflicts")
         self.assertGreater(result["merge"]["informational_record_count"], 0)
         self.assertNotEqual(result["merge"]["conflict_types"], [])
 
@@ -134,7 +140,7 @@ class RealMergeTreeFixtures(GitFixture):
         upstream = self.commit("combine directories", {})
         self.git("config", "merge.directoryRenames", "true")
         result = preview.preview_repository(self.repo, downstream, upstream, base)
-        self.assertEqual(result["status"], "conflicts")
+        self.assert_preview_status(result, "conflicts")
         self.assertIn(
             "CONFLICT(directory rename collision)",
             [record["type"] for record in result["merge"]["informational_records"]],
@@ -152,7 +158,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", rewritten, "downstream", {"downstream.txt": "d\n"})
         upstream = self.branch_commit("upstream", base, "upstream", {"upstream.txt": "u\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, base, rewritten)
-        self.assertEqual(result["status"], "clean")
+        self.assert_preview_status(result, "clean")
         self.assertEqual(result["base_contract"]["mode"], "mapped-rewrite-explicit-tree")
         self.assertFalse(result["base_contract"]["logical_base_is_ancestor_of_downstream"])
         self.assertTrue(result["base_contract"]["logical_base_is_ancestor_of_upstream"])
@@ -167,9 +173,9 @@ class RealMergeTreeFixtures(GitFixture):
         upstream = self.branch_commit("upstream", base, "upstream", {"u.txt": "u\n"})
         wrong = preview.preview_repository(self.repo, downstream, upstream, root)
         absent = preview.preview_repository(self.repo, downstream, upstream, "f" * 40)
-        self.assertEqual(wrong["status"], "diagnostic-incomplete")
+        self.assert_preview_status(wrong, "diagnostic-incomplete")
         self.assertEqual(wrong["reason"], "logical base is not the unique direct merge base")
-        self.assertEqual(absent["status"], "diagnostic-incomplete")
+        self.assert_preview_status(absent, "diagnostic-incomplete")
         self.assertEqual(absent["reason"], "required object unavailable or not a commit")
 
     def test_multiple_real_merge_bases_are_ambiguous(self) -> None:
@@ -182,7 +188,7 @@ class RealMergeTreeFixtures(GitFixture):
         downstream = self.branch_commit("downstream", left_merge, "downstream", {"d.txt": "d\n"})
         upstream = self.branch_commit("upstream", right_merge, "upstream", {"u.txt": "u\n"})
         result = preview.preview_repository(self.repo, downstream, upstream, first)
-        self.assertEqual(result["status"], "diagnostic-incomplete")
+        self.assert_preview_status(result, "diagnostic-incomplete")
         self.assertEqual(result["reason"], "direct merge base is ambiguous")
 
 
@@ -232,6 +238,34 @@ class ParserAndCapabilityTests(unittest.TestCase):
                 preview.interpret_merge_tree(1, raw)
         with self.assertRaises(preview.PreviewError):
             preview.interpret_merge_tree(2, self.TREE + b"\0")
+
+    @staticmethod
+    def valid_merge_tree_help(merge_base: bytes = b"--merge-base=<tree-ish>") -> bytes:
+        return b"\n".join(
+            (
+                b"usage: git merge-tree [--write-tree] [<options>] <branch1> <branch2>",
+                b"    --write-tree                  real merge",
+                b"    --[no-]messages               messages",
+                b"    -z                            NUL output",
+                b"    --name-only                   names only",
+                b"    " + merge_base + b"             merge base",
+            )
+        )
+
+    def test_boolean_help_spelling_and_metavar_variants_are_accepted(self) -> None:
+        preview.validate_merge_tree_help(self.valid_merge_tree_help())
+        preview.validate_merge_tree_help(self.valid_merge_tree_help(b"--merge-base <tree-ish>"))
+
+    def test_missing_or_malformed_help_option_rows_fail_closed(self) -> None:
+        missing = self.valid_merge_tree_help().replace(b"    --name-only                   names only\n", b"")
+        malformed = self.valid_merge_tree_help().replace(b"--[no-]messages", b"--[no-messages")
+        prose_and_lookalike = self.valid_merge_tree_help().replace(
+            b"    --[no-]messages               messages",
+            b"    prose mentions --messages\n    --messages-fake              not the option",
+        )
+        for help_output in (missing, malformed, prose_and_lookalike):
+            with self.assertRaises(preview.PreviewError):
+                preview.validate_merge_tree_help(help_output)
 
     def test_unsupported_capability_is_not_accepted(self) -> None:
         with self.assertRaises(preview.PreviewError):

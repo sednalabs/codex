@@ -28,7 +28,14 @@ PUBLIC_REMOTES = {
     "downstream": "https://github.com/sednalabs/codex.git",
     "upstream": "https://github.com/openai/codex.git",
 }
-REQUIRED_MERGE_TREE_OPTIONS = (b"--write-tree", b"--merge-base", b"--name-only", b"--messages", b"-z")
+# `git merge-tree -h` prints options in an indented option column.  Match the
+# complete option lexeme in that column, not a byte substring in prose, usage,
+# or a longer lookalike option.  Boolean options are rendered by parse-options
+# as `--[no-]name`, while the invoked positive spelling remains `--name`.
+HELP_OPTION_LINE = re.compile(
+    rb"(?m)^[ \t]{2,}(--(?:\[no-\])?[A-Za-z][A-Za-z0-9-]*|-[A-Za-z])(?=[ \t=]|$)"
+)
+REQUIRED_MERGE_TREE_OPTIONS = frozenset({"--write-tree", "--merge-base", "--name-only", "--messages", "-z"})
 MAX_PATHS_PER_INFORMATION_RECORD = 10_000
 
 
@@ -95,8 +102,19 @@ def git_version(repo: Path) -> str:
     return match.group(1)
 
 
+def merge_tree_help_options(help_output: bytes) -> frozenset[str]:
+    """Return exact capability names from ``git merge-tree -h`` option rows."""
+    options: set[str] = set()
+    for match in HELP_OPTION_LINE.finditer(help_output):
+        option = match.group(1).decode("ascii")
+        if option.startswith("--[no-]"):
+            option = "--" + option[len("--[no-]"):]
+        options.add(option)
+    return frozenset(options)
+
+
 def validate_merge_tree_help(help_output: bytes) -> None:
-    if any(option not in help_output for option in REQUIRED_MERGE_TREE_OPTIONS):
+    if not REQUIRED_MERGE_TREE_OPTIONS.issubset(merge_tree_help_options(help_output)):
         raise PreviewError("unsupported git merge-tree capability")
 
 
