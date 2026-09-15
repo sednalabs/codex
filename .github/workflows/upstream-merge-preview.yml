@@ -1,0 +1,79 @@
+name: upstream merge preview fixtures
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/upstream_merge_preview.py"
+      - ".github/scripts/test_upstream_merge_preview.py"
+      - ".github/workflows/upstream-merge-preview.yml"
+  workflow_dispatch:
+    inputs:
+      downstream:
+        description: Exact 40-hex sednalabs/codex downstream commit D
+        required: true
+        type: string
+      upstream:
+        description: Exact 40-hex openai/codex upstream commit U
+        required: true
+        type: string
+      logical_base:
+        description: Exact 40-hex logical upstream base B
+        required: true
+        type: string
+      rewritten_base:
+        description: Optional exact 40-hex rewritten downstream base B-prime
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    name: hosted real-git fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Run isolated real-Git fixture tests
+        id: fixtures
+        run: python3 .github/scripts/test_upstream_merge_preview.py --report fixture-results.json
+      - name: Upload safe fixture metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-merge-preview-fixtures-${{ github.run_id }}
+          path: fixture-results.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  preview:
+    name: manual public merge metadata preview
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Compute read-only public merge metadata
+        env:
+          DOWNSTREAM: ${{ inputs.downstream }}
+          UPSTREAM: ${{ inputs.upstream }}
+          LOGICAL_BASE: ${{ inputs.logical_base }}
+          REWRITTEN_BASE: ${{ inputs.rewritten_base }}
+        run: |
+          set -o pipefail
+          arguments=(--downstream "$DOWNSTREAM" --upstream "$UPSTREAM" --base "$LOGICAL_BASE")
+          if [[ -n "$REWRITTEN_BASE" ]]; then
+            arguments+=(--rewritten-base "$REWRITTEN_BASE")
+          fi
+          python3 .github/scripts/upstream_merge_preview.py "${arguments[@]}" | tee merge-preview.json
+      - name: Upload safe preview metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-merge-preview-${{ github.run_id }}
+          path: merge-preview.json
+          if-no-files-found: warn
+          retention-days: 1
