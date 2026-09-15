@@ -1,0 +1,26 @@
+name: Workflow diagnostic proof
+on:
+  push:
+    branches: [validation/workflow-diagnostic-reuse]
+permissions:
+  contents: read
+jobs:
+  python-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 9b971239fcd0bc6fc65ced088735e419f28b92c3
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify exact candidate and extract baseline
+        run: |
+          test "$(git rev-parse HEAD)" = 9b971239fcd0bc6fc65ced088735e419f28b92c3
+          git show 5497cda2981489117545baeff0b1ac2929e54f82:.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py > "$RUNNER_TEMP/watcher-baseline.py"
+      - name: Workflow watcher contracts and baseline equivalence
+        env:
+          GH_WORKFLOW_BASELINE_MODULE_PATH: ${{ runner.temp }}/watcher-baseline.py
+        run: python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
+      - name: Dispatch contracts
+        run: python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_dispatch_and_watch.py
