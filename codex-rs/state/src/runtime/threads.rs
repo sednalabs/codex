@@ -1623,13 +1623,6 @@ fn push_thread_filters_with_preview<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-    if !include_empty_preview {
-        builder.push(" AND threads.preview <> ''");
-    }
-    if let Some(is_pinned) = is_pinned {
-        builder.push(" AND threads.is_pinned = ");
-        builder.push_bind(is_pinned);
-    }
     if !include_empty_preview && !matches!(section, Some(Some(_))) {
         builder.push(" AND threads.preview <> ''");
     }

@@ -141,11 +141,6 @@ impl StateRuntime {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(sqlite.home()).await?;
-        let state_migrator = runtime_state_migrator();
-        let logs_migrator = runtime_logs_migrator();
-        let goals_migrator = runtime_goals_migrator();
-        let memories_migrator = runtime_memories_migrator();
-        let queue_migrator = runtime_queue_migrator();
         let state_path = sqlite.state_db_path();
         let logs_path = sqlite.logs_db_path();
         let goals_path = sqlite.goals_db_path();
@@ -177,6 +172,7 @@ impl StateRuntime {
         let usage_migrator = runtime_usage_migrator();
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
+        let queue_migrator = runtime_queue_migrator();
         let queue_path = sqlite.queue_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         let pool = match sqlite
