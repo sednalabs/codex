@@ -14,7 +14,8 @@ import tempfile
 import types
 import typing
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Sequence, get_args, get_origin
 
 _SDK_PYTHON_ROOT = str(Path(__file__).resolve().parents[1])
@@ -227,7 +228,7 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
     runtime_package_root.mkdir(parents=True, exist_ok=True)
     extraction_root = runtime_package_root.resolve()
     with tarfile.open(package_archive, "r:gz") as archive:
-        validated_members: list[tuple[tarfile.TarInfo, Path]] = []
+        validated_members = []
         for member in archive.getmembers():
             relative_path = PurePosixPath(member.name)
             path_parts = tuple(part for part in relative_path.parts if part not in ("", "."))
@@ -248,9 +249,10 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
                     f"Unsafe path in Codex package archive: {member.name!r}"
                 ) from exc
 
-            if not member.isdir() and not member.isfile():
+            if not (member.isdir() or member.isfile()):
                 raise RuntimeError(
-                    f"Unsupported link or special entry in Codex package archive: {member.name!r}"
+                    "Unsupported link or special entry in Codex package archive: "
+                    f"{member.name!r}"
                 )
             validated_members.append((member, destination))
 
@@ -261,7 +263,9 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
             destination.parent.mkdir(parents=True, exist_ok=True)
             source = archive.extractfile(member)
             if source is None:
-                raise RuntimeError(f"Unable to read Codex package archive entry: {member.name!r}")
+                raise RuntimeError(
+                    f"Unable to read Codex package archive entry: {member.name!r}"
+                )
             with source, destination.open("wb") as output:
                 shutil.copyfileobj(source, output)
             destination.chmod(member.mode & 0o777)
@@ -536,7 +540,6 @@ def _make_chatgpt_account_email_nullable(schema: dict[str, Any]) -> None:
     raise RuntimeError("Schema bundle is missing the ChatGPT account variant")
 
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 def _make_collab_spawn_identity_phase_compatible(schema: dict[str, Any]) -> None:
     """Add the downstream identity contract when the pinned runtime predates it."""
 
@@ -634,24 +637,6 @@ def _make_collab_spawn_identity_phase_compatible(schema: dict[str, Any]) -> None
             required.append(field_name)
 
 
-def generate_schema_from_pinned_runtime(schema_dir: Path) -> Path:
-    """Generate app-server schemas by invoking the installed pinned runtime binary."""
-    codex_path = pinned_runtime_codex_path()
-    if schema_dir.exists():
-        shutil.rmtree(schema_dir)
-    schema_dir.mkdir(parents=True)
-    run(
-        [
-            str(codex_path),
-            "app-server",
-            "generate-json-schema",
-            "--out",
-            str(schema_dir),
-        ],
-        cwd=sdk_root(),
-    )
-    return schema_dir
-=======
 def _preserve_guardian_approval_path_wrappers(schema: dict[str, Any]) -> None:
     """Preserve the path wrappers accepted by the existing Python API."""
     definitions = schema.get("definitions", {})
@@ -664,18 +649,14 @@ def _preserve_guardian_approval_path_wrappers(schema: dict[str, Any]) -> None:
             properties["cwd"] = {"$ref": "#/definitions/AbsolutePathBuf"}
         if kind == ["applyPatch"]:
             properties["files"]["items"] = {"$ref": "#/definitions/AbsolutePathBuf"}
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 
 def _normalized_schema_bundle_text(schema_dir: Path) -> str:
     """Normalize the schema bundle before feeding it to the Python type generator."""
     schema = json.loads(schema_bundle_path(schema_dir).read_text())
     _make_chatgpt_account_email_nullable(schema)
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     _make_collab_spawn_identity_phase_compatible(schema)
-=======
     _preserve_guardian_approval_path_wrappers(schema)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     definitions = schema.get("definitions", {})
     if isinstance(definitions, dict):
         for definition in definitions.values():
@@ -735,41 +716,11 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     _require_nullable_collab_spawn_identity_fields(out_path)
     _add_legacy_collab_spawn_identity_validator(out_path)
     _preserve_collab_spawn_identity_contract(out_path)
-=======
     _preserve_plan_type_enum(out_path)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     _normalize_generated_timestamps(out_path)
-    _strip_redundant_model_config_passes(out_path)
-
-
-def _strip_redundant_model_config_passes(out_path: Path) -> None:
-    lines = out_path.read_text().splitlines()
-    class_decl = re.compile(r"^class [A-Za-z_][A-Za-z0-9_]*\(.*BaseModel\):$")
-    output: list[str] = []
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-        if (
-            line == "    pass"
-            and output
-            and class_decl.match(output[-1])
-            and i + 1 < len(lines)
-            and lines[i + 1].startswith("    model_config = ConfigDict(")
-        ):
-            i += 1
-            continue
-
-        output.append(line)
-        i += 1
-
-    updated = "\n".join(output) + "\n"
-    if updated != out_path.read_text():
-        out_path.write_text(updated)
 
 
 def _preserve_inline_image_class_names(out_path: Path) -> None:
@@ -923,8 +874,6 @@ def _preserve_reasoning_effort_enum(out_path: Path) -> None:
     medium = "medium"
     high = "high"
     xhigh = "xhigh"
-    max = "max"
-    ultra = "ultra"
 
     @classmethod
     def _missing_(cls, value: object) -> ReasoningEffort | None:
@@ -965,7 +914,6 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
 
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 def _preserve_collab_spawn_identity_contract(out_path: Path) -> None:
     """Reject regenerated artifacts that collapse requested and effective spawn identity."""
     source = out_path.read_text()
@@ -997,7 +945,8 @@ def _preserve_collab_spawn_identity_contract(out_path: Path) -> None:
         raise RuntimeError(
             "Generated CollabAgentToolCallThreadItem did not preserve the requested/effective identity contract"
         )
-=======
+
+
 def _preserve_plan_type_enum(out_path: Path) -> None:
     """Keep the public plan constants while accepting values from newer runtimes."""
     source = out_path.read_text()
@@ -1026,7 +975,6 @@ def _preserve_plan_type_enum(out_path: Path) -> None:
         return member
 """
     out_path.write_text(source[:class_start] + class_source + source[class_end:])
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 
 def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:

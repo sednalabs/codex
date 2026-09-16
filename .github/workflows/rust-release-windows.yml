@@ -519,6 +519,11 @@ jobs:
           # The wheel's Windows support floor predates the native voice
           # runtime's verified device/VC++ prerequisites. Keep it voice-free.
           wheel_package="${RUNNER_TEMP}/codex-package-${{ matrix.target }}"
+          rm -rf "$wheel_package"
+          mkdir -p "$wheel_package"
+          tar -xzf "dist/${{ matrix.target }}/codex-package-${{ matrix.target }}.tar.gz" -C "$wheel_package"
+          test -x "$wheel_package/bin/codex.exe"
+          rm -rf "$wheel_package/codex-resources/voice"
           python - "$wheel_package" <<'PY'
           import sys
           from pathlib import Path
