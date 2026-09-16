@@ -107,6 +107,7 @@ jobs:
   prepare-integration:
     name: prepare provisional upstream integration branch
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_integration }}
+    needs: fixture
     runs-on: ubuntu-latest
     permissions:
       contents: write

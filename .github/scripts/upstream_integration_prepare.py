@@ -5,9 +5,8 @@ This helper deliberately creates a single-parent downstream commit.  It does
 not assert that upstream is an ancestor, complete a sync, or decide carry
 status; reconciliation remains a later, separate hosted operation.
 """
-from __future__ import annotations
-
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -73,13 +72,14 @@ def _push_environment() -> dict[str, str]:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         raise PrepareError("push credential unavailable")
+    authorization = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
     environment = _public_environment()
-    # This transient process configuration authenticates the one push without
+    # Match actions/checkout's Basic token convention transiently, without
     # modifying the bare repository's remote URL or persistent Git config.
     environment.update(
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0=f"AUTHORIZATION: Bearer {token}",
+        GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {authorization}",
     )
     return environment
 
