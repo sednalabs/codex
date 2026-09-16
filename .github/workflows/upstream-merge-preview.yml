@@ -75,7 +75,7 @@ jobs:
             arguments+=(--rewritten-base "$REWRITTEN_BASE")
           fi
           if [[ "$EXPORT_CONFLICT_SOURCE" == "true" ]]; then
-            arguments+=(--conflict-source-output conflict-source.json)
+            arguments+=(--export-conflict-source)
           fi
           python3 .github/scripts/upstream_merge_preview.py "${arguments[@]}" | tee merge-preview.json
       - name: Upload safe preview metadata

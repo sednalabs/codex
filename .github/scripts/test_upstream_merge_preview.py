@@ -368,16 +368,29 @@ class ParserAndCapabilityTests(unittest.TestCase):
         self.assertEqual(preview.exit_status({"status": "conflicts"}), 1)
         self.assertEqual(preview.exit_status({"status": "diagnostic-incomplete"}), 2)
 
-    def test_cli_stdout_stays_metadata_only_when_source_file_is_requested(self) -> None:
+    def test_cli_stdout_stays_metadata_only_when_fixed_source_export_is_requested(self) -> None:
         metadata = {"status": "conflicts", "merge": {"result_tree": "a" * 40}}
         captured = io.StringIO()
         with mock.patch.object(preview, "preview", return_value=metadata) as mocked:
-            with mock.patch.object(sys, "argv", ["upstream_merge_preview.py", "--downstream", "a" * 40, "--upstream", "b" * 40, "--base", "c" * 40, "--conflict-source-output", "conflict-source.json"]):
+            with mock.patch.object(sys, "argv", ["upstream_merge_preview.py", "--downstream", "a" * 40, "--upstream", "b" * 40, "--base", "c" * 40, "--export-conflict-source"]):
                 with contextlib.redirect_stdout(captured):
                     self.assertEqual(preview.main(), 1)
         self.assertEqual(json.loads(captured.getvalue()), metadata)
         self.assertNotIn("bytes_base64", captured.getvalue())
-        self.assertEqual(mocked.call_args.args[-1], Path("conflict-source.json"))
+        self.assertTrue(mocked.call_args.args[-1])
+
+    def test_cli_defaults_off_and_rejects_an_arbitrary_source_target(self) -> None:
+        metadata = {"status": "clean"}
+        self.assertEqual(preview.CONFLICT_SOURCE_OUTPUT, Path("conflict-source.json"))
+        with mock.patch.object(preview, "preview", return_value=metadata) as mocked:
+            with mock.patch.object(sys, "argv", ["upstream_merge_preview.py", "--downstream", "a" * 40, "--upstream", "b" * 40, "--base", "c" * 40]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(preview.main(), 0)
+        self.assertFalse(mocked.call_args.args[-1])
+        with mock.patch.object(sys, "argv", ["upstream_merge_preview.py", "--downstream", "a" * 40, "--upstream", "b" * 40, "--base", "c" * 40, "--conflict-source-output", "elsewhere.json"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    preview.main()
 
 
 def run_suite(report_path: Path | None) -> int:

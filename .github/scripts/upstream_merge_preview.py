@@ -44,6 +44,7 @@ MAX_PATHS_PER_INFORMATION_RECORD = 10_000
 MAX_STAGED_RECORDS = 30_000
 MAX_BLOB_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 128 * 1024 * 1024
+CONFLICT_SOURCE_OUTPUT = Path("conflict-source.json")
 
 
 class PreviewError(Exception):
@@ -676,8 +677,9 @@ def fetch(repo: Path, remote: str, sha: str) -> None:
         raise PreviewError("required public object unavailable")
 
 
-def write_source_artifact(output_path: Path, source: dict[str, object]) -> None:
-    """Atomically write the one explicitly requested, content-bearing file."""
+def write_source_artifact(source: dict[str, object]) -> None:
+    """Atomically write the one fixed, explicitly opted-in source artifact."""
+    output_path = CONFLICT_SOURCE_OUTPUT
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="wb", dir=output_path.parent, prefix=f".{output_path.name}.", delete=False) as handle:
@@ -689,6 +691,8 @@ def write_source_artifact(output_path: Path, source: dict[str, object]) -> None:
             try:
                 os.unlink(temporary_name)
             except OSError:
+                # The original write error remains authoritative; a failed
+                # best-effort cleanup must not mask it or broaden handling.
                 pass
         raise PreviewError("unable to write conflict source artifact") from error
 
@@ -698,7 +702,7 @@ def preview(
     upstream: str,
     logical_base: str,
     rewritten_base: str | None,
-    conflict_source_output: Path | None = None,
+    export_conflict_source: bool = False,
 ) -> dict[str, object]:
     requested: dict[str, str] = {}
     try:
@@ -721,7 +725,7 @@ def preview(
                 if rewritten_base:
                     fetch(repo, "downstream", rewritten_base)
                 result = preview_repository(repo, downstream, upstream, logical_base, rewritten_base)
-                if conflict_source_output is not None and result.get("status") == "conflicts":
+                if export_conflict_source and result.get("status") == "conflicts":
                     base_contract = result.get("base_contract")
                     actual = result.get("actual")
                     if not isinstance(base_contract, dict) or not isinstance(actual, dict):
@@ -732,7 +736,7 @@ def preview(
                     if not all(isinstance(value, str) for value in (base_tree, actual_downstream, actual_upstream)):
                         raise PreviewError("incomplete conflict source metadata")
                     source = conflict_source_repository(repo, actual_downstream, actual_upstream, base_tree, result)
-                    write_source_artifact(conflict_source_output, source)
+                    write_source_artifact(source)
                 return result
             except PreviewError as error:
                 return _incomplete(requested, str(error), repo)
@@ -747,9 +751,9 @@ def main() -> int:
     parser.add_argument("--base", required=True, dest="logical_base")
     parser.add_argument("--rewritten-base")
     parser.add_argument(
-        "--conflict-source-output",
-        type=Path,
-        help="Explicit file for the opt-in content-bearing conflict source artifact; stdout remains metadata only",
+        "--export-conflict-source",
+        action="store_true",
+        help="Write fixed conflict-source.json for this opt-in manual source export; stdout remains metadata only",
     )
     arguments = parser.parse_args()
     try:
@@ -758,7 +762,7 @@ def main() -> int:
             arguments.upstream,
             arguments.logical_base,
             arguments.rewritten_base,
-            arguments.conflict_source_output,
+            arguments.export_conflict_source,
         )
     except Exception:
         # Do not let an unexpected implementation failure place a traceback,
