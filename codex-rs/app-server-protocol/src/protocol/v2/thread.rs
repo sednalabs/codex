@@ -1407,17 +1407,14 @@ pub struct ThreadListParams {
     /// are returned. When omitted or empty, defaults to interactive sources.
     #[ts(optional = nullable)]
     pub source_kinds: Option<Vec<ThreadSourceKind>>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// Optional per-thread source filter; when omitted, side threads are excluded.
     #[ts(optional = nullable)]
     pub thread_sources: Option<Vec<ThreadSource>>,
-=======
     /// Optional originator allowlist, matching any supplied value exactly.
     /// Supported by hosted backends only; the local app-server rejects a nonempty list.
     /// Omitted or empty lists leave originators unrestricted.
     #[ts(optional = nullable)]
     pub originators: Option<Vec<String>>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     /// Optional archived filter; when set to true, only archived threads are returned.
     /// If false or null, only non-archived threads are returned.
     #[ts(optional = nullable)]

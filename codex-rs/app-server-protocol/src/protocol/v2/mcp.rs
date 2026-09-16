@@ -875,17 +875,10 @@ pub struct McpServerElicitationRequestResponse {
 
 impl From<McpServerElicitationRequestResponse> for rmcp::model::ElicitResult {
     fn from(value: McpServerElicitationRequestResponse) -> Self {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        Self {
-            action: value.action.into(),
-            content: value.content,
-            meta: value.meta.and_then(json_value_to_rmcp_meta),
-        }
-=======
         let mut result = Self::new(value.action.into());
         result.content = value.content;
+        result.meta = value.meta.and_then(json_value_to_rmcp_meta);
         result
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }
 

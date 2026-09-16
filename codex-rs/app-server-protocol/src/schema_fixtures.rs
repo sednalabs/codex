@@ -112,11 +112,8 @@ pub fn write_schema_fixtures_with_options(
         prettier,
         crate::export::GenerateTsOptions::default(),
     )?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     normalize_typescript_fixture_tree(&typescript_out_dir)?;
     crate::generate_json_with_experimental(&json_out_dir, options.experimental_api)?;
-=======
-    crate::export::generate_json(&json_out_dir)?;
 
     let internal_dir = tempfile::tempdir().context("create internal schema temp dir")?;
     crate::export::generate_internal_json_schema(internal_dir.path())?;
@@ -126,7 +123,6 @@ pub fn write_schema_fixtures_with_options(
         internal_json_schema: collect_export_files_recursive(internal_dir.path())?,
     };
     write_precomputed_exports(schema_root, "stable", &exports)?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     Ok(())
 }

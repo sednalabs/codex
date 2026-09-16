@@ -1,10 +1,8 @@
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+#[cfg(test)]
 use std::borrow::Cow;
 
-=======
 use crate::JsonSchema;
 use crate::TS;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
 use codex_protocol::config_types::SandboxMode as CoreSandboxMode;
@@ -12,11 +10,6 @@ use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
-=======
 #[cfg(test)]
 use schemars::r#gen::SchemaGenerator;
 #[cfg(test)]
@@ -27,7 +20,6 @@ use schemars::schema::Metadata;
 use schemars::schema::Schema;
 #[cfg(test)]
 use schemars::schema::SchemaObject;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use serde::Deserialize;
 use serde::Serialize;
 #[cfg(test)]

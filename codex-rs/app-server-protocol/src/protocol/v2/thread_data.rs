@@ -7,32 +7,22 @@ use crate::JsonSchema;
 use crate::TS;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::openai_models::ReasoningEffort;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 use codex_protocol::protocol::MisalignmentErrorDetails as CoreMisalignmentErrorDetails;
 use codex_protocol::protocol::MisalignmentSteer as CoreMisalignmentSteer;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode as CoreThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource as CoreThreadSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
-use serde::Deserialize;
-use serde::Serialize;
-use std::borrow::Cow;
-=======
 #[cfg(test)]
 use schemars::r#gen::SchemaGenerator;
 #[cfg(test)]
 use schemars::schema::Schema;
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(test)]
+use std::borrow::Cow;
 use std::fmt;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -256,17 +246,11 @@ pub struct Thread {
     pub history_mode: ThreadHistoryMode,
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    /// Latest observed model for this thread, if known.
-    pub model: Option<String>,
-    /// Latest observed reasoning effort for this thread, if known.
-=======
     /// Current configured model when loaded, otherwise the latest persisted model.
     /// Null when unavailable. This is not per-turn execution telemetry.
     pub model: Option<String>,
     /// Current configured reasoning effort when loaded, otherwise the latest persisted effort.
     /// Null when unset or unavailable. This is not per-turn execution telemetry.
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub reasoning_effort: Option<ReasoningEffort>,
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]

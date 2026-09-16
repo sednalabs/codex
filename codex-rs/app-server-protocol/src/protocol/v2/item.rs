@@ -26,14 +26,11 @@ use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianA
 use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::approvals::GuardianUserAuthorization as CoreGuardianUserAuthorization;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::items::AgentNotificationContent as CoreAgentNotificationContent;
 use codex_protocol::items::AgentNotificationOrigin as CoreAgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary as CoreAgentNotificationSummary;
-=======
 pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
@@ -56,19 +53,13 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
-use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
 use schemars::Schema;
 use schemars::SchemaGenerator;
-=======
-use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::LegacyAppPathString;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -1107,27 +1098,6 @@ impl From<CoreTurnItem> for ThreadItem {
                 summary: reasoning.summary_text,
                 content: reasoning.raw_content,
             },
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            CoreTurnItem::CommandExecution(command) => ThreadItem::CommandExecution {
-                id: command.id,
-                plugin_id: command.plugin_id,
-                script_path: command.script_path,
-                command: shlex_join(&command.command),
-                cwd: command.cwd.clone().into(),
-                process_id: command.process_id,
-                source: command.source.into(),
-                status: command.status.into(),
-                command_actions: command_actions_for_path_uri(&command.parsed_cmd, &command.cwd),
-                aggregated_output: command
-                    .aggregated_output
-                    .filter(|output| !output.is_empty()),
-                exit_code: command.exit_code,
-                duration_ms: command
-                    .duration
-                    .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
-                terminal_wait: command.terminal_wait.map(Into::into),
-            },
-=======
             CoreTurnItem::CommandExecution(command) => {
                 let presentation = CommandExecutionPresentation::from_raw(
                     &command.command,
@@ -1152,9 +1122,9 @@ impl From<CoreTurnItem> for ThreadItem {
                     duration_ms: command
                         .duration
                         .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
+                    terminal_wait: command.terminal_wait.map(Into::into),
                 }
             }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             CoreTurnItem::DynamicToolCall(call) => ThreadItem::DynamicToolCall {
                 id: call.id,
                 namespace: call.namespace,

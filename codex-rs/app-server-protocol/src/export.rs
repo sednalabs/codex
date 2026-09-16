@@ -129,18 +129,12 @@ pub fn generate_ts_with_options(
     ensure_dir(out_dir)?;
     ensure_dir(&v2_out_dir)?;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let ts_config = ts_rs::Config::new().with_out_dir(out_dir);
-=======
-    ClientRequest::export_all_to(out_dir)?;
-    export_client_responses(out_dir)?;
-    ClientNotification::export_all_to(out_dir)?;
-    crate::UserVerificationRpcError::export_all_to(out_dir)?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     ClientRequest::export_all(&ts_config)?;
     export_client_responses(out_dir)?;
     ClientNotification::export_all(&ts_config)?;
+    crate::UserVerificationRpcError::export_all(&ts_config)?;
 
     ServerRequest::export_all(&ts_config)?;
     export_server_responses(out_dir)?;

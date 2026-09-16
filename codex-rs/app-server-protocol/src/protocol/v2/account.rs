@@ -10,12 +10,6 @@ use codex_protocol::protocol::RateLimitReachedType as CoreRateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::SpendControlLimitSnapshot as CoreSpendControlLimitSnapshot;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -49,13 +43,6 @@ pub enum Account {
     },
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-fn nullable_string_schema(generator: &mut SchemaGenerator) -> Schema {
-    generator.subschema_for::<Option<String>>()
-}
-
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 impl From<ProviderAccount> for Account {
     fn from(account: ProviderAccount) -> Self {
         match account {

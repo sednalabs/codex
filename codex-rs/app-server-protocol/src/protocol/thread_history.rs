@@ -1309,13 +1309,9 @@ impl ThreadHistoryBuilder {
 
             if let Some(turn) = self.turns.iter_mut().find(|turn| turn.id == turn_id) {
                 turn.status = TurnStatus::Interrupted;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                let changed_turn = ThreadHistoryTurnChange::from_turn(turn);
-=======
                 turn.completed_at = payload.completed_at;
                 turn.duration_ms = payload.duration_ms;
                 let changed_turn = ThreadHistoryTurnChange::from_pending_turn(turn);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 self.record_changed_turn(changed_turn);
                 return;
             }
@@ -1686,16 +1682,6 @@ fn convert_dynamic_tool_content_items(
         .collect()
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) -> &ThreadItem {
-    if let Some(existing_item_index) = items
-        .iter()
-        .position(|existing_item| existing_item.id() == item.id())
-    {
-        let merged_item = merge_collab_agent_lifecycle(&items[existing_item_index], item);
-        items[existing_item_index] = merged_item;
-        return &items[existing_item_index];
-=======
 const TURN_ITEM_INDEX_THRESHOLD: usize = 32;
 
 /// Lazily indexes a turn's append-only item list. Replacements keep the same ID
@@ -1730,14 +1716,14 @@ impl TurnItemIndex {
             None => items.iter().position(|existing| existing.id() == item.id()),
         };
         if let Some(index) = existing_index {
-            items[index] = item;
+            let merged_item = merge_collab_agent_lifecycle(&items[index], item);
+            items[index] = merged_item;
             &items[index]
         } else {
             let index = items.len();
             self.push(items, item);
             &items[index]
         }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }
 
@@ -1811,13 +1797,10 @@ impl From<&PendingTurn> for Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use crate::protocol::common::ServerNotification;
     use crate::protocol::v2::CollabAgentStatus;
-=======
     use crate::protocol::v2::AgentMessageDelivery;
     use crate::protocol::v2::AsyncUserInputQuestion;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
@@ -1844,16 +1827,12 @@ mod tests {
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
     use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
     use codex_protocol::protocol::CodexErrorInfo;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
     use codex_protocol::protocol::CollabAgentSpawnEndEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::CollabWaitingBeginEvent;
     use codex_protocol::protocol::CollabWaitingEndEvent;
-    use codex_protocol::protocol::CompactedItem;
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::EnteredReviewModeEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;
