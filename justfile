@@ -1,10 +1,6 @@
 set working-directory := "codex-rs"
 set positional-arguments
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-
-=======
 export CODEX_REPO_ROOT := justfile_directory()
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
 
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
