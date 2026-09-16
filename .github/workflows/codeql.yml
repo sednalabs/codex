@@ -297,6 +297,8 @@ jobs:
               ;;
             codex-rs-rest-a)
               scope_paths=(
+                codex-rs/agent-roles codex-rs/app-server-protocol-noop-macros
+                codex-rs/attachment-store codex-rs/build-info
                 codex-rs/.cargo codex-rs/analytics codex-rs/arg0 codex-rs/browser-computer-use
                 codex-rs/cloud-tasks codex-rs/code-mode-host codex-rs/codex-client
                 codex-rs/collaboration-mode-templates codex-rs/core-api codex-rs/exec-server-protocol
@@ -308,6 +310,7 @@ jobs:
               ;;
             codex-rs-rest-b)
               scope_paths=(
+                codex-rs/code-mode-runtime codex-rs/config-schema codex-rs/diagnostics codex-rs/guardian-context
                 codex-rs/.config codex-rs/android-computer-use codex-rs/async-utils codex-rs/chatgpt
                 codex-rs/cloud-tasks-client codex-rs/code-mode-protocol codex-rs/codex-experimental-api-macros
                 codex-rs/config codex-rs/core-plugins codex-rs/execpolicy codex-rs/feedback codex-rs/hooks
@@ -318,6 +321,7 @@ jobs:
               ;;
             codex-rs-rest-c)
               scope_paths=(
+                codex-rs/history codex-rs/mxc-sandbox codex-rs/otel-trace-websocket codex-rs/user-verification
                 codex-rs/agent-graph-store codex-rs/ansi-escape codex-rs/aws-auth codex-rs/cli
                 codex-rs/cloud-tasks-mock-client codex-rs/codex-api codex-rs/codex-home codex-rs/connectors
                 codex-rs/core-skills codex-rs/ext codex-rs/file-search codex-rs/install-context codex-rs/mcp-server
@@ -328,6 +332,7 @@ jobs:
               ;;
             codex-rs-rest-d)
               scope_paths=(
+                codex-rs/voice-host codex-rs/workload-identity codex-rs/windows-sandbox-service codex-rs/worktree
                 codex-rs/agent-identity codex-rs/apply-patch codex-rs/backend-client codex-rs/cloud-config
                 codex-rs/code-mode codex-rs/codex-backend-openapi-models codex-rs/codex-mcp
                 codex-rs/context-fragments codex-rs/docs codex-rs/external-agent-migration codex-rs/file-system

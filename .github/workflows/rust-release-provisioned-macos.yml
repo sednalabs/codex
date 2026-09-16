@@ -117,7 +117,7 @@ jobs:
 
   verify:
     needs: sign
-    runs-on: macos-15-xlarge
+    runs-on: ${{ matrix.target == 'aarch64-apple-darwin' && 'macos-15' || 'macos-15-intel' }}
     timeout-minutes: 30
     environment:
       name: codesigning
