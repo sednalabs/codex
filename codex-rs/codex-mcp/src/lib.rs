@@ -1,14 +1,12 @@
 pub use binding::McpBinding;
 pub use binding::PreparedMcpCall;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use binding_clients::McpResourceListing;
 pub use binding_clients::McpResourceListingFailure;
 pub use binding_clients::McpResourceListingFailureReason;
-=======
+
 pub use client_capabilities::client_mcp_extensions;
 pub use client_tool_catalog::CodexAppsToolSnapshot;
 pub use codex_rmcp_client::McpProtocolMode;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub use connection_manager::tool_is_model_visible;
 pub use elicitation::ElicitationLifecycle;
 pub use elicitation::ElicitationReviewRequest;

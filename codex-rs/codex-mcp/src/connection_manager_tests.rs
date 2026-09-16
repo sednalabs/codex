@@ -52,12 +52,8 @@ use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::models::PermissionProfile;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
-=======
+
 use codex_protocol::protocol::AskForApproval;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::McpStartupFailureReason;
 use codex_protocol::protocol::McpStartupStatus;
@@ -588,18 +584,8 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
                 .expect("create in-process RMCP client"),
         ),
         server_info: create_test_server_info("Ready"),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: 0,
-            tools,
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: "test".to_string(),
-        is_codex_apps_mcp_server: false,
-=======
-        tool_catalog: Arc::new(ClientToolCatalog::new(tools, /*updates*/ None)),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        tool_timeout: None,
+
+        tool_catalog: Arc::new(ClientToolCatalog::new(tools, /*updates*/ None)),        tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
@@ -607,50 +593,7 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
     }
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-async fn create_resource_managed_client(
-    server_name: &str,
-    listing_behavior: ResourceCatalogueListingBehavior,
-) -> anyhow::Result<ManagedClient> {
-    let client = Arc::new(
-        RmcpClient::new_in_process_client(Arc::new(ResourceCatalogueTransportFactory {
-            server_name: server_name.to_string(),
-            listing_behavior,
-        }))
-        .await?,
-    );
-    client
-        .initialize(
-            InitializeRequestParams::new(
-                ClientCapabilities::default(),
-                Implementation::new("codex-test", "0.0.0-test"),
-            )
-            .with_protocol_version(ProtocolVersion::V_2025_06_18),
-            Some(Duration::from_secs(5)),
-            Box::new(|_, _| async { Err(anyhow!("unexpected elicitation")) }.boxed()),
-        )
-        .await?;
 
-    Ok(ManagedClient {
-        client,
-        server_info: create_test_server_info(server_name),
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: 0,
-            tools: Vec::new(),
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: server_name.to_string(),
-        is_codex_apps_mcp_server: server_name == CODEX_APPS_MCP_SERVER_NAME,
-        tool_timeout: Some(Duration::from_secs(5)),
-        server_instructions: None,
-        server_supports_sandbox_state_meta_capability: false,
-        codex_apps_tools_cache_context: None,
-        tool_catalog_cache_context: None,
-    })
-}
-
-async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
-=======
 #[tokio::test(start_paused = true)]
 async fn prepared_call_timeout_includes_trusted_access_lookup() {
     let mut tool = create_test_tool("docs", "access");
@@ -727,9 +670,7 @@ async fn prepared_call_timeout_includes_trusted_access_lookup() {
     assert!(format!("{error:#}").contains("timed out awaiting tools/call after 1s"));
 }
 
-pub(crate) async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    AsyncManagedClient {
+pub(crate) async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {    AsyncManagedClient {
         client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
             create_test_managed_client(tools).await,
         ))
@@ -948,18 +889,8 @@ pub(crate) async fn create_test_manager_with_ready_apps_client(
         _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Codex Apps"),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: 0,
-            tools: vec![tool],
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
-        is_codex_apps_mcp_server: true,
-=======
-        tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool], /*updates*/ None)),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        tool_timeout: Some(Duration::from_secs(5)),
+
+        tool_catalog: Arc::new(ClientToolCatalog::new(vec![tool], /*updates*/ None)),        tool_timeout: Some(Duration::from_secs(5)),
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: Some(cache_context.clone()),
@@ -2653,6 +2584,7 @@ async fn hard_refresh_keeps_client_catalog_local_when_shared_cache_loses_race() 
             .client()
             .await?
             .listed_tools()
+            .await
             .iter()
             .map(|tool| tool.callable_name.as_str())
             .collect::<Vec<_>>(),
@@ -4011,16 +3943,11 @@ async fn cancelling_startup_does_not_disable_a_ready_client() {
         .client()
         .await
         .expect("startup cancellation should not disable a ready client");
-    let tools = managed.listed_tools();
     assert_eq!(
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        model_tool_names(&tools),
-=======
         managed
             .tool_catalog
             .read(|catalog| model_tool_names(&catalog.tools))
             .await,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         HashSet::from([ToolName::namespaced("ready", "search")])
     );
 }
@@ -6086,18 +6013,8 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
         _auth_change_notifications: None,
         client,
         server_info: create_test_server_info("Mutable tools"),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: initial_tools.generation,
-            tools: initial_tools.tools,
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: "docs".to_string(),
-        is_codex_apps_mcp_server: false,
-=======
-        tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools, /*updates*/ None)),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        tool_timeout: None,
+
+        tool_catalog: Arc::new(ClientToolCatalog::new(initial_tools, /*updates*/ None)),        tool_timeout: None,
         server_instructions: initialize.instructions,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
@@ -6206,34 +6123,7 @@ async fn reconciliation_reuses_an_unchanged_ready_server() {
 }
 
 #[tokio::test]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-async fn reconciliation_replaces_catalogue_revision_with_connection() {
-    let runtime_context = reusable_server_runtime_context();
-    let config = reusable_server_config("http://127.0.0.1:1");
-    let previous = Arc::new(
-        manager_with_reusable_ready_server(
-            &config,
-            &runtime_context,
-            vec![create_test_tool("docs", "search")],
-        )
-        .await,
-    );
-    let mut replacement_config = config;
-    let McpServerTransportConfig::StreamableHttp { url, .. } = &mut replacement_config.transport
-    else {
-        unreachable!("reusable test server uses streamable HTTP")
-    };
-    *url = "http://127.0.0.1:2".to_string();
 
-    let replacement =
-        reconcile_reusable_server(previous.as_ref(), replacement_config, runtime_context).await;
-
-    assert!(!previous.shares_test_connection_with(&replacement, "docs"));
-    assert!(!Arc::ptr_eq(
-        &previous.tool_catalog_revision,
-        &replacement.tool_catalog_revision,
-    ));
-=======
 async fn reconciliation_reuses_an_unchanged_pending_server_without_waiting() -> anyhow::Result<()> {
     let runtime_context = reusable_server_runtime_context();
     let mut config = reusable_server_config("http://127.0.0.1:1");
@@ -6606,9 +6496,7 @@ async fn reconciliation_reuses_legacy_stdio_server_when_modern_protocol_is_enabl
     )
     .await;
 
-    assert!(previous.shares_test_connection_with(&reconciled, "docs"));
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-}
+    assert!(previous.shares_test_connection_with(&reconciled, "docs"));}
 
 #[tokio::test]
 async fn reconciliation_updates_elicitation_policy_without_restarting_ready_server() {

@@ -152,14 +152,10 @@ impl McpServerConnection {
     }
 
     fn cancel_startup(&self) {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        self.client.cancel_startup();
-=======
+
         if !self.startup_is_dormant() && !self.client.startup_complete.load(Ordering::Acquire) {
             self.client.cancel_token.cancel();
-        }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    }
+        }    }
 
     fn startup_is_dormant(&self) -> bool {
         self.startup_trigger
@@ -782,15 +778,9 @@ impl McpConnectionSet {
             event_stream_connection,
             disabled_servers,
             required_servers,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            tool_catalog_revision,
-            codex_apps_tools_override: RwLock::new(None),
-            codex_apps_refresh_lock: Mutex::new(()),
-            tool_plugin_provenance,
-=======
+
             optional_startup_deadline: OnceLock::new(),
             tool_plugin_context,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             prefix_mcp_tool_names,
             non_prefixed_mcp_tool_servers,
             elicitation_requests: elicitation_requests.clone(),

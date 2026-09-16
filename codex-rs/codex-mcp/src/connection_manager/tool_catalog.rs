@@ -150,48 +150,11 @@ impl McpConnectionSet {
                 .client
                 .startup_complete
                 .load(Ordering::Acquire);
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            // Keep only the Apps cache reachable while startup is pending. An
-            // ordinary cached catalogue is not executable until its client is
-            // ready. A ready client refreshes under the catalog authority lock
-            // so snapshot replacement and stale-call revision stay atomic.
-            if startup_complete || !has_cached_tools {
-                self.refresh_view_catalogue(server_name, view).await;
-            }
-            let catalog_override = if server_name == CODEX_APPS_MCP_SERVER_NAME {
-                self.codex_apps_tools_override.read().await.clone()
-            } else {
-                None
-            };
-            let Some(server_tools) = async {
-                match catalog_override {
-                    Some(tools) => {
-                        let tools = filter_tools(tools, &view.tool_filter);
-                        Some(prepare_codex_apps_tools_for_model(
-                            tools,
-                            &self.tool_plugin_provenance,
-                        ))
-                    }
-                    None => view.listed_tools(&self.tool_plugin_provenance).await,
-                }
-            }
-            .instrument(trace_span!(
-                "list_tools_for_server",
-                server_name = %server_name,
-                has_cached_tools,
-                startup_complete
-            ))
-            .await
-            else {
-                unavailable_server_count += 1;
-                trace!(
-=======
+
             let server_tools = view
                 .listed_tools(&self.tool_plugin_context)
                 .instrument(trace_span!(
-                    "list_tools_for_server",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-                    server_name = %server_name,
+                    "list_tools_for_server",                    server_name = %server_name,
                     has_cached_tools,
                     startup_complete
                 ))
@@ -240,50 +203,14 @@ impl McpConnectionSet {
         (tools, errors)
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "snapshot replacement and stale-call fencing must share one authority lock"
-    )]
-    async fn refresh_view_catalogue(&self, server_name: &str, view: &McpServerView) -> bool {
-        let mut revision = self.tool_catalog_revision.write().await;
-        let changed = view
-            .connection
-            .client
-            .refresh_tools_if_changed(view.tool_timeout)
-            .await;
-        if changed {
-            if server_name == CODEX_APPS_MCP_SERVER_NAME {
-                // A newer notification wins over an older explicit refresh.
-                *self.codex_apps_tools_override.write().await = None;
-            }
-            *revision += 1;
-        }
-        changed
-    }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "catalog capture must remain serialized with catalog replacement"
-    )]
-=======
-    #[instrument(level = "trace", skip_all)]
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    pub(crate) async fn capture_binding_with_metadata(
+    #[instrument(level = "trace", skip_all)]    pub(crate) async fn capture_binding_with_metadata(
         self: &Arc<Self>,
         config: Arc<crate::McpConfig>,
         plugins_available: bool,
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> McpBinding {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        for (server_name, view) in &self.servers {
-            self.refresh_view_catalogue(server_name, view).await;
-        }
-        let revision = self.tool_catalog_revision.read().await;
-        let configured_servers = self.servers.keys().cloned().collect();
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let mut listed_tools = Vec::new();
         let mut clients = HashMap::new();
         let optional_mcp_startup_grace = config.optional_mcp_startup_grace;
@@ -375,10 +302,6 @@ impl McpConnectionSet {
                 let server_tools = snapshot.tools.to_vec();
                 (Some((Arc::new(client), snapshot)), server_tools)
             };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            let server_tools = catalog_override.unwrap_or_else(|| client.listed_tools());
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             let server_tools = filter_tools(server_tools, &view.tool_filter);
             let server_tools = if server_name == CODEX_APPS_MCP_SERVER_NAME {
                 prepare_codex_apps_tools_for_model(server_tools, &self.tool_plugin_context)
@@ -408,10 +331,6 @@ impl McpConnectionSet {
             }
             listed_tools.extend(server_tools);
         }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let clients = Arc::new(McpBindingClients::new(clients, configured_servers));
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let listed_tools = normalize_tools_for_model_with_prefix(
             listed_tools,
             self.prefix_mcp_tool_names,
@@ -451,11 +370,13 @@ impl McpConnectionSet {
                 tools.push(tool_info);
             }
         }
+        let configured_servers = self.servers.keys().cloned().collect();
         let clients = Arc::new(McpBindingClients::new(
             clients
                 .into_iter()
                 .map(|(server_name, (client, _))| (server_name, client))
                 .collect(),
+            configured_servers,
         ));
         McpBinding::new(
             Arc::clone(self),
@@ -499,41 +420,7 @@ impl McpConnectionSet {
             .servers
             .get(CODEX_APPS_MCP_SERVER_NAME)
             .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let managed_client = view
-            .connection
-            .client()
-            .await
-            .context("failed to get client")?;
-        let _catalogue_refresh = managed_client
-            .tool_refresh_lock
-            .acquire()
-            .await
-            .map_err(|_| anyhow!("MCP tool catalogue refresh semaphore closed"))?;
 
-        let list_start = Instant::now();
-        let fetch_tickets =
-            managed_client.begin_tool_catalogue_fetch(ConnectorRuntimeFetchSource::HardRefresh);
-        let catalogue = list_tools_for_client_uncached(
-            CODEX_APPS_MCP_SERVER_NAME,
-            /*is_codex_apps_mcp_server*/ true,
-            /*codex_apps_refresh_trigger*/ "explicit",
-            &managed_client.client,
-            view.tool_timeout,
-            managed_client.server_instructions.as_deref(),
-        )
-        .await
-        .with_context(|| {
-            format!("failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'")
-        })?;
-
-        let raw_tools = catalogue.tools.clone();
-        let mut tool_catalog_revision = self.tool_catalog_revision.write().await;
-        let tools = managed_client.publish_tool_catalogue(catalogue, fetch_tickets);
-        *self.codex_apps_tools_override.write().await = Some(raw_tools);
-        *tool_catalog_revision += 1;
-        drop(tool_catalog_revision);
-=======
         let (tools, _) = self.refresh_codex_apps_tool_catalog().await?;
         let server_has_permission = config
             .permission_profile_for_server(CODEX_APPS_MCP_SERVER_NAME)
@@ -549,9 +436,7 @@ impl McpConnectionSet {
                     && tool_is_model_visible(tool)
             })
             .map(|tool| tool.tool.name.to_string())
-            .collect();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        emit_duration(
+            .collect();        emit_duration(
             CODEX_APPS_REFRESH_DURATION_METRIC,
             refresh_start.elapsed(),
             &[("path", "legacy"), ("trigger", "explicit")],

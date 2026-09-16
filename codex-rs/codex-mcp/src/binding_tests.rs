@@ -93,18 +93,8 @@ async fn test_step(
             icons: None,
             website_url: None,
         },
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: 0,
-            tools: vec![tool.clone()],
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: label.to_string(),
-        is_codex_apps_mcp_server: false,
-=======
-        tool_catalog: Arc::clone(&tool_catalog),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        tool_timeout: None,
+
+        tool_catalog: Arc::clone(&tool_catalog),        tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,
         codex_apps_tools_cache_context: None,

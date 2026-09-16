@@ -83,11 +83,8 @@ use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::ServerPeerInfo;
 use rmcp::model::Tool as RmcpTool;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use tokio::sync::Semaphore;
-=======
+
 use tokio::sync::watch;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -125,15 +122,8 @@ pub(crate) struct ManagedClient {
     pub(crate) _auth_change_notifications: Option<Arc<AbortOnDropHandle<()>>>,
     pub(crate) client: Arc<RmcpClient>,
     pub(crate) server_info: McpServerInfo,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    pub(crate) tool_catalogue: Arc<ArcSwap<ToolCatalogueSnapshot>>,
-    pub(crate) tool_refresh_lock: Arc<Semaphore>,
-    pub(crate) server_name: String,
-    pub(crate) is_codex_apps_mcp_server: bool,
-=======
-    pub(crate) tool_catalog: Arc<ClientToolCatalog>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    pub(crate) tool_timeout: Option<Duration>,
+
+    pub(crate) tool_catalog: Arc<ClientToolCatalog>,    pub(crate) tool_timeout: Option<Duration>,
     pub(crate) server_instructions: Option<String>,
     pub(crate) server_supports_sandbox_state_meta_capability: bool,
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
@@ -147,140 +137,13 @@ pub(crate) struct ToolCatalogueSnapshot {
     pub(crate) tools: Vec<ToolInfo>,
 }
 
-pub(crate) struct ListedToolCatalogue {
-    pub(crate) generation: usize,
-    pub(crate) tools: Vec<ToolInfo>,
-}
-
 pub(crate) struct ToolCatalogueFetchTickets {
     connector_runtime: Option<ConnectorRuntimeFetchTicket>,
     tool_catalog: Option<McpToolCatalogFetchTicket>,
 }
 
 impl ManagedClient {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    /// Returns the complete, raw inventory for this exact live connection.
-    ///
-    /// Shared caches are intentionally not consulted here. They can represent
-    /// another connection and are only a discovery fallback while startup is
-    /// pending or an Apps connection is recovering.
-    pub(crate) fn listed_tools(&self) -> Vec<ToolInfo> {
-        self.tool_catalogue.load().tools.clone()
-    }
 
-    /// Replaces the complete tool snapshot after an MCP list_changed notification.
-    ///
-    /// The caller uses the return value to invalidate any prepared calls that
-    /// were bound to the previous catalog revision.
-    pub(crate) async fn refresh_tools_if_changed(&self, tool_timeout: Option<Duration>) -> bool {
-        let notified_generation = self.client.tool_list_generation();
-        if self.tool_catalogue.load().observed_generation == notified_generation {
-            return false;
-        }
-
-        let Ok(_refresh_guard) = self.tool_refresh_lock.acquire().await else {
-            warn!(
-                server_name = %self.server_name,
-                "MCP tool catalogue refresh semaphore closed"
-            );
-            return false;
-        };
-        let notified_generation = self.client.tool_list_generation();
-        if self.tool_catalogue.load().observed_generation == notified_generation {
-            return false;
-        }
-
-        let fetch_tickets =
-            self.begin_tool_catalogue_fetch(ConnectorRuntimeFetchSource::ListChanged);
-        match list_tools_for_client_uncached(
-            &self.server_name,
-            self.is_codex_apps_mcp_server,
-            /*codex_apps_refresh_trigger*/ "list_changed",
-            &self.client,
-            tool_timeout,
-            self.server_instructions.as_deref(),
-        )
-        .await
-        {
-            Ok(catalogue) => {
-                self.publish_tool_catalogue(catalogue, fetch_tickets);
-                true
-            }
-            Err(error) => {
-                warn!(
-                    server_name = %self.server_name,
-                    observed_generation = notified_generation,
-                    error = %error,
-                    "failed to refresh MCP tool catalogue after list_changed; retaining last complete snapshot"
-                );
-                self.tool_catalogue.rcu(|current| {
-                    Arc::new(ToolCatalogueSnapshot {
-                        observed_generation: current.observed_generation.max(notified_generation),
-                        tools: current.tools.clone(),
-                    })
-                });
-                false
-            }
-        }
-    }
-
-    pub(crate) fn begin_tool_catalogue_fetch(
-        &self,
-        source: ConnectorRuntimeFetchSource,
-    ) -> ToolCatalogueFetchTickets {
-        ToolCatalogueFetchTickets {
-            connector_runtime: self
-                .codex_apps_tools_cache_context
-                .as_ref()
-                .map(|cache_context| cache_context.begin_fetch(source)),
-            tool_catalog: self
-                .tool_catalog_cache_context
-                .as_ref()
-                .map(McpToolCatalogCacheContext::begin_fetch),
-        }
-    }
-
-    pub(crate) fn publish_tool_catalogue(
-        &self,
-        catalogue: ListedToolCatalogue,
-        fetch_tickets: ToolCatalogueFetchTickets,
-    ) -> Vec<ToolInfo> {
-        let ListedToolCatalogue {
-            generation,
-            tools: client_tools,
-        } = catalogue;
-        let shared_tools = match (
-            &self.codex_apps_tools_cache_context,
-            fetch_tickets.connector_runtime,
-        ) {
-            (Some(cache_context), Some(fetch_ticket)) => cache_context.publish_if_newest_accepted(
-                fetch_ticket,
-                &self.server_info,
-                client_tools.clone(),
-            ),
-            (None, None) => client_tools.clone(),
-            _ => unreachable!("Codex Apps fetch ticket requires cache context"),
-        };
-        match (&self.tool_catalog_cache_context, fetch_tickets.tool_catalog) {
-            (Some(cache_context), Some(fetch_ticket)) => {
-                cache_context.publish_if_newest(fetch_ticket, &client_tools);
-            }
-            (None, None) => {}
-            _ => unreachable!("MCP tool catalogue fetch ticket requires cache context"),
-        }
-
-        self.tool_catalogue.rcu(|current| {
-            if current.observed_generation > generation {
-                Arc::clone(current)
-            } else {
-                Arc::new(ToolCatalogueSnapshot {
-                    observed_generation: generation,
-                    tools: client_tools.clone(),
-                })
-            }
-        });
-        shared_tools
-=======
     pub(crate) async fn listed_tools(&self) -> Vec<ToolInfo> {
         let total_start = Instant::now();
         self.tool_catalog
@@ -302,9 +165,7 @@ impl ManagedClient {
                 }
                 catalog.tools.to_vec()
             })
-            .await
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    }
+            .await    }
 }
 
 pub(crate) type ManagedClientFuture =
@@ -384,7 +245,7 @@ impl McpStartupReconnect {
         }
     }
 
-    fn recovered_client_closed(&self) -> bool {
+    pub(crate) fn recovered_client_closed(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -444,65 +305,31 @@ impl McpStartupReconnect {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.reconnect_in_flight = false;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                if state.cancelled {
-                    client_to_shutdown = result.ok();
-                } else {
-                    match result {
-                        Ok(client) => {
-                            state.current_client = Some(client);
-                            state.consecutive_failures = 0;
-                            state.retry_not_before = None;
-                            state.recovered_client_closed = false;
-                            if let Some(context) = reconnect.startup_status_context.as_ref() {
-                                // Publish readiness while holding the same state lock that
-                                // serializes cancellation and replacement. The session event
-                                // channel is unbounded, so `try_send` cannot wait for capacity;
-                                // cancellation therefore either wins before installation (and
-                                // retires the client below) or observes readiness already
-                                // published for the installed client.
-                                let _ = context.tx_event.try_send(Event {
-                                    id: context.submit_id.clone(),
-                                    msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
-                                        server: context.server_name.clone(),
-                                        status: McpStartupStatus::Ready,
-                                    }),
-                                });
-                            }
-                        }
-                        Err(error) => {
-                            state.consecutive_failures =
-                                state.consecutive_failures.saturating_add(1);
-                            let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
-                            state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                            warn!(
-                                error = %error,
-                                retry_after_ms = retry_after.as_millis(),
-                                "MCP startup reconnect failed"
-                            );
-                        }
-=======
+
                 match result {
                     Ok(client) => {
-                        state.current_client = Some(client);
-                        state.last_error = None;
-                        state.consecutive_failures = 0;
-                        state.retry_not_before = None;
-                        true
+                        if state.cancelled {
+                            client_to_shutdown = Some(client);
+                            false
+                        } else {
+                            client_to_shutdown = state.current_client.replace(client);
+                            state.last_error = None;
+                            state.consecutive_failures = 0;
+                            state.retry_not_before = None;
+                            true
+                        }
                     }
                     Err(error) => {
                         state.last_error = Some(error.clone());
                         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = codex_apps_reconnect_backoff(state.consecutive_failures);
+                        let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
                         state.retry_not_before = Some(TokioInstant::now() + retry_after);
                         warn!(
                             error = %error,
                             retry_after_ms = retry_after.as_millis(),
                             "Apps MCP startup reconnect failed; continuing with cached tools"
                         );
-                        false
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-                    }
+                        false                    }
                 }
             }
 
@@ -676,6 +503,12 @@ pub(crate) struct AsyncManagedClient {
 }
 
 impl AsyncManagedClient {
+    pub(crate) fn recovered_client_closed(&self) -> bool {
+        self.startup_reconnect
+            .as_ref()
+            .is_some_and(|reconnect| reconnect.recovered_client_closed())
+    }
+
     // Keep this constructor flat so the startup inputs remain readable at the
     // single call site instead of introducing a one-off params wrapper.
     #[instrument(level = "trace", skip_all, fields(server_name = %server_name))]
@@ -773,21 +606,7 @@ impl AsyncManagedClient {
         self.client.clone().await
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    pub(crate) fn recovered_client_closed(&self) -> bool {
-        self.startup_reconnect
-            .as_ref()
-            .is_some_and(|reconnect| reconnect.recovered_client_closed())
-    }
 
-    /// Refreshes a ready client's catalog and reports whether it changed.
-    pub(crate) async fn refresh_tools_if_changed(&self, tool_timeout: Option<Duration>) -> bool {
-        match self.client().await {
-            Ok(client) => client.refresh_tools_if_changed(tool_timeout).await,
-            Err(_) => false,
-        }
-    }
-=======
     /// Returns the current ready client, including its tool catalog and metadata,
     /// without waiting for startup or initiating a reconnection.
     pub(crate) fn ready_client(&self) -> Option<ManagedClient> {
@@ -805,8 +624,6 @@ impl AsyncManagedClient {
     pub(crate) fn ready_transport(&self) -> Option<Arc<RmcpClient>> {
         self.ready_client().map(|client| client.client)
     }
-
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub(crate) async fn reconnect_failed_startup(&self) {
         let Some(startup_reconnect) = self.startup_reconnect.as_ref() else {
             return;
@@ -876,13 +693,7 @@ impl AsyncManagedClient {
 
     pub(crate) async fn listed_tools(&self) -> Result<Vec<ToolInfo>, StartupOutcomeError> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        if !self.startup_complete.load(Ordering::Acquire) {
-            if self.is_codex_apps_mcp_server
-                && let Some(startup_tools) = self.cached_tools()
-            {
-                return Some(startup_tools);
-=======
+
         if !self.startup_complete.load(Ordering::Acquire)
             && let Some(startup_tools) = self.cached_tools()
         {
@@ -892,16 +703,7 @@ impl AsyncManagedClient {
                 Ok(client) => Ok(client.listed_tools().await),
                 Err(error) if self.is_codex_apps_mcp_server => self.cached_tools().ok_or(error),
                 Err(error) => Err(error),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             }
-            if !self.is_codex_apps_mcp_server && self.has_cached_tools() {
-                return None;
-            }
-        }
-        match self.client().await {
-            Ok(client) => Some(client.listed_tools()),
-            Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
-            Err(_) => None,
         }
     }
 }
@@ -950,23 +752,9 @@ pub(crate) async fn list_tools_for_client_uncached(
     timeout: Option<Duration>,
     catalog_item_limit: usize,
     server_instructions: Option<&str>,
-) -> Result<ListedToolCatalogue> {
+) -> Result<Vec<ToolInfo>> {
     let fetch_start = Instant::now();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let catalogue = client.list_all_tools_with_connector_ids(timeout).await?;
-    let tools = catalogue
-        .tools
-        .into_iter()
-        .map(|tool| {
-            tool_info_from_listed_tool(
-                server_name,
-                is_codex_apps_mcp_server,
-                server_instructions,
-                tool,
-            )
-        })
-        .collect();
-=======
+
     let protocol_mode = client.protocol_mode();
     let tools = collect_paginated_with_limit("tools/list", timeout, catalog_item_limit, |params| {
         let client = Arc::clone(client);
@@ -992,7 +780,6 @@ pub(crate) async fn list_tools_for_client_uncached(
         )
     })
     .collect();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     if is_codex_apps_mcp_server {
         emit_duration(
             MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
@@ -1006,10 +793,7 @@ pub(crate) async fn list_tools_for_client_uncached(
             &[],
         );
     }
-    Ok(ListedToolCatalogue {
-        generation: catalogue.generation,
-        tools,
-    })
+    Ok(tools)
 }
 
 /// Filters disabled connectors, presents declared Codex Apps file parameters to the model as
@@ -1310,19 +1094,13 @@ async fn start_server_task(
         }
     });
     let list_start = Instant::now();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let connector_fetch_ticket = codex_apps_tools_cache_context
-        .as_ref()
-        .map(|cache_context| cache_context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
-    let catalogue = list_tools_for_client_uncached(
-=======
+
     let server_info =
         mcp_server_info_from_implementation(&server_name, initialize_result.server_info);
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|context| context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
     let tools = list_tools_for_client_uncached(
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         &server_name,
         is_codex_apps_mcp_server,
         /*codex_apps_refresh_trigger*/ "initial",
@@ -1333,35 +1111,7 @@ async fn start_server_task(
     )
     .await
     .map_err(StartupOutcomeError::from)?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
-    let generation = catalogue.generation;
-    let client_tools = catalogue.tools;
-    match (
-        codex_apps_tools_cache_context.as_ref(),
-        connector_fetch_ticket,
-    ) {
-        (Some(cache_context), Some(fetch_ticket)) => {
-            cache_context.publish_if_newest_accepted(
-                fetch_ticket,
-                &server_info,
-                client_tools.clone(),
-            );
-        }
-        (None, None) => {}
-        _ => unreachable!("Codex Apps fetch ticket requires cache context"),
-    }
-    let has_shared_tool_catalog = is_codex_apps_mcp_server || tool_catalog_cache_context.is_some();
-    match (
-        tool_catalog_cache_context.as_ref(),
-        tool_catalog_fetch_ticket,
-    ) {
-        (Some(cache_context), Some(fetch_ticket)) => {
-            cache_context.publish_if_newest(fetch_ticket, &client_tools);
-        }
-        (None, None) => {}
-        _ => unreachable!("MCP tool catalogue fetch ticket requires cache context"),
-=======
+
     let client_tools: Arc<[ToolInfo]> =
         match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
             (Some(context), Some(ticket)) if server_disables_tool_catalog_cache => {
@@ -1378,9 +1128,7 @@ async fn start_server_task(
         tool_catalog_cache_context.as_ref(),
         tool_catalog_fetch_ticket,
     ) {
-        cache_context.publish_if_newest(fetch_ticket, &client_tools);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    }
+        cache_context.publish_if_newest(fetch_ticket, &client_tools);    }
     if is_codex_apps_mcp_server || tool_catalog_cache_context.is_some() {
         emit_duration(
             MCP_TOOLS_LIST_DURATION_METRIC,
@@ -1392,23 +1140,13 @@ async fn start_server_task(
         _auth_change_notifications: auth_change_notifications,
         client: Arc::clone(&client),
         server_info,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        tool_catalogue: Arc::new(ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: generation,
-            tools: client_tools,
-        })),
-        tool_refresh_lock: Arc::new(Semaphore::new(1)),
-        server_name,
-        is_codex_apps_mcp_server,
-=======
+
         tool_catalog: Arc::new(ClientToolCatalog::new(
             client_tools,
             codex_apps_tools_cache_context
                 .as_ref()
                 .and_then(ConnectorRuntimeContext::subscribe),
-        )),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-        tool_timeout: None,
+        )),        tool_timeout: None,
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability,
         codex_apps_tools_cache_context,

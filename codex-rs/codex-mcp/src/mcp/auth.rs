@@ -34,12 +34,9 @@ pub struct McpOAuthLoginConfig {
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: Option<String>,
     pub discovered_scopes: Option<Vec<String>>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub device_authorization_endpoint: Option<String>,
     pub grant_types_supported: Option<Vec<String>>,
-=======
     pub callback_mode: McpOAuthCallbackMode,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[derive(Debug)]
@@ -111,37 +108,6 @@ pub async fn oauth_login_support(
         &config.url,
         config.http_headers.clone(),
         config.env_http_headers.clone(),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    )
-    .await
-    {
-        Ok(Some(discovery)) => {
-            config.authorization_endpoint = discovery.authorization_endpoint;
-            config.token_endpoint = Some(discovery.token_endpoint);
-            config.discovered_scopes = discovery.scopes_supported;
-            config.device_authorization_endpoint = discovery.device_authorization_endpoint;
-            config.grant_types_supported = discovery.grant_types_supported;
-            McpOAuthLoginSupport::Supported(Box::new(config))
-        }
-        Ok(None) => McpOAuthLoginSupport::Unsupported,
-        Err(err) => McpOAuthLoginSupport::Unknown(err),
-    }
-}
-
-pub async fn oauth_login_support_with_http_client(
-    transport: &McpServerTransportConfig,
-    http_client: Arc<dyn HttpClient>,
-    discovery_timeout: OAuthDiscoveryTimeout,
-) -> McpOAuthLoginSupport {
-    let Some(mut config) = oauth_login_candidate(transport) else {
-        return McpOAuthLoginSupport::Unsupported;
-    };
-    match discover_streamable_http_oauth_with_http_client(
-        &config.url,
-        config.http_headers.clone(),
-        config.env_http_headers.clone(),
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         http_client,
         discovery_timeout,
         redirect_mode,
@@ -152,14 +118,10 @@ pub async fn oauth_login_support_with_http_client(
             config.authorization_endpoint = discovery.authorization_endpoint;
             config.token_endpoint = Some(discovery.token_endpoint);
             config.discovered_scopes = discovery.scopes_supported;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             config.device_authorization_endpoint = discovery.device_authorization_endpoint;
             config.grant_types_supported = discovery.grant_types_supported;
-            McpOAuthLoginSupport::Supported(Box::new(config))
-=======
             config.callback_mode = discovery.callback_mode;
             McpOAuthLoginSupport::Supported(config)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
@@ -187,12 +149,9 @@ fn oauth_login_candidate(transport: &McpServerTransportConfig) -> Option<McpOAut
         authorization_endpoint: None,
         token_endpoint: None,
         discovered_scopes: None,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         device_authorization_endpoint: None,
         grant_types_supported: None,
-=======
         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     })
 }
 

@@ -22,11 +22,9 @@ use serde_json::Value as JsonValue;
 
 use crate::McpConfig;
 use crate::binding_clients::McpBindingClients;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::binding_clients::McpResourceListing;
-=======
+
 use crate::client_tool_catalog::ToolCatalogSnapshot;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;

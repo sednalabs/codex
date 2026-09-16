@@ -510,11 +510,7 @@ impl McpRuntime {
         self.current.load().ready_selected_capability_roots.clone()
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    /// Returns whether any initialized MCP connection has lost its transport.
-    pub async fn has_closed_connections(&self) -> bool {
-        self.latest_connections().has_closed_connections().await
-=======
+
     /// Whether this publication uses the currently ready environment handles.
     pub fn current_environments_match(
         &self,
@@ -528,9 +524,7 @@ impl McpRuntime {
                     .selected_environments
                     .get(id)
                     .is_some_and(|published| Arc::ptr_eq(published, environment))
-            })
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
-    }
+            })    }
 
     pub fn elicitations_auto_deny(&self) -> bool {
         self.elicitation_router.auto_deny()
