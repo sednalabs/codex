@@ -1,4 +1,3 @@
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::version::CODEX_RELEASE_TAG_PREFIX;
 use semver::Version;
 
@@ -11,14 +10,6 @@ pub(crate) fn is_actionable_sedna_update(latest: &str, current: &str) -> bool {
     codex_utils_version::is_sedna_release_version(latest)
         && codex_utils_version::is_sedna_release_version(current)
         && is_newer(latest, current).unwrap_or(false)
-=======
-#[cfg(any(not(debug_assertions), test))]
-pub(crate) fn is_newer(latest: &str, current: &str) -> Option<bool> {
-    match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => Some(l > c),
-        _ => None,
-    }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[cfg(any(not(debug_assertions), test))]
@@ -35,10 +26,10 @@ pub(crate) fn is_source_build_version(version: &str) -> bool {
     parse_version(version) == Some(Version::new(0, 0, 0))
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn parse_version(v: &str) -> Option<Version> {
     Version::parse(v.trim()).ok()
-=======
+}
+
 /// Whether an official stable TUI release is newer than the connected app server.
 pub(crate) fn is_official_server_older(client: &str, server: &str) -> bool {
     fn stable_version(version: &str) -> Option<(u64, u64, u64)> {
@@ -63,16 +54,6 @@ pub(crate) fn is_official_server_older(client: &str, server: &str) -> bool {
     }
 
     matches!((stable_version(client), stable_version(server)), (Some(client), Some(server)) if client > server)
-}
-
-#[cfg(any(not(debug_assertions), test))]
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[cfg(test)]

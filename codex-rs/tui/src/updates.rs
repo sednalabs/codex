@@ -12,10 +12,7 @@ use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
 use chrono::Duration;
 use chrono::Utc;
-use codex_http_client::ClientRouteClass;
-use codex_http_client::HttpClientFactory;
-use codex_http_client::RouteAwareClientPool;
-use codex_login::default_client::default_headers;
+use codex_login::default_client::create_client;
 use serde::Deserialize;
 use std::future::Future;
 use std::path::Path;
@@ -52,16 +49,11 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
                 || info.last_checked_at < Utc::now() - Duration::hours(20)
         }
     } {
-        let http_client_factory = config.http_client_factory();
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             check_for_update(&version_file, Some(action), channel)
-=======
-            check_for_update(&version_file, action, http_client_factory)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 .await
                 .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
@@ -90,7 +82,6 @@ struct ReleaseAsset {
     browser_download_url: String,
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[derive(Deserialize)]
 struct ReleaseMetadata {
     release_tag: String,
@@ -100,50 +91,6 @@ struct ReleaseMetadata {
     #[serde(default)]
     release_channel: Option<codex_utils_version::SednaReleaseChannel>,
 }
-=======
-async fn check_for_update(
-    version_file: &Path,
-    action: Option<UpdateAction>,
-    http_client_factory: HttpClientFactory,
-) -> anyhow::Result<()> {
-    let client_pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
-        http_client_factory,
-        ClientRouteClass::Other,
-    )
-    .with_legacy_custom_ca_fallback();
-    let latest_version = match action {
-        Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = client_pool
-                .get(HOMEBREW_CASK_API_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
-        }
-        Some(UpdateAction::NpmGlobalLatest)
-        | Some(UpdateAction::BunGlobalLatest)
-        | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
-            let package_info = client_pool
-                .get(npm_registry::PACKAGE_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<NpmPackageInfo>()
-                .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
-        }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
-        }
-    };
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 async fn check_for_update(
     version_file: &Path,
@@ -181,22 +128,12 @@ async fn check_for_update(
 }
 
 async fn fetch_latest_github_release_version(
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     channel: codex_utils_version::SednaReleaseChannel,
 ) -> anyhow::Result<String> {
     let releases_url =
         format!("https://api.github.com/repos/{CODEX_RELEASE_REPOSITORY}/releases?per_page=100");
     let releases = create_client()
         .get(releases_url)
-=======
-    client_pool: &RouteAwareClientPool,
-) -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = client_pool
-        .get(LATEST_RELEASE_URL)
-        .headers(default_headers())
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .send()
         .await?
         .error_for_status()?

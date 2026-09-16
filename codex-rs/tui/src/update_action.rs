@@ -11,25 +11,8 @@ use codex_utils_version::SednaReleaseChannel;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// Update via the fork-owned standalone release installer.
     StandaloneUnix(SednaReleaseChannel),
-=======
-    /// Update via `npm install -g @openai/codex@latest`.
-    NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
-    BunGlobalLatest,
-    /// Update via `vp install -g @openai/codex@latest`.
-    VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
-    PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
-    BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
-    StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
-    StandaloneWindows,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl UpdateAction {
@@ -115,17 +98,11 @@ impl UpdateAction {
             return None;
         }
         match &context.method {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm | InstallMethod::Brew => {
-                None
-            }
-=======
-            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
-            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
-            InstallMethod::VitePlus => Some(UpdateAction::VitePlusGlobalLatest),
-            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
-            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+            InstallMethod::Npm
+            | InstallMethod::Bun
+            | InstallMethod::VitePlus
+            | InstallMethod::Pnpm
+            | InstallMethod::Brew => None,
             InstallMethod::Standalone { platform, .. } => Some(match platform {
                 StandalonePlatform::Unix => UpdateAction::StandaloneUnix(release_channel),
                 StandalonePlatform::Windows => return None,
@@ -135,7 +112,6 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub fn command_args(self) -> (&'static str, Vec<String>) {
         Self::sedna_standalone_unix_command_args(match self {
             Self::StandaloneUnix(channel) => channel,
@@ -161,32 +137,6 @@ impl UpdateAction {
                 ),
             ],
         )
-=======
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
-        match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
-            ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
-            ),
-        }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.

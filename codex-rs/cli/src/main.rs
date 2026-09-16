@@ -27,12 +27,9 @@ use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_exec_server::ExecServerRuntimePaths;
 use codex_execpolicy::ExecPolicyCheckCommand;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_home::CodexHomeUserInstructionsProvider;
-=======
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
@@ -45,11 +42,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::ProfileV2Name;
 use codex_utils_cli::SharedCliOptions;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_utils_version::DISPLAY_VERSION;
 use owo_colors::OwoColorize;
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -916,16 +910,11 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
             eprintln!("ERROR: {message}");
             std::process::exit(1);
         }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        ExitReason::UserRequested => { /* normal exit */ }
-    }
-=======
         ExitReason::UserRequested
         | ExitReason::Archived(_)
         | ExitReason::TurnInterrupted
         | ExitReason::ThreadRemoved => false,
     };
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     let update_action = exit_info.update_action;
     let color_enabled = supports_color::on(Stream::Stdout).is_some();
@@ -947,16 +936,6 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
         #[cfg(windows)]
         {
             let (cmd, args) = action.command_args();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            std::process::Command::new(cmd).args(args).status()?
-=======
-            let cmd = if action == UpdateAction::StandaloneWindows {
-                // These args contain PowerShell metacharacters, so do not let
-                // PATHEXT select a batch shim for this action.
-                "powershell.exe"
-            } else {
-                cmd
-            };
             let path_env =
                 std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is not set"))?;
             let command_path = resolve_windows_update_command_from_path(cmd, &path_env)?;
@@ -970,7 +949,6 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
                 .args(args)
                 .current_dir(update_cwd.path())
                 .status()?
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         #[cfg(not(windows))]
         {
@@ -992,9 +970,6 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-async fn run_update_command(_root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
-=======
 #[cfg(windows)]
 fn resolve_windows_update_command_from_path(
     command: &str,
@@ -1012,8 +987,7 @@ fn resolve_windows_update_command_from_path(
         .ok_or_else(|| anyhow::anyhow!("could not find update command `{command}` on PATH"))
 }
 
-fn run_update_command() -> anyhow::Result<()> {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+async fn run_update_command(_root_config_overrides: CliConfigOverrides) -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
         anyhow::bail!(
@@ -3195,7 +3169,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     fn manual_update_url_uses_sedna_releases_only_for_sedna_identity() {
         assert_eq!(
             update_manual_install_url_for_release_identity(Some("sednalabs/codex"), Some("v")),
@@ -3250,7 +3223,7 @@ mod tests {
         ));
     }
 
-=======
+    #[test]
     fn interactive_tui_future_stays_bounded() {
         let future = run_interactive_tui(
             TuiCli::parse_from(["codex"]),
@@ -3309,7 +3282,6 @@ mod tests {
         );
     }
 
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[tokio::test]
     async fn updater_http_client_factory_honors_respect_system_proxy() {
         let codex_home = tempfile::tempdir().expect("temporary Codex home");
@@ -4272,8 +4244,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
     fn format_exit_messages_includes_session_id_for_fatal_exit_without_resume_hint() {
         let exit_info = AppExitInfo {
             token_usage: TokenUsage::default(),
@@ -4309,7 +4279,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     fn format_exit_messages_includes_resume_hint_without_color() {
         insta::allow_duplicates! {
             for thread_name in [None, Some("")] {
