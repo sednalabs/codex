@@ -10,6 +10,7 @@ repository-relative paths are emitted as exact metadata for conflict allocation.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from typing import Iterable
 
 SHA40 = re.compile(r"^[0-9a-fA-F]{40}$")
 TREE40 = re.compile(rb"^[0-9a-f]{40}$")
+MODE = re.compile(rb"^(?:100644|100755|120000|160000)$")
 GIT_VERSION = re.compile(r"^git version ([0-9][0-9A-Za-z._+-]*)\n?$")
 PUBLIC_REMOTES = {
     "downstream": "https://github.com/sednalabs/codex.git",
@@ -37,6 +39,12 @@ HELP_OPTION_LINE = re.compile(
 )
 REQUIRED_MERGE_TREE_OPTIONS = frozenset({"--write-tree", "--merge-base", "--name-only", "--messages", "-z"})
 MAX_PATHS_PER_INFORMATION_RECORD = 10_000
+# The source artifact is deliberately bounded.  It is an opt-in aid for the
+# next hosted composition step, not an unbounded repository export.
+MAX_STAGED_RECORDS = 30_000
+MAX_BLOB_BYTES = 32 * 1024 * 1024
+MAX_TOTAL_BLOB_BYTES = 128 * 1024 * 1024
+CONFLICT_SOURCE_OUTPUT = Path("conflict-source.json")
 
 
 class PreviewError(Exception):
@@ -54,6 +62,23 @@ class MergeTreeResult:
     status: str
     tree: str
     staged_paths: tuple[bytes, ...]
+    records: tuple[InformationalRecord, ...]
+
+
+@dataclass(frozen=True)
+class StagedRecord:
+    """One documented higher-order index record from ``merge-tree`` output."""
+
+    mode: str
+    oid: str
+    stage: int
+    path: bytes
+
+
+@dataclass(frozen=True)
+class StagedMergeTreeResult:
+    tree: str
+    staged_records: tuple[StagedRecord, ...]
     records: tuple[InformationalRecord, ...]
 
 
@@ -275,6 +300,67 @@ def interpret_merge_tree(returncode: int, raw: bytes) -> MergeTreeResult:
     return MergeTreeResult("conflicts", tree, staged_paths, parse_informational_records(informational))
 
 
+def _parse_staged_record(raw: bytes) -> StagedRecord:
+    """Parse one documented ``<mode> <object> <stage> TAB <filename>`` record.
+
+    This is intentionally separate from the metadata-only ``--name-only``
+    parser.  ``git merge-tree --write-tree`` does not populate a bare
+    repository index, so querying ``git ls-files -u`` here would silently
+    inspect the wrong thing.
+    """
+    header, separator, path = raw.partition(b"\t")
+    if not separator:
+        raise PreviewError("malformed merge-tree staged record")
+    fields = header.split(b" ")
+    if len(fields) != 3:
+        raise PreviewError("malformed merge-tree staged record")
+    mode_raw, oid_raw, stage_raw = fields
+    if not MODE.fullmatch(mode_raw) or not TREE40.fullmatch(oid_raw.lower()):
+        raise PreviewError("malformed merge-tree staged record")
+    if stage_raw not in (b"1", b"2", b"3"):
+        raise PreviewError("malformed merge-tree staged record")
+    serialise_repo_path(path)
+    return StagedRecord(mode_raw.decode("ascii"), oid_raw.decode("ascii").lower(), int(stage_raw), path)
+
+
+def interpret_staged_merge_tree(returncode: int, raw: bytes) -> StagedMergeTreeResult:
+    """Parse full ``merge-tree --write-tree --messages -z`` conflict output.
+
+    The grammar is documented by Git: an OID field, NUL-terminated full staged
+    records, then the leading NUL for the messages section.  It is the only
+    source of the higher-order stages used below; no working tree or index is
+    consulted.
+    """
+    if returncode != 1:
+        raise PreviewError("source export requires a conflicted merge")
+    tree_raw, separator, remainder = raw.partition(b"\0")
+    if not separator or not TREE40.fullmatch(tree_raw.lower()) or not remainder:
+        raise PreviewError("malformed conflicted merge-tree output")
+    tree = tree_raw.decode("ascii").lower()
+    if remainder.startswith(b"\0"):
+        staged_section = b""
+        informational = remainder[1:]
+    else:
+        staged_section, marker, informational = remainder.partition(b"\0\0")
+        if not marker:
+            raise PreviewError("malformed conflicted merge-tree output")
+    staged_records: list[StagedRecord] = []
+    if staged_section:
+        for raw_record in staged_section.split(b"\0"):
+            if not raw_record:
+                raise PreviewError("malformed merge-tree staged record")
+            staged_records.append(_parse_staged_record(raw_record))
+    if len(staged_records) > MAX_STAGED_RECORDS:
+        raise PreviewError("merge-tree staged record count exceeds limit")
+    seen_stages: set[tuple[bytes, int]] = set()
+    for record in staged_records:
+        key = (record.path, record.stage)
+        if key in seen_stages:
+            raise PreviewError("contradictory merge-tree staged records")
+        seen_stages.add(key)
+    return StagedMergeTreeResult(tree, tuple(staged_records), parse_informational_records(informational))
+
+
 def is_conflict_stable_type(stable_type: str) -> bool:
     """Classify the stable merge-ort vocabulary, including no-space forms."""
     return stable_type.startswith("CONFLICT (") or stable_type.startswith("CONFLICT(")
@@ -288,6 +374,184 @@ def _type_counts(records: Iterable[InformationalRecord], *, conflicts_only: bool
             continue
         counts[record.stable_type] = counts.get(record.stable_type, 0) + 1
     return [{"type": kind, "count": counts[kind]} for kind in sorted(counts)]
+
+
+def _stage_side(stage: int) -> str:
+    return {1: "base", 2: "ours", 3: "theirs"}[stage]
+
+
+def _object_size(repo: Path, oid: str) -> int:
+    process = run_git(repo, "cat-file", "-s", oid, check=False)
+    if process.returncode != 0:
+        raise PreviewError("required source object unavailable")
+    try:
+        size_raw = process.stdout.decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise PreviewError("invalid source object size") from error
+    if not size_raw.isdigit():
+        raise PreviewError("invalid source object size")
+    return int(size_raw)
+
+
+def _read_blob(repo: Path, oid: str, used_bytes: int) -> tuple[bytes, int]:
+    """Read an exact already-present blob after type and bounded-size checks."""
+    object_type = run_git(repo, "cat-file", "-t", oid, check=False)
+    if object_type.returncode != 0 or object_type.stdout.strip() != b"blob":
+        raise PreviewError("source object is not a blob")
+    size = _object_size(repo, oid)
+    if size > MAX_BLOB_BYTES or used_bytes + size > MAX_TOTAL_BLOB_BYTES:
+        raise PreviewError("source blob size limit exceeded")
+    process = run_git(repo, "cat-file", "blob", oid, check=False)
+    if process.returncode != 0 or len(process.stdout) != size:
+        raise PreviewError("source blob read failed")
+    return process.stdout, size
+
+
+def _result_entry(repo: Path, tree: str, path: bytes) -> tuple[str, str] | None:
+    """Return the exact direct result-tree entry for one staged path, if any."""
+    process = run_git(repo, "ls-tree", "-z", "--full-tree", tree, "--", os.fsdecode(path), check=False)
+    if process.returncode != 0:
+        raise PreviewError("unable to inspect provisional result tree")
+    if not process.stdout:
+        return None
+    records = process.stdout.split(b"\0")
+    if len(records) != 2 or not records[0]:
+        raise PreviewError("malformed provisional result tree entry")
+    header, separator, returned_path = records[0].partition(b"\t")
+    fields = header.split(b" ")
+    if not separator or len(fields) != 3 or returned_path != path:
+        raise PreviewError("malformed provisional result tree entry")
+    mode_raw, kind_raw, oid_raw = fields
+    if not MODE.fullmatch(mode_raw) or not TREE40.fullmatch(oid_raw.lower()):
+        raise PreviewError("malformed provisional result tree entry")
+    if kind_raw == b"blob" and mode_raw != b"160000":
+        return mode_raw.decode("ascii"), oid_raw.decode("ascii").lower()
+    if kind_raw == b"commit" and mode_raw == b"160000":
+        return mode_raw.decode("ascii"), oid_raw.decode("ascii").lower()
+    raise PreviewError("unsupported provisional result tree object")
+
+
+def _serialised_blob(oid: str, data: bytes) -> dict[str, object]:
+    return {
+        "oid": oid,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "bytes_base64": base64.b64encode(data).decode("ascii"),
+    }
+
+
+def conflict_source_repository(
+    repo: Path,
+    downstream: str,
+    upstream: str,
+    base_tree: str,
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    """Create the explicit content-bearing artifact for an already-checked preview.
+
+    It deliberately invokes the documented full staged-record mode rather than
+    reusing the metadata ``--name-only`` invocation.  The result tree is
+    ephemeral merge output, not a fetched ref or a completed merge.
+    """
+    if not isinstance(downstream, str) or not isinstance(upstream, str) or not isinstance(base_tree, str):
+        raise PreviewError("invalid conflict source merge identity")
+    try:
+        base_tree_raw = base_tree.encode("ascii", "strict").lower()
+    except UnicodeEncodeError as error:
+        raise PreviewError("invalid conflict source merge identity") from error
+    if not SHA40.fullmatch(downstream) or not SHA40.fullmatch(upstream) or not TREE40.fullmatch(base_tree_raw):
+        raise PreviewError("invalid conflict source merge identity")
+    process = run_git(
+        repo,
+        "merge-tree",
+        "--write-tree",
+        f"--merge-base={base_tree}",
+        "--messages",
+        "-z",
+        downstream,
+        upstream,
+        check=False,
+    )
+    merge = interpret_staged_merge_tree(process.returncode, process.stdout)
+    metadata_merge = metadata.get("merge")
+    observer = metadata.get("observer")
+    requested = metadata.get("requested")
+    actual = metadata.get("actual")
+    base_contract = metadata.get("base_contract")
+    if (
+        metadata.get("status") != "conflicts"
+        or not isinstance(metadata_merge, dict)
+        or metadata_merge.get("result_tree") != merge.tree
+        or not isinstance(observer, dict)
+        or not isinstance(requested, dict)
+        or not isinstance(actual, dict)
+        or not isinstance(base_contract, dict)
+    ):
+        raise PreviewError("conflict source does not match metadata preview")
+
+    staged = sorted(merge.staged_records, key=lambda record: (record.path, record.stage, record.mode, record.oid))
+    blob_oids: set[str] = set()
+    staged_output: list[dict[str, object]] = []
+    unsupported: list[dict[str, object]] = []
+    for record in staged:
+        entry = {
+            "path": serialise_repo_path(record.path),
+            "stage": record.stage,
+            "side": _stage_side(record.stage),
+            "mode": record.mode,
+            "oid": record.oid,
+        }
+        staged_output.append(entry)
+        if record.mode == "160000":
+            unsupported.append({**entry, "reason": "gitlink-reference-unsupported"})
+        else:
+            blob_oids.add(record.oid)
+
+    provisional: list[dict[str, object]] = []
+    for path in sorted({record.path for record in staged}):
+        entry = _result_entry(repo, merge.tree, path)
+        if entry is None:
+            continue
+        mode, oid = entry
+        rendered = {"path": serialise_repo_path(path), "mode": mode, "oid": oid}
+        if mode == "160000":
+            unsupported.append({**rendered, "reason": "provisional-gitlink-reference-unsupported"})
+        else:
+            provisional.append(rendered)
+            blob_oids.add(oid)
+
+    blobs: list[dict[str, object]] = []
+    used_bytes = 0
+    for oid in sorted(blob_oids):
+        data, size = _read_blob(repo, oid, used_bytes)
+        used_bytes += size
+        blobs.append(_serialised_blob(oid, data))
+
+    source: dict[str, object] = {
+        "version": 1,
+        "kind": "upstream-merge-conflict-source",
+        "observer": observer,
+        "requested": requested,
+        "actual": actual,
+        "base_contract": base_contract,
+        "merge": {
+            "status": "conflicts",
+            "result_tree": merge.tree,
+            "staged_records": staged_output,
+            "provisional_result_entries": provisional,
+            "unsupported_references": unsupported,
+        },
+        "blobs": blobs,
+        "total_blob_bytes": used_bytes,
+    }
+    unsigned = json.dumps(source, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    source["content_sha256"] = hashlib.sha256(unsigned).hexdigest()
+    return source
+
+
+def source_artifact_bytes(source: dict[str, object]) -> bytes:
+    """Return canonical bytes; the embedded hash covers the object without itself."""
+    return json.dumps(source, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
 def _observer(repo: Path) -> dict[str, str]:
@@ -413,7 +677,33 @@ def fetch(repo: Path, remote: str, sha: str) -> None:
         raise PreviewError("required public object unavailable")
 
 
-def preview(downstream: str, upstream: str, logical_base: str, rewritten_base: str | None) -> dict[str, object]:
+def write_source_artifact(source: dict[str, object]) -> None:
+    """Atomically write the one fixed, explicitly opted-in source artifact."""
+    output_path = CONFLICT_SOURCE_OUTPUT
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=output_path.parent, prefix=f".{output_path.name}.", delete=False) as handle:
+            temporary_name = handle.name
+            handle.write(source_artifact_bytes(source))
+        os.replace(temporary_name, output_path)
+    except OSError as error:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                # The original write error remains authoritative; a failed
+                # best-effort cleanup must not mask it or broaden handling.
+                pass
+        raise PreviewError("unable to write conflict source artifact") from error
+
+
+def preview(
+    downstream: str,
+    upstream: str,
+    logical_base: str,
+    rewritten_base: str | None,
+    export_conflict_source: bool = False,
+) -> dict[str, object]:
     requested: dict[str, str] = {}
     try:
         downstream = exact_sha(downstream, "downstream")
@@ -434,7 +724,20 @@ def preview(downstream: str, upstream: str, logical_base: str, rewritten_base: s
                 fetch(repo, "upstream", logical_base)
                 if rewritten_base:
                     fetch(repo, "downstream", rewritten_base)
-                return preview_repository(repo, downstream, upstream, logical_base, rewritten_base)
+                result = preview_repository(repo, downstream, upstream, logical_base, rewritten_base)
+                if export_conflict_source and result.get("status") == "conflicts":
+                    base_contract = result.get("base_contract")
+                    actual = result.get("actual")
+                    if not isinstance(base_contract, dict) or not isinstance(actual, dict):
+                        raise PreviewError("incomplete conflict source metadata")
+                    base_tree = base_contract.get("merge_base_tree")
+                    actual_downstream = actual.get("downstream")
+                    actual_upstream = actual.get("upstream")
+                    if not all(isinstance(value, str) for value in (base_tree, actual_downstream, actual_upstream)):
+                        raise PreviewError("incomplete conflict source metadata")
+                    source = conflict_source_repository(repo, actual_downstream, actual_upstream, base_tree, result)
+                    write_source_artifact(source)
+                return result
             except PreviewError as error:
                 return _incomplete(requested, str(error), repo)
     except PreviewError as error:
@@ -447,9 +750,20 @@ def main() -> int:
     parser.add_argument("--upstream", required=True)
     parser.add_argument("--base", required=True, dest="logical_base")
     parser.add_argument("--rewritten-base")
+    parser.add_argument(
+        "--export-conflict-source",
+        action="store_true",
+        help="Write fixed conflict-source.json for this opt-in manual source export; stdout remains metadata only",
+    )
     arguments = parser.parse_args()
     try:
-        result = preview(arguments.downstream, arguments.upstream, arguments.logical_base, arguments.rewritten_base)
+        result = preview(
+            arguments.downstream,
+            arguments.upstream,
+            arguments.logical_base,
+            arguments.rewritten_base,
+            arguments.export_conflict_source,
+        )
     except Exception:
         # Do not let an unexpected implementation failure place a traceback,
         # host path, or raw subprocess output in a workflow log or artifact.
