@@ -906,18 +906,38 @@ impl AgentControl {
             let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
                 return String::new();
             };
-            return agents
-                .into_iter()
-                .map(|(thread_id, metadata)| {
+            const MAX_V1_SUBAGENTS: usize = 16;
+            const MAX_V1_REFERENCE_CHARS: usize = 192;
+            let total = agents.len();
+            let mut lines = Vec::with_capacity(total.min(MAX_V1_SUBAGENTS) + 1);
+            for (index, (thread_id, metadata)) in agents.into_iter().enumerate() {
+                if index == MAX_V1_SUBAGENTS {
+                    lines.push(format!(
+                        "<omitted count=\"{}\" />",
+                        total - MAX_V1_SUBAGENTS
+                    ));
+                    break;
+                }
+                let reference = {
                     let reference = metadata
                         .agent_path
                         .as_ref()
                         .map(|path| path.name().to_string())
                         .unwrap_or_else(|| thread_id.to_string());
-                    format_subagent_context_line(&reference, metadata.agent_nickname.as_deref())
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+                    let chars = reference.chars().count();
+                    if chars > MAX_V1_REFERENCE_CHARS {
+                        let prefix: String = reference.chars().take(MAX_V1_REFERENCE_CHARS - 3).collect();
+                        format!("{prefix}...")
+                    } else {
+                        reference
+                    }
+                };
+                lines.push(format_subagent_context_line(
+                    &reference,
+                    metadata.agent_nickname.as_deref(),
+                ));
+            }
+            return lines.join("\n");
         }
 
         let Some(parent_path) = self

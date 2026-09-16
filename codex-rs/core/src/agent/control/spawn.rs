@@ -996,6 +996,13 @@ impl AgentControl {
             return Err(error);
         }
 
+        let start_options = TurnStartOptions {
+            parent_turn_id: options.parent_turn_id.clone(),
+            turn_trigger: options.turn_trigger.clone(),
+            root_turn_id: options.root_turn_id.clone(),
+            cyber_access_program: options.cyber_access_program.clone(),
+            ..Default::default()
+        };
         let initial_input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => self
                 .send_input_after_capacity_check(new_thread.thread_id, &state, input)
@@ -1028,6 +1035,7 @@ impl AgentControl {
                         &state,
                         communication,
                         context,
+                        start_options.clone(),
                     )
                     .await
                     .map(drop)
@@ -1179,29 +1187,6 @@ impl AgentControl {
         )
         .await;
 
-        let start_options = TurnStartOptions {
-            parent_turn_id: options.parent_turn_id,
-            turn_trigger: options.turn_trigger,
-            root_turn_id: options.root_turn_id,
-            cyber_access_program: options.cyber_access_program,
-            ..Default::default()
-        };
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input(new_thread.thread_id, input, start_options)
-                    .await?;
-            }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                    start_options,
-                )
-                .await?;
-            }
-        }
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
