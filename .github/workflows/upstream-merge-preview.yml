@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/scripts/upstream_merge_preview.py"
       - ".github/scripts/test_upstream_merge_preview.py"
+      - ".github/scripts/upstream_integration_prepare.py"
+      - ".github/scripts/test_upstream_integration_prepare.py"
       - ".github/workflows/upstream-merge-preview.yml"
   workflow_dispatch:
     inputs:
@@ -29,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      prepare_integration:
+        description: Create the fixed provisional single-parent downstream integration branch
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -43,7 +50,9 @@ jobs:
           persist-credentials: false
       - name: Run isolated real-Git fixture tests
         id: fixtures
-        run: python3 .github/scripts/test_upstream_merge_preview.py --report fixture-results.json
+        run: |
+          python3 .github/scripts/test_upstream_merge_preview.py --report fixture-results.json
+          python3 .github/scripts/test_upstream_integration_prepare.py
       - name: Upload safe fixture metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -92,5 +101,31 @@ jobs:
         with:
           name: upstream-merge-conflict-source-${{ github.run_id }}
           path: conflict-source.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  prepare-integration:
+    name: prepare provisional upstream integration branch
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepare_integration }}
+    needs: fixture
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Create fixed provisional integration branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
+        run: |
+          set -o pipefail
+          python3 .github/scripts/upstream_integration_prepare.py --prepare | tee integration-prepare.json
+      - name: Upload provisional integration metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-integration-prepare-${{ github.run_id }}
+          path: integration-prepare.json
           if-no-files-found: warn
           retention-days: 1
