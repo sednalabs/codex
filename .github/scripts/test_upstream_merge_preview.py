@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -87,6 +92,38 @@ class RealMergeTreeFixtures(GitFixture):
         self.assertGreater(result["merge"]["staged_path_count"], 0)
         self.assertTrue(all(path["encoding"] == "utf-8" for path in result["merge"]["staged_paths"]))
         self.assertTrue(all("paths" in record for record in result["merge"]["informational_records"]))
+
+    def test_conflict_source_exports_real_stages_and_provisional_result_blobs(self) -> None:
+        base = self.commit("base", {"shared.txt": "base\n"})
+        downstream = self.branch_commit("downstream", base, "downstream", {"shared.txt": "downstream\n"})
+        upstream = self.branch_commit("upstream", base, "upstream", {"shared.txt": "upstream\n"})
+        metadata = preview.preview_repository(self.repo, downstream, upstream, base)
+        source = preview.conflict_source_repository(
+            self.repo,
+            downstream,
+            upstream,
+            metadata["base_contract"]["merge_base_tree"],
+            metadata,
+        )
+        self.assertEqual(source["kind"], "upstream-merge-conflict-source")
+        records = source["merge"]["staged_records"]
+        self.assertEqual([record["side"] for record in records], ["base", "ours", "theirs"])
+        self.assertEqual({record["path"]["value"] for record in records}, {"shared.txt"})
+        blobs = {blob["oid"]: base64.b64decode(blob["bytes_base64"]) for blob in source["blobs"]}
+        self.assertTrue(all(blob["sha256"] == hashlib.sha256(blobs[blob["oid"]]).hexdigest() for blob in source["blobs"]))
+        self.assertEqual({blobs[record["oid"]] for record in records}, {b"base\n", b"downstream\n", b"upstream\n"})
+        provisional = source["merge"]["provisional_result_entries"]
+        self.assertEqual(len(provisional), 1)
+        self.assertIn(b"<<<<<<<", blobs[provisional[0]["oid"]])
+        self.assertEqual(preview.source_artifact_bytes(source), preview.source_artifact_bytes(source))
+        repeat = preview.conflict_source_repository(
+            self.repo,
+            downstream,
+            upstream,
+            metadata["base_contract"]["merge_base_tree"],
+            metadata,
+        )
+        self.assertEqual(preview.source_artifact_bytes(source), preview.source_artifact_bytes(repeat))
 
     def test_clean_overlapping_content_merge_preserves_auto_merging_metadata(self) -> None:
         base = self.commit("base", {"shared.txt": "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"})
@@ -218,6 +255,44 @@ class ParserAndCapabilityTests(unittest.TestCase):
         self.assertEqual(parsed.status, "conflicts")
         self.assertEqual(parsed.staged_paths, ())
 
+    def test_full_staged_records_preserve_exact_stages_and_reject_contradictions(self) -> None:
+        oid_a = b"a" * 40
+        oid_b = b"b" * 40
+        oid_c = b"c" * 40
+        raw = (
+            self.TREE + b"\0"
+            + b"100644 " + oid_a + b" 1\tshared.txt\0"
+            + b"100644 " + oid_b + b" 2\tshared.txt\0"
+            + b"100755 " + oid_c + b" 3\tshared.txt\0\0"
+            + b"1\0shared.txt\0CONFLICT (content)\0ignored\0"
+        )
+        parsed = preview.interpret_staged_merge_tree(1, raw)
+        self.assertEqual([(record.mode, record.oid, record.stage, record.path) for record in parsed.staged_records], [
+            ("100644", "a" * 40, 1, b"shared.txt"),
+            ("100644", "b" * 40, 2, b"shared.txt"),
+            ("100755", "c" * 40, 3, b"shared.txt"),
+        ])
+        malformed_stage = raw.replace(b" 3\tshared.txt", b" 4\tshared.txt")
+        duplicate_stage = raw.replace(b" 3\tshared.txt", b" 2\tshared.txt")
+        unsafe_path = raw.replace(b"shared.txt", b"../private", 1)
+        for candidate in (malformed_stage, duplicate_stage, unsafe_path):
+            with self.assertRaises(preview.PreviewError):
+                preview.interpret_staged_merge_tree(1, candidate)
+
+    def test_source_blob_validation_rejects_non_blob_and_inconsistent_size(self) -> None:
+        completed = subprocess.CompletedProcess
+        with mock.patch.object(preview, "run_git", return_value=completed([], 0, b"tree\n", b"")):
+            with self.assertRaises(preview.PreviewError):
+                preview._read_blob(Path("/unused"), "a" * 40, 0)
+        responses = [
+            completed([], 0, b"blob\n", b""),
+            completed([], 0, b"4\n", b""),
+            completed([], 0, b"bad", b""),
+        ]
+        with mock.patch.object(preview, "run_git", side_effect=responses):
+            with self.assertRaises(preview.PreviewError):
+                preview._read_blob(Path("/unused"), "a" * 40, 0)
+
     def test_path_serialisation_is_reversible_and_rejects_host_like_paths(self) -> None:
         self.assertEqual(
             preview.serialise_repo_path(b"src/file.txt"),
@@ -292,6 +367,17 @@ class ParserAndCapabilityTests(unittest.TestCase):
         self.assertEqual(preview.exit_status({"status": "clean"}), 0)
         self.assertEqual(preview.exit_status({"status": "conflicts"}), 1)
         self.assertEqual(preview.exit_status({"status": "diagnostic-incomplete"}), 2)
+
+    def test_cli_stdout_stays_metadata_only_when_source_file_is_requested(self) -> None:
+        metadata = {"status": "conflicts", "merge": {"result_tree": "a" * 40}}
+        captured = io.StringIO()
+        with mock.patch.object(preview, "preview", return_value=metadata) as mocked:
+            with mock.patch.object(sys, "argv", ["upstream_merge_preview.py", "--downstream", "a" * 40, "--upstream", "b" * 40, "--base", "c" * 40, "--conflict-source-output", "conflict-source.json"]):
+                with contextlib.redirect_stdout(captured):
+                    self.assertEqual(preview.main(), 1)
+        self.assertEqual(json.loads(captured.getvalue()), metadata)
+        self.assertNotIn("bytes_base64", captured.getvalue())
+        self.assertEqual(mocked.call_args.args[-1], Path("conflict-source.json"))
 
 
 def run_suite(report_path: Path | None) -> int:

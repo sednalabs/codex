@@ -24,6 +24,11 @@ on:
         description: Optional exact 40-hex rewritten downstream base B-prime
         required: false
         type: string
+      export_conflict_source:
+        description: Write the opt-in content-bearing conflict source artifact (manual runs only)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -62,11 +67,15 @@ jobs:
           UPSTREAM: ${{ inputs.upstream }}
           LOGICAL_BASE: ${{ inputs.logical_base }}
           REWRITTEN_BASE: ${{ inputs.rewritten_base }}
+          EXPORT_CONFLICT_SOURCE: ${{ inputs.export_conflict_source }}
         run: |
           set -o pipefail
           arguments=(--downstream "$DOWNSTREAM" --upstream "$UPSTREAM" --base "$LOGICAL_BASE")
           if [[ -n "$REWRITTEN_BASE" ]]; then
             arguments+=(--rewritten-base "$REWRITTEN_BASE")
+          fi
+          if [[ "$EXPORT_CONFLICT_SOURCE" == "true" ]]; then
+            arguments+=(--conflict-source-output conflict-source.json)
           fi
           python3 .github/scripts/upstream_merge_preview.py "${arguments[@]}" | tee merge-preview.json
       - name: Upload safe preview metadata
@@ -75,5 +84,13 @@ jobs:
         with:
           name: upstream-merge-preview-${{ github.run_id }}
           path: merge-preview.json
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Upload explicitly requested conflict source
+        if: ${{ always() && inputs.export_conflict_source }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-merge-conflict-source-${{ github.run_id }}
+          path: conflict-source.json
           if-no-files-found: warn
           retention-days: 1
