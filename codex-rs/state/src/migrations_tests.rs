@@ -967,7 +967,7 @@ INSERT INTO agent_job_items (
         .await
         .expect("state runtime should repair and migrate the origin main database");
     let pool = sqlite
-        .open_read_only_pool(&sqlite.state_db_path())
+        .open_read_only_pool(&sqlite.state_db_path(), /*busy_timeout*/ None)
         .await
         .expect("migrated state database should reopen read-only");
 
