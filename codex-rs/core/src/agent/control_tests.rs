@@ -778,7 +778,7 @@ async fn format_environment_context_subagents_bounds_live_metadata() {
 
     let rendered = harness
         .control
-        .format_environment_context_subagents(parent_thread_id)
+        .format_environment_context_subagents(parent_thread_id, MultiAgentVersion::V1)
         .await;
     let expected_reference = format!("{}...", &long_name[..189]);
     let expected_nickname = first_child_nickname.expect("spawn should assign a nickname");
@@ -4969,13 +4969,6 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         worker_thread_id,
         Op::InterAgentCommunication {
             communication: expected_communication,
-            communication: InterAgentCommunication::new(
-                tester_path.clone(),
-                worker_path.clone(),
-                Vec::new(),
-                expected_message.clone(),
-                /*trigger_turn*/ false,
-            ),
             start_options: Default::default(),
         },
     );

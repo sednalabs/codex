@@ -479,23 +479,9 @@ impl V2Residency {
                 return true;
             }
             self.touch(candidate_thread_id);
-            candidate_thread.ensure_rollout_materialized().await;
-            if let Err(err) = candidate_thread.shutdown_and_wait().await {
-                warn!(
-                    "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
-                );
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            let environments = candidate_thread.environment_selections().await;
-            candidate_thread
-                .session
-                .services
-                .agent_control
-                .state
-                .save_evicted_environments(candidate_thread_id, environments);
-            let _ = manager.remove_thread(&candidate_thread_id).await;
-            return true;
+            // A guarded refusal means the candidate is not safely reloadable; retain it.
+            // Capacity callers must continue searching or return their bounded capacity error.
+            continue;
         }
         false
     }

@@ -323,6 +323,10 @@ impl AgentControl {
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
+            #[cfg(test)]
+            spawn_test_hooks: Arc::default(),
+            #[cfg(test)]
+            hide_next_agent_config_snapshot: Arc::new(tokio::sync::Mutex::new(false)),
         };
         if let Some(rollout_budget) = rollout_budget {
             control.rollout_budget.configure(rollout_budget);
@@ -668,7 +672,13 @@ impl AgentControl {
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         let (thread, result) = state
-            .send_op_with_thread(agent_id, Op::InterAgentCommunication { communication })
+            .send_op_with_thread(
+                agent_id,
+                Op::InterAgentCommunication {
+                    communication,
+                    start_options,
+                },
+            )
             .await;
         let result = self
             .handle_thread_request_result(agent_id, state, thread.as_ref(), result)
