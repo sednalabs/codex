@@ -4,11 +4,8 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     "android-computer-use",
-=======
     "agent-roles",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     "backend-client",
     "browser-computer-use",
     "bwrap",
@@ -31,12 +28,9 @@ members = [
     "codex-backend-openapi-models",
     "code-mode",
     "code-mode-host",
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
     "code-mode-protocol",
     "code-mode-runtime",
     "codex-home",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     "cloud-config",
     "cloud-tasks",
     "cloud-tasks-client",
@@ -193,11 +187,8 @@ codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 codex-browser-computer-use = { path = "browser-computer-use" }
-=======
 codex-build-info = { path = "build-info" }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-chatgpt = { path = "chatgpt" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
@@ -206,11 +197,8 @@ codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 codex-code-mode-runtime = { path = "code-mode-runtime" }
 codex-home = { path = "codex-home" }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-http-client = { path = "http-client" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
@@ -244,11 +232,7 @@ codex-install-context = { path = "install-context" }
 codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-codex-home = { path = "codex-home" }
-=======
 codex-guardian-context = { path = "guardian-context" }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-hooks = { path = "hooks" }
 codex-history = { path = "history" }
 codex-keyring-store = { path = "keyring-store" }
@@ -321,11 +305,8 @@ codex-utils-sleep-inhibitor = { path = "utils/sleep-inhibitor" }
 codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-utils-template = { path = "utils/template" }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 codex-utils-version = { path = "utils/version" }
-=======
 codex-user-verification = { path = "user-verification" }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-v8-poc = { path = "v8-poc" }
 codex-workload-identity = { path = "workload-identity" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
@@ -387,12 +368,8 @@ eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 gix = { version = "0.83.0", default-features = false, features = ["sha1"] }
-=======
-gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
 gix-url = "0.35.2"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 glob = "0.3"
 globset = "0.4"
 h2 = "0.4.17"
@@ -443,18 +420,14 @@ pretty_assertions = "1.4.1"
 pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
 rand = "0.9"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-ratatui = { version = "0.30.1", features = ["unstable-widget-ref"] }
-ratatui-macros = "0.7.1"
-=======
 rand_regex = "0.18.1"
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
     "layout-cache",
+    "unstable-widget-ref",
     "underline-color",
 ] }
 ratatui-macros = "0.7.2"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 rcgen = { version = "0.14.7", default-features = false, features = [
     "aws_lc_rs",
     "pem",
@@ -462,14 +435,9 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 regex = "1.12.3"
 regex-automata = { version = "0.4.13", default-features = false, features = ["std", "syntax", "unicode", "nfa-pikevm"] }
 regex-lite = "0.1.8"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+regex-syntax = "0.8.8"
 reqwest = { version = "0.13", features = ["cookies", "query"] }
 rmcp = { version = "1.8.0", default-features = false }
-=======
-regex-syntax = "0.8.8"
-reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "=3.2.0", default-features = false }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustix = { version = "1.1.4", features = ["net"] }
 rustls = { version = "0.23.45", default-features = false, features = [
@@ -494,12 +462,8 @@ sha1 = "0.10.6"
 scopeguard = "1.2.0"
 sha2 = "0.11"
 shlex = "1.3.0"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-similar = "3.1.1"
-=======
 signal-hook = "0.3.18"
-similar = "2.7.0"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+similar = "3.1.1"
 symphonia = { version = "0.6.0", default-features = false, features = [
     "isomp4",
     "mkv",
@@ -555,12 +519,8 @@ tonic = { version = "0.14.3", default-features = false, features = ["channel", "
 tonic-prost = "0.14.3"
 tree-sitter = "0.25.10"
 tree-sitter-bash = "0.25"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-ts-rs = "12"
-=======
 tree-sitter-powershell = "=0.26.4"
-ts-rs = "11"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+ts-rs = "12"
 tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
 uds_windows = "1.2.1"
 unicode-segmentation = "1.12.0"
@@ -669,10 +629,7 @@ opt-level = 0
 [patch.crates-io]
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "45fecb9508105988f42fe6ff0441783ed3717f92" }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
 

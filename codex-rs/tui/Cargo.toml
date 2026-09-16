@@ -33,11 +33,8 @@ codex-android-computer-use = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-arg0 = { workspace = true }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 codex-browser-computer-use = { workspace = true }
-=======
 codex-backend-client = { workspace = true }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-install-context = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-config = { workspace = true }
@@ -60,20 +57,14 @@ codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
 codex-realtime-webrtc = { workspace = true }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 futures = { workspace = true }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-rollout = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 codex-tools = { workspace = true }
-=======
 codex-worktree = { workspace = true }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 codex-utils-approval-presets = { workspace = true }
 codex-uds = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
