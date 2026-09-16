@@ -2144,22 +2144,13 @@ impl From<crate::dynamic_tools::DynamicToolCallOutputContentItem>
             crate::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
                 Self::InputText { text }
             }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
                 detail,
             } => Self::InputImage {
-                image_url,
+                image: ImageReference::Inline { image_url },
                 detail: function_call_image_detail_from_tool_hint(detail.as_deref()),
             },
-=======
-            crate::dynamic_tools::DynamicToolCallOutputContentItem::InputImage { image_url } => {
-                Self::InputImage {
-                    image: ImageReference::Inline { image_url },
-                    detail: Some(DEFAULT_IMAGE_DETAIL),
-                }
-            }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             crate::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
                 Self::InputAudio { audio_url }
             }
@@ -2175,7 +2166,7 @@ impl From<crate::computer_use::ComputerUseOutputContentItem> for FunctionCallOut
             }
             crate::computer_use::ComputerUseOutputContentItem::InputImage { image_url, detail } => {
                 Self::InputImage {
-                    image_url,
+                    image: ImageReference::Inline { image_url },
                     detail: function_call_image_detail_from_tool_hint(detail.as_deref()),
                 }
             }

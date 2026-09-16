@@ -278,7 +278,11 @@ impl CollabAgentToolCallItem {
     pub(crate) fn as_legacy_begin_event(&self, started_at_ms: i64) -> Option<EventMsg> {
         let receiver_thread_id = self.receiver_thread_ids.first().copied();
         match self.tool {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+            // V2 records these tool items privately for analytics, not legacy UI events.
+            CollabAgentTool::SendMessage
+            | CollabAgentTool::FollowupTask
+            | CollabAgentTool::InterruptAgent
+            | CollabAgentTool::ListAgents => None,
             CollabAgentTool::SpawnAgent => {
                 let pre_additive_in_progress_identity =
                     matches!(self.status, CollabAgentToolCallStatus::InProgress)
@@ -320,23 +324,6 @@ impl CollabAgentToolCallItem {
                     },
                 ))
             }
-=======
-            // V2 records these tool items privately for analytics, not legacy UI events.
-            CollabAgentTool::SendMessage
-            | CollabAgentTool::FollowupTask
-            | CollabAgentTool::InterruptAgent
-            | CollabAgentTool::ListAgents => None,
-            CollabAgentTool::SpawnAgent => Some(EventMsg::CollabAgentSpawnBegin(
-                CollabAgentSpawnBeginEvent {
-                    call_id: self.id.clone(),
-                    started_at_ms,
-                    sender_thread_id: self.sender_thread_id,
-                    prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone().unwrap_or_default(),
-                    reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
-                },
-            )),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {
                 EventMsg::CollabAgentInteractionBegin(CollabAgentInteractionBeginEvent {
                     call_id: self.id.clone(),

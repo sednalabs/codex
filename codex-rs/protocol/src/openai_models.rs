@@ -21,10 +21,7 @@ use serde::de::DeserializeOwned;
 use serde::de::Error;
 use strum_macros::Display;
 use strum_macros::EnumIter;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 use tracing::warn;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use ts_rs::TS;
 
 use crate::config_types::Personality;
@@ -34,11 +31,6 @@ use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 use crate::protocol::MultiAgentVersion;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
-
-/// Additional speed-tier tag used by model metadata to advertise fast-mode availability.
-=======
 mod access_programs;
 #[path = "openai_models/guardian.rs"]
 mod guardian;
@@ -57,7 +49,6 @@ pub use guardian_v2::GuardianV2TranscriptModelConfig;
 
 /// Backend model-catalog specialty identifying cybersecurity-focused models.
 pub const MODEL_SPECIALTY_CYBER: &str = "cyber";
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub const SPEED_TIER_FAST: &str = "fast";
 
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
@@ -536,14 +527,6 @@ impl ModelInfo {
             && let Some(template) =
                 usable_instruction(model_messages.instructions_template.as_deref())
         {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            let personality_message = model_messages
-                .get_personality_message(personality)
-                .unwrap_or_default();
-            template.replace(PERSONALITY_PLACEHOLDER, personality_message.as_str())
-        } else {
-            self.base_instructions.clone()
-=======
             template.clone()
         } else {
             warn!(
@@ -551,24 +534,18 @@ impl ModelInfo {
                 "Model has no instruction template; returning empty instructions."
             );
             String::new()
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
     }
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn usable_instruction(value: Option<&str>) -> Option<&str> {
     value.filter(|value| !value.trim().is_empty())
 }
 
-/// A strongly-typed template for assembling model instructions and developer messages. If
-/// instructions_* is populated and valid, it will override base_instructions.
-=======
 /// A strongly-typed template for assembling model instructions and developer messages.
 ///
 /// `instructions_template` is literal text. The deprecated `instructions_variables` field is
 /// retained to decode catalogs produced before personality selection was removed.
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelMessages {
     /// Additional developer instructions for persistent mode. Missing or null uses the built-in
@@ -736,17 +713,6 @@ impl From<&ModelUpgrade> for ModelInfoUpgrade {
 /// Response wrapper for `/models`.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema, Default)]
 pub struct ModelsResponse {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    #[serde(deserialize_with = "deserialize_model_infos_with_legacy_base")]
-    pub models: Vec<ModelInfo>,
-}
-
-/// Deserializes model lists while accepting catalogs that omit the legacy instruction field.
-///
-/// The legacy field remains part of `ModelInfo` for downstream overlay/config consumers. A
-/// canonical template wins when both fields are present; legacy-only entries retain their legacy
-/// field as the effective fallback, while entries with neither usable source are rejected.
-=======
     #[serde(
         serialize_with = "serialize_model_infos_with_legacy_base",
         deserialize_with = "deserialize_model_infos_with_legacy_base"
@@ -791,7 +757,6 @@ where
 
 /// Deserializes catalog models while promoting the legacy top-level instruction field into Model
 /// Messages V2 when no canonical instruction template is present.
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[doc(hidden)]
 pub fn deserialize_model_infos_with_legacy_base<'de, D>(
     deserializer: D,
@@ -799,42 +764,6 @@ pub fn deserialize_model_infos_with_legacy_base<'de, D>(
 where
     D: Deserializer<'de>,
 {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let models = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    models
-        .into_iter()
-        .map(|mut value| {
-            let object = value
-                .as_object_mut()
-                .ok_or_else(|| D::Error::custom("model entry must be an object"))?;
-            let legacy_base = object
-                .get("base_instructions")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_owned);
-            let template = object
-                .get("model_messages")
-                .and_then(serde_json::Value::as_object)
-                .and_then(|messages| messages.get("instructions_template"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_owned);
-            let Some(base_instructions) = legacy_base.or(template) else {
-                let slug = object
-                    .get("slug")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("<unknown>");
-                return Err(D::Error::custom(format!(
-                    "model `{slug}` is missing both `base_instructions` and \
-                     `model_messages.instructions_template`"
-                )));
-            };
-            object.insert(
-                "base_instructions".to_string(),
-                serde_json::Value::String(base_instructions),
-            );
-            serde_json::from_value(value).map_err(D::Error::custom)
-=======
     let models = Vec::<ModelInfoWithLegacyBaseInstructions>::deserialize(deserializer)?;
     models
         .into_iter()
@@ -843,34 +772,37 @@ where
                 base_instructions,
                 mut model,
             } = legacy_model;
-            if let Some(base_instructions) = base_instructions
-                && model
-                    .model_messages
-                    .as_ref()
-                    .and_then(|messages| messages.instructions_template.as_ref())
-                    .is_none()
-            {
-                let messages = model.model_messages.get_or_insert(ModelMessages {
-                    persistent_instructions: None,
-                    tools: None,
-                    instructions_template: None,
-                    instructions_variables: None,
-                    approvals: None,
-                    collaboration_modes: None,
-                    auto_review: None,
-                    permissions: None,
-                    multi_agent: None,
-                    token_budget: None,
-                    confirmation_policies: None,
-                    guardian_v2: None,
-                });
-                messages.instructions_template = Some(base_instructions);
-            }
-            if model
+            let has_usable_template = model
                 .model_messages
                 .as_ref()
-                .and_then(|messages| messages.instructions_template.as_ref())
-                .is_none()
+                .and_then(|messages| messages.instructions_template.as_deref())
+                .is_some_and(|template| !template.trim().is_empty());
+            if !has_usable_template {
+                if let Some(base_instructions) =
+                    base_instructions.filter(|base| !base.trim().is_empty())
+                {
+                    let messages = model.model_messages.get_or_insert(ModelMessages {
+                        persistent_instructions: None,
+                        tools: None,
+                        instructions_template: None,
+                        instructions_variables: None,
+                        approvals: None,
+                        collaboration_modes: None,
+                        auto_review: None,
+                        permissions: None,
+                        multi_agent: None,
+                        token_budget: None,
+                        confirmation_policies: None,
+                        guardian_v2: None,
+                    });
+                    messages.instructions_template = Some(base_instructions);
+                }
+            }
+            if !model
+                .model_messages
+                .as_ref()
+                .and_then(|messages| messages.instructions_template.as_deref())
+                .is_some_and(|template| !template.trim().is_empty())
             {
                 let model_slug = &model.slug;
                 return Err(D::Error::custom(format!(
@@ -879,7 +811,6 @@ where
                 )));
             }
             Ok(model)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         })
         .collect()
 }
@@ -1145,18 +1076,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("model_messages");
+        legacy_only["base_instructions"] = serde_json::json!("base");
 
         let response: ModelsResponse = serde_json::from_value(serde_json::json!({
             "models": [template_only, legacy_only]
         }))
         .unwrap();
 
-        assert_eq!(response.models[0].base_instructions, template);
         assert_eq!(
             response.models[0].get_model_instructions(/*personality*/ None),
             template
         );
-        assert_eq!(response.models[1].base_instructions, "base");
         assert_eq!(
             response.models[1].get_model_instructions(/*personality*/ None),
             "base"
@@ -1174,13 +1104,13 @@ mod tests {
             "models": [both]
         }))
         .unwrap();
-        assert_eq!(response.models[0].base_instructions, "base");
         assert_eq!(
             response.models[0].get_model_instructions(/*personality*/ None),
             "canonical"
         );
 
         let mut fallback = serde_json::to_value(test_model(/*spec*/ None)).unwrap();
+        fallback["base_instructions"] = serde_json::json!("base");
         fallback["model_messages"] = serde_json::json!({
             "instructions_template": " \n\t",
             "instructions_variables": null,
@@ -1189,7 +1119,6 @@ mod tests {
             "models": [fallback]
         }))
         .unwrap();
-        assert_eq!(fallback_response.models[0].base_instructions, "base");
         assert_eq!(
             fallback_response.models[0].get_model_instructions(/*personality*/ None),
             "base"
@@ -1197,7 +1126,10 @@ mod tests {
 
         let mut invalid = serde_json::to_value(test_model(/*spec*/ None)).unwrap();
         let invalid_object = invalid.as_object_mut().unwrap();
-        invalid_object.remove("base_instructions");
+        invalid_object.insert(
+            "base_instructions".to_string(),
+            serde_json::json!(" \n\t"),
+        );
         invalid_object.insert(
             "model_messages".to_string(),
             serde_json::json!({
