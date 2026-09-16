@@ -6,11 +6,8 @@ use rmcp::transport::auth::AuthError;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::oauth::refresh_error_requires_reauthorization;
-=======
 use crate::rmcp_client::ClientOperationError;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 /// Returns whether an RMCP client error indicates that authentication is required.
 ///

@@ -65,12 +65,8 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tracing::warn;
 
-use self::refresh_lock::RefreshCredentialLock;
-#[cfg(test)]
-use self::refresh_transaction::CredentialExposure;
 #[cfg(test)]
 use self::refresh_transaction::RefreshReason;
-use self::refresh_transaction::install_tokens_in_manager;
 #[cfg(test)]
 use self::refresh_transaction::request_oauth_token_response;
 #[cfg(test)]
@@ -95,6 +91,8 @@ pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
 pub(crate) use self::issuer_binding::validate_refresh_token_issuer;
 pub(crate) use self::refresh_lock::RefreshCredentialLock;
 pub(crate) use self::refresh_transaction::install_tokens_in_manager;
+pub(crate) use self::refresh_transaction::install_tokens_in_manager_guard;
+pub(crate) use self::refresh_transaction::CredentialExposure;
 pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
 pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
@@ -521,8 +519,8 @@ pub async fn save_oauth_tokens_locked(
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<()> {
-    let _lock = RefreshCredentialLock::acquire_for_server(server_name, &tokens.url).await?;
-    save_oauth_tokens(server_name, tokens, store_mode, keyring_backend_kind)
+    let lock = RefreshCredentialLock::acquire_for_server(server_name, &tokens.url).await?;
+    save_oauth_tokens_with_lock_held(&lock, server_name, tokens, store_mode, keyring_backend_kind)
 }
 
 fn save_oauth_tokens_with_keyring<K: KeyringStore + Clone + 'static>(
@@ -680,8 +678,8 @@ pub async fn delete_oauth_tokens_locked(
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<bool> {
-    let _lock = RefreshCredentialLock::acquire_for_server(server_name, url).await?;
-    delete_oauth_tokens(server_name, url, store_mode, keyring_backend_kind)
+    let lock = RefreshCredentialLock::acquire_for_server(server_name, url).await?;
+    delete_oauth_tokens_with_lock_held(&lock, server_name, url, store_mode, keyring_backend_kind)
 }
 
 fn delete_oauth_tokens_from_keyring_and_file<K: KeyringStore + Clone + 'static>(
@@ -844,7 +842,7 @@ impl OAuthPersistor {
                 let stored = StoredOAuthTokens {
                     server_name: self.inner.server_name.clone(),
                     url: self.inner.url.clone(),
-                    issuer: last_credentials
+                    issuer: previous
                         .as_ref()
                         .and_then(|previous| previous.issuer.clone()),
                     client_id,
@@ -1266,7 +1264,6 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
     fs::create_dir_all(parent)?;
 
     let serialized = serde_json::to_string(store)?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let parent = path
         .parent()
         .context("credentials file path is missing a parent directory")?;
@@ -1345,16 +1342,7 @@ fn write_fallback_file(store: &FallbackFile) -> Result<()> {
             .with_context(|| format!("failed to open {}", parent.display()))?;
         dir.sync_all()
             .with_context(|| format!("failed to sync {}", parent.display()))?;
-=======
-    let mut file = open_fallback_file_for_write(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
-    file.set_len(/*size*/ 0)?;
-    file.write_all(serialized.as_bytes())?;
 
     Ok(())
 }
@@ -1388,7 +1376,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rmcp::transport::auth::CredentialStore as _;
     use std::sync::Arc;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     use tokio::time;
     use wiremock::Mock;
     use wiremock::MockServer;
@@ -1396,10 +1383,8 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::matchers::path;
 
-=======
     #[path = "credential_store_tests.rs"]
     mod credential_store_tests;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[path = "persistor_tests.rs"]
     mod persistor_tests;
 

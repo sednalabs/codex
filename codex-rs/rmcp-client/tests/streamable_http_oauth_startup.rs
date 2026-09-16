@@ -380,25 +380,11 @@ async fn assert_expired_token_refresh(
     let helper_directory = TempDir::new()?;
     let helper_invocations = helper_directory.path().join("helper-invocations");
     Mock::given(method("GET"))
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        .and(path("/.well-known/oauth-authorization-server/mcp"))
-        .and(header(
-            "user-agent",
-            concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION")),
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
-            "token_endpoint": format!("{}/oauth/token", server.uri()),
-            "scopes_supported": ["profile", "offline_access"],
-        })))
-        .expect(1)
-=======
         .and(path(authorization_metadata_path))
         .and(header("user-agent", RESOURCE_USER_AGENT))
         .and(header("x-api-key", RESOURCE_API_KEY))
         .respond_with(ResponseTemplate::new(200).set_body_json(authorization_metadata))
         .expect(2)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -415,23 +401,6 @@ async fn assert_expired_token_refresh(
         .and(body_string_contains(format!(
             "refresh_token={REFRESH_TOKEN}"
         )))
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        .respond_with(|request: &Request| {
-            let body = String::from_utf8_lossy(&request.body);
-            assert!(
-                !body.contains("scope="),
-                "refresh must not broaden explicit persisted scopes from AS metadata: {body}"
-            );
-            ResponseTemplate::new(200).set_body_json(json!({
-                "access_token": REFRESHED_ACCESS_TOKEN,
-                "token_type": "Bearer",
-                "expires_in": 7200,
-                "refresh_token": REFRESH_TOKEN,
-            }))
-        })
-        .expect(1)
-        .mount(&server)
-=======
         .and({
             let expected_resource = resource_url.clone();
             move |request: &Request| {
@@ -440,6 +409,11 @@ async fn assert_expired_token_refresh(
             }
         })
         .respond_with(move |request: &Request| {
+            let body = String::from_utf8_lossy(&request.body);
+            assert!(
+                !body.contains("scope="),
+                "refresh must not broaden explicit persisted scopes from AS metadata: {body}"
+            );
             if same_origin_gateway
                 && request
                     .headers
@@ -455,7 +429,6 @@ async fn assert_expired_token_refresh(
                     "refresh_token": REFRESH_TOKEN,
                 }));
                 if refresh_mode == McpOAuthRefreshMode::Coordinated {
-                    // Longer than the child's handshake timeout: refresh must finish first.
                     response.set_delay(Duration::from_secs(/*secs*/ 2))
                 } else {
                     response
@@ -464,7 +437,6 @@ async fn assert_expired_token_refresh(
         })
         .expect(if same_origin_gateway { 2 } else { 1 })
         .mount(token_server)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await;
     Mock::given(method("POST"))
         .and(path(mcp_path))

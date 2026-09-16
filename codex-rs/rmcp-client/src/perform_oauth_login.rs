@@ -728,16 +728,7 @@ impl OauthLoginFlow {
     }
 
     async fn finish(self, emit_browser_url: bool) -> Result<()> {
-        let store_mode = self.store_mode;
-        let keyring_backend_kind = self.keyring_backend_kind;
-        let stored = self.complete(emit_browser_url).await?;
-        save_oauth_tokens(
-            &stored.server_name,
-            &stored,
-            store_mode,
-            keyring_backend_kind,
-        )
-        .await
+        self.complete(emit_browser_url).await.map(|_| ())
     }
 
     pub(crate) async fn complete(mut self, emit_browser_url: bool) -> Result<StoredOAuthTokens> {
@@ -791,14 +782,13 @@ impl OauthLoginFlow {
             let credentials = credentials_opt
                 .ok_or_else(|| anyhow!("OAuth provider did not return credentials"))?;
             let expires_at = compute_expires_at_millis(&credentials);
-            Ok(StoredOAuthTokens {
+            let stored = StoredOAuthTokens {
                 server_name: self.server_name.clone(),
                 url: self.server_url.clone(),
                 issuer: self.authorization_server_issuer.clone(),
                 client_id,
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             };
             save_oauth_tokens_locked(
                 &self.server_name,
@@ -808,10 +798,7 @@ impl OauthLoginFlow {
             )
             .await?;
 
-            Ok(())
-=======
-            })
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+            Ok(stored)
         }
         .await;
 

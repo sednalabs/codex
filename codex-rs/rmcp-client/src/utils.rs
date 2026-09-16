@@ -159,7 +159,6 @@ pub(crate) fn build_default_headers(
     Ok(headers)
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub(crate) fn apply_default_headers(
     builder: ClientBuilder,
     default_headers: &HeaderMap,
@@ -182,9 +181,6 @@ pub(crate) fn build_reqwest_client(
     }
     Ok(builder.build()?)
 }
-
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",

@@ -582,12 +582,39 @@ async fn rejected_refresh_token_requires_reauthorization() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 async fn transient_refresh_failure_does_not_require_reauthorization() -> Result<()> {
     let (_env, server, initial) = test_context().await?;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
-=======
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains("refresh_token=refresh-token"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "error": "temporarily_unavailable",
+            "error_description": "provider is temporarily unavailable",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let persistor = persistor_for(&initial).await?;
+
+    let error = persistor
+        .refresh_if_needed()
+        .await
+        .expect_err("a transient provider failure should be surfaced without reauthorization");
+    assert!(!is_authentication_required_error(&error));
+    assert!(error.chain().any(|source| matches!(
+        source.downcast_ref::<AuthError>(),
+        Some(AuthError::TokenRefreshFailed(_))
+    )));
+    let stored = load_oauth_tokens_from_file(&initial.server_name, &initial.url)?
+        .expect("a transient refresh failure must preserve durable credentials");
+    assert_tokens_match_without_expiry(&stored, &initial);
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn changed_issuer_requires_reauthorization_before_refresh() -> Result<()> {
     let (_env, server, mut initial) = test_context().await?;
     initial.issuer = Some("https://original-issuer.example.test".to_string());
@@ -668,7 +695,6 @@ async fn proactive_refresh_failure_with_unexpired_token_does_not_require_reautho
     initial.expires_at = compute_expires_at_millis(&initial.token_response.0);
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .and(body_string_contains("grant_type=refresh_token"))
         .and(body_string_contains("refresh_token=refresh-token"))
         .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
@@ -684,11 +710,7 @@ async fn proactive_refresh_failure_with_unexpired_token_does_not_require_reautho
     let error = persistor
         .refresh_if_needed()
         .await
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         .expect_err("a transient provider failure should be surfaced without reauthorization");
-=======
-        .expect_err("a transient provider failure should not erase valid credentials");
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     assert!(!is_authentication_required_error(&error));
     assert!(error.chain().any(|source| matches!(
         source.downcast_ref::<AuthError>(),
@@ -701,7 +723,6 @@ async fn proactive_refresh_failure_with_unexpired_token_does_not_require_reautho
     Ok(())
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_refresh_failure_does_not_require_reauthorization() -> Result<()> {
     let (_env, server, initial) = test_context().await?;
@@ -732,8 +753,6 @@ async fn malformed_refresh_failure_does_not_require_reauthorization() -> Result<
     Ok(())
 }
 
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn caller_cancellation_does_not_cancel_refresh_persistence() -> Result<()> {
     assert_caller_cancellation(crate::McpOAuthRefreshMode::Legacy).await?;

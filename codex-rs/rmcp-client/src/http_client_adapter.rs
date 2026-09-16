@@ -10,14 +10,10 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use std::time::Duration;
-=======
 use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 use bytes::Bytes;
 use codex_api::SharedAuthProvider;
@@ -30,17 +26,7 @@ use codex_exec_server::HttpResponseBodyStream;
 use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use httpdate::parse_http_date;
-use reqwest::StatusCode;
-use reqwest::header::ACCEPT;
-use reqwest::header::AUTHORIZATION;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderName;
-use reqwest::header::HeaderValue;
-use reqwest::header::RETRY_AFTER;
-=======
 use http::HeaderMap;
 use http::HeaderName;
 use http::HeaderValue;
@@ -48,8 +34,8 @@ use http::StatusCode;
 use http::header::ACCEPT;
 use http::header::AUTHORIZATION;
 use http::header::CONTENT_TYPE;
+use http::header::RETRY_AFTER;
 use http::header::WWW_AUTHENTICATE;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ClientNotification;
 use rmcp::model::ConstString;
@@ -123,17 +109,14 @@ pub(crate) enum StreamableHttpClientAdapterError {
     HttpRequest(#[from] ExecServerError),
     #[error("invalid HTTP header: {0}")]
     Header(String),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     #[error("HTTP {status}: {body}")]
     HttpStatus {
         status: u16,
         body: String,
         retry_after: Option<Duration>,
     },
-=======
     #[error("MCP response body exceeds {maximum_bytes} bytes")]
     ResponseTooLarge { maximum_bytes: usize },
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl StreamableHttpClientAdapter {
@@ -996,15 +979,6 @@ fn sse_stream_from_body(
     body_stream: HttpResponseBodyStream,
     maximum_event_bytes: Option<usize>,
 ) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    SseStream::from_bytes_stream(stream::unfold(body_stream, |mut body_stream| async move {
-        match body_stream.recv().await {
-            Ok(Some(bytes)) => Some((Ok(Bytes::from(bytes)), body_stream)),
-            Ok(None) => None,
-            Err(error) => Some((Err(io::Error::other(error)), body_stream)),
-        }
-    }))
-=======
     SseStream::from_bytes_stream(stream::unfold(
         (body_stream, SseEventSizeLimit::new(maximum_event_bytes)),
         |(mut body_stream, mut size_limit)| async move {
@@ -1021,7 +995,6 @@ fn sse_stream_from_body(
             }
         },
     ))
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     .boxed()
 }
 

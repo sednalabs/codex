@@ -195,7 +195,6 @@ pub(crate) async fn arm_session_post_failure(
     remaining: usize,
     www_authenticate_headers: &[&str],
 ) -> anyhow::Result<()> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     arm_session_post_failure_with_retry_after(
         base_url,
         status,
@@ -213,10 +212,7 @@ pub(crate) async fn arm_session_post_failure_with_retry_after(
     www_authenticate_headers: &[&str],
     retry_after: Option<&str>,
 ) -> anyhow::Result<()> {
-    let response = reqwest::Client::new()
-=======
     let response = control_client()?
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
         .json(&json!({
             "status": status,

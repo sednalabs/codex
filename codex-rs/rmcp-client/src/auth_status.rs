@@ -11,16 +11,10 @@ use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
 use codex_protocol::protocol::McpAuthStatus;
 use futures::FutureExt;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::HeaderMap;
-=======
-use http::HeaderMap;
-use http::header::AUTHORIZATION;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::AuthorizationMetadata;
@@ -58,12 +52,9 @@ pub struct StreamableHttpOAuthDiscovery {
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: String,
     pub scopes_supported: Option<Vec<String>>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub device_authorization_endpoint: Option<String>,
     pub grant_types_supported: Option<Vec<String>>,
-=======
     pub callback_mode: McpOAuthCallbackMode,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,28 +229,6 @@ pub async fn discover_streamable_http_oauth(
     .await
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-async fn discover_streamable_http_oauth_with_headers(
-    url: &str,
-    default_headers: &HeaderMap,
-) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    // Use no_proxy to avoid a bug in the system-configuration crate that
-    // can result in a panic. See #8912.
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = apply_default_headers(builder, default_headers).build()?;
-    let mut authorization_manager = AuthorizationManager::new(url).await?;
-    authorization_manager.with_client(client)?;
-    match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
-        Some(discovery) => Ok(Some(discovery)),
-        // rmcp's standard metadata type requires an authorization endpoint.
-        // Preserve the downstream device-only extension without bypassing the
-        // upstream manager for normal OAuth or protected-resource discovery.
-        None => discover_device_only_oauth_with_headers(url, default_headers).await,
-    }
-}
-
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 async fn discover_streamable_http_oauth_with_headers_and_http_client(
     url: &str,
     default_headers: HeaderMap,
@@ -269,10 +238,6 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
     redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let oauth_http_client = match discovery_timeout {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        OAuthDiscoveryTimeout::Requested => {
-            OAuthHttpClientAdapter::new(http_client.clone(), default_headers.clone())
-=======
         OAuthDiscoveryTimeout::Requested => OAuthHttpClientAdapter::new_with_redirect_mode(
             http_client,
             default_headers,
@@ -289,17 +254,10 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
                 has_configured_headers,
                 redirect_mode,
             )?
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
-        OAuthDiscoveryTimeout::Capped(max_timeout) => OAuthHttpClientAdapter::new_with_max_timeout(
-            http_client.clone(),
-            default_headers.clone(),
-            max_timeout,
-        ),
     };
     let mut authorization_manager =
         AuthorizationManager::new_with_oauth_http_client(url, Arc::new(oauth_http_client)).await?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
         Some(discovery) => Ok(Some(discovery)),
         None => {
@@ -308,6 +266,8 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
                 &default_headers,
                 http_client.as_ref(),
                 discovery_timeout,
+                has_configured_headers,
+                redirect_mode,
             )
             .await
         }
@@ -343,12 +303,14 @@ fn device_only_discovery_from_metadata(
         scopes_supported: normalize_scopes(metadata.scopes_supported),
         device_authorization_endpoint: Some(device_authorization_endpoint),
         grant_types_supported: normalize_scopes(metadata.grant_types_supported),
+        callback_mode: McpOAuthCallbackMode::CallbackSpecific,
     })
 }
 
 fn discovery_from_authorization_metadata(
     metadata: AuthorizationMetadata,
 ) -> StreamableHttpOAuthDiscovery {
+    let callback_mode = callback_mode(&metadata).unwrap_or(McpOAuthCallbackMode::CallbackSpecific);
     let device_authorization_endpoint = metadata
         .additional_fields
         .get("device_authorization_endpoint")
@@ -372,6 +334,7 @@ fn discovery_from_authorization_metadata(
         scopes_supported: normalize_scopes(metadata.scopes_supported),
         device_authorization_endpoint,
         grant_types_supported: normalize_scopes(grant_types_supported),
+        callback_mode,
     }
 }
 
@@ -392,46 +355,13 @@ fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<H
     Ok(headers)
 }
 
-async fn discover_device_only_oauth_with_headers(
-    url: &str,
-    default_headers: &HeaderMap,
-) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let base_url = Url::parse(url)?;
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = apply_default_headers(builder, default_headers).build()?;
-
-    for candidate_path in discovery_paths(base_url.path()) {
-        let mut discovery_url = base_url.clone();
-        discovery_url.set_path(&candidate_path);
-        let response = match client
-            .get(discovery_url)
-            .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(_) => continue,
-        };
-        if response.status() != StatusCode::OK {
-            continue;
-        }
-        let metadata = match response.json::<DeviceOnlyOAuthDiscoveryMetadata>().await {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
-            return Ok(Some(discovery));
-        }
-    }
-
-    Ok(None)
-}
-
 async fn discover_device_only_oauth_with_http_client(
     url: &str,
     default_headers: &HeaderMap,
     http_client: &dyn HttpClient,
     discovery_timeout: OAuthDiscoveryTimeout,
+    has_configured_headers: bool,
+    redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let base_url = Url::parse(url)?;
     let timeout_ms = match discovery_timeout {
@@ -451,7 +381,13 @@ async fn discover_device_only_oauth_with_http_client(
                 headers: oauth_discovery_protocol_headers(default_headers)?,
                 body: None,
                 timeout_ms,
-                redirect_policy: HttpRedirectPolicy::Follow,
+                redirect_policy: if redirect_mode == StreamableHttpRedirectMode::AgentPluginV1
+                    && (has_configured_headers || default_headers.contains_key(AUTHORIZATION))
+                {
+                    HttpRedirectPolicy::Stop
+                } else {
+                    HttpRedirectPolicy::Follow
+                },
                 request_id: format!("oauth-device-only-discovery-{index}"),
                 stream_response: false,
             })
@@ -475,10 +411,6 @@ async fn discover_device_only_oauth_with_http_client(
     }
 
     Ok(None)
-=======
-    authorization_manager.set_allow_missing_issuer(true);
-    discover_streamable_http_oauth_with_manager(&authorization_manager).await
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 fn has_configured_headers(
@@ -496,21 +428,11 @@ fn has_configured_headers(
 async fn discover_streamable_http_oauth_with_manager(
     authorization_manager: &AuthorizationManager,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    match authorization_manager.discover_metadata().boxed().await {
-        Ok(metadata) => Ok(Some(discovery_from_authorization_metadata(metadata))),
-=======
     match authorization_manager.resolve_metadata().boxed().await {
         Ok(resolution) if !resolution.source.is_discovered() => Ok(None),
-        Ok(resolution) => {
-            let metadata = resolution.metadata;
-            Ok(Some(StreamableHttpOAuthDiscovery {
-                callback_mode: callback_mode(&metadata)
-                    .unwrap_or(McpOAuthCallbackMode::CallbackSpecific),
-                scopes_supported: normalize_scopes(metadata.scopes_supported),
-            }))
-        }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+        Ok(resolution) => Ok(Some(discovery_from_authorization_metadata(
+            resolution.metadata,
+        ))),
         Err(AuthError::NoAuthorizationSupport) => Ok(None),
         Err(err) => Err(err.into()),
     }
@@ -667,14 +589,20 @@ mod tests {
         }
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    struct DeviceOnlyHttpClient;
+    struct DeviceOnlyHttpClient {
+        redirect_policy: Arc<Mutex<Option<HttpRedirectPolicy>>>,
+    }
 
     impl HttpClient for DeviceOnlyHttpClient {
         fn http_request(
             &self,
-            _params: HttpRequestParams,
+            params: HttpRequestParams,
         ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
+            *self
+                .redirect_policy
+                .lock()
+                .expect("device-only redirect recorder lock should not be poisoned") =
+                Some(params.redirect_policy);
             Box::pin(async {
                 Ok(HttpRequestResponse {
                     status: 200,
@@ -701,7 +629,8 @@ mod tests {
                 ))
             })
         }
-=======
+    }
+
     fn assert_recorded_discovery_failure(discovery: Result<Option<StreamableHttpOAuthDiscovery>>) {
         let error = discovery.expect_err("the recording HTTP client rejects OAuth discovery");
         assert!(
@@ -712,7 +641,6 @@ mod tests {
             ),
             "OAuth discovery must preserve the executor transport failure: {error:#}"
         );
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     async fn spawn_oauth_discovery_server(metadata: serde_json::Value) -> TestServer {
@@ -1067,7 +995,6 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
@@ -1076,8 +1003,6 @@ mod tests {
                     "authorization_code".to_string(),
                     "urn:ietf:params:oauth:grant-type:device_code".to_string()
                 ]),
-=======
-                scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
             }
         );
@@ -1108,9 +1033,12 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                authorization_endpoint: Some("https://example.com/authorize".to_string()),
+                token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: None,
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
                 callback_mode: McpOAuthCallbackMode::CallbackSpecific,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             }
         );
     }
@@ -1165,8 +1093,6 @@ mod tests {
             Some(Some(30_000))
         );
     }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 
     #[tokio::test]
     async fn routed_agent_plugin_oauth_discovery_stops_with_configured_headers() {
@@ -1270,7 +1196,6 @@ mod tests {
         );
     }
 
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[tokio::test]
     async fn discover_streamable_http_oauth_ignores_empty_scopes() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
@@ -1300,6 +1225,7 @@ mod tests {
                 scopes_supported: None,
                 device_authorization_endpoint: None,
                 grant_types_supported: None,
+                callback_mode: McpOAuthCallbackMode::CallbackSpecific,
             }
         );
     }
@@ -1340,6 +1266,9 @@ mod tests {
             &server.url,
             /*http_headers*/ None,
             /*env_http_headers*/ None,
+            test_http_client(),
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
         )
         .await
         .expect("discovery should succeed")
@@ -1353,6 +1282,7 @@ mod tests {
                 scopes_supported: Some(vec!["profile".to_string()]),
                 device_authorization_endpoint: None,
                 grant_types_supported: None,
+                callback_mode: McpOAuthCallbackMode::CallbackSpecific,
             }
         );
     }
@@ -1370,6 +1300,9 @@ mod tests {
             &server.url,
             /*http_headers*/ None,
             /*env_http_headers*/ None,
+            test_http_client(),
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
         )
         .await
         .expect("discovery should succeed")
@@ -1385,18 +1318,23 @@ mod tests {
                 grant_types_supported: Some(vec![
                     "urn:ietf:params:oauth:grant-type:device_code".to_string()
                 ]),
+                callback_mode: McpOAuthCallbackMode::CallbackSpecific,
             }
         );
     }
 
     #[tokio::test]
     async fn runtime_oauth_discovery_preserves_device_only_metadata() {
-        let discovery = discover_streamable_http_oauth_with_http_client(
+        let http_client = Arc::new(DeviceOnlyHttpClient {
+            redirect_policy: Arc::new(Mutex::new(None)),
+        });
+        let discovery = discover_streamable_http_oauth(
             "http://example.com/mcp",
             /*http_headers*/ None,
             /*env_http_headers*/ None,
-            Arc::new(DeviceOnlyHttpClient),
+            http_client.clone(),
             OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::AgentPluginV1,
         )
         .await
         .expect("runtime discovery should succeed")
@@ -1412,7 +1350,38 @@ mod tests {
                 grant_types_supported: Some(vec![
                     "urn:ietf:params:oauth:grant-type:device_code".to_string()
                 ]),
+                callback_mode: McpOAuthCallbackMode::CallbackSpecific,
             }
+        );
+        assert_eq!(
+            *http_client
+                .redirect_policy
+                .lock()
+                .expect("device-only redirect recorder lock should not be poisoned"),
+            Some(HttpRedirectPolicy::Follow)
+        );
+
+        let configured_client = Arc::new(DeviceOnlyHttpClient {
+            redirect_policy: Arc::new(Mutex::new(None)),
+        });
+        let _ = discover_streamable_http_oauth(
+            "http://example.com/mcp",
+            Some(HashMap::from([(
+                "X-Test".to_string(),
+                "configured".to_string(),
+            )])),
+            /*env_http_headers*/ None,
+            configured_client.clone(),
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::AgentPluginV1,
+        )
+        .await;
+        assert_eq!(
+            *configured_client
+                .redirect_policy
+                .lock()
+                .expect("device-only redirect recorder lock should not be poisoned"),
+            Some(HttpRedirectPolicy::Stop)
         );
     }
 }

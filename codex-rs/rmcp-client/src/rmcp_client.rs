@@ -1,9 +1,5 @@
 use std::collections::HashMap;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use std::collections::HashSet;
-=======
 use std::ffi::OsStr;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use std::ffi::OsString;
 use std::future::Future;
 use std::io;
@@ -103,10 +99,6 @@ use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
-
-const MAX_TOOLS_LIST_PAGES: usize = 64;
-const MAX_TOOLS_LIST_ITEMS: usize = 10_000;
-const MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS: usize = 3;
 
 #[path = "streamable_http_retry.rs"]
 mod streamable_http_retry;
@@ -398,94 +390,10 @@ pub struct ListToolsWithConnectorIdResult {
     pub tools: Vec<ToolWithConnectorId>,
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-pub struct CompleteToolsWithConnectorIdResult {
-    pub generation: usize,
-    pub tools: Vec<ToolWithConnectorId>,
-}
-
-enum ToolCatalogueWalk {
-    Complete(Vec<ToolWithConnectorId>),
-    Changed,
-}
-
-async fn collect_tool_pages<Fetch, FetchFuture, CurrentGeneration>(
-    generation: usize,
-    current_generation: CurrentGeneration,
-    mut fetch_page: Fetch,
-) -> Result<ToolCatalogueWalk>
-where
-    Fetch: FnMut(Option<PaginatedRequestParams>) -> FetchFuture,
-    FetchFuture: Future<Output = Result<ListToolsWithConnectorIdResult>>,
-    CurrentGeneration: Fn() -> usize,
-{
-    let mut tools = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut seen_cursors = HashSet::new();
-    let mut seen_tool_names = HashSet::new();
-
-    for _ in 0..MAX_TOOLS_LIST_PAGES {
-        let params = cursor
-            .as_ref()
-            .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor.clone())));
-        let page = match fetch_page(params).await {
-            Ok(page) => page,
-            Err(_) if current_generation() != generation => {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            Err(error) => return Err(error),
-        };
-        let observed_items = tools.len().saturating_add(page.tools.len());
-        if observed_items > MAX_TOOLS_LIST_ITEMS {
-            if current_generation() != generation {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            return Err(anyhow!(
-                "tools/list returned {observed_items} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}"
-            ));
-        }
-        for tool in &page.tools {
-            let name = tool.tool.name.as_ref();
-            if !seen_tool_names.insert(name.to_string()) {
-                if current_generation() != generation {
-                    return Ok(ToolCatalogueWalk::Changed);
-                }
-                return Err(anyhow!("tools/list returned duplicate tool name {name:?}"));
-            }
-        }
-        tools.extend(page.tools);
-
-        let Some(next_cursor) = page.next_cursor else {
-            return if current_generation() == generation {
-                Ok(ToolCatalogueWalk::Complete(tools))
-            } else {
-                Ok(ToolCatalogueWalk::Changed)
-            };
-        };
-        if !seen_cursors.insert(next_cursor.clone()) {
-            if current_generation() != generation {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            return Err(anyhow!(
-                "tools/list returned repeated cursor {next_cursor:?}"
-            ));
-        }
-        cursor = Some(next_cursor);
-    }
-
-    if current_generation() != generation {
-        Ok(ToolCatalogueWalk::Changed)
-    } else {
-        Err(anyhow!(
-            "tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages"
-        ))
-    }
-=======
 /// An active Plugin Runtime event request and its request-scoped notifications.
 pub struct CancellableEventStreamRequest {
     pub handle: RequestHandle<RoleClient>,
     pub notifications: crate::EventNotificationReceiver,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 /// MCP client implemented on top of the official `rmcp` SDK.
@@ -714,22 +622,12 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    ) -> Result<InitializeResult> {
-        let client_service = ElicitationClientService::new(
-            params.clone(),
-            send_elicitation,
-            self.elicitation_pause_state.clone(),
-            Arc::clone(&self.tool_list_generation),
-        );
-=======
     ) -> Result<ServerPeerInfo> {
         let context = InitializeContext {
             timeout,
             client_info: params,
             send_elicitation: Arc::new(send_elicitation),
         };
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let pending_transport = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
@@ -742,17 +640,8 @@ impl RmcpClient {
             }
         };
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let (service, oauth_persistor) = self
-            .connect_pending_transport_with_oauth_recovery(
-                pending_transport,
-                client_service.clone(),
-                timeout,
-            )
-=======
         let (service, oauth_runtime) = self
             .connect_pending_transport_with_initialize_retries(pending_transport, &context)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await?;
 
         let initialize_result_rmcp = service
@@ -840,57 +729,7 @@ impl RmcpClient {
         })
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    /// Lists one complete, internally consistent tool catalogue while preserving connector metadata.
-    ///
-    /// A non-null cursor is always followed as an opaque value, including the
-    /// empty string. The walk is bounded, rejects repeated cursors and duplicate
-    /// tool names, and restarts when `notifications/tools/list_changed` arrives
-    /// before the terminal page is collected.
-    ///
-    /// # Errors
-    /// Returns an error when a page fetch fails, pagination cycles or exceeds
-    /// its limits, tool names repeat, or the server changes its catalogue during
-    /// every bounded snapshot attempt.
-    pub async fn list_all_tools_with_connector_ids(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<CompleteToolsWithConnectorIdResult> {
-        let deadline = timeout.map(|duration| Instant::now() + duration);
-
-        for _ in 0..MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS {
-            let generation = self.tool_list_generation();
-            let walk = collect_tool_pages(
-                generation,
-                || self.tool_list_generation(),
-                |params| async move {
-                    let page_timeout =
-                        remaining_operation_timeout("tools/list", timeout, deadline)?;
-                    self.list_tools_with_connector_ids(params, page_timeout)
-                        .await
-                },
-            )
-            .await?;
-            if let ToolCatalogueWalk::Complete(tools) = walk {
-                return Ok(CompleteToolsWithConnectorIdResult { generation, tools });
-            }
-        }
-
-        Err(anyhow!(
-            "tools/list changed during {MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS} consecutive catalogue walks"
-        ))
-    }
-
-    /// Returns the notification generation for the server's tool catalogue.
-    #[must_use]
-    pub fn tool_list_generation(&self) -> usize {
-        self.tool_list_generation.load(Ordering::Acquire)
-    }
-
-    fn meta_string(meta: Option<&rmcp::model::Meta>, key: &str) -> Option<String> {
-=======
     fn meta_string(meta: Option<&rmcp::model::MetaObject>, key: &str) -> Option<String> {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         meta.and_then(|meta| meta.get(key))
             .and_then(Value::as_str)
             .map(str::trim)
@@ -1417,10 +1256,7 @@ impl RmcpClient {
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthRuntime>,
     )> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let deadline = timeout.map(|duration| Instant::now() + duration);
-        let (transport, oauth_persistor) = match pending_transport {
-=======
         // Request IDs and remembered cancellations belong to this connection, including
         // when a failed initialization or expired HTTP session creates a new transport.
         let send_elicitation = Arc::clone(&initialize_context.send_elicitation);
@@ -1428,6 +1264,7 @@ impl RmcpClient {
             initialize_context.client_info.clone(),
             Box::new(move |id, request| send_elicitation(id, request)),
             self.elicitation_pause_state.clone(),
+            Arc::clone(&self.tool_list_generation),
         );
         let _initialize_deadline = match &self.transport_recipe {
             TransportRecipe::StreamableHttp {
@@ -1446,7 +1283,6 @@ impl RmcpClient {
         };
         let lifecycle = self.protocol_mode.client_lifecycle();
         let (transport, oauth_runtime) = match pending_transport {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             PendingTransport::InProcess { transport } => (
                 client_service
                     .serve_with_lifecycle(transport, lifecycle)
@@ -1748,13 +1584,8 @@ impl RmcpClient {
             .clone()
             .ok_or_else(|| anyhow!("MCP client cannot recover before initialize succeeds"))?;
         let pending_transport = Self::create_pending_transport(&self.transport_recipe).await?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let (service, oauth_persistor) = self
-            .connect_pending_transport_with_oauth_recovery(
-=======
         let (service, oauth_runtime) = self
             .connect_pending_transport_with_initialize_retries(
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 pending_transport,
                 &initialize_context,
             )
@@ -1826,7 +1657,12 @@ async fn create_oauth_transport_and_runtime(
         runtime_tokens.token_response.0.set_refresh_token(None);
         runtime_tokens.issuer = None;
     }
-    install_tokens_in_manager(&mut manager, &runtime_tokens).await?;
+    crate::oauth::install_tokens_in_manager_guard(
+        &mut manager,
+        &runtime_tokens,
+        crate::oauth::CredentialExposure::Request,
+    )
+    .await?;
     let coordinated_store = match oauth_refresh_mode {
         McpOAuthRefreshMode::Coordinated if !use_stored_access_token_only => {
             let store = OAuthCredentialStore::new(
@@ -1858,23 +1694,12 @@ async fn create_oauth_transport_and_runtime(
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let runtime = OAuthPersistor::new(
-        server_name.to_string(),
-        url.to_string(),
-        auth_manager,
-        credential_store,
-        Some(initial_tokens.clone()),
-    );
-    runtime.adopt_credentials(initial_tokens).await?;
-=======
     if use_stored_access_token_only {
         warn!(
             "stored OAuth refresh credentials could not be bound to their issuer for MCP server `{server_name}`; using the stored access token without refresh"
         );
         return Ok(PendingTransport::StreamableHttpWithAccessTokenOnly { transport });
     }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     let runtime = match coordinated_store {
         Some(store) => OAuthRuntime::Coordinated {
@@ -1907,214 +1732,20 @@ mod user_verification_cancellation_tests;
 #[cfg(test)]
 mod tests {
     use std::any::TypeId;
-    use std::borrow::Cow;
-    use std::cell::Cell;
-    use std::collections::VecDeque;
-    use std::rc::Rc;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
-    use rmcp::model::JsonObject;
     use rmcp::transport::DynamicTransportError;
     use rmcp::transport::streamable_http_client::AuthRequiredError;
     use tokio::time;
 
     use super::*;
 
-    fn listed_tool(name: &str) -> ToolWithConnectorId {
-        ToolWithConnectorId {
-            tool: Tool::new(
-                Cow::Owned(name.to_string()),
-                Cow::Borrowed("test tool"),
-                Arc::new(JsonObject::new()),
-            ),
-            connector_id: None,
-            connector_name: None,
-            connector_description: None,
-        }
-    }
-
-    fn tool_page(names: &[&str], next_cursor: Option<&str>) -> ListToolsWithConnectorIdResult {
-        ListToolsWithConnectorIdResult {
-            next_cursor: next_cursor.map(str::to_string),
-            tools: names.iter().map(|name| listed_tool(name)).collect(),
-        }
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_cursor_cycles() {
-        let mut pages = VecDeque::from([
-            tool_page(&["first"], Some("a")),
-            tool_page(&["second"], Some("b")),
-            tool_page(&["third"], Some("a")),
-        ]);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("cursor cycle should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "tools/list returned repeated cursor \"a\""
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_duplicate_tool_names() {
-        let mut pages = VecDeque::from([
-            tool_page(&["same"], Some("next")),
-            tool_page(&["same"], /*next_cursor*/ None),
-        ]);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("duplicate tool names should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "tools/list returned duplicate tool name \"same\""
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_oversized_catalogues() {
-        let mut page = Some(ListToolsWithConnectorIdResult {
-            next_cursor: None,
-            tools: (0..=MAX_TOOLS_LIST_ITEMS)
-                .map(|index| listed_tool(&format!("tool-{index}")))
-                .collect(),
-        });
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    page.take()
-                        .ok_or_else(|| anyhow!("missing oversized fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("oversized tool catalogues should fail");
-
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "tools/list returned {} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}",
-                MAX_TOOLS_LIST_ITEMS + 1
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_non_terminating_page_chain() {
-        let page_index = Rc::new(Cell::new(0));
-        let fetched_page_index = Rc::clone(&page_index);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                let index = fetched_page_index.get();
-                fetched_page_index.set(index + 1);
-                std::future::ready(Ok(ListToolsWithConnectorIdResult {
-                    next_cursor: Some(format!("cursor-{index}")),
-                    tools: vec![listed_tool(&format!("tool-{index}"))],
-                }))
-            },
-        )
-        .await
-        .err()
-        .expect("non-terminating page chain should fail");
-
-        assert_eq!(
-            error.to_string(),
-            format!("tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages")
-        );
-        assert_eq!(page_index.get(), MAX_TOOLS_LIST_PAGES);
-    }
-
-    #[tokio::test]
-    async fn tool_walk_discards_snapshot_changed_mid_collection() {
-        let generation = Arc::new(AtomicUsize::new(0));
-        let current_generation = Arc::clone(&generation);
-        let changed_generation = Arc::clone(&generation);
-        let calls = Rc::new(Cell::new(0));
-        let fetch_calls = Rc::clone(&calls);
-        let mut pages = VecDeque::from([
-            tool_page(&["old"], Some("next")),
-            tool_page(&["stale"], /*next_cursor*/ None),
-        ]);
-
-        let walk = collect_tool_pages(
-            /*generation*/ 0,
-            move || current_generation.load(Ordering::Acquire),
-            move |_params| {
-                let call = fetch_calls.get();
-                fetch_calls.set(call + 1);
-                if call == 1 {
-                    changed_generation.store(1, Ordering::Release);
-                }
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .expect("changed catalogue walk should be discarded without protocol error");
-
-        assert!(matches!(walk, ToolCatalogueWalk::Changed));
-        assert_eq!(calls.get(), 2);
-    }
-
-    #[tokio::test]
-    async fn tool_walk_discards_fetch_error_after_snapshot_change() {
-        let generation = Arc::new(AtomicUsize::new(0));
-        let current_generation = Arc::clone(&generation);
-        let changed_generation = Arc::clone(&generation);
-
-        let walk = collect_tool_pages(
-            /*generation*/ 0,
-            move || current_generation.load(Ordering::Acquire),
-            move |_params| {
-                changed_generation.store(1, Ordering::Release);
-                std::future::ready(Err(anyhow!("cursor invalidated by catalogue change")))
-            },
-        )
-        .await
-        .expect("an error from an invalidated snapshot should request a retry");
-
-        assert!(matches!(walk, ToolCatalogueWalk::Changed));
-    }
+    // Aggregate tools/list walking is owned by rmcp's current ClientToolCatalog. This client
+    // deliberately exposes page-level list_tools APIs; pagination bounds, cursor-cycle handling,
+    // duplicate detection, and generation invalidation are covered by that owner rather than by
+    // the removed obsolete aggregate-walk test harness.
 
     #[test]
     fn client_operation_timeout_rounds_duration() {

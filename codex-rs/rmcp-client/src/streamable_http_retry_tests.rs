@@ -12,7 +12,6 @@ use crate::rmcp_client::ClientOperationError;
 use super::*;
 
 #[test]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn oauth_refresh_exclusions_accumulate_on_the_outer_initialize_deadline() {
     let initial_deadline = Instant::now() + Duration::from_secs(30);
     let mut deadline = Some(initial_deadline);
@@ -24,10 +23,7 @@ fn oauth_refresh_exclusions_accumulate_on_the_outer_initialize_deadline() {
 }
 
 #[test]
-fn retryable_initialize_error_includes_initialized_notification_context() {
-=======
 fn retryable_initialize_error_includes_discovery_and_initialized_notification_context() {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let contexts = [
         "send discover request",
         "send initialize request",

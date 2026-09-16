@@ -229,22 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }),
         )
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         .route("/oauth/token", post(refresh_token))
-=======
-        .route(
-            "/oauth/token",
-            post(|| async {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": "invalid_grant",
-                        "error_description": "refresh token expired or revoked",
-                    })),
-                )
-            }),
-        )
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .nest_service(
             "/mcp",
             StreamableHttpService::new(
@@ -297,7 +282,6 @@ impl ServerHandler for TestToolServer {
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         async move {
             if std::env::var_os("MCP_PAGINATE_TOOLS").is_some() {
                 return match request.as_ref().and_then(|params| params.cursor.as_deref()) {
@@ -324,9 +308,6 @@ impl ServerHandler for TestToolServer {
                 meta: None,
             })
         }
-=======
-        async move { Ok(ListToolsResult::with_all_items((*tools).clone())) }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     fn list_resources(
@@ -521,7 +502,6 @@ async fn require_bearer(
     }
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 async fn refresh_token(
     Form(request): Form<TokenRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -547,7 +527,8 @@ async fn refresh_token(
         response["refresh_token"] = json!(refresh_token);
     }
     Ok(Json(response))
-=======
+}
+
 async fn require_gateway_bearer(
     State(expected): State<Arc<String>>,
     request: Request<Body>,
@@ -565,7 +546,6 @@ async fn require_gateway_bearer(
     } else {
         Err(StatusCode::UNAUTHORIZED)
     }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 async fn arm_session_post_failure(

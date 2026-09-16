@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use std::sync::atomic::AtomicUsize;
-=======
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use std::sync::atomic::AtomicUsize;
 
 use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 use rmcp::RoleClient;
 use rmcp::model::ClientInfo;

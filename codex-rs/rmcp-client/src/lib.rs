@@ -19,11 +19,8 @@ mod oauth;
 mod oauth_callback;
 mod oauth_client_registration;
 mod oauth_http_client;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 mod perform_oauth_device_login;
-=======
 mod oauth_refresh_mode;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 mod perform_oauth_login;
 mod program_resolver;
 mod protocol_mode;
@@ -71,19 +68,15 @@ pub use oauth::WrappedOAuthTokenResponse;
 pub use oauth::delete_oauth_tokens;
 pub use oauth::delete_oauth_tokens_locked;
 pub use oauth::save_oauth_tokens;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use oauth::save_oauth_tokens_locked;
-pub use oauth::stored_oauth_credentials;
 pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_device_login::perform_oauth_device_login;
-=======
 pub use oauth::stored_oauth_credential_snapshot;
 pub use oauth::stored_oauth_credentials;
 pub use oauth_callback::McpOAuthCallbackMode;
 pub use oauth_callback::resolve_mcp_oauth_callback_url;
 pub use oauth_client_registration::McpOAuthClientRegistration;
 pub use oauth_refresh_mode::McpOAuthRefreshMode;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub use perform_oauth_login::OAuthProviderError;
 pub use perform_oauth_login::OauthLoginHandle;
 pub use perform_oauth_login::perform_oauth_login;

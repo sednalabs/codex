@@ -8,11 +8,8 @@ use codex_keyring_store::KeyringStore;
 use tracing::warn;
 
 use super::OAuthKeyringLoadError;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 use super::OAuthStore;
 use super::OAuthStoreLock;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::OAuthStoreLockFailure;
 use super::StoredOAuthTokens;
 use super::compute_store_key;
@@ -207,7 +204,6 @@ pub(crate) fn resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + '
     }
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn load_auto_fallback_tokens(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
     match load_oauth_tokens_from_file(server_name, url) {
         Ok(tokens) => Ok(tokens),
@@ -220,7 +216,9 @@ fn load_auto_fallback_tokens(server_name: &str, url: &str) -> Result<Option<Stor
             );
             Ok(None)
         }
-=======
+    }
+}
+
 pub(crate) fn try_resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone + 'static>(
     keyring_store: &K,
     server_name: &str,
@@ -247,6 +245,5 @@ pub(crate) fn try_resolve_oauth_tokens_from_store_policy<K: KeyringStore + Clone
                     .with_context(|| format!("failed to read OAuth tokens from keyring: {error}"))
             }
         },
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }

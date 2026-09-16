@@ -17,22 +17,13 @@ use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::oauth::OAuthRuntime;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use super::ClientOperationError;
-=======
 use super::InitializeContext;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::PendingTransport;
 use super::RmcpClient;
 
 const JSON_RPC_INTERNAL_ERROR_CODE: i64 = -32603;
 pub(super) const STREAMABLE_HTTP_RETRY_DELAYS_MS: [u64; 2] = [250, 1_000];
-
-#[derive(Default)]
-struct InitializeAttemptContext {
-    oauth_persistor: Option<OAuthPersistor>,
-    rejected_access_token: Option<String>,
-}
 
 impl RmcpClient {
     pub(super) async fn connect_pending_transport_with_oauth_recovery(
@@ -43,78 +34,7 @@ impl RmcpClient {
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthRuntime>,
     )> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let mut attempt_context = InitializeAttemptContext::default();
-        let mut deadline = timeout.map(|duration| Instant::now() + duration);
-        let mut excluded_oauth_time = Duration::ZERO;
-        let initial_result = self
-            .connect_pending_transport_with_initialize_retries(
-                initial_transport,
-                client_service.clone(),
-                timeout,
-                &mut attempt_context,
-                &mut excluded_oauth_time,
-            )
-            .await;
-        extend_initialize_deadline(&mut deadline, excluded_oauth_time);
-
-        match initial_result {
-            Ok(result) => Ok(result),
-            Err(error) if Self::is_unauthorized_initialize_error(&error) => {
-                let Some(oauth_persistor) = attempt_context.oauth_persistor else {
-                    return Err(error);
-                };
-                // OAuth refresh has independent lock and provider bounds, so exclude it from the
-                // MCP initialize budget just as we do for pre-initialize expiry refreshes.
-                let refresh_started_at = Instant::now();
-                let refresh_result = oauth_persistor
-                    .refresh_after_unauthorized(attempt_context.rejected_access_token.as_deref())
-                    .await;
-                extend_initialize_deadline(&mut deadline, refresh_started_at.elapsed());
-                if let Err(error) = refresh_result {
-                    remaining_initialize_timeout(timeout, deadline)?;
-                    return Err(error);
-                }
-                let remaining = remaining_initialize_timeout(timeout, deadline)?;
-                let transport = match remaining {
-                    Some(remaining) => time::timeout(
-                        remaining,
-                        Self::create_pending_transport(&self.transport_recipe),
-                    )
-                    .await
-                    .map_err(|_| initialize_timeout_error(timeout, remaining))??,
-                    None => Self::create_pending_transport(&self.transport_recipe).await?,
-                };
-                let remaining = remaining_initialize_timeout(timeout, deadline)?;
-                let mut retry_context = InitializeAttemptContext::default();
-                let mut retry_excluded_oauth_time = Duration::ZERO;
-                self.connect_pending_transport_with_initialize_retries(
-                    transport,
-                    client_service,
-                    remaining,
-                    &mut retry_context,
-                    &mut retry_excluded_oauth_time,
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn connect_pending_transport_with_initialize_retries(
-        &self,
-        initial_transport: PendingTransport,
-        client_service: ElicitationClientService,
-        timeout: Option<Duration>,
-        attempt_context: &mut InitializeAttemptContext,
-        excluded_oauth_time: &mut Duration,
-    ) -> Result<(
-        Arc<RunningService<RoleClient, ElicitationClientService>>,
-        Option<OAuthPersistor>,
-    )> {
-=======
         let timeout = initialize_context.timeout;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let should_retry = match &initial_transport {
             PendingTransport::InProcess { .. } | PendingTransport::Stdio { .. } => false,
             PendingTransport::StreamableHttp { .. }
@@ -146,34 +66,6 @@ impl RmcpClient {
                     }
                 }
             };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            match &transport {
-                PendingTransport::StreamableHttpWithOAuth {
-                    oauth_persistor, ..
-                } => {
-                    attempt_context.oauth_persistor = Some(oauth_persistor.clone());
-                }
-                PendingTransport::InProcess { .. }
-                | PendingTransport::Stdio { .. }
-                | PendingTransport::StreamableHttp { .. } => {
-                    attempt_context.oauth_persistor = None;
-                    attempt_context.rejected_access_token = None;
-                }
-            }
-            if let PendingTransport::StreamableHttpWithOAuth {
-                oauth_persistor, ..
-            } = &transport
-            {
-                // OAuth refresh has its own lock and provider request bounds. Exclude it from the
-                // MCP handshake budget, and finish persistence before attempting initialize.
-                let refresh_started_at = Instant::now();
-                oauth_persistor.refresh_if_needed().await?;
-                let refresh_elapsed = refresh_started_at.elapsed();
-                *excluded_oauth_time += refresh_elapsed;
-                extend_initialize_deadline(&mut retry_deadline, refresh_elapsed);
-                attempt_context.rejected_access_token =
-                    oauth_persistor.access_token_snapshot().await;
-=======
             if let PendingTransport::StreamableHttpWithOAuth { oauth_runtime, .. } = &transport {
                 // OAuth refresh has its own lock and provider request bounds. Exclude it from the
                 // MCP handshake budget, and finish persistence before attempting initialize.
@@ -182,7 +74,6 @@ impl RmcpClient {
                 if let Some(deadline) = retry_deadline.as_mut() {
                     *deadline += refresh_started_at.elapsed();
                 }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             }
             let attempt_timeout = remaining_initialize_timeout(timeout, retry_deadline)?;
 
