@@ -1,7 +1,7 @@
 use chrono::DateTime;
 use chrono::Utc;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::deserialize_model_infos_with_legacy_base;
+use codex_protocol::openai_models::ModelInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
@@ -73,21 +73,13 @@ pub struct ModelsCacheEntry {
     ///
     /// The models manager rejects entries whose value is absent or differs from its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    pub(crate) client_version: Option<String>,
-    #[serde(deserialize_with = "deserialize_model_infos_with_legacy_base")]
-    pub(crate) models: Vec<ModelInfo>,
-=======
     pub client_version: Option<String>,
     /// Opaque provider and auth identity. Unscoped legacy entries are cache misses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
     /// Models returned by the catalog endpoint.
-    #[serde(
-        deserialize_with = "codex_protocol::openai_models::deserialize_model_infos_with_legacy_base"
-    )]
+    #[serde(deserialize_with = "deserialize_model_infos_with_legacy_base")]
     pub models: Vec<ModelInfo>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl ModelsCacheEntry {
@@ -104,10 +96,9 @@ impl ModelsCacheEntry {
     }
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[cfg(test)]
 mod tests {
-    use super::ModelsCache;
+    use super::ModelsCacheEntry;
     use serde_json::json;
 
     #[test]
@@ -137,7 +128,7 @@ mod tests {
                 "experimental_supported_tools": []
             }]
         });
-        let cache: ModelsCache =
+        let cache: ModelsCacheEntry =
             serde_json::from_value(payload.clone()).expect("cache catalog should deserialize");
 
         assert_eq!(cache.models[0].base_instructions, "template");
@@ -146,7 +137,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("model_messages");
-        let error = serde_json::from_value::<ModelsCache>(payload)
+        let error = serde_json::from_value::<ModelsCacheEntry>(payload)
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing both"));
@@ -176,13 +167,13 @@ mod tests {
                 "experimental_supported_tools": []
             }]
         });
-        let error = serde_json::from_value::<ModelsCache>(whitespace.take())
+        let error = serde_json::from_value::<ModelsCacheEntry>(whitespace.take())
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing both"));
     }
 }
-=======
+
 /// Error returned by a [`ModelsCache`] implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelsCacheError {
@@ -332,4 +323,3 @@ async fn save_file(cache_path: &PathBuf, cache: &ModelsCacheEntry) -> Result<(),
 fn cache_error(error: impl fmt::Display) -> ModelsCacheError {
     ModelsCacheError::new(error.to_string())
 }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

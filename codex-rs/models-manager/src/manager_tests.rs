@@ -1,10 +1,10 @@
 use super::*;
-use crate::ModelsManagerConfig;
 use crate::cache::FileModelsCache;
 use crate::cache::ModelsCache;
 use crate::cache::ModelsCacheEntry;
 use crate::cache::ModelsCacheError;
 use crate::cache::ModelsCacheFuture;
+use crate::ModelsManagerConfig;
 use chrono::Utc;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -16,21 +16,18 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-use codex_protocol::openai_models::ModelMessages;
-=======
 use codex_protocol::openai_models::ModelAccessPrograms;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 use tempfile::tempdir;
 
 #[path = "api_key_discovery_tests.rs"]
@@ -1650,14 +1647,12 @@ async fn openai_overlay_preserves_unrelated_metadata_and_static_catalog_preceden
         instruction_overlay::OverlayOutcome::Applied
     );
     assert!(!transformed.base_instructions.contains(sentence));
-    assert!(
-        !transformed
-            .model_messages
-            .as_ref()
-            .and_then(|messages| messages.instructions_template.as_ref())
-            .expect("template")
-            .contains(sentence)
-    );
+    assert!(!transformed
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_ref())
+        .expect("template")
+        .contains(sentence));
     assert_eq!(transformed.display_name, original_display);
     assert_eq!(transformed.priority, original_priority);
 
@@ -1713,19 +1708,15 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let info = manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(
-        !info
-            .get_model_instructions(/*personality*/ None)
-            .contains(sentence)
-    );
-    assert!(
-        !info
-            .model_messages
-            .as_ref()
-            .and_then(|messages| messages.instructions_template.as_ref())
-            .expect("template")
-            .contains(sentence)
-    );
+    assert!(!info
+        .get_model_instructions(/*personality*/ None)
+        .contains(sentence));
+    assert!(!info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_ref())
+        .expect("template")
+        .contains(sentence));
     assert_eq!(info.display_name, original_display);
     assert_eq!(endpoint.fetch_count(), 1);
 
@@ -1744,11 +1735,9 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let disabled_info = manager
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
         .await;
-    assert!(
-        !disabled_info
-            .get_model_instructions(/*personality*/ None)
-            .contains(sentence)
-    );
+    assert!(!disabled_info
+        .get_model_instructions(/*personality*/ None)
+        .contains(sentence));
     assert!(disabled_info.model_messages.is_none());
 
     let cache_bytes = tokio::fs::read(home.path().join("models_cache.json"))
@@ -1769,27 +1758,21 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
     let cached_info = cached_manager
         .get_model_info("codex-auto-review", &template_config)
         .await;
-    assert!(
-        !cached_info
-            .get_model_instructions(/*personality*/ None)
-            .contains(sentence)
-    );
-    assert!(
-        !cached_info
-            .model_messages
-            .as_ref()
-            .and_then(|messages| messages.instructions_template.as_ref())
-            .expect("cached template")
-            .contains(sentence)
-    );
+    assert!(!cached_info
+        .get_model_instructions(/*personality*/ None)
+        .contains(sentence));
+    assert!(!cached_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_ref())
+        .expect("cached template")
+        .contains(sentence));
     assert_eq!(cache_endpoint.fetch_count(), 0);
 
     let suffix_info = manager
         .get_model_info("codex-auto-review-v2", &ModelsManagerConfig::default())
         .await;
-    assert!(
-        suffix_info
-            .get_model_instructions(/*personality*/ None)
-            .contains(sentence)
-    );
+    assert!(suffix_info
+        .get_model_instructions(/*personality*/ None)
+        .contains(sentence));
 }
