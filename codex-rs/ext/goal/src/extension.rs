@@ -117,7 +117,6 @@ where
             let Ok(thread_id) = ThreadId::from_string(input.thread_store.level_id()) else {
                 return;
             };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             let parent_thread_id = match input.session_source {
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id, ..
@@ -133,7 +132,6 @@ where
             let notification_store = input
                 .thread_store
                 .get_or_init(GoalNotificationStore::default);
-=======
             let root_accounting_state = input
                 .session_source
                 .parent_thread_id()
@@ -158,7 +156,6 @@ where
                         .root_accounting_state()
                         .unwrap_or_else(|| parent.accounting_state())
                 });
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             let runtime = input.thread_store.get_or_init::<GoalRuntimeHandle>(|| {
                 GoalRuntimeHandle::new(
                     thread_id,
@@ -171,14 +168,11 @@ where
                         analytics: self.analytics.clone(),
                         enabled,
                         tools_available_for_thread,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                         parent_thread_id,
                         child_agent_path,
                         notification_store,
-=======
                         tools_visible_for_thread,
                         root_accounting_state,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                     },
                 )
             });
@@ -342,22 +336,10 @@ where
             };
 
             let turn_id = input.turn_store.level_id();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            match self
-                .state_dbs
-                .thread_goals()
-                .get_thread_goal(runtime.thread_id())
-                .await
-            {
-                Ok(Some(goal)) => {
-                    runtime.publish_goal_notification_turn(input.turn_store, goal.status)
-                }
-                Ok(None) | Err(_) => runtime.invalidate_goal_notification(),
-=======
             if let Some(expected_goal_id) =
                 runtime.accounting_state().execution_failure_goal(turn_id)
                 && let Err(err) = runtime
-                    .stop_active_goal_for_turn(
+                    .stop_active_goal_for_turn_locked(
                         turn_id,
                         ActiveGoalStopReason::ExecutionUnavailable { expected_goal_id },
                     )
@@ -370,13 +352,12 @@ where
                 return;
             }
             if let Err(err) = runtime
-                .stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::EmptyResponse)
+                .stop_active_goal_for_turn_locked(turn_id, ActiveGoalStopReason::EmptyResponse)
                 .await
             {
                 input.thread_store.remove::<TurnStartOptions>();
                 tracing::warn!("failed to stop goal after empty responses for {turn_id}: {err}");
                 return;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             }
             if let Err(err) = runtime
                 .account_active_goal_progress(
@@ -394,20 +375,6 @@ where
                 runtime.invalidate_goal_notification();
                 return;
             }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            runtime.accounting_state().finish_turn(turn_id);
-            match self
-                .state_dbs
-                .thread_goals()
-                .get_thread_goal(runtime.thread_id())
-                .await
-            {
-                Ok(Some(goal)) => {
-                    runtime.publish_goal_notification_turn(input.turn_store, goal.status)
-                }
-                Ok(None) | Err(_) => runtime.invalidate_goal_notification(),
-            }
-=======
             let accounting = runtime.accounting_state();
             if accounting
                 .current_active_goal_id_for_turn(turn_id)
@@ -423,7 +390,17 @@ where
                 );
             }
             accounting.finish_turn(turn_id);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+            match self
+                .state_dbs
+                .thread_goals()
+                .get_thread_goal(runtime.thread_id())
+                .await
+            {
+                Ok(Some(goal)) => {
+                    runtime.publish_goal_notification_turn(input.turn_store, goal.status)
+                }
+                Ok(None) | Err(_) => runtime.invalidate_goal_notification(),
+            }
         })
     }
 
@@ -438,14 +415,11 @@ where
             }
 
             let turn_id = input.turn_store.level_id();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             runtime.publish_goal_notification_turn(
                 input.turn_store,
                 codex_state::ThreadGoalStatus::Blocked,
             );
-=======
             input.thread_store.remove::<TurnStartOptions>();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             if let Err(err) = runtime
                 .account_active_goal_progress(
                     turn_id,
@@ -630,40 +604,26 @@ where
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 Arc::clone(&runtime),
-            )),
-            Arc::new(GoalToolExecutor::create(
-=======
             ),
             GoalToolExecutor::create(
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 Arc::clone(&runtime),
-            )),
-            Arc::new(GoalToolExecutor::update(
-=======
                 max_goal_token_budget,
             ),
             GoalToolExecutor::update(
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 runtime.thread_id(),
                 Arc::clone(&self.state_dbs),
                 runtime.accounting_state(),
                 self.analytics.clone(),
                 self.event_emitter.clone(),
                 self.metrics.clone(),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 Arc::clone(&runtime),
-            )),
-        ]
-=======
             ),
         ];
         tools
@@ -673,7 +633,6 @@ where
                 Arc::new(tool) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
             })
             .collect()
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }
 

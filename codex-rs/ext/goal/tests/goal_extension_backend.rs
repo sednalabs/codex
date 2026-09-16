@@ -898,7 +898,7 @@ async fn failed_execution_turns_block_goal_unless_a_tool_succeeds() -> anyhow::R
                     .notify_tool_finish(&turn_id, "call-recovery", "shell")
                     .await;
             }
-            harness.stop_turn(&turn_id).await;
+            tokio::time::timeout(Duration::from_secs(1), harness.stop_turn(&turn_id)).await?;
 
             let goal = runtime
                 .thread_goals()
@@ -914,6 +914,34 @@ async fn failed_execution_turns_block_goal_unless_a_tool_succeeds() -> anyhow::R
         }
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_response_turn_stop_does_not_deadlock() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness
+        .start_turn("turn-empty", &TokenUsage::default())
+        .await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({ "objective": "ship goal extension backend" }),
+        ))
+        .await?;
+
+    tokio::time::timeout(Duration::from_secs(1), harness.stop_turn("turn-empty")).await?;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
     Ok(())
 }
 
@@ -1067,6 +1095,113 @@ async fn usage_limit_stale_turn_does_not_stop_current_goal() -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
     assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_goal_rejects_stale_turn_after_goal_replacement() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness
+        .start_turn("turn-stale", &TokenUsage::default())
+        .await;
+
+    let mut create_invocation = tool_call(
+        "create_goal",
+        "call-create-goal",
+        json!({ "objective": "original goal" }),
+    );
+    create_invocation.turn_id = "turn-stale".to_string();
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(create_invocation)
+        .await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "replacement goal",
+            codex_state::ThreadGoalStatus::Active,
+            None,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should be created"))?;
+
+    let update_tool = tool_by_name(&harness.tools(), "update_goal");
+    let mut invocation = tool_call(
+        "update_goal",
+        "call-stale-update",
+        json!({ "status": "complete" }),
+    );
+    invocation.turn_id = "turn-stale".to_string();
+    let result = update_tool.handle(invocation).await;
+    assert!(
+        result.is_err(),
+        "stale turn must not update replacement goal"
+    );
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should exist"))?;
+    assert_eq!("replacement goal", goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_goal_rejects_ended_turn_without_accounting_identity() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness
+        .start_turn("turn-ended", &TokenUsage::default())
+        .await;
+
+    let mut create_invocation = tool_call(
+        "create_goal",
+        "call-create-goal",
+        json!({ "objective": "original goal" }),
+    );
+    create_invocation.turn_id = "turn-ended".to_string();
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(create_invocation)
+        .await?;
+    harness.stop_turn("turn-ended").await;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "replacement goal",
+            codex_state::ThreadGoalStatus::Active,
+            None,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should be created"))?;
+
+    let update_tool = tool_by_name(&harness.tools(), "update_goal");
+    let mut invocation = tool_call(
+        "update_goal",
+        "call-ended-update",
+        json!({ "status": "complete" }),
+    );
+    invocation.turn_id = "turn-ended".to_string();
+    let result = update_tool.handle(invocation).await;
+    assert!(
+        result.is_err(),
+        "ended turn must not update replacement goal"
+    );
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("replacement goal should exist"))?;
+    assert_eq!("replacement goal", goal.objective);
+    assert_eq!(codex_state::ThreadGoalStatus::Active, goal.status);
     Ok(())
 }
 

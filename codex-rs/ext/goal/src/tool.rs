@@ -38,11 +38,8 @@ pub(crate) struct GoalToolExecutor {
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     runtime: Arc<GoalRuntimeHandle>,
-=======
     max_goal_token_budget: Option<i64>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[derive(Clone, Copy)]
@@ -98,11 +95,8 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             runtime,
-=======
             max_goal_token_budget: None,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
     }
 
@@ -113,11 +107,8 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         runtime: Arc<GoalRuntimeHandle>,
-=======
         max_goal_token_budget: Option<i64>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     ) -> Self {
         Self {
             kind: GoalToolKind::Create,
@@ -128,11 +119,8 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             runtime,
-=======
             max_goal_token_budget,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
     }
 
@@ -154,11 +142,8 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             runtime,
-=======
             max_goal_token_budget: None,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
     }
 }
@@ -228,16 +213,13 @@ impl GoalToolExecutor {
         request.objective = request.objective.trim().to_string();
         validate_thread_goal_objective(&request.objective)
             .map_err(FunctionCallError::RespondToModel)?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
+        request.token_budget = request.token_budget.or(self.max_goal_token_budget);
+        validate_goal_budget(request.token_budget, self.max_goal_token_budget)
+            .map_err(FunctionCallError::RespondToModel)?;
         let _goal_state_permit = self
             .runtime
             .goal_state_permit()
             .await
-=======
-        request.token_budget = request.token_budget.or(self.max_goal_token_budget);
-        validate_goal_budget(request.token_budget, self.max_goal_token_budget)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .map_err(FunctionCallError::RespondToModel)?;
 
         let goal = self
@@ -290,6 +272,14 @@ impl GoalToolExecutor {
             .goal_state_permit()
             .await
             .map_err(FunctionCallError::RespondToModel)?;
+        let expected_goal_id = self
+            .accounting_state
+            .current_active_goal_id_for_turn(invocation.turn_id.as_str());
+        let Some(expected_goal_id) = expected_goal_id else {
+            return Err(FunctionCallError::RespondToModel(
+                "cannot update goal because this turn has no accounted active goal".to_string(),
+            ));
+        };
 
         self.account_active_goal_progress(
             match args.status {
@@ -306,7 +296,7 @@ impl GoalToolExecutor {
         )
         .await?;
         let previous_status = self
-            .current_goal_status_for_metrics(/*expected_goal_id*/ None)
+            .current_goal_status_for_metrics(Some(expected_goal_id.as_str()))
             .await?;
         let goal = self
             .state_db
@@ -317,7 +307,7 @@ impl GoalToolExecutor {
                     objective: None,
                     status: Some(state_status_from_protocol(args.status)),
                     token_budget: None,
-                    expected_goal_id: None,
+                    expected_goal_id: Some(expected_goal_id),
                 },
             )
             .await

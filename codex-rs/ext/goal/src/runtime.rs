@@ -4,20 +4,16 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_core::GoalNotificationBinding;
 use codex_core::GoalNotificationStore;
 use codex_core::GoalNotificationTurnToken;
-use codex_core::ThreadManager;
-use codex_extension_api::ExtensionData;
-use codex_protocol::AgentPath;
-=======
 use codex_core::StartIfIdleSubmission;
 use codex_core::ThreadManager;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+use codex_extension_api::ExtensionData;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
@@ -44,14 +40,11 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) analytics: GoalAnalytics,
     pub(crate) enabled: bool,
     pub(crate) tools_available_for_thread: bool,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) child_agent_path: Option<AgentPath>,
     pub(crate) notification_store: Arc<GoalNotificationStore>,
-=======
     pub(crate) tools_visible_for_thread: bool,
     pub(crate) root_accounting_state: Option<Arc<GoalAccountingState>>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 pub(crate) enum ActiveGoalStopReason {
@@ -178,7 +171,6 @@ impl GoalRuntimeHandle {
         Arc::clone(&self.inner.accounting_state)
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub(crate) fn bind_goal_notification_turn(
         &self,
         turn_store: &ExtensionData,
@@ -320,7 +312,7 @@ impl GoalRuntimeHandle {
                 Err(err)
             }
         }
-=======
+    }
     pub(crate) fn root_accounting_state(&self) -> Option<Arc<GoalAccountingState>> {
         self.inner.root_accounting_state.clone()
     }
@@ -333,7 +325,6 @@ impl GoalRuntimeHandle {
             return;
         };
         thread.thread_extension_data().remove::<TurnStartOptions>();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
@@ -477,13 +468,22 @@ impl GoalRuntimeHandle {
         turn_id: &str,
         reason: ActiveGoalStopReason,
     ) -> Result<(), String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        self.stop_active_goal_for_turn_locked(turn_id, reason).await
+    }
+
+    /// Stops a turn's active goal while the caller already owns the goal-state
+    /// permit. This avoids recursively acquiring the single permit from a
+    /// lifecycle callback that is serializing the same transition.
+    pub(crate) async fn stop_active_goal_for_turn_locked(
+        &self,
+        turn_id: &str,
+        reason: ActiveGoalStopReason,
+    ) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
         }
 
-        // Hold this through accounting and the status update so external goal
-        // mutations and idle continuation cannot interleave between them.
-        let _goal_state_permit = self.goal_state_permit().await?;
         let Some(accounting_goal_id) = self
             .inner
             .accounting_state
@@ -678,15 +678,7 @@ impl GoalRuntimeHandle {
             thread.config().await.update_plan_enabled,
         );
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let _continuation_launch_guard = self.continuation_launch_guard();
-        if let Err(err) = thread.try_start_turn_if_idle(vec![item]).await {
-            let reason = err.reason();
-            tracing::debug!(
-                ?reason,
-                "skipping goal continuation because automatic idle work was rejected"
-            );
-=======
         match thread
             .start_turn_if_idle(
                 TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
@@ -713,7 +705,6 @@ impl GoalRuntimeHandle {
                     "skipping goal continuation because turn input submission failed"
                 );
             }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
 
         let current_turn_is_goal_active = self

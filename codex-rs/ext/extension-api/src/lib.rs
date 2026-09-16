@@ -98,14 +98,11 @@ pub use registry::ExtensionRegistryBuilder;
 pub use registry::empty_extension_registry;
 pub use state::ExtensionData;
 pub use state::ExtensionDataInit;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use state::ExtensionStorageId;
-pub use user_instructions::LoadUserInstructionsFuture;
-=======
 pub use turn_admission::TurnStartAdmission;
 pub use user_instructions::Instructions;
 pub use user_instructions::LoadInstructionsFuture;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+pub use user_instructions::LoadUserInstructionsFuture;
 pub use user_instructions::LoadedUserInstructions;
 pub use user_instructions::ThreadInstructionsProvider;
 pub use user_instructions::UserInstructionsProvider;

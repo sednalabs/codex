@@ -326,15 +326,13 @@ impl GoalService {
                 GoalServiceError::Internal(format!("failed to clear thread goal: {err}"))
             })?;
         let cleared = cleared_goal.is_some();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if let Some(runtime) = runtime.as_ref()
             && let Err(err) = runtime.finalize_pending_goal_notification().await
         {
             tracing::warn!("failed to forward deferred goal completion: {err}");
-=======
+        }
         if cleared && let Some(runtime) = runtime.as_ref() {
             runtime.clear_pending_turn_start_options().await;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         drop(goal_state_permit);
         drop(runtime);
