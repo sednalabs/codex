@@ -48,8 +48,6 @@ jobs:
       INPUT_PROFILE: ${{ inputs.profile }}
       INPUT_TARGET: ${{ inputs.target }}
       USE_SCCACHE: ${{ inputs.use_sccache && 'true' || 'false' }}
-      CODEX_CI_PROFILE: ${{ inputs.profile }}
-      CODEX_CI_TARGET: ${{ inputs.target }}
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_CI_TEST_DEBUG: "0"
       CARGO_PROFILE_CI_TEST_STRIP: "symbols"
@@ -70,7 +68,7 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
           fi
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -151,6 +149,14 @@ jobs:
         with:
           tool: nextest@0.9.103
 
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Build nextest archive
         shell: bash
         run: |
@@ -158,13 +164,8 @@ jobs:
           archive_dir="${RUNNER_TEMP}/nextest-archive"
           mkdir -p "${archive_dir}"
           cargo nextest archive \
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             --target "${INPUT_TARGET}" \
             --cargo-profile "${INPUT_PROFILE}" \
-=======
-            --target "${CODEX_CI_TARGET}" \
-            --cargo-profile "${CODEX_CI_PROFILE}" \
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             --timings \
             --archive-file "${archive_dir}/${NEXTEST_ARCHIVE_FILE}"
 
@@ -178,7 +179,6 @@ jobs:
 
           if [[ "${RUNNER_OS}" == "Linux" ]]; then
             cargo build \
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
               --target "${INPUT_TARGET}" \
               --profile "${INPUT_PROFILE}" \
               -p codex-linux-sandbox \
@@ -193,22 +193,6 @@ jobs:
               --bin codex-command-runner
             cp "${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}/codex-windows-sandbox-setup.exe" "${helper_dir}/"
             cp "${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}/codex-command-runner.exe" "${helper_dir}/"
-=======
-              --target "${CODEX_CI_TARGET}" \
-              --profile "${CODEX_CI_PROFILE}" \
-              -p codex-linux-sandbox \
-              --bin codex-linux-sandbox
-            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-linux-sandbox" "${helper_dir}/"
-          else
-            cargo build \
-              --target "${CODEX_CI_TARGET}" \
-              --profile "${CODEX_CI_PROFILE}" \
-              -p codex-windows-sandbox \
-              --bin codex-windows-sandbox-setup \
-              --bin codex-command-runner
-            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-windows-sandbox-setup.exe" "${helper_dir}/"
-            cp "${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}/codex-command-runner.exe" "${helper_dir}/"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           fi
 
       - name: Upload Cargo timings (nextest)
@@ -266,11 +250,7 @@ jobs:
         shell: bash
         run: |
           {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             echo "### sccache stats — ${INPUT_TARGET} (tests)";
-=======
-            echo "### sccache stats — ${CODEX_CI_TARGET} (tests)";
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             echo;
             echo '```';
             sccache --show-stats || true;
@@ -286,15 +266,9 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       INPUT_PROFILE: ${{ inputs.profile }}
       INPUT_TARGET: ${{ inputs.target }}
       INPUT_TEST_THREADS: ${{ inputs.test_threads }}
-=======
-      CODEX_CI_PROFILE: ${{ inputs.profile }}
-      CODEX_CI_TARGET: ${{ inputs.target }}
-      CODEX_CI_TEST_THREADS: ${{ inputs.test_threads }}
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
     strategy:
@@ -315,7 +289,7 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -y
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev libasound2-dev bubblewrap
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev bubblewrap
           fi
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -325,6 +299,14 @@ jobs:
       - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2.87.6
         with:
           tool: nextest@0.9.103
+
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Set up remote test env (Docker)
         if: ${{ runner.os == 'Linux' && inputs.remote_env }}
@@ -380,21 +362,13 @@ jobs:
 
           if [[ "${RUNNER_OS}" == "Linux" ]]; then
             helper_dir="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             helper_target_dir="${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}"
-=======
-            helper_target_dir="${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             mkdir -p "${helper_target_dir}"
             cp "${helper_dir}/codex-linux-sandbox" "${helper_target_dir}/"
             chmod +x "${helper_target_dir}/codex-linux-sandbox"
           elif [[ "${RUNNER_OS}" == "Windows" ]]; then
             helper_dir="${RUNNER_TEMP}/${TEST_HELPERS_ARTIFACT}"
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             helper_target_dir="${CARGO_TARGET_DIR}/${INPUT_TARGET}/${INPUT_PROFILE}"
-=======
-            helper_target_dir="${CARGO_TARGET_DIR}/${CODEX_CI_TARGET}/${CODEX_CI_PROFILE}"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             mkdir -p "${helper_target_dir}"
             cp "${helper_dir}/codex-windows-sandbox-setup.exe" "${helper_target_dir}/"
             cp "${helper_dir}/codex-command-runner.exe" "${helper_target_dir}/"
@@ -407,13 +381,8 @@ jobs:
             --workspace-remap "${workspace_root}"
             --partition "hash:${CODEX_NEXTEST_SHARD}/4"
           )
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
           if [[ "${INPUT_TEST_THREADS}" != "0" ]]; then
             nextest_args+=(--test-threads "${INPUT_TEST_THREADS}")
-=======
-          if [[ "${CODEX_CI_TEST_THREADS}" != "0" ]]; then
-            nextest_args+=(--test-threads "${CODEX_CI_TEST_THREADS}")
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           fi
 
           test_command=(cargo nextest "${nextest_args[@]}")

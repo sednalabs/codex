@@ -20,7 +20,6 @@ permissions:
   pull-requests: read
 
 jobs:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
   matrix_plan:
     name: Rust CI lane planner (informational)
     runs-on: ubuntu-24.04
@@ -48,9 +47,6 @@ jobs:
           PY
 
   # --- Detect what changed so the fast PR workflow only runs relevant jobs ----
-=======
-  # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
   changed:
     name: Detect changed areas
     runs-on: ubuntu-24.04
@@ -75,12 +71,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
-=======
-          fetch-depth: 0
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           persist-credentials: false
       - name: Resolve comparison SHAs
         id: shas
@@ -437,6 +429,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -525,6 +518,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -549,6 +543,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -618,6 +613,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ steps.argument_comment_lint_gate.outputs.run == 'true' }}
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Run argument comment lint on codex-rs
         uses: ./.github/actions/run-argument-comment-lint

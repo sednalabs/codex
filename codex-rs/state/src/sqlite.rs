@@ -86,7 +86,6 @@ const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
     migrate_phase: "migrate_memories",
 };
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
     label: "usage DB",
     filename: USAGE_DB_FILENAME,
@@ -94,7 +93,8 @@ const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
     open_phase: "open_usage",
     repair_phase: None,
     migrate_phase: "migrate_usage",
-=======
+};
+
 const MEMORIES_V2_DB: RuntimeDbSpec = RuntimeDbSpec {
     label: "memories v2 DB",
     filename: "memories_v2_1.sqlite",
@@ -106,8 +106,8 @@ const QUEUE_DB: RuntimeDbSpec = RuntimeDbSpec {
     filename: QUEUE_DB_FILENAME,
     kind: DbKind::Queue,
     open_phase: "open_queue",
+    repair_phase: None,
     migrate_phase: "migrate_queue",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 };
 
 const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
@@ -119,21 +119,14 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     migrate_phase: "migrate_thread_history",
 };
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-const RUNTIME_DBS: [RuntimeDbSpec; 6] = [
-=======
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
     MEMORIES_DB,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     USAGE_DB,
-=======
     MEMORIES_V2_DB,
     QUEUE_DB,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     THREAD_HISTORY_DB,
 ];
 
@@ -182,11 +175,11 @@ impl SqliteConfig {
         MEMORIES_DB.path(self.home())
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// Return the path to the usage ledger database.
     pub fn usage_db_path(&self) -> PathBuf {
         USAGE_DB.path(self.home())
-=======
+    }
+
     pub(crate) fn memories_v2_db_path(&self) -> PathBuf {
         MEMORIES_V2_DB.path(self.home())
     }
@@ -203,7 +196,6 @@ impl SqliteConfig {
     /// Return the path to the durable user-message queue database.
     pub fn queue_db_path(&self) -> PathBuf {
         QUEUE_DB.path(self.home())
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     /// Return the path to the paginated thread-history database.
@@ -261,20 +253,21 @@ impl SqliteConfig {
             .await
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub(super) async fn open_usage_db(
-=======
-    pub(super) async fn open_queue_db(
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         &self,
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
-=======
+            .await
+    }
+
+    pub(super) async fn open_queue_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
         self.open_runtime_db(QUEUE_DB, migrator, telemetry_override)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await
     }
 
