@@ -81,10 +81,21 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def diagnostic(stderr: str) -> str:
+    """Keep short Cargo failures intact and cap genuinely huge stderr safely."""
     lines = stderr.strip().splitlines()
-    if len(lines) <= 8:
-        return " ".join(lines)
-    return " ".join(lines[:4] + ["...", *lines[-4:]])
+    if not lines:
+        return ""
+    rendered = "\n".join(lines)
+    max_lines = 120
+    max_chars = 20_000
+    if len(lines) <= max_lines and len(rendered) <= max_chars:
+        return rendered
+    head = lines[:40]
+    tail = lines[-40:]
+    excerpt = "\n".join(head + [f"[diagnostic truncated: {len(lines)} lines, {len(rendered)} characters]", *tail])
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[: max_chars - 40] + "\n[diagnostic excerpt char-truncated]"
+    return excerpt
 
 
 def reconcile(args: argparse.Namespace) -> dict[str, Any]:

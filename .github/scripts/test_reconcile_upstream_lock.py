@@ -58,6 +58,33 @@ class ReconcileLockTests(unittest.TestCase):
             with self.assertRaises(MODULE.ReconcileError):
                 MODULE.run(Path("/tmp/workspace"), "show", "deadbeef")
 
+    def test_diagnostic_keeps_cargo_chain_after_rustup_preamble(self) -> None:
+        stderr = "\n".join(
+            [
+                "info: syncing channel updates for '1.96.0-x86_64-unknown-linux-gnu'",
+                "info: downloading component 'cargo'",
+                "info: installing component 'rustc'",
+                "warning: profile minimal",
+                "error: failed to select a version for `alsa`.",
+                "package `codex-audio` depends on `alsa` with feature `vendored`",
+                "but `alsa` does not have that feature",
+                "failed to resolve dependency graph",
+                "help: select a compatible dependency version",
+                "note: required by codex-audio",
+                "note: required by the workspace",
+                "error: dependency resolution failed",
+            ]
+        )
+        rendered = MODULE.diagnostic(stderr)
+        self.assertIn("failed to select a version for `alsa`", rendered)
+        self.assertIn("depends on `alsa` with feature `vendored`", rendered)
+        self.assertIn("does not have that feature", rendered)
+
+    def test_diagnostic_marks_large_excerpt_truncation(self) -> None:
+        rendered = MODULE.diagnostic("\n".join(f"line-{index}" for index in range(300)))
+        self.assertIn("diagnostic truncated", rendered)
+        self.assertLessEqual(len(rendered), 20_000)
+
     def test_main_fixture_covers_exact_heads_seed_metadata_and_report(self) -> None:
         candidate = "a" * 40
         upstream = "b" * 40
