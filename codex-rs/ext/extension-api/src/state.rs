@@ -1,3 +1,4 @@
+pub use codex_protocol::ExtensionStorageId;
 use std::any::Any;
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -6,22 +7,6 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 
 type ErasedData = Arc<dyn Any + Send + Sync>;
-
-/// Stable identifier for a persistent storage namespace owned by an extension.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ExtensionStorageId {
-    namespace: &'static str,
-}
-
-impl ExtensionStorageId {
-    pub const fn new(namespace: &'static str) -> Self {
-        Self { namespace }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        self.namespace
-    }
-}
 
 /// Typed values supplied before an [`ExtensionData`] scope is created.
 ///

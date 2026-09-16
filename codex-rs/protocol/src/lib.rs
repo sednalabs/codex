@@ -26,6 +26,8 @@ pub mod config_types;
 pub mod custom_prompts;
 pub mod dynamic_tools;
 mod environment;
+mod extension_storage;
+pub use extension_storage::ExtensionStorageId;
 pub mod error;
 pub mod exec_output;
 pub mod items;

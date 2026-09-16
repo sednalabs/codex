@@ -1,4 +1,4 @@
-use codex_extension_api::ExtensionStorageId;
+use codex_protocol::ExtensionStorageId;
 use sqlx::Row;
 use sqlx::SqlitePool;
 use std::time::SystemTime;
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS extension_migrations (
 "#;
 
 const PHASE2_ATTESTATION_ROOTS_SQL: &str =
-    include_str!("../../migrations/0024_phase2_attestation_roots.sql");
+    include_str!("../../migrations/9001_phase2_attestation_roots.sql");
 const PHASE2_ATTESTED_BASELINES_SQL: &str =
-    include_str!("../../migrations/0038_phase2_attested_baselines.sql");
+    include_str!("../../migrations/9004_phase2_attested_baselines.sql");
 
 const STATE_EXTENSION_MIGRATIONS: &[ExtensionStorageMigration] = &[
     ExtensionStorageMigration {

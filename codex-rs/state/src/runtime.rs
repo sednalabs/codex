@@ -24,7 +24,7 @@ use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
 use chrono::DateTime;
 use chrono::Utc;
-use codex_extension_api::ExtensionStorageId;
+use codex_protocol::ExtensionStorageId;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
 use serde_json::Value;
