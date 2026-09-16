@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/scripts/upstream_merge_preview.py"
       - ".github/scripts/test_upstream_merge_preview.py"
+      - ".github/scripts/reconcile_upstream_lock.py"
+      - ".github/scripts/test_reconcile_upstream_lock.py"
       - ".github/workflows/upstream-merge-preview.yml"
   workflow_dispatch:
     inputs:
@@ -29,12 +31,18 @@ on:
         required: false
         default: false
         type: boolean
-
+      lock_mode:
+        description: Reconcile Cargo.lock from the exact upstream commit (manual runs only)
+        required: false
+        default: false
+        type: boolean
+  
 permissions:
   contents: read
 
 jobs:
   fixture:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.lock_mode) }}
     name: hosted real-git fixtures
     runs-on: ubuntu-latest
     steps:
@@ -54,8 +62,8 @@ jobs:
           retention-days: 1
 
   preview:
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.lock_mode }}
     name: manual public merge metadata preview
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -71,12 +79,8 @@ jobs:
         run: |
           set -o pipefail
           arguments=(--downstream "$DOWNSTREAM" --upstream "$UPSTREAM" --base "$LOGICAL_BASE")
-          if [[ -n "$REWRITTEN_BASE" ]]; then
-            arguments+=(--rewritten-base "$REWRITTEN_BASE")
-          fi
-          if [[ "$EXPORT_CONFLICT_SOURCE" == "true" ]]; then
-            arguments+=(--export-conflict-source)
-          fi
+          if [[ -n "$REWRITTEN_BASE" ]]; then arguments+=(--rewritten-base "$REWRITTEN_BASE"); fi
+          if [[ "$EXPORT_CONFLICT_SOURCE" == "true" ]]; then arguments+=(--export-conflict-source); fi
           python3 .github/scripts/upstream_merge_preview.py "${arguments[@]}" | tee merge-preview.json
       - name: Upload safe preview metadata
         if: ${{ always() }}
@@ -92,5 +96,42 @@ jobs:
         with:
           name: upstream-merge-conflict-source-${{ github.run_id }}
           path: conflict-source.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  lock:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.lock_mode }}
+    name: hosted upstream Cargo.lock reconciliation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.downstream }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: 1.96.0
+      - name: Run hosted lock helper tests
+        run: python3 .github/scripts/test_reconcile_upstream_lock.py
+      - name: Reconcile Cargo.lock from immutable upstream source
+        env:
+          DOWNSTREAM: ${{ inputs.downstream }}
+          UPSTREAM: ${{ inputs.upstream }}
+        run: |
+          set -o pipefail
+          python3 .github/scripts/reconcile_upstream_lock.py \
+            --candidate "$DOWNSTREAM" \
+            --upstream "$UPSTREAM" \
+            --report upstream-lock-reconciliation.json
+      - name: Upload lock reconciliation artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: upstream-lock-reconciliation-${{ github.run_id }}
+          path: |
+            upstream-lock-reconciliation.json
+            codex-rs/Cargo.lock
           if-no-files-found: warn
           retention-days: 1
