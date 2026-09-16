@@ -1,10 +1,7 @@
 use super::*;
 use base64::Engine;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::error::CodexErrSource;
-=======
 use codex_protocol::protocol::CodexErrorInfo;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 

@@ -72,17 +72,15 @@ pub struct MemorySummarizeOutput {
     pub memory_summary: String,
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResponseModelIdentity {
     pub final_model: Option<String>,
     pub model_snapshot: Option<String>,
 }
-=======
+
 /// The latest server response ID received in this turn, shared with tool-review extensions.
 #[derive(Clone, Debug)]
 pub struct ResponseId(pub String);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 #[derive(Debug)]
 pub enum ResponseEvent {

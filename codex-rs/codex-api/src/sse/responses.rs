@@ -202,18 +202,17 @@ pub struct ResponsesStreamEvent {
     safety_buffering: Option<Value>,
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ResponseModelMetadata {
     pub(crate) warning_model: Option<String>,
     pub(crate) execution_identity: ResponseModelIdentity,
-=======
+}
+
 fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Value::deserialize(deserializer).map(Some)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl ResponsesStreamEvent {
@@ -1250,7 +1249,7 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert!(
-            matches!(&events[0], Err(ApiError::ServerOverloaded)),
+            matches!(&events[0], Err(ApiError::RateLimitExceeded { .. })),
             "unexpected event: {:?}",
             events[0]
         );
@@ -1756,13 +1755,6 @@ mod tests {
             &events[0],
             ResponseEvent::ServerModel(model) if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
         );
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
-        assert_matches!(
-            &events[1],
-            ResponseEvent::Created { response_id: Some(id) } if id == "resp-1"
-        );
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         assert_matches!(
             &events[1],
             ResponseEvent::ServerModelIdentity(ResponseModelIdentity {
@@ -1771,7 +1763,7 @@ mod tests {
             }) if final_model == CYBER_RESTRICTED_MODEL_FOR_TESTS
                 && model_snapshot == MODEL_SNAPSHOT_FOR_TESTS
         );
-        assert_matches!(&events[2], ResponseEvent::Created);
+        assert_matches!(&events[2], ResponseEvent::Created { .. });
         assert_matches!(
             &events[3],
             ResponseEvent::Completed {

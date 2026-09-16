@@ -321,18 +321,16 @@ impl ResponsesWebsocketConnection {
                         .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                         .await;
                 }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                let mut guard = stream.lock().await;
-                if tx_event.is_closed() {
-                    initiation.cancel();
-=======
                 let mut guard = tokio::select! {
                     biased;
-                    _ = tx_event.closed() => return,
+                    _ = tx_event.closed() => {
+                        initiation.cancel();
+                        return;
+                    },
                     guard = stream.lock() => guard,
                 };
                 if tx_event.is_closed() {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+                    initiation.cancel();
                     return;
                 }
                 let result = {
@@ -345,19 +343,6 @@ impl ResponsesWebsocketConnection {
                         return;
                     };
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                    run_websocket_response_stream(
-                        ws_stream,
-                        tx_event.clone(),
-                        request_text,
-                        idle_timeout,
-                        telemetry,
-                        turn_state.as_deref(),
-                        &timing_log_context,
-                        initiation,
-                    )
-                    .await
-=======
                     tokio::select! {
                         biased;
                         result = run_websocket_response_stream(
@@ -368,12 +353,12 @@ impl ResponsesWebsocketConnection {
                             telemetry,
                             turn_state.as_deref(),
                             &timing_log_context,
+                            initiation,
                         ) => result,
                         _ = tx_event.closed() => Err(ApiError::Stream(
                             "response event consumer dropped".to_string(),
                         )),
                     }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 };
 
                 if let Err(err) = result {
@@ -474,20 +459,14 @@ impl ResponsesWebsocketClient {
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let (stream, _status, server_reasoning_included, models_etag, server_model) =
-            connect_websocket(
-                ws_url,
-                headers,
-                http_client_factory,
-                turn_state.clone(),
-                Some(initiation),
-            )
-            .await?;
-=======
-        let (stream, _status, server_reasoning_included, server_model) =
-            connect_websocket(ws_url, headers, http_client_factory, turn_state.clone()).await?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+        let (stream, _status, server_reasoning_included, server_model) = connect_websocket(
+            ws_url,
+            headers,
+            http_client_factory,
+            turn_state.clone(),
+            Some(initiation),
+        )
+        .await?;
         Ok(ResponsesWebsocketConnection::new(
             stream,
             self.provider.stream_idle_timeout,
@@ -520,25 +499,14 @@ impl ResponsesWebsocketClient {
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let (mut stream, status, reasoning_included, models_etag, server_model) =
-            connect_websocket(
-                ws_url.clone(),
-                headers,
-                http_client_factory,
-                /*turn_state*/ None,
-                /*initiation*/ None,
-            )
-            .await?;
-=======
         let (mut stream, status, reasoning_included, server_model) = connect_websocket(
             ws_url.clone(),
             headers,
             http_client_factory,
             /*turn_state*/ None,
+            /*initiation*/ None,
         )
         .await?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
             .await
             .ok()
@@ -593,12 +561,8 @@ async fn connect_websocket(
     headers: HeaderMap,
     http_client_factory: &HttpClientFactory,
     turn_state: Option<Arc<OnceLock<String>>>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     initiation: Option<RequestInitiation>,
-) -> Result<(WsStream, StatusCode, bool, Option<String>, Option<String>), ApiError> {
-=======
 ) -> Result<(WsStream, StatusCode, bool, Option<String>), ApiError> {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     info!("connecting to websocket: {url}");
 
     let mut request = url
