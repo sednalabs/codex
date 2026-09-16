@@ -9,13 +9,10 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::config::Config;
-=======
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents::collab_tool_call_status;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
@@ -141,11 +138,13 @@ async fn handle_spawn_agent(
             reasoning_effort: args.reasoning_effort.clone(),
         },
     )
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    .await?;
-    if !is_full_history_fork {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
-    }
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
+    let mut config = prepared.config;
+    let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
+    // Keep the fork-only public contract that the upstream config preparation
+    // deliberately leaves to the entrypoint: explicit service tier and exact
+    // requested/effective identity assertions are decided before child creation.
     apply_spawn_agent_service_tier(
         &session,
         &mut config,
@@ -164,13 +163,6 @@ async fn handle_spawn_agent(
         args.reasoning_effort.as_ref(),
         args.expected_reasoning_effort.as_ref(),
     )?;
-
-=======
-    .await
-    .map_err(FunctionCallError::RespondToModel)?;
-    let config = prepared.config;
-    let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let spawn_source = thread_spawn_source(
         session.thread_id,
         &turn.session_source,
@@ -233,17 +225,13 @@ async fn handle_spawn_agent(
                     fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                    environments: Some(turn.environments.to_selections()),
                     spawn_call_id: Some(call_id.clone()),
-=======
                     parent_turn_id: Some(turn.sub_id.clone()),
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
                     turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                     environments: Some(step_context.environments.to_selections()),
                     multi_agent_v2_usage_hints,
                     cyber_access_program: turn.cyber_access_program,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 },
             ),
     )
@@ -292,49 +280,21 @@ async fn handle_spawn_agent(
     let task_name = String::from(new_agent_path);
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    if hide_agent_metadata {
-        Ok(SpawnAgentResult {
-            agent_id: None,
-            task_name,
-            nickname: None,
-            requested_model: args.model.clone(),
-            requested_reasoning_effort: args.reasoning_effort.clone(),
-            effective_model: effective_model.clone(),
-            requested_model_honored: args
-                .model
-                .as_ref()
-                .zip(effective_model.as_ref())
-                .map(|(requested_model, effective_model)| requested_model == effective_model),
-            effective_reasoning_effort: effective_reasoning_effort.clone(),
-        })
-    } else {
-        Ok(SpawnAgentResult {
-            agent_id: Some(new_thread_id.to_string()),
-            task_name,
-            nickname,
-            requested_model: args.model.clone(),
-            requested_reasoning_effort: args.reasoning_effort.clone(),
-            effective_model: effective_model.clone(),
-            requested_model_honored: args
-                .model
-                .as_ref()
-                .zip(effective_model.as_ref())
-                .map(|(requested_model, effective_model)| requested_model == effective_model),
-            effective_reasoning_effort,
-        })
-    }
-=======
-    let output = if hide_agent_metadata {
-        SpawnAgentResult::HiddenMetadata { task_name }
-    } else {
-        SpawnAgentResult::WithNickname {
-            task_name,
-            nickname,
-        }
+    let output = SpawnAgentResult {
+        agent_id: (!hide_agent_metadata).then(|| new_thread_id.to_string()),
+        task_name,
+        nickname: (!hide_agent_metadata).then_some(nickname).flatten(),
+        requested_model: args.model.clone(),
+        requested_reasoning_effort: args.reasoning_effort.clone(),
+        effective_model: effective_model.clone(),
+        requested_model_honored: args
+            .model
+            .as_ref()
+            .zip(effective_model.as_ref())
+            .map(|(requested_model, effective_model)| requested_model == effective_model),
+        effective_reasoning_effort,
     };
     Ok((output, new_thread_id, agent_status, agent_snapshot))
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl CoreToolRuntime for Handler {
@@ -358,11 +318,8 @@ struct SpawnAgentArgs {
     model: Option<String>,
     expected_model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     expected_reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     fork_turns: Option<String>,
     fork_context: Option<bool>,
 }

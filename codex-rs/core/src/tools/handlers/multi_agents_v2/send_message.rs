@@ -1,8 +1,7 @@
-use super::analytics::ToolCallAnalytics;
 use super::message_tool::SendMessageArgs;
+use super::message_tool::MessageDeliveryMode;
 use super::message_tool::handle_message_submission;
 use super::*;
-use crate::agent::control::MessageDeliveryMode;
 use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
 use codex_tools::ToolSpec;
 
@@ -21,12 +20,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     where
         ToolInvocation: 'a,
     {
-        Box::pin(async move {
-            let mut analytics = ToolCallAnalytics::new(&invocation, CollabAgentTool::SendMessage);
-            let result = self.handle_call(invocation, &mut analytics).await;
-            analytics.finish(&result);
-            result
-        })
+        Box::pin(self.handle_call(invocation))
     }
 }
 
@@ -34,7 +28,6 @@ impl Handler {
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
-        analytics: &mut ToolCallAnalytics,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendMessageArgs = parse_arguments(&arguments)?;
@@ -42,16 +35,10 @@ impl Handler {
         handle_message_submission(
             invocation,
             MessageDeliveryMode::QueueOnly,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             target,
             message,
             interrupt,
             /*expected_model*/ None,
-=======
-            args.target,
-            args.message,
-            analytics,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         )
         .await
         .map(boxed_tool_output)

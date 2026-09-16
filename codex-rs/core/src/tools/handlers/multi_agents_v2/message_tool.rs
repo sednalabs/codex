@@ -4,12 +4,8 @@
 //! keeps the plain-text message path. Both share the same submission plumbing once the prompt is
 //! assembled.
 
-use super::analytics::ToolCallAnalytics;
 use super::*;
-use crate::agent::control::MessageDeliveryError;
-use crate::agent::control::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
@@ -38,8 +34,6 @@ impl MessageDeliveryMode {
         }
     }
 }
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,7 +168,6 @@ pub(super) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     expected_model: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     handle_message_submission(
@@ -242,9 +235,6 @@ async fn handle_message_submission_inner(
     message: String,
     interrupt: bool,
     expected_model: Option<String>,
-=======
-    analytics: &mut ToolCallAnalytics,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -256,11 +246,9 @@ async fn handle_message_submission_inner(
     } = invocation;
     let _ = payload;
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
-    analytics.set_receiver(receiver_thread_id);
-    let receiver_agent_path = session
+    let receiver_agent = session
         .services
         .agent_control
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         .ensure_agent_known(receiver_thread_id)
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     if mode == MessageDeliveryMode::TriggerTurn
@@ -338,22 +326,6 @@ async fn handle_message_submission_inner(
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
     result?;
-=======
-        .deliver_message(
-            session.thread_id,
-            &turn,
-            receiver_thread_id,
-            agent_message_from_tool(message, &source),
-            mode,
-        )
-        .await
-        .map_err(|err| match err {
-            MessageDeliveryError::InvalidRequest(message) => {
-                FunctionCallError::RespondToModel(message)
-            }
-            MessageDeliveryError::Agent(err) => collab_agent_error(receiver_thread_id, err),
-        })?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     emit_sub_agent_activity(
         &session,
         &turn,

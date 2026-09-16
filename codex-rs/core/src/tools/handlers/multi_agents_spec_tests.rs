@@ -42,7 +42,6 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
 
 #[test]
 fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let mut incompatible = model_preset("incompatible", /*show_in_picker*/ true);
     incompatible.multi_agent_version = Some(MultiAgentVersion::V1);
     let mut luna = model_preset("luna", /*show_in_picker*/ true);
@@ -50,24 +49,13 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     luna.multi_agent_version = Some(MultiAgentVersion::V1);
     let mut unspecified = model_preset("unspecified", /*show_in_picker*/ true);
     unspecified.multi_agent_version = None;
-=======
-    let mut legacy = model_preset("legacy", /*show_in_picker*/ true);
-    legacy.multi_agent_version = Some(MultiAgentVersion::V1);
-    let mut disabled = model_preset("disabled", /*show_in_picker*/ true);
-    disabled.multi_agent_version = Some(MultiAgentVersion::Disabled);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
         available_models: vec![
             model_preset("visible", /*show_in_picker*/ true),
             model_preset("hidden", /*show_in_picker*/ false),
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             unspecified,
             luna,
             incompatible,
-=======
-            legacy,
-            disabled,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         ],
         agent_type_description: "role help".to_string(),
         expose_agent_type: true,
@@ -106,14 +94,10 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         "- `visible-model`: visible description Reasoning efforts: medium (default). Service tiers: priority."
     ));
     assert!(description.contains(
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         "- `unspecified-model`: unspecified description Reasoning efforts: medium (default). Service tiers: priority."
     ));
     assert!(description.contains(
         "- `gpt-5.6-luna`: luna description Reasoning efforts: medium (default). Service tiers: priority."
-=======
-        "- `legacy-model`: legacy description Reasoning efforts: medium (default). Service tiers: priority."
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     ));
     assert!(!description.contains("hidden-model"));
     assert!(!description.contains("disabled-model"));
@@ -147,7 +131,6 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .and_then(|schema| schema.description.as_deref()),
         Some("Reasoning effort override for the new agent. Omit to inherit the parent effort.")
     );
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     assert_eq!(
         properties
             .get("expected_reasoning_effort")
@@ -160,23 +143,22 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .and_then(|schema| schema.description.as_deref()),
         Some(SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION)
     );
-=======
-    assert!(!properties.contains_key("service_tier"));
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     assert_eq!(
         parameters.required.as_ref(),
         Some(&vec!["task_name".to_string(), "message".to_string()])
     );
     let output_schema = output_schema.expect("spawn_agent output schema");
     assert_eq!(
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         output_schema["required"],
         json!([
             "task_name",
-            "effective_model",
             "effective_reasoning_effort",
             "agent_id"
         ])
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_model"]["type"],
+        json!(["string", "null"])
     );
     assert_eq!(
         output_schema["properties"]
@@ -202,10 +184,6 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert_eq!(
         output_schema["properties"]["effective_reasoning_effort"]["type"],
         json!(["string", "null"])
-=======
-        output_schema.expect("spawn_agent output schema").to_value()["required"],
-        json!(["task_name", "nickname"])
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     );
 }
 
@@ -384,7 +362,11 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
     let output_schema = output_schema.expect("spawn_agent output schema");
     assert_eq!(
         output_schema["required"],
-        json!(["task_name", "effective_model", "effective_reasoning_effort"])
+        json!(["task_name", "effective_reasoning_effort"])
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_model"]["type"],
+        json!(["string", "null"])
     );
     let output_properties = output_schema["properties"]
         .as_object()
@@ -641,7 +623,6 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
         Some("Task-path prefix filter without a trailing slash. Omit to list all live agents.")
     );
     assert_eq!(
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
         json!([
             "agent_name",
@@ -649,11 +630,6 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
             "has_active_subagents",
             "active_subagent_count"
         ])
-=======
-        output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["required"],
-        json!(["agent_name", "agent_status"])
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     );
 }
 

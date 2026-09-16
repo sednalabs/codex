@@ -40,26 +40,18 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_models_manager::bundled_models_response;
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::items::AgentNotificationContent;
 use codex_protocol::items::AgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus;
-=======
-use codex_protocol::items::TurnItem;
-use codex_protocol::mcp::ClientMcpExtensions;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
@@ -78,11 +70,7 @@ use codex_protocol::protocol::FileSystemPath;
 use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InterAgentCommunication;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::protocol::MultiAgentVersion;
-=======
-use codex_protocol::protocol::ItemCompletedEvent;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -564,7 +552,6 @@ fn service_tier_test_catalog() -> codex_protocol::openai_models::ModelsResponse 
 }
 
 #[tokio::test]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
@@ -1201,29 +1188,6 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
         FunctionCallError::RespondToModel(
             "Unknown model `v1-only-model` for spawn_agent. Available models: gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5".to_string()
         )
-=======
-async fn spawn_agent_service_tier_uses_root_preference_when_root_model_cannot_support_it() {
-    let (_session, turn) = make_session_and_context().await;
-    let mut config = (*turn.config).clone();
-    config.model = Some("test-model-without-fast".to_string());
-    config.model_catalog = Some(service_tier_test_catalog());
-    config.service_tier = Some(ServiceTier::Fast.request_value().to_string());
-    let manager = thread_manager();
-    let root = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("root thread should start");
-    assert_eq!(root.thread.config_snapshot().await.service_tier, None);
-
-    config.model = Some("gpt-5.5".to_string());
-    apply_spawn_agent_service_tier(root.thread.session.as_ref(), &mut config)
-        .await
-        .expect("root preference should be resolved against the child model");
-
-    assert_eq!(
-        config.service_tier,
-        Some(ServiceTier::Fast.request_value().to_string())
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     );
 }
 
@@ -1631,7 +1595,6 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5-role-override");
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     assert_eq!(snapshot.model_provider_id, "ollama");
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
 }
@@ -2018,10 +1981,6 @@ async fn multi_agent_v2_inspect_agent_tree_receipt_includes_live_effective_ident
         })
     );
     assert_eq!(success, Some(true));
-=======
-    assert_eq!(snapshot.model_provider_id, parent_provider_id);
-    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Minimal));
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
@@ -4662,40 +4621,6 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
         assert!(!result.timed_out);
         assert_eq!(success, None);
     });
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
-    tokio::task::yield_now().await;
-
-    session
-        .input_queue
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "hello from worker".to_string(),
-                /*trigger_turn*/ false,
-            ),
-            Default::default(),
-        )
-        .await;
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("timeout-only args should be accepted in v2 mode");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
-    );
-    assert_eq!(success, None);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
@@ -5251,7 +5176,6 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
 
     session
         .input_queue
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         .enqueue_mailbox_communication(InterAgentCommunication::new(
             worker_path.clone(),
             AgentPath::root(),
@@ -5259,18 +5183,6 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             "mailbox update".to_string(),
             /*trigger_turn*/ false,
         ))
-=======
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "completed".to_string(),
-                /*trigger_turn*/ false,
-            ),
-            Default::default(),
-        )
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await;
 
     let output = wait_task
@@ -5351,7 +5263,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
 
     session
         .input_queue
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         .enqueue_mailbox_communication(InterAgentCommunication::new(
             worker_path.clone(),
             AgentPath::root(),
@@ -5359,18 +5270,6 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             "already queued".to_string(),
             /*trigger_turn*/ false,
         ))
-=======
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "already queued".to_string(),
-                /*trigger_turn*/ false,
-            ),
-            Default::default(),
-        )
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await;
 
     let output = timeout(
@@ -5745,132 +5644,6 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         assert!(!content.contains("internal_chat_message_metadata_passthrough"));
         assert_eq!(success, None);
     });
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
-    tokio::task::yield_now().await;
-
-    session
-        .input_queue
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_b_path,
-                AgentPath::root(),
-                Vec::new(),
-                "from worker b".to_string(),
-                /*trigger_turn*/ false,
-            ),
-            Default::default(),
-        )
-        .await;
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
-    );
-    assert_eq!(success, None);
-}
-
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let manager = thread_manager();
-    let root = manager
-        .start_thread(StartThreadOptions::new((*turn.config).clone()))
-        .await
-        .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
-    session.thread_id = root.thread_id;
-    let mut config = (*turn.config).clone();
-    config
-        .features
-        .enable(Feature::MultiAgentV2)
-        .expect("test config should allow feature update");
-    set_turn_config(&mut turn, config);
-    let session = Arc::new(session);
-    let turn = Arc::new(turn);
-
-    SpawnAgentHandlerV2::default()
-        .handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "boot worker",
-                "task_name": "worker"
-            })),
-        ))
-        .await
-        .expect("spawn worker");
-    let agent_id = session
-        .services
-        .agent_control
-        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
-        .await
-        .expect("worker should resolve");
-    let worker_path = session
-        .services
-        .agent_control
-        .get_agent_metadata(agent_id)
-        .expect("worker metadata")
-        .agent_path
-        .expect("worker path");
-    let wait_task = tokio::spawn({
-        let session = session.clone();
-        let turn = turn.clone();
-        async move {
-            WaitAgentHandlerV2::default()
-                .handle(invocation(
-                    session,
-                    turn,
-                    "wait_agent",
-                    function_payload(json!({"timeout_ms": 10_000})),
-                ))
-                .await
-        }
-    });
-    tokio::task::yield_now().await;
-
-    session
-        .input_queue
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "sensitive child output".to_string(),
-                /*trigger_turn*/ false,
-            ),
-            Default::default(),
-        )
-        .await;
-
-    let output = wait_task
-        .await
-        .expect("wait task should join")
-        .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
-    );
-    assert!(!content.contains("sensitive child output"));
-    assert_eq!(success, None);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]

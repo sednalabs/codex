@@ -1,13 +1,8 @@
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+use super::analytics::ToolCallAnalytics;
 use super::message_tool::AssignTaskArgs;
 use super::message_tool::MessageDeliveryMode;
-=======
-use super::analytics::ToolCallAnalytics;
-use super::message_tool::FollowupTaskArgs;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use super::message_tool::handle_message_string_tool;
 use super::*;
-use crate::agent::control::MessageDeliveryMode;
 use crate::tools::handlers::multi_agents_spec::create_followup_task_tool;
 use codex_tools::ToolSpec;
 
@@ -48,11 +43,7 @@ impl Handler {
             MessageDeliveryMode::TriggerTurn,
             args.target,
             args.message,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             args.expected_model,
-=======
-            analytics,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         )
         .await
         .map(boxed_tool_output)
