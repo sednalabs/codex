@@ -17,7 +17,6 @@ updates:
       - /codex-rs
       - /tools/argument-comment-lint
     schedule:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       interval: daily
       time: "03:00"
       timezone: Etc/UTC
@@ -46,11 +45,6 @@ updates:
       interval: daily
       time: "03:00"
       timezone: Etc/UTC
-=======
-      interval: weekly
-    cooldown:
-      default-days: 7
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
   - package-ecosystem: docker
     directories:
       - /.devcontainer

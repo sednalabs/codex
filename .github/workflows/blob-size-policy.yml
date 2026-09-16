@@ -10,14 +10,7 @@ jobs:
     permissions:
       contents: read
     steps:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-=======
-      - uses: openai/fence@e6b39c80c51cb2b2a39448ddeff74b3b886c0a63 # pin@v0.10.0
-        with:
-          mode: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         with:
           fetch-depth: 0
           persist-credentials: false

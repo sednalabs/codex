@@ -35,27 +35,13 @@ jobs:
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             bundle: helpers
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-            binaries: "codex-windows-sandbox-setup codex-command-runner"
+            binaries: "codex-windows-sandbox-setup codex-windows-sandbox-service codex-command-runner"
             runs_on: windows-2022
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: helpers
-            binaries: "codex-windows-sandbox-setup codex-command-runner"
+            binaries: "codex-windows-sandbox-setup codex-windows-sandbox-service codex-command-runner"
             runs_on: windows-2022
-=======
-            binaries: "codex-windows-sandbox-setup codex-windows-sandbox-service codex-command-runner"
-            runs_on:
-              group: ${{ github.event.repository.name }}-runners
-              labels: ${{ github.event.repository.name }}-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            bundle: helpers
-            binaries: "codex-windows-sandbox-setup codex-windows-sandbox-service codex-command-runner"
-            runs_on:
-              group: ${{ github.event.repository.name }}-runners
-              labels: ${{ github.event.repository.name }}-windows-arm64
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             bundle: app-server
@@ -163,15 +149,13 @@ jobs:
           - target: x86_64-pc-windows-msvc
             arch: x86_64
             python_arch: x64
-            runs_on:
-              group: ${{ github.event.repository.name }}-runners
-              labels: ${{ github.event.repository.name }}-windows-x64
+            # Public hosted runner; target remains x86_64.
+            runs_on: windows-2022
           - target: aarch64-pc-windows-msvc
             arch: aarch64
             python_arch: arm64
-            runs_on:
-              group: ${{ github.event.repository.name }}-runners
-              labels: ${{ github.event.repository.name }}-windows-arm64
+            # Native public GitHub-hosted Windows ARM64 runner.
+            runs_on: windows-11-arm
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -201,7 +185,8 @@ jobs:
           $source = $manifest.sourceArchive
           $directory = Join-Path $env:RUNNER_TEMP "voice-cygwin-snapshot"
           New-Item -ItemType Directory -Path $directory | Out-Null
-          gh release download $pin.tag --repo "${{ github.repository }}" --pattern $pin.name --pattern $source.name --dir $directory
+          # Fetch the pinned public upstream inputs; verify their integrity below.
+          gh release download $pin.tag --repo "openai/codex" --pattern $pin.name --pattern $source.name --dir $directory
           if ($LASTEXITCODE -ne 0) { throw "Cannot obtain the public Cygwin inputs and source" }
           $sourceFile = Join-Path $directory $source.name
           if ((Get-Item $sourceFile).Length -ne $source.bytes -or

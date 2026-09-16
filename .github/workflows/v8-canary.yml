@@ -317,13 +317,9 @@ jobs:
             target: aarch64-pc-windows-msvc
 
     steps:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
-=======
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
       - id: setup_ci
         uses: ./.github/actions/setup-ci

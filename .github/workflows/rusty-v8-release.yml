@@ -456,7 +456,6 @@ jobs:
           path: dist
 
       - name: Create GitHub Release
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         if: ${{ steps.release.outputs.exists != 'true' }}
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -476,27 +475,3 @@ jobs:
           overwrite_files: true
           # Keep V8 artifact releases out of Codex's normal "latest release" channel.
           prerelease: true
-=======
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          assets=()
-          while IFS= read -r -d '' asset; do
-            assets+=("${asset}")
-          done < <(find dist -type f -print0)
-          if [[ "${#assets[@]}" -eq 0 ]]; then
-            echo "No V8 release artifacts were found." >&2
-            exit 1
-          fi
-
-          # GitHub CLI keeps asset-bearing releases in draft until all uploads finish.
-          gh release create "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${RELEASE_TAG}" \
-            --verify-tag \
-            --prerelease \
-            "${assets[@]}"
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

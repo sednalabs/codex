@@ -18,16 +18,9 @@ permissions:
   contents: read
 
 jobs:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
   python-sdk:
     if: ${{ inputs.run_python }}
     runs-on: ubuntu-24.04
-=======
-  python-sdk-installation:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -56,16 +49,9 @@ jobs:
             '
 
   sdks:
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     if: ${{ inputs.run_typescript }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-=======
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
-    timeout-minutes: 20
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     environment:
       name: bazel
       deployment: false

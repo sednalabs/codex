@@ -47,7 +47,6 @@ jobs:
       - name: Verify Bazel clippy flags match Cargo workspace lints
         run: python3 .github/scripts/verify_bazel_clippy_lints.py
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       - name: Verify native visual response production CodeQL contract
         run: python3 .github/scripts/verify_native_visual_response_contract.py
 
@@ -72,7 +71,6 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
-=======
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -83,7 +81,6 @@ jobs:
 
       - name: Test PyPI release verification
         run: uv run --no-project --with packaging==26.2 python -m unittest discover -s .github/scripts -p 'test_verify_pypi_release.py'
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
       - name: Test Codex package builder
         run: python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
@@ -107,7 +104,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
@@ -123,15 +119,12 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
       - name: Ensure root README.md contains only ASCII and certain Unicode code points
         run: ./scripts/asciicheck.py README.md
 
       - name: Check root README ToC
         run: python3 scripts/readme_toc.py README.md
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
@@ -169,8 +162,6 @@ jobs:
         with:
           version: "0.11.3"
 
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
       - name: Check formatting (run `just fmt` to fix)
         run: just fmt-check
 
