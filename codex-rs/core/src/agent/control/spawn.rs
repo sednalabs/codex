@@ -5,7 +5,6 @@ use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::role::apply_role_to_config;
 use crate::codex_thread::CodexThread;
 use crate::config::PermissionProfileSnapshot;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home;
 use codex_extension_api::ExtensionDataInit;
@@ -19,7 +18,6 @@ use tokio::time::Duration;
 /// path finishes instead of issuing an unbounded background stream of shutdown operations.
 const UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS: usize = 3;
 const UNPUBLISHED_SPAWN_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
-=======
 use crate::context::ContextualUserFragment;
 use crate::context::CurrentTimeReminder;
 use crate::context::DeveloperInstructions;
@@ -36,7 +34,6 @@ use codex_history::ResponseItemEnvelope;
 use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 
@@ -487,28 +484,6 @@ impl AgentControl {
         thread_id: ThreadId,
         parent: Option<Arc<CodexThread>>,
     ) -> CodexResult<()> {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        Box::pin(self.prepare_v2_agent_delivery_with_reload(config, thread_id))
-            .await
-            .map(drop)
-    }
-
-    pub(super) async fn ensure_v2_agent_loaded_under_lifecycle(
-        &self,
-        state: &Arc<ThreadManagerState>,
-        mut config: Config,
-        thread_id: ThreadId,
-        metadata: &AgentMetadata,
-        residency_slot: V2ResidencySlot,
-        lifecycle: &mut crate::agent::lifecycle::AgentLifecycleState,
-    ) -> CodexResult<()> {
-        if state.get_thread(thread_id).await.is_ok() {
-            metadata.clear_cold_status();
-            self.touch_loaded_v2_residency(state, thread_id).await;
-            return self
-                .restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
-                .await;
-=======
         let state = self.upgrade()?;
         let parent = if let Some(parent) = parent {
             let parent_thread_id = parent.session.thread_id;
@@ -541,7 +516,6 @@ impl AgentControl {
         }
         if self.state.agent_metadata_for_thread(thread_id).is_none() {
             return Err(CodexErr::ThreadNotFound(thread_id));
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         }
         let mut environment_selections = self.state.evicted_environments(thread_id);
 
@@ -633,28 +607,6 @@ impl AgentControl {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
         }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        restore_persisted_agent_model_selection(
-            &mut config,
-            stored_thread.model.as_deref(),
-            &stored_thread.model_provider,
-            stored_thread.reasoning_effort.clone(),
-            thread_id,
-        )?;
-        if let Some(approvals_reviewer) = persisted_approvals_reviewer {
-            config.approvals_reviewer = approvals_reviewer;
-        }
-        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
-        let parent_thread_id = initial_history
-            .get_resumed_parent_thread_id()
-            .or(stored_parent_thread_id);
-        let inherited_environments = self
-            .inherited_environments_for_source(state, Some(&session_source))
-            .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(state, Some(&session_source), &config)
-            .await;
-=======
         config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
             config.model = Some(model);
@@ -792,7 +744,6 @@ impl AgentControl {
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
             .await?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
@@ -811,20 +762,10 @@ impl AgentControl {
             .await
         {
             Ok(reloaded_thread) => {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                let current_thread = state.get_thread(thread_id).await?;
-                if !self.state.metadata_is_current(thread_id, metadata)
-                    || !Arc::ptr_eq(&current_thread, &reloaded_thread.thread)
-                {
-                    return Err(CodexErr::ThreadNotFound(thread_id));
-                }
-                metadata.clear_cold_status();
-=======
                 if let Some(parent_thread_id) = owner_thread_id {
                     self.validate_loaded_v2_child(&reloaded_thread.thread, parent_thread_id)?;
                 }
                 self.state.clear_evicted_environments(thread_id);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 residency_slot.commit(reloaded_thread.thread_id);
                 self.start_terminal_idle_unload_watcher_under_lifecycle(
                     Arc::clone(&reloaded_thread.thread),
@@ -837,18 +778,11 @@ impl AgentControl {
                     .await
             }
             Err(err) => {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-                if self.state.metadata_is_current(thread_id, metadata)
-                    && state.get_thread(thread_id).await.is_ok()
-                {
-                    metadata.clear_cold_status();
-=======
                 if let Ok(thread) = state.get_thread(thread_id).await {
                     if let Some(parent_thread_id) = owner_thread_id {
                         self.validate_loaded_v2_child(&thread, parent_thread_id)?;
                     }
                     self.state.clear_evicted_environments(thread_id);
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                     drop(residency_slot);
                     self.touch_loaded_v2_residency(state, thread_id).await;
                     return self
@@ -1245,8 +1179,6 @@ impl AgentControl {
         )
         .await;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
@@ -1270,7 +1202,6 @@ impl AgentControl {
                 .await?;
             }
         }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -2102,11 +2033,8 @@ impl AgentControl {
                 agent_control: self.clone(),
                 session_source,
                 parent_thread_id,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 dynamic_tools: configured_browser_dynamic_tools(&config),
-=======
                 environment_selections: None,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 inherited_environments,
                 inherited_instructions: None,
                 inherited_exec_policy,

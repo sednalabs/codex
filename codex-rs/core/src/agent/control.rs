@@ -15,25 +15,19 @@ use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::context::world_state::SubagentContext;
 use crate::context::world_state::SubagentContextBuilder;
 use crate::context::world_state::SubagentContextRow;
-=======
 use crate::context::SubagentNotification;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session::multi_agents::ResolvedMultiAgentV2UsageHints;
 use crate::session_prefix::format_inter_agent_completion_message;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::RemoveThreadIfSameResult;
-=======
 use crate::session_prefix::format_subagent_context_line;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
@@ -54,12 +48,9 @@ use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::openai_models::ReasoningEffort;
-=======
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Event;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -101,7 +92,6 @@ pub(crate) use self::interrupt::AgentInterruptError;
 pub(crate) use self::interrupt::AgentInterruptOutcome;
 use self::residency::V2Residency;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub(crate) const SUBAGENT_IDENTITY_SOURCE_THREAD_CONFIG_SNAPSHOT: &str = "thread_config_snapshot";
 const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
     "inspect_agent_tree cannot include stale descendants because this session has no configured ",
@@ -110,9 +100,7 @@ const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
     "<child-thread-id>`), or with parent thread id plus the exact agent_path if the child id is ",
     "unavailable."
 );
-=======
 mod delivery;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 mod execution;
 mod interrupt;
 mod legacy;
@@ -146,16 +134,13 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) turn_trigger: Option<String>,
     pub(crate) root_turn_id: Option<String>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// The call that owns the parent-visible publication decision for a tool spawn.
     ///
     /// Direct control-plane callers leave this unset. Tool runtime dispatch creates the matching
     /// record before the handler begins, so cancellation and child publication share one winner.
     pub(crate) spawn_call_id: Option<String>,
-=======
     pub(crate) multi_agent_v2_usage_hints: Option<ResolvedMultiAgentV2UsageHints>,
     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[derive(Clone, Debug)]
@@ -279,7 +264,8 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
+    /// The user-selected root routing tier, shared by the entire agent tree.
+    root_service_tier: Arc<ArcSwapOption<String>>,
     #[cfg(test)]
     spawn_test_hooks: Arc<SpawnTestHooks>,
     #[cfg(test)]
@@ -309,9 +295,6 @@ struct AfterNewThreadTestHook {
 struct RetainedUnpublishedCleanupTestHook {
     observed_child: tokio::sync::oneshot::Sender<ThreadId>,
     resume_cleanup: Arc<tokio::sync::Notify>,
-=======
-    /// The user-selected root routing tier, shared by the entire agent tree.
-    root_service_tier: Arc<ArcSwapOption<String>>,
 }
 
 impl Default for AgentControl {
@@ -322,7 +305,6 @@ impl Default for AgentControl {
             /*rollout_budget*/ None,
         )
     }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 impl AgentControl {
@@ -565,7 +547,6 @@ impl AgentControl {
         };
         self.handle_thread_request_result(agent_id, &state, result)
             .await
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     }
 
     async fn send_input_after_capacity_check(
@@ -577,8 +558,6 @@ impl AgentControl {
         let (thread, result) = state.send_op_with_thread(agent_id, input.into()).await;
         self.handle_thread_request_result(agent_id, state, thread.as_ref(), result)
             .await
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     pub(crate) async fn send_inter_agent_communication(
@@ -688,38 +667,11 @@ impl AgentControl {
         }
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let (thread, result) = state
             .send_op_with_thread(agent_id, Op::InterAgentCommunication { communication })
             .await;
         let result = self
             .handle_thread_request_result(agent_id, state, thread.as_ref(), result)
-=======
-        let (parent_turn_id, root_turn_id) = if communication.trigger_turn {
-            (
-                start_options.parent_turn_id.clone(),
-                start_options.root_turn_id.clone(),
-            )
-        } else {
-            (None, None)
-        };
-        let result = self
-            .handle_thread_request_result(
-                agent_id,
-                state,
-                state
-                    .send_op(
-                        agent_id,
-                        Op::InterAgentCommunication {
-                            communication,
-                            start_options,
-                        },
-                        parent_turn_id,
-                        root_turn_id,
-                    )
-                    .await,
-            )
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await;
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
@@ -737,7 +689,6 @@ impl AgentControl {
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let (thread, result) = state.send_op_with_thread(agent_id, Op::Interrupt).await;
         self.handle_thread_request_result(agent_id, &state, thread.as_ref(), result)
             .await
@@ -757,21 +708,6 @@ impl AgentControl {
                 /*trace*/ None,
             )
             .await
-=======
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            state
-                .send_op(
-                    agent_id,
-                    Op::Interrupt,
-                    /*parent_turn_id*/ None,
-                    /*root_turn_id*/ None,
-                )
-                .await,
-        )
-        .await
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     async fn handle_thread_request_result(
@@ -954,32 +890,6 @@ impl AgentControl {
     pub(crate) async fn format_environment_context_subagents(
         &self,
         parent_thread_id: ThreadId,
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    ) -> SubagentContext {
-        let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
-            return SubagentContext::default();
-        };
-
-        let mut builder = SubagentContextBuilder::default();
-        let mut agents = agents.into_iter();
-        while let Some((thread_id, metadata)) = agents.next() {
-            if !builder.has_row_capacity() {
-                builder.note_omitted(1 + agents.len());
-                break;
-            }
-            let row = if let Some(agent_path) = metadata.agent_path.as_ref() {
-                SubagentContextRow::new(agent_path.name(), metadata.agent_nickname.as_deref())
-            } else {
-                let reference = thread_id.to_string();
-                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref())
-            };
-            if !builder.push(row) {
-                builder.note_omitted(1 + agents.len());
-                break;
-            }
-        }
-        builder.finish()
-=======
         multi_agent_version: MultiAgentVersion,
     ) -> String {
         if multi_agent_version != MultiAgentVersion::V2 {
@@ -1044,7 +954,6 @@ impl AgentControl {
             }
         }
         lines.join("\n")
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     pub(crate) async fn list_agents(

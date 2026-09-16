@@ -8,11 +8,8 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_utils_string::take_bytes_at_char_boundary;
-=======
 use codex_protocol::protocol::TurnEnvironmentSelection;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use rand::prelude::IndexedRandom;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -449,7 +446,6 @@ impl AgentRegistry {
             .cloned()
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub(in crate::agent) fn metadata_is_current(
         &self,
         thread_id: ThreadId,
@@ -462,7 +458,7 @@ impl AgentRegistry {
             .values()
             .find(|metadata| metadata.agent_id == Some(thread_id))
             .is_some_and(|metadata| Arc::ptr_eq(&metadata.generation, &expected.generation))
-=======
+    }
     pub(crate) fn save_evicted_environments(
         &self,
         thread_id: ThreadId,
@@ -499,7 +495,6 @@ impl AgentRegistry {
         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
             agent.evicted_environments = None;
         }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {

@@ -3,11 +3,8 @@ use crate::CodexThread;
 use crate::StateDbHandle;
 use crate::ThreadManager;
 use crate::agent::agent_status_from_event;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use crate::agent::lifecycle::ColdMailboxItem;
-=======
 use crate::agent::next_thread_spawn_depth;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::AgentRoleConfig;
@@ -69,12 +66,9 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::protocol::ThreadSource;
-=======
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageRecord;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -122,7 +116,6 @@ fn text_input(text: &str) -> Vec<UserInput> {
     }]
 }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn write_browser_provider_config(codex_home: &std::path::Path) {
     std::fs::write(
         codex_home.join("browser-computer-use.json"),
@@ -155,7 +148,8 @@ async fn assert_browser_dynamic_tools_absent(thread: &CodexThread) {
                 .is_none(),
             "{name} should not leak from another config home"
         );
-=======
+    }
+}
 fn captured_op_matches(actual: &(ThreadId, Op), expected: &(ThreadId, Op)) -> bool {
     if actual.0 != expected.0 {
         return false;
@@ -188,7 +182,6 @@ fn user_message(text: &str) -> ResponseItem {
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
 }
 
@@ -680,7 +673,6 @@ async fn wait_for_subagent_notification(parent_thread: &Arc<CodexThread>) -> boo
 }
 
 async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let turn_context = thread.session.new_default_turn().await;
     let item = thread
         .session
@@ -688,7 +680,8 @@ async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str
     thread
         .session
         .record_conversation_items(turn_context.as_ref(), &[item])
-=======
+        .await
+        .expect("record resume context");
     // These tests only need a durable resume fixture. Stop the child prompt
     // first so this marker records directly instead of waiting behind an
     // unrelated active turn.
@@ -703,7 +696,6 @@ async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str
     thread
         .session
         .ensure_rollout_materialized(PersistContext::Standard)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .await;
     thread
         .session
@@ -1304,7 +1296,6 @@ async fn on_event_updates_status_from_task_started() {
 
 #[tokio::test]
 async fn on_event_updates_status_from_task_complete() {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let status = agent_status_from_event(&EventMsg::TurnComplete(TurnCompleteEvent {
         turn_id: "turn-1".to_string(),
         started_at: None,
@@ -1320,7 +1311,6 @@ async fn on_event_updates_status_from_task_complete() {
     }));
     let expected = AgentStatus::Completed(Some("done".to_string()));
     assert_eq!(status, Some(expected));
-=======
     for (error, expected) in [
         (None, AgentStatus::Completed(Some("done".to_string()))),
         (
@@ -1343,7 +1333,6 @@ async fn on_event_updates_status_from_task_complete() {
         }));
         assert_eq!(status, Some(expected));
     }
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
@@ -1497,7 +1486,6 @@ async fn send_input_submits_user_message() {
         .await
         .expect("send_input should succeed");
     assert!(!submission_id.is_empty());
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let expected = (
         thread_id,
         Op::UserInput {
@@ -1601,9 +1589,6 @@ async fn stale_thread_submission_is_rejected_before_acceptance() {
         .shutdown_and_wait()
         .await
         .expect("stale fixture should shut down");
-=======
-    wait_for_recorded_user_message(thread.as_ref(), "hello from tests").await;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
@@ -1829,7 +1814,6 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         Ok(_) => panic!("expected thread to be removed"),
     }
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     let cold_communication = InterAgentCommunication::new(
         AgentPath::root(),
         agent_path.clone(),
@@ -1897,7 +1881,10 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         .await
         .expect("known v2 agent should reload");
     let reloaded_thread = harness
-=======
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("reloaded thread should be registered");
     let mut sender_config = harness.config.clone();
     sender_config.model_provider_id = "ollama".to_string();
     sender_config.model_provider = sender_config
@@ -1945,12 +1932,10 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         }
     }
     let reloaded_child = harness
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .manager
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("reloaded child thread should exist");
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     assert_eq!(
         reloaded_thread
             .session
@@ -2004,7 +1989,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
     assert_eq!(
         reloaded_provider.supports_websockets,
         expected_runtime_provider.supports_websockets
-=======
+    );
     let reloaded_instructions = reloaded_child.session.inherited_instructions().await;
     assert_eq!(
         (reloaded_instructions.user, reloaded_instructions.thread),
@@ -2051,7 +2036,6 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
             harness.config.model_provider.clone()
         ),
         "residency reload must preserve the worker provider instead of inheriting its sender's provider",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     );
 
     let communication = InterAgentCommunication::new(
@@ -2229,7 +2213,6 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     );
     assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
     let mut direct_resume_config = harness.config.clone();
     direct_resume_config
@@ -2310,7 +2293,6 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_thread_not_loaded(&direct_manager, worker_thread_id).await;
-=======
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
     resumed_control
         .restore_v2_agent_metadata(&harness.config, parent_thread_id)
@@ -2443,7 +2425,6 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
         resumed_worker.session.inherited_instructions().await.thread,
         Some(thread_instructions),
     );
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
@@ -4987,9 +4968,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             communication: expected_communication,
-=======
             communication: InterAgentCommunication::new(
                 tester_path.clone(),
                 worker_path.clone(),
@@ -4998,7 +4977,6 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
                 /*trigger_turn*/ false,
             ),
             start_options: Default::default(),
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         },
     );
 
