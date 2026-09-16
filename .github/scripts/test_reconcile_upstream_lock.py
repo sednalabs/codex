@@ -103,6 +103,8 @@ class ReconcileLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             (workspace / ".git").mkdir()
+            (workspace / "codex-rs").mkdir()
+            (workspace / "codex-rs/Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
             report = workspace / "report.json"
             def fake_git(repo: Path, *args: str, check: bool = True):
                 if args[:3] == ("rev-parse", "--verify", "HEAD"):
