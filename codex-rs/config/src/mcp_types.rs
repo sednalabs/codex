@@ -243,6 +243,22 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
 
+    /// Whether this server may issue elicitation requests to the client.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enable_elicitation: bool,
+
+    /// Whether all tools from this server should be treated as read-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+
+    /// Whether tool classification from this server should be treated strictly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_tool_classification: bool,
+
+    /// Whether mutating tools require explicit approval when elicitation is enabled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_approval_for_mutating: bool,
+
     /// Reason this server was disabled after applying requirements.
     #[serde(skip)]
     pub disabled_reason: Option<McpServerDisabledReason>,
@@ -271,27 +287,7 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    /// Whether this server may issue elicitation requests to the client.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub enable_elicitation: bool,
-
-    /// Whether all tools from this server should be treated as read-only.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub read_only: bool,
-
-    /// Whether tool classification from this server should be treated strictly.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub strict_tool_classification: bool,
-
-    /// Whether mutating tools require explicit approval when elicitation is enabled.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub require_approval_for_mutating: bool,
-
-    /// Optional OAuth scopes to request during MCP login.
-=======
     /// Optional scopes requested during MCP login or EMA token exchange.
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
 
@@ -404,12 +400,6 @@ pub struct RawMcpServerConfig {
     #[serde(default)]
     pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
     #[serde(default)]
-    pub default_tools_approval_mode: Option<AppToolApproval>,
-    #[serde(default)]
-    pub enabled_tools: Option<Vec<String>>,
-    #[serde(default)]
-    pub disabled_tools: Option<Vec<String>>,
-    #[serde(default)]
     pub enable_elicitation: bool,
     #[serde(default)]
     pub read_only: bool,
@@ -417,6 +407,12 @@ pub struct RawMcpServerConfig {
     pub strict_tool_classification: bool,
     #[serde(default)]
     pub require_approval_for_mutating: bool,
+    #[serde(default)]
+    pub default_tools_approval_mode: Option<AppToolApproval>,
+    #[serde(default)]
+    pub enabled_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub disabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub scopes: Option<Vec<String>>,
     #[serde(default)]
@@ -455,13 +451,13 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             required,
             supports_parallel_tool_calls,
             omit_tools_from,
-            default_tools_approval_mode,
-            enabled_tools,
-            disabled_tools,
             enable_elicitation,
             read_only,
             strict_tool_classification,
             require_approval_for_mutating,
+            default_tools_approval_mode,
+            enabled_tools,
+            disabled_tools,
             scopes,
             oauth,
             oauth_resource,
@@ -570,14 +566,14 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             required: required.unwrap_or_default(),
             supports_parallel_tool_calls: supports_parallel_tool_calls.unwrap_or_default(),
             omit_tools_from,
-            disabled_reason: None,
-            default_tools_approval_mode,
-            enabled_tools,
-            disabled_tools,
             enable_elicitation,
             read_only,
             strict_tool_classification,
             require_approval_for_mutating,
+            disabled_reason: None,
+            default_tools_approval_mode,
+            enabled_tools,
+            disabled_tools,
             scopes,
             oauth,
             oauth_resource,

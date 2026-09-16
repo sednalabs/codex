@@ -137,6 +137,14 @@ of strings; comma-separated strings are not supported. Use \
 }
 
 /// Orchestrator-owned feature settings.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ConfigLockfileToml {
+    pub version: u32,
+    pub codex_version: String,
+    pub config: ConfigToml,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct OrchestratorToml {
@@ -358,6 +366,9 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
 
+    /// Debugging and reproducibility settings.
+    pub debug: Option<DebugToml>,
+
     /// Optional URI-based file opener. If set, citations to files in the model
     /// output will be hyperlinked using the specified URI scheme.
     pub file_opener: Option<UriBasedFileOpener>,
@@ -504,18 +515,12 @@ pub struct ConfigToml {
     /// Defaults to `true`.
     pub check_for_update_on_startup: Option<bool>,
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     /// The published Sedna release stream used by update notices. `stable`
     /// includes only GitHub Releases whose `prerelease` flag is false.
     /// Defaults to `stable`.
     pub sedna_release_channel: Option<SednaReleaseChannel>,
 
-    /// When true, disables burst-paste detection for typed input entirely.
-    /// All characters are inserted as they are received, and no buffering
-    /// or placeholder replacement will occur for fast keypress bursts.
-=======
     /// Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub disable_paste_burst: Option<bool>,
 
     /// When `false`, disables analytics across Codex product surfaces in this machine.
@@ -559,6 +564,21 @@ pub enum ThreadStoreToml {
     InMemory {
         id: String,
     },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugToml {
+    pub config_lockfile: Option<DebugConfigLockToml>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct DebugConfigLockToml {
+    pub export_dir: Option<AbsolutePathBuf>,
+    pub load_path: Option<AbsolutePathBuf>,
+    pub allow_codex_version_mismatch: Option<bool>,
+    pub save_fields_resolved_from_model_catalog: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -690,8 +710,6 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
 #[schemars(deny_unknown_fields)]
 pub struct GoalsToml {
     /// Maximum token budget allowed for a goal and default budget for new goals.
@@ -700,7 +718,6 @@ pub struct GoalsToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub struct AgentsToml {
     /// Whether multi-agent tools are enabled. Defaults to true.
     /// An enabled `features.multi_agent_v2` setting takes precedence.
