@@ -25,9 +25,7 @@ pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2AttestedBaseline;
 pub use model::Phase2JobClaimOutcome;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use runtime::ConfiguredIdentityProvenance;
-=======
 pub use model::Project;
 pub use model::ProjectRoot;
 pub use model::ProjectSortKey;
@@ -36,7 +34,6 @@ pub use model::QueuedUserSubmissionRecord;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use sqlite::SqliteConfig;
@@ -69,13 +66,10 @@ pub use model::ThreadGoalStatus;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadRelationFilter;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use model::ThreadSpawnDescendants;
-=======
 pub use model::ThreadSection;
 pub use model::ThreadSectionAppearance;
 pub use model::ThreadSectionsPage;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub use model::ThreadsPage;
 pub use runtime::ExternalAgentConfigImportDetailsRecord;
 pub use runtime::ExternalAgentConfigImportFailureRecord;
@@ -148,14 +142,12 @@ pub const DB_INIT_METRIC: &str = "codex.sqlite.init.count";
 pub const DB_INIT_DURATION_METRIC: &str = "codex.sqlite.init.duration_ms";
 /// Rollout fallback attempts. Tags: [caller, reason]
 pub const DB_FALLBACK_METRIC: &str = "codex.sqlite.fallback.count";
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 
 /// Maximum descendant rows retained by thread-relation consumers.
 ///
 /// Recursive relation queries admit one additional row as a truncation sentinel so callers can
 /// expose every retained descendant while still detecting that more lineage exists.
 pub const MAX_THREAD_RELATION_DESCENDANTS: usize = 3_200;
-=======
 /// SQLite log batch write attempts. Tags: [status, error]
 pub const LOG_WRITE_METRIC: &str = "codex.sqlite.logs.write.count";
 /// SQLite log batch write latency. Tags: [status, error]
@@ -168,4 +160,3 @@ pub const LOG_WRITE_ENTRIES_METRIC: &str = "codex.sqlite.logs.write.entries";
 pub const LOG_WRITE_MAX_ENTRY_BYTES_METRIC: &str = "codex.sqlite.logs.write.max_entry_bytes";
 /// SQLite log entries discarded before they can be queued. Tags: [reason]
 pub const LOG_QUEUE_DROPPED_METRIC: &str = "codex.sqlite.logs.queue.dropped";
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360

@@ -24,11 +24,8 @@ use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
 use chrono::DateTime;
 use chrono::Utc;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_extension_api::ExtensionStorageId;
-=======
 use codex_history::RolloutItem;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::ThreadId;
 use serde_json::Value;
 use sqlx::QueryBuilder;
@@ -53,14 +50,11 @@ mod goal_execution_lease;
 mod goals;
 mod logs;
 mod memories;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub(crate) mod migration_repair;
 mod phase2_attestation;
-=======
 mod memory_versions;
 mod projects;
 mod queued_items;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 mod recovery;
 mod remote_control;
 mod rollout_migration;
@@ -147,19 +141,15 @@ impl StateRuntime {
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(sqlite.home()).await?;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-=======
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
         let queue_migrator = runtime_queue_migrator();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let state_path = sqlite.state_db_path();
         let logs_path = sqlite.logs_db_path();
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let usage_path = sqlite.usage_db_path();
         remove_legacy_db_files(
             sqlite.home(),
@@ -187,10 +177,8 @@ impl StateRuntime {
         let usage_migrator = runtime_usage_migrator();
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
-=======
         let queue_path = sqlite.queue_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let pool = match sqlite
             .open_state_db(&state_migrator, telemetry_override)
             .await
@@ -251,22 +239,13 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
         let usage_pool = match sqlite
             .open_usage_db(&usage_migrator, telemetry_override)
-=======
-        let queue_pool = match sqlite
-            .open_queue_db(&queue_migrator, telemetry_override)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
                 warn!("failed to open usage db at {}: {err}", usage_path.display());
-=======
-                warn!("failed to open queue db at {}: {err}", queue_path.display());
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
                 close_sqlite_pools(&[
                     pool.as_ref(),
                     logs_pool.as_ref(),
@@ -274,6 +253,19 @@ impl StateRuntime {
                     memories_pool.as_ref(),
                 ])
                 .await;
+                return Err(err);
+            }
+        };
+        let queue_pool = match sqlite
+            .open_queue_db(&queue_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open queue db at {}: {err}", queue_path.display());
+                close_sqlite_pools(&[
+                    pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref(), memories_pool.as_ref(), usage_pool.as_ref(),
+                ]).await;
                 return Err(err);
             }
         };
@@ -683,13 +675,9 @@ mod tests {
     use std::io;
     use std::path::Path;
     use std::sync::Mutex;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    use std::time::Duration;
-=======
     use std::sync::atomic::Ordering;
     use std::time::Duration;
     use std::time::Instant;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
     #[derive(Default)]
     struct TestTelemetry {
@@ -1121,13 +1109,10 @@ mod tests {
             "migrate_goals",
             "open_memories",
             "migrate_memories",
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
             "open_usage",
             "migrate_usage",
-=======
             "open_queue",
             "migrate_queue",
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             "ensure_backfill_state",
             "post_init_query",
         ]

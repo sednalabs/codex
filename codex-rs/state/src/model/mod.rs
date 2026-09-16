@@ -44,13 +44,10 @@ pub use thread_metadata::SortKey;
 pub use thread_metadata::ThreadMetadata;
 pub use thread_metadata::ThreadMetadataBuilder;
 pub use thread_metadata::ThreadRelationFilter;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 pub use thread_metadata::ThreadSpawnDescendants;
-=======
 pub use thread_metadata::ThreadSection;
 pub use thread_metadata::ThreadSectionAppearance;
 pub use thread_metadata::ThreadSectionsPage;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 pub use thread_metadata::ThreadsPage;
 
 pub(crate) use thread_goal::ThreadGoalRow;

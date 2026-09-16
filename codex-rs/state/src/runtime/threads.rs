@@ -1,10 +1,7 @@
 use super::*;
 use crate::SortDirection;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-=======
 use codex_protocol::SanitizedGitUrl;
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
@@ -1426,16 +1423,11 @@ fn push_list_threads_query(
         ),
         None => builder.push(" FROM threads"),
     };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let include_thread_id_tiebreaker =
-        relation_filter.is_some() || filters.sort_key == SortKey::RecencyAt;
-=======
     let include_thread_id_tiebreaker = relation_filter.is_some()
         || matches!(
             filters.sort_key,
             SortKey::RecencyAt | SortKey::SectionPosition
         );
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     push_thread_filters_with_preview(
         builder,
         filters,
@@ -1631,14 +1623,13 @@ fn push_thread_filters_with_preview<'a>(
     } else {
         builder.push(" AND threads.archived = 0");
     }
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     if !include_empty_preview {
         builder.push(" AND threads.preview <> ''");
     }
     if let Some(is_pinned) = is_pinned {
         builder.push(" AND threads.is_pinned = ");
         builder.push_bind(is_pinned);
-=======
+    }
     if !include_empty_preview && !matches!(section, Some(Some(_))) {
         builder.push(" AND threads.preview <> ''");
     }
@@ -1661,7 +1652,6 @@ fn push_thread_filters_with_preview<'a>(
             builder.push(" AND threads.project_id IS NULL");
         }
         None => {}
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     }
     if !allowed_sources.is_empty() {
         builder.push(" AND threads.source IN (");

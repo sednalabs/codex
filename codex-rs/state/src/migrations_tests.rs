@@ -10,7 +10,6 @@ use sqlx::migrate::Migrator;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 use super::USAGE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
 
@@ -28,13 +27,11 @@ const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
 const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
 const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
-=======
 use super::repair_legacy_recency_migration_version;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -302,11 +299,7 @@ async fn thread_section_migration_preserves_legacy_pin_compatibility() {
         .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     migrator_through(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION)
-=======
-    migrator_through(/*version*/ 44)
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         .run(&pool)
         .await
         .expect("released thread migrations should apply");
