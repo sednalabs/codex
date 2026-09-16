@@ -110,14 +110,14 @@ jobs:
     needs: fixture
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Create fixed provisional integration branch
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}
         run: |
           set -o pipefail
           python3 .github/scripts/upstream_integration_prepare.py --prepare | tee integration-prepare.json

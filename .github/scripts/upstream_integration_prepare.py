@@ -24,6 +24,13 @@ REWRITTEN_BASE = "aa505a66940223ac01048e2b75113965fe260118"
 INTEGRATION_BRANCH = "integration/upstream-20260916"
 INTEGRATION_REF = f"refs/heads/{INTEGRATION_BRANCH}"
 PREPARATION_MESSAGE = "Provisional upstream integration preparation; unresolved conflicts and carry remain."
+PUSH_FAILURES: tuple[tuple[str, tuple[bytes, ...]], ...] = (
+    ("github-app-workflow-write-denied", (b"refusing to allow a github app to create or update workflow",)),
+    ("auth-unavailable", (b"authentication failed", b"could not read username", b"http basic: access denied")),
+    ("repository-write-denied", (b"write access to repository not granted", b"permission to ", b"remote: permission")),
+    ("protected-ref-rejected", (b"protected branch", b"protected ref", b"gh006")),
+    ("lease-stale-info-conflict", (b"stale info", b"fetch first", b"non-fast-forward")),
+)
 
 
 class PrepareError(Exception):
@@ -174,7 +181,16 @@ def push_new_ref(repo: Path, candidate: str) -> None:
         environment=_push_environment(),
     )
     if process.returncode != 0:
-        raise PrepareError("integration branch creation refused")
+        raise PrepareError(f"integration branch creation refused: {classify_push_failure(process.stderr)}")
+
+
+def classify_push_failure(stderr: bytes) -> str:
+    """Reduce Git transport diagnostics to fixed public-safe categories only."""
+    lowered = stderr.lower()
+    for category, signals in PUSH_FAILURES:
+        if any(signal in lowered for signal in signals):
+            return category
+    return "unknown-push-refusal"
 
 
 def _metadata(inputs: FrozenInputs, preview_result: dict[str, object], candidate: str | None = None) -> dict[str, object]:
@@ -204,6 +220,33 @@ def _metadata(inputs: FrozenInputs, preview_result: dict[str, object], candidate
     return result
 
 
+def _failure_metadata(
+    inputs: FrozenInputs,
+    reason: str,
+    preview_result: dict[str, object] | None = None,
+    candidate: str | None = None,
+) -> dict[str, object]:
+    """Keep already-created provisional identity without relaying Git output."""
+    if preview_result is not None:
+        result = _metadata(inputs, preview_result, candidate)
+        result.update(status="diagnostic-incomplete", reason=reason)
+        return result
+    return {
+        "version": 1,
+        "status": "diagnostic-incomplete",
+        "reason": reason,
+        "successful_sync": False,
+        "carry_status": "unknown",
+        "inputs": {
+            "downstream": inputs.downstream,
+            "upstream": inputs.upstream,
+            "logical_base": inputs.logical_base,
+            "rewritten_base": inputs.rewritten_base,
+        },
+        "ref": INTEGRATION_REF,
+    }
+
+
 def prepare_integration(*, publish: bool) -> dict[str, object]:
     """Perform the fixed preparation only when explicitly requested."""
     inputs = validate_inputs(FrozenInputs())
@@ -224,6 +267,8 @@ def prepare_integration(*, publish: bool) -> dict[str, object]:
         }
     with tempfile.TemporaryDirectory(prefix="upstream-integration-prepare-") as temporary:
         repo = Path(temporary) / "objects.git"
+        preview_result: dict[str, object] | None = None
+        candidate: str | None = None
         try:
             preview.run_git(Path(temporary), "init", "--bare", "--quiet", os.fspath(repo))
             for name, url in preview.PUBLIC_REMOTES.items():
@@ -242,20 +287,7 @@ def prepare_integration(*, publish: bool) -> dict[str, object]:
             push_new_ref(repo, candidate)
             return _metadata(inputs, preview_result, candidate)
         except (preview.PreviewError, PrepareError) as error:
-            return {
-                "version": 1,
-                "status": "diagnostic-incomplete",
-                "reason": str(error),
-                "successful_sync": False,
-                "carry_status": "unknown",
-                "inputs": {
-                    "downstream": inputs.downstream,
-                    "upstream": inputs.upstream,
-                    "logical_base": inputs.logical_base,
-                    "rewritten_base": inputs.rewritten_base,
-                },
-                "ref": INTEGRATION_REF,
-            }
+            return _failure_metadata(inputs, str(error), preview_result, candidate)
 
 
 def main() -> int:

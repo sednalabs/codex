@@ -135,6 +135,64 @@ class PreparationControlTests(unittest.TestCase):
         expected = base64.b64encode(b"x-access-token:test-token").decode("ascii")
         self.assertEqual(environment["GIT_CONFIG_VALUE_0"], f"AUTHORIZATION: basic {expected}")
 
+    def test_workflow_scopes_dedicated_sync_secret_to_preparation_step(self) -> None:
+        workflow = (SCRIPT_DIR.parent / "workflows" / "upstream-merge-preview.yml").read_text(encoding="utf-8")
+        before_prepare, prepare_job = workflow.split("  prepare-integration:\n", 1)
+        secret = "${{ secrets.SEDNA_SYNC_UPSTREAM_PUSH_TOKEN }}"
+        self.assertNotIn(secret, before_prepare)
+        self.assertEqual(prepare_job.count(secret), 1)
+        self.assertIn("permissions:\n      contents: read", prepare_job)
+        self.assertIn("GITHUB_TOKEN: " + secret, prepare_job)
+
+    def test_push_failure_categories_do_not_reflect_transport_text(self) -> None:
+        cases = (
+            (b"remote: Refusing to allow a GitHub App to create or update workflow", "github-app-workflow-write-denied"),
+            (b"fatal: Authentication failed for private-host", "auth-unavailable"),
+            (b"remote: Write access to repository not granted", "repository-write-denied"),
+            (b"remote: error: GH006: Protected branch update failed", "protected-ref-rejected"),
+            (b"! [rejected] stale info", "lease-stale-info-conflict"),
+            (b"hostile transport detail /private/token-like-value", "unknown-push-refusal"),
+        )
+        completed = subprocess.CompletedProcess
+        for stderr, category in cases:
+            self.assertEqual(prepare.classify_push_failure(stderr), category)
+            with mock.patch.object(prepare, "_push_environment", return_value={}):
+                with mock.patch.object(prepare, "_run", return_value=completed([], 1, b"", stderr)):
+                    with self.assertRaises(prepare.PrepareError) as raised:
+                        prepare.push_new_ref(Path("/unused"), "a" * 40)
+            self.assertEqual(str(raised.exception), f"integration branch creation refused: {category}")
+            self.assertNotIn("private", str(raised.exception))
+
+    def test_push_failure_retains_candidate_tree_parent_and_frozen_inputs(self) -> None:
+        inputs = prepare.FrozenInputs()
+        preview_result = {
+            "status": "conflicts",
+            "merge": {
+                "result_tree": "a" * 40,
+                "staged_path_count": 517,
+                "conflict_record_count": 29,
+            },
+        }
+        result = prepare._failure_metadata(
+            inputs,
+            "integration branch creation refused: github-app-workflow-write-denied",
+            preview_result,
+            "b" * 40,
+        )
+        self.assertEqual(result["status"], "diagnostic-incomplete")
+        self.assertEqual(result["candidate_commit"], "b" * 40)
+        self.assertEqual(result["parent_commit"], inputs.downstream)
+        self.assertEqual(result["result_tree"], "a" * 40)
+        self.assertEqual(result["inputs"], {
+            "downstream": inputs.downstream,
+            "upstream": inputs.upstream,
+            "logical_base": inputs.logical_base,
+            "rewritten_base": inputs.rewritten_base,
+        })
+        self.assertEqual(result["ref"], prepare.INTEGRATION_REF)
+        self.assertFalse(result["successful_sync"])
+        self.assertEqual(result["carry_status"], "unknown")
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main(verbosity=2))
