@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+use codex_protocol::ThreadId;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use sqlx::Connection;
@@ -8,26 +9,32 @@ use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
+use super::GOALS_MIGRATOR;
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
 use super::USAGE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
 
-const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
+const PRE_RECENCY_MIGRATION_VERSION: i64 = 38;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
-const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
+const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 39;
 const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
-const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
+const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 36;
 const LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 41;
-const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
-const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
+const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 37;
+const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 9004;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
-const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
+const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 38;
+const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 43;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
-const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
-use super::repair_legacy_recency_migration_version;
+const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
+const LEGACY_GOAL_ID: &str = "legacy-goal";
+const LEGACY_GOAL_STATUS: &str = "active";
+const LEGACY_GOAL_TOKEN_BUDGET: Option<i64> = Some(123);
+const LEGACY_GOAL_TOKENS_USED: i64 = 17;
+const LEGACY_GOAL_TIME_USED_SECONDS: i64 = 19;
+const LEGACY_GOAL_CREATED_AT_MS: i64 = 1_700_000_000_000;
+const LEGACY_GOAL_UPDATED_AT_MS: i64 = 1_700_000_001_000;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
 
@@ -51,12 +58,69 @@ fn migrator_through(version: i64) -> Migrator {
     }
 }
 
-fn origin_main_migrator() -> Migrator {
-    let remote_control_enabled_migration = STATE_MIGRATOR
-        .migrations
+/// Maps each historical downstream migration file to the canonical embedded
+/// migration containing its exact SQL. Versions 40 through 42 are already
+/// upstream-identical, so they deliberately keep their own canonical number.
+const DOWNSTREAM_STATE_MIGRATION_TARGETS: &[(i64, i64)] = &[
+    (24, 9001),
+    (25, 24),
+    (26, 25),
+    (27, 9002),
+    (28, 9003),
+    (29, 26),
+    (30, 27),
+    (31, 28),
+    (32, 29),
+    (33, 30),
+    (34, 31),
+    (35, 32),
+    (36, 33),
+    (37, 34),
+    (38, 9004),
+    (39, 35),
+    (40, 40),
+    (41, 41),
+    (42, 42),
+    (43, 39),
+    (44, 36),
+    (45, 9005),
+    (46, 37),
+    (47, 38),
+    (48, 43),
+    (49, 44),
+    (50, 9006),
+];
+
+fn downstream_migrator_through(version: i64) -> Migrator {
+    let mut migrations = STATE_MIGRATOR
         .iter()
-        .find(|migration| migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
-        .expect("remote control enabled migration should exist");
+        .filter(|migration| migration.version <= 23)
+        .cloned()
+        .collect::<Vec<_>>();
+    for &(legacy_version, canonical_version) in DOWNSTREAM_STATE_MIGRATION_TARGETS {
+        if legacy_version > version {
+            break;
+        }
+        let migration = STATE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == canonical_version)
+            .expect("canonical migration should exist");
+        migrations.push(Migration::new(
+            legacy_version,
+            migration.description.clone(),
+            migration.migration_type,
+            migration.sql.clone(),
+            migration.no_tx,
+        ));
+    }
+    Migrator::with_migrations(migrations)
+}
+
+fn downstream_migrator_through_goal_status() -> Migrator {
+    downstream_migrator_through(36)
+}
+
+fn origin_main_migrator() -> Migrator {
     let external_imports_migration = STATE_MIGRATOR
         .migrations
         .iter()
@@ -67,16 +131,9 @@ fn origin_main_migrator() -> Migrator {
     let mut migrations = STATE_MIGRATOR
         .migrations
         .iter()
-        .filter(|migration| migration.version < LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
+        .filter(|migration| migration.version <= 35)
         .cloned()
         .collect::<Vec<_>>();
-    migrations.push(Migration::new(
-        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
-        remote_control_enabled_migration.description.clone(),
-        remote_control_enabled_migration.migration_type,
-        remote_control_enabled_migration.sql.clone(),
-        remote_control_enabled_migration.no_tx,
-    ));
     migrations.push(Migration::new(
         LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
         external_imports_migration.description.clone(),
@@ -84,16 +141,6 @@ fn origin_main_migrator() -> Migrator {
         external_imports_migration.sql.clone(),
         external_imports_migration.no_tx,
     ));
-    migrations.extend(
-        STATE_MIGRATOR
-            .migrations
-            .iter()
-            .filter(|migration| {
-                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-                    && migration.version <= DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION
-            })
-            .cloned(),
-    );
     Migrator::with_migrations(migrations)
 }
 
@@ -133,9 +180,7 @@ fn upstream_external_agent_import_provider_migrator() -> Migrator {
     let mut migrations = STATE_MIGRATOR
         .migrations
         .iter()
-        .filter(|migration| {
-            migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-        })
+        .filter(|migration| migration.version <= 43)
         .cloned()
         .collect::<Vec<_>>();
     migrations.push(Migration::new(
@@ -145,17 +190,6 @@ fn upstream_external_agent_import_provider_migrator() -> Migrator {
         external_imports_migration.sql.clone(),
         external_imports_migration.no_tx,
     ));
-    migrations.extend(
-        STATE_MIGRATOR
-            .migrations
-            .iter()
-            .filter(|migration| {
-                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-                    && migration.version
-                        < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
-            })
-            .cloned(),
-    );
     migrations.push(Migration::new(
         LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
         provider_id_migration.description.clone(),
@@ -200,6 +234,114 @@ INSERT INTO threads (
     .execute(pool)
     .await
     .expect("old-binary-shaped thread should insert");
+}
+
+async fn insert_legacy_goal(pool: &sqlx::SqlitePool, thread_id: &str, objective: &str) {
+    sqlx::query(
+        r#"
+INSERT INTO thread_goals (
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(thread_id)
+    .bind(LEGACY_GOAL_ID)
+    .bind(objective)
+    .bind(LEGACY_GOAL_STATUS)
+    .bind(LEGACY_GOAL_TOKEN_BUDGET)
+    .bind(LEGACY_GOAL_TOKENS_USED)
+    .bind(LEGACY_GOAL_TIME_USED_SECONDS)
+    .bind(LEGACY_GOAL_CREATED_AT_MS)
+    .bind(LEGACY_GOAL_UPDATED_AT_MS)
+    .execute(pool)
+    .await
+    .expect("legacy goal should insert");
+}
+
+async fn assert_transferred_legacy_goal_row(
+    sqlite: &crate::SqliteConfig,
+    thread_id: &str,
+    objective: &str,
+) {
+    let goals_pool = sqlite
+        .open_read_write_pool(&sqlite.goals_db_path())
+        .await
+        .expect("goals database should open for transferred-row readback");
+    let destination = sqlx::query(
+        r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms
+FROM thread_goals
+WHERE thread_id = ?
+        "#,
+    )
+    .bind(thread_id)
+    .fetch_one(&goals_pool)
+    .await
+    .expect("transferred goal row should exist");
+    let destination = (
+        destination.get::<String, _>("thread_id"),
+        destination.get::<String, _>("goal_id"),
+        destination.get::<String, _>("objective"),
+        destination.get::<String, _>("status"),
+        destination.get::<Option<i64>, _>("token_budget"),
+        destination.get::<i64, _>("tokens_used"),
+        destination.get::<i64, _>("time_used_seconds"),
+        destination.get::<i64, _>("created_at_ms"),
+        destination.get::<i64, _>("updated_at_ms"),
+    );
+    let expected = (
+        thread_id.to_owned(),
+        LEGACY_GOAL_ID.to_owned(),
+        objective.to_owned(),
+        LEGACY_GOAL_STATUS.to_owned(),
+        LEGACY_GOAL_TOKEN_BUDGET,
+        LEGACY_GOAL_TOKENS_USED,
+        LEGACY_GOAL_TIME_USED_SECONDS,
+        LEGACY_GOAL_CREATED_AT_MS,
+        LEGACY_GOAL_UPDATED_AT_MS,
+    );
+    assert_eq!(
+        destination, expected,
+        "all legacy goal fields must transfer exactly"
+    );
+    goals_pool.close().await;
+}
+
+async fn assert_canonical_state_ledger(pool: &sqlx::SqlitePool) {
+    let applied = sqlx::query("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+        .fetch_all(pool)
+        .await
+        .expect("state migration ledger should load")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<i64, _>("version"),
+                row.get::<Vec<u8>, _>("checksum"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = STATE_MIGRATOR
+        .iter()
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(applied, expected);
 }
 
 #[test]
@@ -1431,7 +1573,7 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
         .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
-    migrator_through(/*version*/ 39)
+    migrator_through(/*version*/ 35)
         .run(&pool)
         .await
         .expect("pre-visible-sort migrations should apply");
@@ -1444,7 +1586,7 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
         .iter()
-        .filter(|migration| migration.version <= 39)
+        .filter(|migration| migration.version <= 35)
         .cloned()
         .collect::<Vec<_>>();
     legacy_migrations.push(Migration::new(
@@ -1507,7 +1649,7 @@ async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41
         .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
-    migrator_through(/*version*/ 40)
+    migrator_through(/*version*/ 36)
         .run(&pool)
         .await
         .expect("pre-thread-name migrations should apply");
@@ -1520,7 +1662,7 @@ async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
         .iter()
-        .filter(|migration| migration.version <= 40)
+        .filter(|migration| migration.version <= 36)
         .cloned()
         .collect::<Vec<_>>();
     legacy_migrations.push(Migration::new(
@@ -1609,6 +1751,522 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
     read_pool.close().await;
     pool.close().await;
     repair_result.expect("current migration history should not need the writer slot");
+}
+
+#[tokio::test]
+async fn state_migration_repair_rejects_an_unknown_checksum_without_mutating_history() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("current state schema should apply");
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 24")
+        .bind(vec![0xA5_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("test checksum should update");
+
+    let repair = repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR).await;
+    assert!(
+        repair.is_err(),
+        "unknown migration checksum must fail closed"
+    );
+    let checksum = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 24",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("checksum should remain readable");
+    assert_eq!(checksum, vec![0xA5_u8; 32]);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn pre_drop_state_goals_transfer_to_goals_database_before_canonical_drop() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let thread_id = "00000000-0000-0000-0000-000000000099";
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    migrator_through(33)
+        .run(&state_pool)
+        .await
+        .expect("pre-drop upstream state history should apply");
+    insert_old_binary_thread(&state_pool, thread_id, "/tmp/legacy-goal.jsonl").await;
+    insert_legacy_goal(&state_pool, thread_id, "preserve this user goal").await;
+    state_pool.close().await;
+
+    let runtime = crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("runtime should transfer goals before dropping the state table");
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(ThreadId::from_string(thread_id).expect("valid thread id"))
+        .await
+        .expect("goal query should succeed")
+        .expect("transferred goal should exist");
+    assert_eq!(goal.goal_id, "legacy-goal");
+    assert_eq!(goal.objective, "preserve this user goal");
+    assert_eq!(goal.token_budget, Some(123));
+    assert_eq!(goal.tokens_used, 17);
+    assert_eq!(goal.time_used_seconds, 19);
+    runtime.close().await;
+
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should reopen");
+    let source_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_goals'",
+    )
+    .fetch_optional(&state_pool)
+    .await
+    .expect("state schema should query")
+    .is_some();
+    assert!(
+        !source_exists,
+        "canonical state migration should drop the source only after transfer"
+    );
+    state_pool.close().await;
+}
+
+#[tokio::test]
+async fn downstream_pre_drop_state_goals_transfer_from_d32_through_d36() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let thread_id = "00000000-0000-0000-0000-000000000098";
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    downstream_migrator_through_goal_status()
+        .run(&state_pool)
+        .await
+        .expect("D32 through D36 state history should apply");
+    insert_old_binary_thread(&state_pool, thread_id, "/tmp/downstream-goal.jsonl").await;
+    insert_legacy_goal(&state_pool, thread_id, "preserve downstream user goal").await;
+    state_pool.close().await;
+
+    let runtime = crate::runtime::StateRuntime::init(sqlite, "test-provider".to_string())
+        .await
+        .expect("runtime should remap D history and transfer its goal rows");
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(ThreadId::from_string(thread_id).expect("valid thread id"))
+        .await
+        .expect("goal query should succeed")
+        .expect("transferred goal should exist");
+    assert_eq!(goal.objective, "preserve downstream user goal");
+    assert_eq!(goal.tokens_used, 17);
+    assert_eq!(goal.time_used_seconds, 19);
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn every_pre_drop_upstream_and_downstream_cutline_transfers_legacy_goals() {
+    for (family, cutlines) in [
+        ("U", &[29, 30, 31, 32, 33][..]),
+        ("D", &[32, 33, 34, 35, 36][..]),
+    ] {
+        for &cutline in cutlines {
+            let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+            tokio::fs::create_dir_all(&sqlite_home)
+                .await
+                .expect("sqlite home should be created");
+            let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+                let _ = std::fs::remove_dir_all(sqlite_home);
+            });
+            let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+            let thread_id = format!("00000000-0000-0000-0000-{cutline:012}");
+            let state_pool = sqlite
+                .open_read_write_pool(&sqlite.state_db_path())
+                .await
+                .expect("state database should open");
+            let historical_migrator = match family {
+                "U" => migrator_through(cutline),
+                "D" => downstream_migrator_through(cutline),
+                _ => unreachable!("the fixture families are fixed"),
+            };
+            historical_migrator
+                .run(&state_pool)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{family}{cutline} state history should apply: {error}")
+                });
+            insert_old_binary_thread(&state_pool, &thread_id, "/tmp/cutline-goal.jsonl").await;
+            let objective = format!("preserve {family}{cutline} goal");
+            insert_legacy_goal(&state_pool, &thread_id, &objective).await;
+            state_pool.close().await;
+
+            let runtime = crate::runtime::StateRuntime::init(
+                sqlite.clone(),
+                "test-provider".to_string(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{family}{cutline} startup should bridge goals before the state drop: {error}"
+                )
+            });
+            assert_transferred_legacy_goal_row(&sqlite, &thread_id, &objective).await;
+            let goal = runtime
+                .thread_goals()
+                .get_thread_goal(ThreadId::from_string(&thread_id).expect("valid thread id"))
+                .await
+                .expect("goal query should succeed")
+                .expect("transferred goal should exist");
+            assert_eq!(goal.objective, objective, "{family}{cutline}");
+            assert_eq!(goal.goal_id, "legacy-goal", "{family}{cutline}");
+            runtime.close().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_downstream_history_converges_to_the_canonical_state_ledger() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    downstream_migrator_through(50)
+        .run(&state_pool)
+        .await
+        .expect("full downstream state history should apply");
+    state_pool.close().await;
+
+    let runtime = crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("runtime should converge the full downstream history");
+    runtime.close().await;
+
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should reopen");
+    assert_canonical_state_ledger(&state_pool).await;
+    state_pool.close().await;
+}
+
+#[tokio::test]
+async fn full_upstream_history_converges_to_the_canonical_state_ledger() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    migrator_through(55)
+        .run(&state_pool)
+        .await
+        .expect("full upstream state history should apply");
+    state_pool.close().await;
+
+    let runtime = crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("runtime should add only downstream high migrations to upstream history");
+    runtime.close().await;
+
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should reopen");
+    assert_canonical_state_ledger(&state_pool).await;
+    state_pool.close().await;
+}
+
+#[tokio::test]
+async fn destination_collision_preflight_does_not_mutate_the_mixed_history_ledger() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    downstream_migrator_through(34)
+        .run(&pool)
+        .await
+        .expect("real downstream pre-drop state history should apply");
+
+    // This is intentionally a corrupt mixed ledger, not an old-binary fixture:
+    // it combines two real embedded checksums so two records target canonical
+    // U31. The repair must reject it before its transactional remap starts.
+    let u31_checksum = STATE_MIGRATOR
+        .iter()
+        .find(|migration| migration.version == 31)
+        .expect("canonical U31 migration should exist")
+        .checksum
+        .to_vec();
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 31")
+        .bind(u31_checksum)
+        .execute(&pool)
+        .await
+        .expect("mixed-ledger collision should be injected");
+    let before =
+        sqlx::query("SELECT version, description, checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("mixed ledger should load")
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<i64, _>("version"),
+                    row.get::<String, _>("description"),
+                    row.get::<Vec<u8>, _>("checksum"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+    let repair = repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR).await;
+    assert!(repair.is_err(), "destination collisions must fail closed");
+    assert!(
+        repair
+            .err()
+            .expect("collision should produce an error")
+            .to_string()
+            .contains("maps multiple records to canonical version 31")
+    );
+    let after =
+        sqlx::query("SELECT version, description, checksum FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .expect("mixed ledger should remain readable")
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<i64, _>("version"),
+                    row.get::<String, _>("description"),
+                    row.get::<Vec<u8>, _>("checksum"),
+                )
+            })
+            .collect::<Vec<_>>();
+    assert_eq!(after, before, "collision preflight must not mutate history");
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn goal_transfer_reopens_after_destination_commit_failure_without_losing_source() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let thread_id = "00000000-0000-0000-0000-000000000101";
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    migrator_through(33)
+        .run(&state_pool)
+        .await
+        .expect("pre-drop upstream state history should apply");
+    insert_old_binary_thread(&state_pool, thread_id, "/tmp/reopen-goal.jsonl").await;
+    insert_legacy_goal(&state_pool, thread_id, "retry after destination commit").await;
+    state_pool.close().await;
+
+    crate::runtime::migration_repair::fail_next_goal_transfer_after_destination_commit(thread_id);
+    let first_open =
+        crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await;
+    assert!(
+        first_open.is_err(),
+        "injected post-commit failure should abort startup"
+    );
+
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should reopen after injected failure");
+    let source_goal =
+        sqlx::query_scalar::<_, String>("SELECT objective FROM thread_goals WHERE thread_id = ?")
+            .bind(thread_id)
+            .fetch_one(&state_pool)
+            .await
+            .expect("source goal must remain until canonical drop");
+    assert_eq!(source_goal, "retry after destination commit");
+    state_pool.close().await;
+
+    let runtime = crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("retry should accept the identical committed destination goal");
+    assert!(
+        runtime
+            .thread_goals()
+            .get_thread_goal(ThreadId::from_string(thread_id).expect("valid thread id"))
+            .await
+            .expect("goal query should succeed")
+            .is_some()
+    );
+    runtime.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_new_runtimes_serialize_goal_transfer_before_state_drop() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let thread_id = "00000000-0000-0000-0000-000000000102";
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    migrator_through(33)
+        .run(&state_pool)
+        .await
+        .expect("pre-drop upstream state history should apply");
+    insert_old_binary_thread(&state_pool, thread_id, "/tmp/concurrent-goal.jsonl").await;
+    insert_legacy_goal(&state_pool, thread_id, "serialize concurrent transfer").await;
+    state_pool.close().await;
+
+    let (first, second) = tokio::join!(
+        crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string()),
+        crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+    );
+    let first = first.expect("first runtime should initialize");
+    let second = second.expect("second runtime should initialize");
+    assert!(
+        first
+            .thread_goals()
+            .get_thread_goal(ThreadId::from_string(thread_id).expect("valid thread id"))
+            .await
+            .expect("first goal query should succeed")
+            .is_some()
+    );
+    assert!(
+        second
+            .thread_goals()
+            .get_thread_goal(ThreadId::from_string(thread_id).expect("valid thread id"))
+            .await
+            .expect("second goal query should succeed")
+            .is_some()
+    );
+    first.close().await;
+    second.close().await;
+}
+
+#[tokio::test]
+async fn conflicting_pre_drop_goal_destination_fails_closed_without_dropping_source() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let thread_id = "00000000-0000-0000-0000-000000000100";
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should open");
+    migrator_through(33)
+        .run(&state_pool)
+        .await
+        .expect("pre-drop upstream state history should apply");
+    insert_old_binary_thread(&state_pool, thread_id, "/tmp/conflicting-goal.jsonl").await;
+    insert_legacy_goal(&state_pool, thread_id, "source goal").await;
+    state_pool.close().await;
+
+    let goals_pool = sqlite
+        .open_read_write_pool(&sqlite.goals_db_path())
+        .await
+        .expect("goals database should open");
+    GOALS_MIGRATOR
+        .run(&goals_pool)
+        .await
+        .expect("goals schema should apply");
+    sqlx::query(
+        r#"
+INSERT INTO thread_goals (
+    thread_id, goal_id, objective, status, token_budget, tokens_used,
+    time_used_seconds, created_at_ms, updated_at_ms
+) VALUES (?, 'different-goal', 'destination goal', 'active', NULL, 0, 0, 1, 1)
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&goals_pool)
+    .await
+    .expect("conflicting destination goal should insert");
+    goals_pool.close().await;
+
+    let result =
+        crate::runtime::StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await;
+    assert!(
+        result.is_err(),
+        "conflicting destination goal must fail closed"
+    );
+    let error = result
+        .err()
+        .expect("conflicting destination goal should return an error");
+    assert!(
+        error
+            .to_string()
+            .contains("conflicts with an existing destination goal")
+    );
+
+    let state_pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("state database should reopen");
+    let source_goal =
+        sqlx::query_scalar::<_, String>("SELECT objective FROM thread_goals WHERE thread_id = ?")
+            .bind(thread_id)
+            .fetch_one(&state_pool)
+            .await
+            .expect("source goal must remain after conflict");
+    assert_eq!(source_goal, "source goal");
+    state_pool.close().await;
 }
 
 #[tokio::test]

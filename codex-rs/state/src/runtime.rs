@@ -50,9 +50,9 @@ mod goal_execution_lease;
 mod goals;
 mod logs;
 mod memories;
+mod memory_versions;
 pub(crate) mod migration_repair;
 mod phase2_attestation;
-mod memory_versions;
 mod projects;
 mod queued_items;
 mod recovery;
@@ -175,13 +175,27 @@ impl StateRuntime {
         let queue_migrator = runtime_queue_migrator();
         let queue_path = sqlite.queue_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
+        // The legacy state database can still own thread_goals until canonical
+        // migration 34 drops that table. Prepare the destination first so the
+        // state bridge can copy user rows before it permits that drop.
+        let goals_pool = match sqlite
+            .open_goals_db(&goals_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open goals db at {}: {err}", goals_path.display());
+                return Err(err);
+            }
+        };
         let pool = match sqlite
-            .open_state_db(&state_migrator, telemetry_override)
+            .open_state_db(&state_migrator, telemetry_override, goals_pool.as_ref())
             .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open state db at {}: {err}", state_path.display());
+                goals_pool.close().await;
                 return Err(err);
             }
         };
@@ -196,7 +210,7 @@ impl StateRuntime {
             &extension_migrations_result,
         );
         if let Err(err) = extension_migrations_result {
-            close_sqlite_pools(&[pool.as_ref()]).await;
+            close_sqlite_pools(&[pool.as_ref(), goals_pool.as_ref()]).await;
             return Err(err);
         }
         let logs_pool = match sqlite
@@ -206,18 +220,7 @@ impl StateRuntime {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open logs db at {}: {err}", logs_path.display());
-                close_sqlite_pools(&[pool.as_ref()]).await;
-                return Err(err);
-            }
-        };
-        let goals_pool = match sqlite
-            .open_goals_db(&goals_migrator, telemetry_override)
-            .await
-        {
-            Ok(db) => Arc::new(db),
-            Err(err) => {
-                warn!("failed to open goals db at {}: {err}", goals_path.display());
-                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref()]).await;
+                close_sqlite_pools(&[pool.as_ref(), goals_pool.as_ref()]).await;
                 return Err(err);
             }
         };
@@ -260,8 +263,13 @@ impl StateRuntime {
             Err(err) => {
                 warn!("failed to open queue db at {}: {err}", queue_path.display());
                 close_sqlite_pools(&[
-                    pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref(), memories_pool.as_ref(), usage_pool.as_ref(),
-                ]).await;
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    memories_pool.as_ref(),
+                    usage_pool.as_ref(),
+                ])
+                .await;
                 return Err(err);
             }
         };
@@ -860,84 +868,23 @@ mod tests {
         strict_pool.close().await;
 
         let tolerant_migrator = runtime_state_migrator();
+        let goals_pool = sqlite
+            .open_goals_db(
+                &crate::migrations::runtime_goals_migrator(),
+                /*telemetry_override*/ None,
+            )
+            .await
+            .expect("open goals database before state");
         let tolerant_pool = sqlite
-            .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
+            .open_state_db(
+                &tolerant_migrator,
+                /*telemetry_override*/ None,
+                &goals_pool,
+            )
             .await
             .expect("runtime migrator should tolerate newer applied migrations");
         tolerant_pool.close().await;
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
-
-    #[tokio::test]
-    async fn open_state_sqlite_marks_existing_thread_source_migration_applied() {
-        let codex_home = unique_temp_dir();
-        tokio::fs::create_dir_all(&codex_home)
-            .await
-            .expect("create codex home");
-        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
-        let state_path = sqlite.state_db_path();
-        let pool = sqlite
-            .open_read_write_pool(&state_path)
-            .await
-            .expect("open state db");
-        let partial_migrator = Migrator {
-            migrations: Cow::Owned(
-                STATE_MIGRATOR
-                    .iter()
-                    .filter(|migration| migration.version <= 32)
-                    .cloned()
-                    .collect(),
-            ),
-            ignore_missing: STATE_MIGRATOR.ignore_missing,
-            locking: STATE_MIGRATOR.locking,
-            no_tx: STATE_MIGRATOR.no_tx,
-            table_name: STATE_MIGRATOR.table_name.clone(),
-            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
-        };
-        partial_migrator
-            .run(&pool)
-            .await
-            .expect("apply state schema before thread_source migration");
-        sqlx::query("ALTER TABLE threads ADD COLUMN thread_source TEXT")
-            .execute(&pool)
-            .await
-            .expect("simulate column applied without migration record");
-        pool.close().await;
-
-        let strict_pool = open_db_pool(state_path.as_path()).await;
-        let strict_err = STATE_MIGRATOR
-            .run(&strict_pool)
-            .await
-            .expect_err("strict migrator should try to add the existing column again");
-        assert!(strict_err.to_string().contains("duplicate column name"));
-        strict_pool.close().await;
-
-        let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = sqlite
-            .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
-            .await
-            .expect("runtime migrator should repair the missing migration record");
-
-        let applied: (String, bool, Vec<u8>) = sqlx::query_as(
-            "SELECT description, success, checksum FROM _sqlx_migrations WHERE version = 33",
-        )
-        .fetch_one(&tolerant_pool)
-        .await
-        .expect("migration 33 should be recorded");
-        let migration = tolerant_migrator
-            .iter()
-            .find(|migration| migration.version == 33)
-            .expect("embedded migration 33");
-        assert_eq!(
-            applied,
-            (
-                migration.description.to_string(),
-                true,
-                migration.checksum.as_ref().to_vec(),
-            )
-        );
-        tolerant_pool.close().await;
+        goals_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

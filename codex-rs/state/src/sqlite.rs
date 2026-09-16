@@ -7,6 +7,7 @@
 
 use crate::DbTelemetry;
 use crate::runtime::RuntimeDbInitError;
+use crate::runtime::migration_repair::acquire_state_migration_lease;
 use crate::runtime::migration_repair::repair_state_migrations;
 use crate::telemetry;
 use crate::telemetry::DbKind;
@@ -189,6 +190,7 @@ impl SqliteConfig {
             MEMORIES_V2_DB,
             &crate::migrations::runtime_memories_migrator(),
             /*telemetry_override*/ None,
+            None,
         )
         .await
     }
@@ -218,11 +220,16 @@ impl SqliteConfig {
         &self,
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
+        goals_pool: &SqlitePool,
     ) -> anyhow::Result<SqlitePool> {
         // New state DBs should use incremental auto-vacuum, but retrofitting an
         // existing DB requires a full VACUUM. Do not attempt that during process
         // startup: it is maintenance work that can contend with foreground writers.
-        self.open_runtime_db(STATE_DB, migrator, telemetry_override)
+        // Hold this lease until SQLx has completed the canonical migration. A
+        // second new runtime must not observe and drop the legacy goals source
+        // while the first runtime is still copying it to goals_1.sqlite.
+        let _lease = acquire_state_migration_lease(&self.state_db_path()).await?;
+        self.open_runtime_db(STATE_DB, migrator, telemetry_override, Some(goals_pool))
             .await
     }
 
@@ -231,7 +238,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(LOGS_DB, migrator, telemetry_override)
+        self.open_runtime_db(LOGS_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -240,7 +247,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(GOALS_DB, migrator, telemetry_override)
+        self.open_runtime_db(GOALS_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -249,7 +256,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(MEMORIES_DB, migrator, telemetry_override)
+        self.open_runtime_db(MEMORIES_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -258,7 +265,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
+        self.open_runtime_db(USAGE_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -267,7 +274,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(QUEUE_DB, migrator, telemetry_override)
+        self.open_runtime_db(QUEUE_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -276,7 +283,7 @@ impl SqliteConfig {
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<SqlitePool> {
-        self.open_runtime_db(THREAD_HISTORY_DB, migrator, telemetry_override)
+        self.open_runtime_db(THREAD_HISTORY_DB, migrator, telemetry_override, None)
             .await
     }
 
@@ -285,6 +292,7 @@ impl SqliteConfig {
         spec: RuntimeDbSpec,
         migrator: &Migrator,
         telemetry_override: Option<&dyn DbTelemetry>,
+        goals_pool: Option<&SqlitePool>,
     ) -> anyhow::Result<SqlitePool> {
         let path = spec.path(self.home());
         let started = Instant::now();
@@ -304,7 +312,10 @@ impl SqliteConfig {
         })?;
         if let Some(repair_phase) = spec.repair_phase {
             let started = Instant::now();
-            let repair_result = repair_state_migrations(&pool, migrator).await;
+            let goals_pool = goals_pool.ok_or_else(|| {
+                anyhow::anyhow!("state migration repair requires the migrated goals database")
+            })?;
+            let repair_result = repair_state_migrations(&pool, goals_pool, migrator).await;
             telemetry::record_init_result(
                 telemetry_override,
                 spec.kind,
