@@ -204,13 +204,10 @@ impl ExternalAgentConfigService {
             || self.home_target_skills_dir(),
             |repo_root| repo_root.join(".agents").join("skills"),
         );
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        self.ensure_scope_migration_path(scope, &source_skills)?;
-        self.ensure_scope_migration_path(scope, &target_skills)?;
-        let skill_names = missing_subdirectory_names(&source_skills, &target_skills)?;
-=======
         let mut skill_names = Vec::new();
         for source_skills_dir in &source_skills {
+            self.ensure_scope_migration_path(scope, source_skills_dir)?;
+            self.ensure_scope_migration_path(scope, &target_skills)?;
             skill_names.extend(missing_subdirectory_names(
                 source_skills_dir,
                 &target_skills,
@@ -218,7 +215,6 @@ impl ExternalAgentConfigService {
         }
         skill_names.sort();
         skill_names.dedup();
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
         let skills_count = skill_names.len();
         if skills_count > 0 {
             items.push(ExternalAgentConfigMigrationItem {

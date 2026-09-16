@@ -22,11 +22,8 @@ impl CurSource {
     pub const HOME_CONFIG_FILE: &'static str = "cli-config.json";
     pub const HOOKS_DIR: &'static str = "hooks";
     pub const PROJECT_CONFIG_FILE: &'static str = "cli.json";
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
     pub const MCP_CONFIG_FILE: &'static str = "mcp.json";
     pub const SANDBOX_CONFIG_FILE: &'static str = "sandbox.json";
-=======
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
     pub const HOOKS_CONFIG_FILE: &'static str = "hooks.json";
     pub const REWRITE_PROFILE: RewriteProfile = RewriteProfile::new(Self::LEGACY_RULES_FILE, &[])
         .with_case_sensitive_term_variants(&["Cursor"]);

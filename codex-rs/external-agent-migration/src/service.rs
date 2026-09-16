@@ -756,12 +756,8 @@ impl ExternalAgentConfigService {
         let Some(scope) = MigrationScope::from_cwd(cwd)? else {
             return Ok(Vec::new());
         };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        let (source_skills, target_skills) = match &scope {
-=======
         let source_skills_dir_names = self.source.skills_dir_names(&scope);
-        let (source_config_dir, target_skills) = match scope {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
+        let (source_config_dir, target_skills) = match &scope {
             MigrationScope::Home => (
                 self.external_agent_home.clone(),
                 self.home_target_skills_dir(),
@@ -771,18 +767,16 @@ impl ExternalAgentConfigService {
                 root.join(".agents").join("skills"),
             ),
         };
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-        self.ensure_scope_migration_path(&scope, &source_skills)?;
-        self.ensure_scope_migration_path(&scope, &target_skills)?;
-        if !source_skills.is_dir() {
-=======
         let source_skills = source_skills_dir_names
             .iter()
             .map(|directory| source_config_dir.join(*directory))
             .filter(|path| path.is_dir())
             .collect::<Vec<_>>();
+        for source_skills_dir in &source_skills {
+            self.ensure_scope_migration_path(&scope, source_skills_dir)?;
+        }
+        self.ensure_scope_migration_path(&scope, &target_skills)?;
         if source_skills.is_empty() {
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
             return Ok(Vec::new());
         }
 

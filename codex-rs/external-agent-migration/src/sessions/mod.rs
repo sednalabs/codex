@@ -34,7 +34,6 @@ pub use records_cla::summarize_session;
 
 const SESSION_TITLE_MAX_LEN: usize = 120;
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
 fn digest_hex(digest: impl AsRef<[u8]>) -> String {
     use std::fmt::Write as _;
 
@@ -44,26 +43,12 @@ fn digest_hex(digest: impl AsRef<[u8]>) -> String {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
-=======
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SessionRecordFormat {
     Cla,
     Cur,
-}
-
-pub struct SessionSummary {
-    pub latest_timestamp: i64,
-    pub migration: ExternalAgentSessionMigration,
-}
-
-struct ParsedSessionImport {
-    cwd: Option<PathBuf>,
-    custom_title: Option<String>,
-    ai_title: Option<String>,
-    messages: Vec<ConversationMessage>,
-    content_sha256: String,
-    attributed_mcp_server_ids: BTreeSet<String>,
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 pub(crate) fn normalized_connector_display_name(name: Option<&str>) -> Option<String> {

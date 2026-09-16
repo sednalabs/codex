@@ -588,32 +588,7 @@ async fn detect_repo_skips_project_relative_external_agent_plugin_marketplace_pa
         .await
         .expect("detect");
 
-<<<<<<< f12747ca5e6eb85d32a823b9450726c76ffbb93e
-    let repo_root = canonical_fixture_path(&repo_root);
-    assert_eq!(
-        items,
-        vec![ExternalAgentConfigMigrationItem {
-            item_type: ExternalAgentConfigMigrationItemType::Plugins,
-            description: format!(
-                "Migrate enabled plugins from {}",
-                repo_root
-                    .join(EXTERNAL_AGENT_DIR)
-                    .join("settings.json")
-                    .display()
-            ),
-            cwd: Some(repo_root),
-            details: Some(MigrationDetails {
-                plugins: vec![PluginsMigration {
-                    marketplace_name: "my-plugins".to_string(),
-                    plugin_names: vec!["cloudflare".to_string()],
-                }],
-                ..Default::default()
-            }),
-        }]
-    );
-=======
     assert_eq!(items, Vec::<ExternalAgentConfigMigrationItem>::new());
->>>>>>> 7f83d4922d7e92a36c1c1e4f61159a5815d45360
 }
 
 #[tokio::test]
