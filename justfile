@@ -393,6 +393,7 @@ blocking-waits-unified-exec-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_end_event_is_bounded_when_descendant_holds_output_open --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core tools::handlers::unified_exec::tests::blocking_wait_window_accepts_long_budget_and_caps_at_two_hours --lib -- --exact --test-threads=1
 
 blocking-waits-app-server-targeted:
     cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
