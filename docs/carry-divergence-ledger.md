@@ -1962,7 +1962,10 @@ bundles during upstream sync merely because they once shared this carry entry.
   official release contract independently
   supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
   checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
-  SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
+  SPDX SBOMs, and GitHub build-provenance attestations. Manual prerelease dispatches default to
+  the explicitly labelled, ad-hoc-signed Intel macOS preview, while automatic release-marker
+  events keep macOS disabled and notarized publication remains explicit; Apple Silicon remains
+  unsupported.
 - Preview and release Cargo dependency/compiler caches use separate authority namespaces and
   exclude executable Cargo tool paths. Current x86 and all Arm64 installs default to exact-source
   hardened verification, using checksum-pinned temporary verifier tools and downloaded local
