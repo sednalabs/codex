@@ -178,9 +178,10 @@ for GitHub Release creation and verifier dispatch.
 
 Intel macOS publication has four explicit modes:
 
-- `off` is the default, including automatic tag and release-marker events. It publishes no macOS
-  asset and never reads the `codesigning` environment.
-- `preview` is allowed only for prereleases. It publishes an Intel x64 tarball whose filename and
+- `off` remains the default for automatic release-marker events. It publishes no macOS asset and
+  never reads the `codesigning` environment. Manual dispatches can still select it explicitly.
+- `preview` is the default for manual release dispatches and the release helper, and is allowed only
+  for prereleases. It publishes an Intel x64 tarball whose filename and
   metadata identify it as an unnotarized preview. The binaries are ad-hoc signed, architecture and
   signature checked, checksummed, and executed on an Intel macOS runner. They are not Developer ID
   signed, may be blocked by Gatekeeper, and are not an official supported macOS distribution.
@@ -240,8 +241,10 @@ python3 .github/scripts/dispatch_sedna_release.py \
   --macos-release-mode unnotarized
 ```
 
-Omit `--macos-release-mode` to publish without macOS assets. Use `notarized` only after the
-`codesigning` environment has been provisioned.
+Omit `--macos-release-mode` to use the prerelease-only Intel preview default. Pass
+`--macos-release-mode off` to publish without macOS assets. A stable dispatch must select `off`,
+`unnotarized`, or `notarized` explicitly. Use `notarized` only after the `codesigning` environment
+has been provisioned.
 
 The resolver writes `version_policy=sedna-upstream-track-v2` into release metadata so future policy
 changes can be detected explicitly instead of inferred from tag shape alone.

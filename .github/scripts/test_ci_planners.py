@@ -550,6 +550,12 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
 
 
 class DispatchSednaReleaseTests(unittest.TestCase):
+    def test_cli_defaults_to_prerelease_with_macos_preview(self) -> None:
+        args = DISPATCH_SEDNA_RELEASE.parse_args([])
+
+        self.assertEqual(args.channel, "prerelease")
+        self.assertEqual(args.macos_release_mode, "preview")
+
     def test_refresh_upstream_rust_tags_fetches_only_rust_release_tags(self) -> None:
         with mock.patch.object(DISPATCH_SEDNA_RELEASE, "run_command") as run_command:
             DISPATCH_SEDNA_RELEASE.refresh_upstream_rust_tags(
@@ -585,6 +591,7 @@ class DispatchSednaReleaseTests(unittest.TestCase):
         metadata = {
             "release_tag": "v0.133.0-sedna.1+upstream.31",
             "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+            "github_prerelease": True,
         }
 
         with mock.patch.object(DISPATCH_SEDNA_RELEASE, "run_command") as run_command:
@@ -620,6 +627,7 @@ class DispatchSednaReleaseTests(unittest.TestCase):
         metadata = {
             "release_tag": "v0.133.0-sedna.1+upstream.31",
             "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+            "github_prerelease": True,
         }
 
         def refresh_tags(**kwargs: object) -> None:
@@ -9692,7 +9700,9 @@ fi
     def test_repository_workflows_follow_static_policy(self) -> None:
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 
-    def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
+    def test_sedna_release_manual_dispatch_defaults_to_auto_channel_and_macos_preview(
+        self,
+    ) -> None:
         workflow_path = REPO_ROOT / ".github/workflows/sedna-release.yml"
         payload = load_workflow_payload(workflow_path)
         inputs = (
@@ -9726,7 +9736,7 @@ fi
                 "options": macos_input.get("options"),
             },
             {
-                "default": "off",
+                "default": "preview",
                 "options": ["off", "preview", "unnotarized", "notarized"],
             },
         )
@@ -9735,40 +9745,30 @@ fi
             yaml.safe_load("default: off\noptions:\n  - off\n"),
             {"default": False, "options": [False]},
         )
-        for provider_workflow in (
-            workflow_path,
-            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
-        ):
-            with self.subTest(workflow=provider_workflow.name):
-                provider_payload = yaml.safe_load(
-                    provider_workflow.read_text(encoding="utf-8")
-                )
-                provider_on = (
-                    provider_payload.get("on") or provider_payload.get(True) or {}
-                )
-                provider_inputs = (
-                    (provider_on.get("workflow_dispatch") or {}).get("inputs") or {}
-                )
-                provider_macos_input = (
-                    provider_inputs.get("macos_release_mode") or {}
-                )
-                self.assertEqual(
-                    {
-                        "default": provider_macos_input.get("default"),
-                        "options": provider_macos_input.get("options"),
-                    },
-                    {
-                        "default": "off",
-                        "options": ["off", "preview", "unnotarized", "notarized"],
-                    },
-                )
+        install_workflow = REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        install_payload = yaml.safe_load(install_workflow.read_text(encoding="utf-8"))
+        install_on = install_payload.get("on") or install_payload.get(True) or {}
+        install_inputs = (
+            (install_on.get("workflow_dispatch") or {}).get("inputs") or {}
+        )
+        install_macos_input = install_inputs.get("macos_release_mode") or {}
+        self.assertEqual(
+            {
+                "default": install_macos_input.get("default"),
+                "options": install_macos_input.get("options"),
+            },
+            {
+                "default": "off",
+                "options": ["off", "preview", "unnotarized", "notarized"],
+            },
+        )
 
     def test_prerelease_main_command_dispatches_explicit_markerless_opt_in(self) -> None:
         justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
         self.assertIn("prerelease-main:", justfile)
         self.assertIn(
             "gh workflow run sedna-release.yml --repo sednalabs/codex --ref main "
-            "-f channel=prerelease -f draft=false -f macos_release_mode=off "
+            "-f channel=prerelease -f draft=false -f macos_release_mode=preview "
             "-f allow_markerless_prerelease=true",
             justfile,
         )
