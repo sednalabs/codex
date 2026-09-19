@@ -4653,11 +4653,28 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
         session
             .input_queue
             .enqueue_mailbox_communication(InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "hello from worker".to_string(),
                 /*trigger_turn*/ false,
+            ))
+            .await;
+
+        assert!(
+            timeout(Duration::from_millis(100), &mut wait_task)
+                .await
+                .is_err(),
+            "queue-only mail must not wake an exact-target wait"
+        );
+        session
+            .input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::new(
+                worker_path,
+                AgentPath::root(),
+                Vec::new(),
+                "triggered wake".to_string(),
+                /*trigger_turn*/ true,
             ))
             .await;
 
@@ -5645,6 +5662,23 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             ))
             .await;
 
+        assert!(
+            timeout(Duration::from_millis(100), &mut wait_task)
+                .await
+                .is_err(),
+            "queue-only mail must not wake an exact-target wait"
+        );
+        session
+            .input_queue
+            .enqueue_mailbox_communication(InterAgentCommunication::new(
+                worker_path.clone(),
+                AgentPath::root(),
+                Vec::new(),
+                "triggered wake".to_string(),
+                /*trigger_turn*/ true,
+            ))
+            .await;
+
         let output = wait_task
             .await
             .expect("wait task should join")
@@ -5661,7 +5695,7 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         let notifications = result
             .wake_notifications
             .expect("mailbox wake should include a safe notification summary");
-        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications.len(), 2);
         let notification = &notifications[0];
         assert_eq!(notification.communication_id, None);
         assert_eq!(notification.sequence, 0);
@@ -5675,6 +5709,14 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             notification.content,
             AgentNotificationContent::PlaintextPreview {
                 text: "sensitive child output".to_string(),
+                truncated: false,
+            }
+        );
+        assert_eq!(notifications[1].sequence, 1);
+        assert_eq!(
+            notifications[1].content,
+            AgentNotificationContent::PlaintextPreview {
+                text: "triggered wake".to_string(),
                 truncated: false,
             }
         );

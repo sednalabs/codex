@@ -53,7 +53,9 @@ decisions.
   completion while preserving FIFO delivery and notification redaction.
 - This is an intentional downstream regression repair; retain the focused
   hosted `codex.core-multi-agent-orchestration-targeted` lane until upstream
-  adopts the same distinction.
+  adopts the same distinction. The hybrid wait/mailbox surface originated in
+  PR #150; filtering was deferred in PR #769, so this repair remains a
+  downstream carry until that boundary is made explicit upstream.
 
 ### MCP JSON-family Resource Output Boundary
 

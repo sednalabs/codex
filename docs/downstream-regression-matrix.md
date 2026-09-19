@@ -18,7 +18,8 @@ Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;
 targetless waits retain broad mailbox wake behavior. The focused guardrail is
 `codex.core-multi-agent-orchestration-targeted`, covering
-`multi_agent_v2_wait_agent_returns_for_already_queued_mail`,
+`multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments`,
+`multi_agent_v2_wait_agent_does_not_return_completed_content`,
 `multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification`, and
 `input_queue_tracks_pending_trigger_turn_mail`.
 

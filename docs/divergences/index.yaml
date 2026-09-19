@@ -3557,7 +3557,8 @@
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
       "tests": [
-        "multi_agent_v2_wait_agent_returns_for_already_queued_mail",
+        "multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments",
+        "multi_agent_v2_wait_agent_does_not_return_completed_content",
         "multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification",
         "input_queue_tracks_pending_trigger_turn_mail"
       ],

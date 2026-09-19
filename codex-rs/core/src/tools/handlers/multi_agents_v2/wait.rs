@@ -243,8 +243,9 @@ impl Handler {
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
             .map_or(ReturnWhen::Any, |_| args.return_when);
-        // Preserve the existing broad mailbox eligibility rule. Typed mailbox
-        // filtering is a follow-on; native mode only changes lease expiry.
+        // Targetless waits retain broad mailbox eligibility. Exact-target waits
+        // use the typed actionable-input predicate below; native mode only
+        // changes lease expiry.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
         let native_event_wait = args.native_event_wait && native_event_capable;
         let completion_rule = CompletionRule::new(return_when);
