@@ -330,9 +330,8 @@ impl InputQueue {
                 None => true,
             }
         };
-        accepts_mailbox_delivery
-            && (self.has_trigger_turn_mailbox_items().await
-                || self.has_pending_terminal_completions().await)
+        (accepts_mailbox_delivery && self.has_trigger_turn_mailbox_items().await)
+            || self.has_pending_terminal_completions().await
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
