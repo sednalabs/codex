@@ -4631,7 +4631,7 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
             .agent_path
             .expect("worker path");
 
-        let wait_task = tokio::spawn({
+        let mut wait_task = tokio::spawn({
             let session = session.clone();
             let turn = turn.clone();
             async move {
@@ -5632,7 +5632,7 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             .expect("worker metadata")
             .agent_path
             .expect("worker path");
-        let wait_task = tokio::spawn({
+        let mut wait_task = tokio::spawn({
             let session = session.clone();
             let turn = turn.clone();
             async move {
