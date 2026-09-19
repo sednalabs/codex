@@ -33,22 +33,37 @@ fn blocking_wait_window_accepts_long_budget_and_caps_at_two_hours() {
     assert_eq!(
         resolve_wait_window_ms(
             Some(one_hour_and_one_ms),
-            None,
+            /*heartbeat_interval_ms*/ None,
             MIN_YIELD_TIME_MS,
             capability,
         ),
         one_hour_and_one_ms
     );
     assert_eq!(
-        resolve_wait_window_ms(Some(two_hours), None, MIN_YIELD_TIME_MS, capability),
+        resolve_wait_window_ms(
+            Some(two_hours),
+            /*heartbeat_interval_ms*/ None,
+            MIN_YIELD_TIME_MS,
+            capability,
+        ),
         two_hours
     );
     assert_eq!(
-        resolve_wait_window_ms(Some(two_hours + 1), None, MIN_YIELD_TIME_MS, capability),
+        resolve_wait_window_ms(
+            Some(two_hours + 1),
+            /*heartbeat_interval_ms*/ None,
+            MIN_YIELD_TIME_MS,
+            capability,
+        ),
         two_hours
     );
     assert_eq!(
-        resolve_wait_window_ms(None, None, two_hours + 1, capability),
+        resolve_wait_window_ms(
+            /*max_wait_ms*/ None,
+            /*heartbeat_interval_ms*/ None,
+            two_hours + 1,
+            capability,
+        ),
         two_hours
     );
 }
