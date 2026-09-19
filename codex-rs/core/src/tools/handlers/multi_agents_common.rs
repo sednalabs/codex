@@ -321,12 +321,12 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     Ok(())
 }
 
-pub(crate) fn resolve_spawn_agent_model_request(
-    explicit_model: Option<&str>,
-    configured_model: Option<&str>,
+pub(crate) fn resolve_spawn_agent_model_request<'a>(
+    explicit_model: Option<&'a str>,
+    configured_model: Option<&'a str>,
     role_name: Option<&str>,
     role_is_builtin: bool,
-) -> Option<&str> {
+) -> Option<&'a str> {
     explicit_model
         .or(configured_model)
         .or_else(|| role_default_model(role_name, role_is_builtin))
