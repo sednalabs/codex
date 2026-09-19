@@ -243,8 +243,9 @@ impl Handler {
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
             .map_or(ReturnWhen::Any, |_| args.return_when);
-        // Preserve the existing broad mailbox eligibility rule. Typed mailbox
-        // filtering is a follow-on; native mode only changes lease expiry.
+        // Targetless waits retain broad mailbox eligibility. Exact-target waits
+        // use the typed actionable-input predicate below; native mode only
+        // changes lease expiry.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
         let native_event_wait = args.native_event_wait && native_event_capable;
         let completion_rule = CompletionRule::new(return_when);
@@ -255,6 +256,7 @@ impl Handler {
             &receiver_thread_ids,
             wake_on_mailbox,
             pending_input_activity,
+            !receiver_thread_ids.is_empty(),
             &mut status_rxs,
         )
         .await
@@ -269,6 +271,7 @@ impl Handler {
                 completion_rule,
                 &mut final_statuses,
                 wake_on_mailbox,
+                !receiver_thread_ids.is_empty(),
                 &call_id,
                 native_event_wait,
                 lease_timer_enabled(native_event_wait, timeout_ms),
@@ -412,6 +415,7 @@ async fn mailbox_notifications(session: &Session) -> Vec<AgentNotificationSummar
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ready_wake_source(
     session: &Session,
     completion_rule: CompletionRule,
@@ -419,16 +423,25 @@ async fn ready_wake_source(
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
     pending_input_activity: Option<InputQueueActivity>,
+    exact_target_wait: bool,
     status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
     } else if wake_on_mailbox
-        && (pending_input_activity.is_some()
-            || session
-                .input_queue
-                .has_pending_input(&session.active_turn)
-                .await)
+        && (pending_input_activity
+            .is_some_and(|activity| !exact_target_wait || activity != InputQueueActivity::Mailbox)
+            || if exact_target_wait {
+                session
+                    .input_queue
+                    .has_pending_wait_input(&session.active_turn)
+                    .await
+            } else {
+                session
+                    .input_queue
+                    .has_pending_input(&session.active_turn)
+                    .await
+            })
     {
         let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
         final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
@@ -646,6 +659,7 @@ async fn wait_for_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
+    exact_target_wait: bool,
     call_id: &str,
     native_event_wait: bool,
     lease_timer_enabled: bool,
@@ -729,10 +743,17 @@ async fn wait_for_wake_source(
             input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox || native_event_wait => {
                 match input_activity_changed {
                     Ok(())
-                        if session
-                            .input_queue
-                            .has_pending_input(&session.active_turn)
-                            .await =>
+                        if if exact_target_wait {
+                            session
+                                .input_queue
+                                .has_pending_wait_input(&session.active_turn)
+                                .await
+                        } else {
+                            session
+                                .input_queue
+                                .has_pending_input(&session.active_turn)
+                                .await
+                        } =>
                     {
                         let latest = collect_current_wait_statuses(
                             session.as_ref(),
@@ -832,6 +853,7 @@ mod tests {
                 CompletionRule::new(ReturnWhen::Any),
                 &mut final_statuses,
                 /*wake_on_mailbox*/ false,
+                /*exact_target_wait*/ true,
                 "test-native-wait-call",
                 /*native_event_wait*/ true,
                 /*lease_timer_enabled*/ true,

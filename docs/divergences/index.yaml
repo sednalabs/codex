@@ -3541,6 +3541,37 @@
         "codex-rs/core/src/context_manager/history.rs"
       ],
       "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
+    },
+    {
+      "id": "exact-target-wait-mailbox-filter",
+      "title": "Exact-target V2 wait filters queue-only mailbox activity",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "wait-agent",
+      "surface": ["multi-agent V2 wait_agent", "session input queue"],
+      "files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/session/input_queue.rs"
+      ],
+      "behavior": "Exact-target waits ignore queue-only inter-agent mailbox activity while retaining FIFO durable messages and later notification summaries; targetless waits remain broadly mailbox-wakeable.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "tests": [
+        "multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments",
+        "multi_agent_v2_wait_agent_does_not_return_completed_content",
+        "multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification",
+        "input_queue_tracks_pending_trigger_turn_mail"
+      ],
+      "owner": "downstream",
+      "notes": "Regression repair for exact-target waits; preserve queue-only delivery and notification visibility until upstream adopts the typed actionable-input distinction.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-regression-repair",
+      "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/session/input_queue.rs"
+      ],
+      "extraction_target": "upstream exact-target wait mailbox filtering"
     }
   ],
   "superseded_hunks": [
