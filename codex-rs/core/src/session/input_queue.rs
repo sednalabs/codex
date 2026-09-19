@@ -789,4 +789,39 @@ mod tests {
             .has_pending_wait_input(&Mutex::new(None))
             .await);
     }
+
+    #[tokio::test]
+    async fn input_queue_wait_input_allows_terminal_completion_after_mailbox_delivery_deferral() {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+        turn_state
+            .lock()
+            .await
+            .set_mailbox_delivery_phase(MailboxDeliveryPhase::NextTurn);
+
+        input_queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "queued",
+                /*trigger_turn*/ false,
+            ))
+            .await;
+        assert!(!input_queue.has_pending_wait_input(&active_turn).await);
+
+        input_queue
+            .enqueue_terminal_completion(terminal_completion(
+                /*process_id*/ 7,
+                uuid::Uuid::new_v4(),
+            ))
+            .await;
+        assert!(input_queue.has_pending_wait_input(&active_turn).await);
+    }
 }
