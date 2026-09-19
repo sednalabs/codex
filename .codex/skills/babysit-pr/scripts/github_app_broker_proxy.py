@@ -7,7 +7,6 @@ import re
 import socket
 import stat
 import struct
-from pathlib import Path
 from urllib.parse import urlparse
 
 MAX_REQUEST = 16 * 1024
@@ -98,21 +97,19 @@ def _validate_download_directory(value):
     match = re.fullmatch(r"/tmp/(gh-run-download-[A-Za-z0-9._-]+)", value)
     if match is None:
         raise ProxyError("download directory must be absolute")
-    # Reconstruct from the allowlisted basename so the filesystem operation
-    # never consumes an unchecked client-supplied path expression.
-    path = Path("/tmp") / match.group(1)
+    name = match.group(1)
     try:
-        info = path.lstat()  # lgtm [py/path-injection] -- strict basename allowlist and fixed root above.
+        with os.scandir("/tmp") as entries:
+            entry = next((candidate for candidate in entries if candidate.name == name), None)
+        if entry is None:
+            raise ProxyError("download directory is unavailable")
+        info = entry.stat(follow_symlinks=False)
     except OSError as exc:
         raise ProxyError("download directory is unavailable") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ProxyError("download directory must be a real directory")
     if info.st_uid != os.geteuid() or info.st_mode & 0o077:
         raise ProxyError("download directory is not private")
-    temp_root = Path(os.path.realpath("/tmp"))
-    resolved = Path(os.path.realpath(path))
-    if resolved.parent != temp_root or not resolved.name.startswith("gh-run-download-"):
-        raise ProxyError("download directory escaped the watcher temporary root")
 
 
 def validate_gh_argv(argv, repository=None):
