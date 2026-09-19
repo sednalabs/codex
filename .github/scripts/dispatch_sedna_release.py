@@ -209,12 +209,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--macos-release-mode",
         choices=("off", "preview", "unnotarized", "notarized"),
-        default="off",
+        default="preview",
         help=(
-            "Intel macOS asset policy. Preview is ad-hoc signed and only valid "
-            "for prereleases; unnotarized is ad-hoc signed without an Apple "
-            "identity and may be used for stable or prerelease releases; "
-            "notarized requires the codesigning environment."
+            "Intel macOS asset policy. Defaults to preview, which is ad-hoc signed "
+            "and only valid for prereleases; unnotarized is ad-hoc signed without "
+            "an Apple identity and may be used for stable or prerelease releases; "
+            "notarized requires the codesigning environment; pass off to omit "
+            "macOS assets."
         ),
     )
     parser.add_argument(
