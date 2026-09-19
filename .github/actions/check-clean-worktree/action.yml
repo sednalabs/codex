@@ -16,5 +16,4 @@ runs:
 
         echo "::error::CI job left tracked changes or untracked files in the repository worktree"
         printf '%s\n' "${status}"
-        git -C "${GITHUB_WORKSPACE}" diff --no-ext-diff -- MODULE.bazel.lock
         exit 1
