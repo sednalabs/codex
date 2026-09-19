@@ -5306,7 +5306,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
             AgentPath::root(),
             Vec::new(),
             "already queued".to_string(),
-            /*trigger_turn*/ false,
+            /*trigger_turn*/ true,
         ))
         .await;
 
@@ -5476,7 +5476,7 @@ async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
 }
 
 #[test]
-fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
+fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
     run_multi_agent_surface_test(|| async {
         let (mut session, mut turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -5549,7 +5549,7 @@ fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
                 AgentPath::root(),
                 Vec::new(),
                 "from worker b".to_string(),
-                /*trigger_turn*/ false,
+                /*trigger_turn*/ true,
             ))
             .await;
 

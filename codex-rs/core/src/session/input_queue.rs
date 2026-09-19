@@ -306,6 +306,35 @@ impl InputQueue {
             .any(|mail| mail.trigger_turn)
     }
 
+    /// Returns whether pending input would be actionable for an exact-target
+    /// wait. Queue-only mailbox messages remain durable, but do not wake a
+    /// wait that is observing specific agents.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state reads must remain atomic"
+    )]
+    pub(crate) async fn has_pending_wait_input(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> bool {
+        let accepts_mailbox_delivery = {
+            let active = active_turn.lock().await;
+            match active.as_ref() {
+                Some(active_turn) => {
+                    let turn_state = active_turn.turn_state.lock().await;
+                    if !turn_state.pending_input.items.is_empty() {
+                        return true;
+                    }
+                    turn_state.accepts_mailbox_delivery_for_current_turn()
+                }
+                None => true,
+            }
+        };
+        accepts_mailbox_delivery
+            && (self.has_trigger_turn_mailbox_items().await
+                || self.has_pending_terminal_completions().await)
+    }
+
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
         self.drain_mailbox_communications()
             .await
@@ -744,6 +773,9 @@ mod tests {
             ))
             .await;
         assert!(!input_queue.has_trigger_turn_mailbox_items().await);
+        assert!(!input_queue
+            .has_pending_wait_input(&Mutex::new(None))
+            .await);
 
         input_queue
             .enqueue_mailbox_communication(make_mail(
@@ -754,5 +786,8 @@ mod tests {
             ))
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+        assert!(input_queue
+            .has_pending_wait_input(&Mutex::new(None))
+            .await);
     }
 }

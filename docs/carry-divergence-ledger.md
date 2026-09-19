@@ -41,6 +41,20 @@ decisions.
 
 ## Current Downstream Guardrails
 
+### Exact-target wait ignores queue-only mailbox activity
+
+- Downstream V2 `wait_agent` keeps queue-only inter-agent mail durable and
+  visible in later notification summaries, but an exact-target wait wakes only
+  for terminal target state, actionable (`trigger_turn`) mail, user steer,
+  terminal completion input, cancellation, or subscription loss. Targetless
+  waits retain broad mailbox wake behavior.
+- The typed `InputQueue::has_pending_wait_input` predicate prevents the
+  queue-only mailbox notification from being mistaken for an exact-target
+  completion while preserving FIFO delivery and notification redaction.
+- This is an intentional downstream regression repair; retain the focused
+  hosted `codex.core-multi-agent-orchestration-targeted` lane until upstream
+  adopts the same distinction.
+
 ### MCP JSON-family Resource Output Boundary
 
 - A model-visible `read_mcp_resource` result must not report success after
