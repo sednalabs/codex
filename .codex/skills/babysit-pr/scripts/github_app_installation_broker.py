@@ -877,7 +877,6 @@ class GitHubAppBroker:
 
         def handle(conn):
             record: TokenRecord | None = None
-            request_binary = False
             try:
                 with conn:
                     conn.settimeout(15)
@@ -886,7 +885,6 @@ class GitHubAppBroker:
                     if size > MAX_IPC_REQUEST: raise BrokerError("proxy request exceeds safety bound")
                     request = json.loads(_read_exact(conn, size).decode("utf-8"))
                     if not isinstance(request, dict) or set(request) != {"argv", "binary"} or not isinstance(request["binary"], bool): raise BrokerError("malformed proxy request")
-                    request_binary = request["binary"]
                     request_argv = request["argv"]
                     validate_gh_argv(request_argv, self.repository)
                     if stop.is_set():
