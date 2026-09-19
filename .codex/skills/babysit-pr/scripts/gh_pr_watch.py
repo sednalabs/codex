@@ -329,6 +329,16 @@ def _format_gh_error(cmd, err):
 
 
 def gh_text(args, repo=None):
+    broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
+    if broker_socket:
+        from github_app_broker_proxy import request
+        broker_args = list(args)
+        if repo and (not broker_args or broker_args[0] != "api"):
+            broker_args = ["-R", repo, *broker_args]
+        result = request(broker_socket, broker_args)
+        if int(result.get("returncode", 1)) != 0:
+            raise GhCommandError("brokered GitHub CLI command failed")
+        return str(result.get("stdout", ""))
     cmd = ["gh"]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's
     # API calls use explicit endpoints (e.g. repos/{owner}/{repo}/...), so the

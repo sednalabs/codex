@@ -15,6 +15,9 @@ import json
 import os
 import re
 import selectors
+import socket
+import tempfile
+import threading
 import shutil
 import stat
 import subprocess
@@ -251,6 +254,15 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
 
 # Descriptive alias for callers that prefer noun-first naming.
 command_fingerprint = fingerprint_command
+
+def fingerprint_brokered_command(repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]) -> str:
+    """Bind observer argv to the fixed proxy helper and real gh executable."""
+    helper = Path(__file__).with_name("github_app_broker_proxy.py")
+    gh = shutil.which("gh")
+    if gh is None or not helper.is_file():
+        raise BrokerError("broker proxy sources are unavailable")
+    payload = {"command": fingerprint_command(repository, permissions, argv), "helper": hashlib.sha256(helper.read_bytes()).hexdigest(), "gh": str(Path(gh).resolve()), "gh_sha256": hashlib.sha256(Path(gh).read_bytes()).hexdigest()}
+    return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
 
 def _looks_like_path(value: str) -> bool:
@@ -685,6 +697,48 @@ class GitHubAppBroker:
         stderr = _redact(raw_stderr.decode("utf-8", "replace"), (record.token,))
         return {"identity": self.public_identity(record), "returncode": returncode, "stdout": stdout, "stderr": stderr}
 
+    def execute_brokered_observer(self, argv: Sequence[str], expected_fingerprint: str) -> dict[str, Any]:
+        """Run an unchanged observer while brokering each short-lived ``gh`` call."""
+        helper = Path(__file__).with_name("github_app_broker_proxy.py")
+        if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+            raise BrokerError("command fingerprint mismatch")
+        if not helper.is_file():
+            raise BrokerError("broker proxy helper is missing")
+        socket_dir = tempfile.TemporaryDirectory(prefix="gh-broker-", dir="/tmp")
+        socket_path = str(Path(socket_dir.name) / "broker.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(socket_path); os.chmod(socket_path, 0o600); server.listen(1); server.settimeout(0.25)
+        stop = threading.Event()
+        def serve():
+            while not stop.is_set():
+                try: conn, _ = server.accept()
+                except socket.timeout: continue
+                try:
+                    raw = conn.recv(16 * 1024 + 1)
+                    if len(raw) > 16 * 1024: raise BrokerError("proxy request exceeds safety bound")
+                    request = json.loads(raw.decode())
+                    from github_app_broker_proxy import validate_gh_argv
+                    validate_gh_argv(request.get("argv"))
+                    record = self.get_installation_token()
+                    env = _without_ambient_tokens(os.environ); env["GH_TOKEN"] = record.token
+                    gh = shutil.which("gh")
+                    if not gh or "/gh" not in gh: raise BrokerError("fixed gh executable is unavailable")
+                    proc = subprocess.run([gh, *request["argv"]], env=env, capture_output=True, timeout=30)
+                    body = {"returncode": proc.returncode, "stdout": _redact(proc.stdout.decode("utf-8", "replace"), (record.token,)), "stderr": _redact(proc.stderr.decode("utf-8", "replace"), (record.token,))}
+                    encoded = _json_bytes(body)
+                    if len(encoded) > 256 * 1024: raise BrokerError("proxy response exceeds safety bound")
+                    conn.sendall(encoded)
+                except Exception as exc:
+                    conn.sendall(_json_bytes({"returncode": 1, "stdout": "", "stderr": _redact(exc)}))
+                finally: conn.close()
+        thread = threading.Thread(target=serve, daemon=True); thread.start()
+        env = _without_ambient_tokens(os.environ); env["GITHUB_APP_BROKER_SOCKET"] = socket_path
+        try:
+            code, out, err = _run_child_bounded(argv, env)
+            return {"returncode": code, "stdout": _redact(out.decode("utf-8", "replace")), "stderr": _redact(err.decode("utf-8", "replace"))}
+        finally:
+            stop.set(); server.close(); thread.join(timeout=2); socket_dir.cleanup(); self.revoke()
+
     def revoke(self) -> dict[str, Any]:
         token = self._pending_cleanup_token or (self._record.token if self._record is not None else None)
         if token is None:
@@ -756,10 +810,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not command_argv:
             raise BrokerError("a command is required")
         if args.command == "fingerprint":
-            print(fingerprint_command(args.repo, args.permissions, command_argv))
+            print(fingerprint_brokered_command(args.repo, args.permissions, command_argv))
             return 0
         broker = GitHubAppBroker(app_id=args.app_id, app_slug=args.app_slug, installation_id=args.installation_id, account=args.account, repository=args.repo, permissions=args.permissions)
-        result = broker.execute(command_argv, args.fingerprint)
+        runner = getattr(broker, "execute_brokered_observer", broker.execute)
+        result = runner(command_argv, args.fingerprint)
         revocation = broker.close()
         result["revocation"] = revocation
         print(json.dumps(result, sort_keys=True))
