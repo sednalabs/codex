@@ -28,6 +28,24 @@ use toml::Value as TomlValue;
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
+struct RoleDefaults {
+    default_model: Option<&'static str>,
+}
+
+fn role_defaults(role_name: &str) -> RoleDefaults {
+    match role_name {
+        "explorer" => RoleDefaults {
+            default_model: Some("gpt-5.6-luna"),
+        },
+        _ => RoleDefaults { default_model: None },
+    }
+}
+
+/// Returns a soft model default owned by a role. Soft defaults are considered only when the
+/// caller and configured subagent defaults leave model selection unspecified.
+pub(crate) fn role_default_model(role_name: Option<&str>) -> Option<&'static str> {
+    role_name.and_then(|name| role_defaults(name).default_model)
+}
 
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.
 ///

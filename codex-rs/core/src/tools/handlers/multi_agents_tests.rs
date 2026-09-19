@@ -16,6 +16,7 @@ use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::InspectAgentTreeHandler;
 use crate::tools::handlers::multi_agents_common::validate_spawn_agent_reasoning_effort;
+use crate::tools::handlers::multi_agents_common::resolve_spawn_agent_model_request;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -98,6 +99,22 @@ fn spawn_agent_reasoning_effort_accepts_empty_support_metadata() {
         &ReasoningEffort::Low,
     )
     .expect("an empty support list should be treated as unknown");
+}
+
+#[test]
+fn explorer_soft_model_default_has_explicit_and_configured_precedence() {
+    assert_eq!(
+        resolve_spawn_agent_model_request(None, None, Some("explorer")),
+        Some("gpt-5.6-luna")
+    );
+    assert_eq!(
+        resolve_spawn_agent_model_request(Some("gpt-5.6-terra"), None, Some("explorer")),
+        Some("gpt-5.6-terra")
+    );
+    assert_eq!(
+        resolve_spawn_agent_model_request(None, Some("gpt-5.6-sol"), Some("explorer")),
+        Some("gpt-5.6-sol")
+    );
 }
 
 fn invocation(
