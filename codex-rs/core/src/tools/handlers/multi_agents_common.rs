@@ -1,4 +1,5 @@
 use crate::agent::role::apply_role_to_config;
+use crate::agent::role::role_default_model;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
@@ -262,8 +263,14 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     config: &mut Config,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
+    role_name: Option<&str>,
 ) -> Result<(), FunctionCallError> {
-    let requested_model = requested_model.or(turn.config.agent_default_subagent_model.as_deref());
+    let requested_model = resolve_spawn_agent_model_request(
+        requested_model,
+        turn.config.agent_default_subagent_model.as_deref(),
+        role_name,
+        role_name.is_some_and(|name| !turn.config.agent_roles.contains_key(name)),
+    );
     let requested_reasoning_effort = requested_reasoning_effort
         .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
     if requested_model.is_none() && requested_reasoning_effort.is_none() {
@@ -312,6 +319,17 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     }
 
     Ok(())
+}
+
+pub(crate) fn resolve_spawn_agent_model_request<'a>(
+    explicit_model: Option<&'a str>,
+    configured_model: Option<&'a str>,
+    role_name: Option<&str>,
+    role_is_builtin: bool,
+) -> Option<&'a str> {
+    explicit_model
+        .or(configured_model)
+        .or_else(|| role_default_model(role_name, role_is_builtin))
 }
 
 pub(crate) async fn apply_spawn_agent_service_tier(

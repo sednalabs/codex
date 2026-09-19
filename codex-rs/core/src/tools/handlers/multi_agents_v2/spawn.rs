@@ -74,6 +74,7 @@ async fn handle_spawn_agent(
         &mut config,
         args.model.as_deref(),
         args.reasoning_effort.clone(),
+        role_name,
     )
     .await?;
     if !is_full_history_fork {
