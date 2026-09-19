@@ -9748,10 +9748,12 @@ fi
             {"default": False, "options": [False]},
         )
         install_workflow = REPO_ROOT / ".github/workflows/sedna-release-install.yml"
-        install_payload = yaml.safe_load(install_workflow.read_text(encoding="utf-8"))
-        install_on = install_payload.get("on") or install_payload.get(True) or {}
+        install_payload = load_workflow_payload(install_workflow)
         install_inputs = (
-            (install_on.get("workflow_dispatch") or {}).get("inputs") or {}
+            ((install_payload.get("on") or {}).get("workflow_dispatch") or {}).get(
+                "inputs"
+            )
+            or {}
         )
         install_macos_input = install_inputs.get("macos_release_mode") or {}
         self.assertEqual(
