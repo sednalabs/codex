@@ -589,7 +589,7 @@ def gh_text(args, repo=None):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError("brokered GitHub CLI command failed")
+            raise GhCommandError(f"brokered GitHub CLI command failed: {result.get('stderr', '')}")
         return str(result.get("stdout", ""))
     cmd = ["gh"]
     if repo and (not args or args[0] != "api"):
@@ -656,7 +656,7 @@ def gh_bytes(args, repo=None):
         broker_args = list(args)
         if repo and (not broker_args or broker_args[0] != "api"):
             broker_args = ["-R", repo, *broker_args]
-        result = request(broker_socket, broker_args)
+        result = request(broker_socket, broker_args, binary=True)
         if int(result.get("returncode", 1)) != 0:
             raise GhCommandError("brokered GitHub CLI binary request failed")
         return result.get("stdout_bytes", b"")

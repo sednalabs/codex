@@ -337,7 +337,7 @@ def gh_text(args, repo=None):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError("brokered GitHub CLI command failed")
+            raise GhCommandError(f"brokered GitHub CLI command failed: {result.get('stderr', '')}")
         return str(result.get("stdout", ""))
     cmd = ["gh"]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's

@@ -5,7 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from github_app_broker_proxy import ProxyError, _read_exact, validate_gh_argv
+from github_app_broker_proxy import MAX_ARGUMENT, MAX_REQUEST, MAX_RESPONSE, ProxyError, _read_exact, validate_gh_argv
 
 
 class BrokerProxyTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class BrokerProxyTests(unittest.TestCase):
             ["repo", "view", "--json", "nameWithOwner"],
             ["-R", "o/r", "repo", "view", "--json", "nameWithOwner"],
             ["api", "repos/o/r/actions/runs/7", "--method", "GET"],
-            ["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number}}}", "-F", "owner=o", "-F", "name=r", "-F", "number=1"],
+            ["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id state position headCommit{oid}}}}}", "-F", "owner=o", "-F", "name=r", "-F", "number=1"],
         ]
         for argv in allowed:
             validate_gh_argv(argv, "o/r")
@@ -46,6 +46,7 @@ class BrokerProxyTests(unittest.TestCase):
             ["api", "graphql", "-f", "query=# comment\nmutation { x }"],
             ["api", "graphql", "-f", "query=/* comment */ mutation { x }"],
             ["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){number}}}", "-F", "owner=other", "-F", "name=r", "-F", "number=1"],
+            ["api", "graphql", "-f", "query=query{rateLimit{remaining}}"],
             ["extension", "exec", "anything"],
         ]
         for argv in rejected:
@@ -65,6 +66,11 @@ class BrokerProxyTests(unittest.TestCase):
                     "o/r",
                 )
 
+    def test_malformed_pr_argv_is_typed_proxy_error(self):
+        for argv in (["-R", "o/r", "pr"], ["-R", "o/r", "pr", "view"], ["-R", "o/r", "pr", "checks"]):
+            with self.assertRaises(ProxyError):
+                validate_gh_argv(argv, "o/r")
+
     def test_oversized_and_malformed_frame_inputs_are_bounded(self):
         left, right = socket.socketpair()
         try:
@@ -74,6 +80,12 @@ class BrokerProxyTests(unittest.TestCase):
                 if size > 16 * 1024: raise ProxyError("request exceeds safety bound")
         finally:
             left.close(); right.close()
+
+    def test_composed_response_and_argument_bounds(self):
+        self.assertGreater(MAX_RESPONSE, 2 * 256 * 1024)
+        with self.assertRaises(ProxyError):
+            validate_gh_argv(["-R", "o/r", "pr", "view", "1", "--json", "x" * (MAX_ARGUMENT + 1)], "o/r")
+        self.assertEqual(16 * 1024, MAX_REQUEST)
 
 
 if __name__ == "__main__": unittest.main()
