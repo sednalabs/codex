@@ -23,6 +23,36 @@ use tokio::sync::Mutex;
 
 const TEST_TRUNCATION_POLICY: TruncationPolicy = TruncationPolicy::Tokens(10_000);
 
+#[test]
+fn blocking_wait_window_accepts_long_budget_and_caps_at_two_hours() {
+    let capability = UnifiedExecBlockingWaitCapability::downstream_default();
+    let one_hour_and_one_ms = 3_600_001;
+    let two_hours = 7_200_000;
+
+    assert_eq!(capability.max_terminal_wait_ms, two_hours);
+    assert_eq!(
+        resolve_wait_window_ms(
+            Some(one_hour_and_one_ms),
+            None,
+            MIN_YIELD_TIME_MS,
+            capability,
+        ),
+        one_hour_and_one_ms
+    );
+    assert_eq!(
+        resolve_wait_window_ms(Some(two_hours), None, MIN_YIELD_TIME_MS, capability),
+        two_hours
+    );
+    assert_eq!(
+        resolve_wait_window_ms(Some(two_hours + 1), None, MIN_YIELD_TIME_MS, capability),
+        two_hours
+    );
+    assert_eq!(
+        resolve_wait_window_ms(None, None, two_hours + 1, capability),
+        two_hours
+    );
+}
+
 async fn invocation_for_payload(
     tool_name: &str,
     call_id: &str,
