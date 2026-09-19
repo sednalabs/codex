@@ -1,6 +1,9 @@
 import argparse
 import importlib.util
 import json
+import os
+import types
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,17 @@ def sample_pr():
         "merge_state_status": "CLEAN",
         "review_decision": "",
     }
+
+
+def test_broker_routes_pr_gh_text_without_token(monkeypatch):
+    calls = []
+    def request(path, argv):
+        calls.append((path, argv))
+        return {"returncode": 0, "stdout": "{}", "stderr": ""}
+    monkeypatch.setenv("GITHUB_APP_BROKER_SOCKET", "/tmp/broker.sock")
+    monkeypatch.setitem(__import__("sys").modules, "github_app_broker_proxy", types.SimpleNamespace(request=request))
+    assert gh_pr_watch.gh_text(["pr", "view", "1"], repo="o/r") == "{}"
+    assert calls == [("/tmp/broker.sock", ["-R", "o/r", "pr", "view", "1"])]
 
 
 def sample_checks(**overrides):

@@ -1,7 +1,7 @@
 # GitHub App installation broker
 
 `github_app_installation_broker.py` is a one-shot transport boundary for the
-PR observer. It gives one selected repository a short-lived GitHub App
+PR and workflow-run observers. It gives one selected repository a short-lived GitHub App
 installation token while keeping the operator's personal token out of the
 child process. Phase A is development-ready and read-only; it does not prove a
 live installation or production commissioning.
@@ -55,6 +55,16 @@ operational follow-up, not silently ignored.
 HTTP requests use the GitHub API version header, HTTPS origin pinning,
 redirect/cross-host rejection, bounded response bodies, strict JSON/type
 checks, and finite timeouts.
+
+Observer calls use `github_app_broker_proxy.py` over a private Unix socket with
+bounded four-byte length-prefixed frames. The broker accepts one request per
+connection, allows only the explicit read-only `pr`, `run`, and REST/GraphQL
+GET forms used by the observers, and rejects aliases, extensions, mutations,
+non-GET methods, and malformed or oversized frames. Real `gh` output is read
+non-blockingly with independent stdout/stderr ceilings and a finite timeout;
+the broker waits for every request and child process to terminate before
+closing the channel and revoking the token. The watcher receives only the
+socket path, never a token or token-bearing error.
 
 Example (with generic credential naming):
 

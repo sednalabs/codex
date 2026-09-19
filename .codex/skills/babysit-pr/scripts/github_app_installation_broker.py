@@ -15,6 +15,7 @@ import json
 import os
 import re
 import selectors
+import signal
 import socket
 import tempfile
 import threading
@@ -37,6 +38,9 @@ KEY_BASENAME = "github-app-private-key.pem"
 OPENSSL_PATH = "/usr/bin/openssl"
 MAX_HTTP_BODY = 1024 * 1024
 MAX_CHILD_OUTPUT = 256 * 1024
+MAX_IPC_REQUEST = 16 * 1024
+MAX_IPC_RESPONSE = 512 * 1024
+CHILD_TIMEOUT_SECONDS = 30
 CHILD_TERMINATION_GRACE_SECONDS = 5
 JWT_LIFETIME_SECONDS = 9 * 60
 REFRESH_THRESHOLD_SECONDS = 120
@@ -261,7 +265,11 @@ def fingerprint_brokered_command(repository: str, permissions: Mapping[str, Any]
     gh = shutil.which("gh")
     if gh is None or not helper.is_file():
         raise BrokerError("broker proxy sources are unavailable")
-    payload = {"command": fingerprint_command(repository, permissions, argv), "helper": hashlib.sha256(helper.read_bytes()).hexdigest(), "gh": str(Path(gh).resolve()), "gh_sha256": hashlib.sha256(Path(gh).read_bytes()).hexdigest()}
+    helper_resolved = helper.resolve(strict=True)
+    gh_resolved = Path(gh).resolve(strict=True)
+    _validate_source(helper_resolved)
+    _validate_source(gh_resolved)
+    payload = {"command": fingerprint_command(repository, permissions, argv), "helper": hashlib.sha256(helper_resolved.read_bytes()).hexdigest(), "gh": str(gh_resolved), "gh_sha256": hashlib.sha256(gh_resolved.read_bytes()).hexdigest()}
     return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
 
@@ -324,7 +332,7 @@ def _production_credentials_directory(value: str | None) -> Path:
     return Path(canonical)
 
 
-def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[int, bytes, bytes]:
+def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str], *, timeout: float | None = CHILD_TIMEOUT_SECONDS) -> tuple[int, bytes, bytes]:
     """Run one child while enforcing an in-memory output ceiling."""
     try:
         process = subprocess.Popen(
@@ -333,6 +341,7 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
+            start_new_session=True,
         )
     except OSError as exc:
         raise BrokerError("child command failed to start") from exc
@@ -349,9 +358,14 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
         selector.register(stream, selectors.EVENT_READ, data=label)
 
     output_exceeded = False
+    started = time.monotonic()
     try:
         while selector.get_map():
-            events = selector.select(timeout=1)
+            remaining_time = None if timeout is None else timeout - (time.monotonic() - started)
+            if remaining_time is not None and remaining_time <= 0:
+                _terminate_process_group(process)
+                raise BrokerError("child command timed out")
+            events = selector.select(timeout=1 if remaining_time is None else min(1, remaining_time))
             if not events and process.poll() is not None:
                 for key in list(selector.get_map().values()):
                     selector.unregister(key.fileobj)
@@ -381,15 +395,30 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
     if output_exceeded:
         for _, stream in streams.values():
             stream.close()
-        process.terminate()
-        try:
-            process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        _terminate_process_group(process)
         raise BrokerError("child output exceeded the safety bound")
 
-    return process.wait(), bytes(buffers["stdout"]), bytes(buffers["stderr"])
+    try:
+        wait_timeout = None if timeout is None else max(0.1, timeout - (time.monotonic() - started))
+        returncode = process.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        raise BrokerError("child command timed out")
+    return returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    """Terminate the leader and all descendants sharing its private session."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError): pass
+        process.wait()
 
 
 class GitHubAppBroker:
@@ -709,35 +738,64 @@ class GitHubAppBroker:
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(socket_path); os.chmod(socket_path, 0o600); server.listen(1); server.settimeout(0.25)
         stop = threading.Event()
+        request_threads: list[threading.Thread] = []
+        request_lock = threading.Lock()
+        gh_path = shutil.which("gh")
+        if not gh_path:
+            raise BrokerError("fixed gh executable is unavailable")
+        gh_path = str(Path(gh_path).resolve(strict=True))
+        _validate_source(Path(gh_path))
+        from github_app_broker_proxy import _read_exact, validate_gh_argv
+        def handle(conn):
+            process_done = False
+            try:
+                with conn:
+                    conn.settimeout(15)
+                    header = _read_exact(conn, 4)
+                    size = int.from_bytes(header, "big")
+                    if size > MAX_IPC_REQUEST: raise BrokerError("proxy request exceeds safety bound")
+                    request = json.loads(_read_exact(conn, size).decode("utf-8"))
+                    if not isinstance(request, dict) or set(request) != {"argv"}: raise BrokerError("malformed proxy request")
+                    request_argv = request["argv"]
+                    validate_gh_argv(request_argv, self.repository)
+                    with request_lock:
+                        if stop.is_set(): raise BrokerError("broker channel is closed")
+                        if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+                            raise BrokerError("bound command source changed")
+                        record = self.get_installation_token()
+                        env = _without_ambient_tokens(os.environ); env["GH_TOKEN"] = record.token
+                        returncode, raw_stdout, raw_stderr = _run_child_bounded([gh_path, *request_argv], env)
+                        process_done = True
+                        safe_stdout = raw_stdout.replace(record.token.encode(), b"[REDACTED]")
+                        body = {"returncode": returncode, "stdout": _redact(raw_stdout.decode("utf-8", "replace"), (record.token,)), "stdout_b64": base64.b64encode(safe_stdout).decode("ascii"), "stderr": _redact(raw_stderr.decode("utf-8", "replace"), (record.token,))}
+                    encoded = _json_bytes(body)
+                    if len(encoded) > MAX_IPC_RESPONSE: raise BrokerError("proxy response exceeds safety bound")
+                    conn.sendall(len(encoded).to_bytes(4, "big") + encoded)
+            except Exception as exc:
+                body = _json_bytes({"returncode": 1, "stdout": "", "stderr": _redact(exc)})
+                if len(body) <= MAX_IPC_RESPONSE:
+                    try: conn.sendall(len(body).to_bytes(4, "big") + body)
+                    except OSError: pass
         def serve():
             while not stop.is_set():
                 try: conn, _ = server.accept()
                 except socket.timeout: continue
-                try:
-                    raw = conn.recv(16 * 1024 + 1)
-                    if len(raw) > 16 * 1024: raise BrokerError("proxy request exceeds safety bound")
-                    request = json.loads(raw.decode())
-                    from github_app_broker_proxy import validate_gh_argv
-                    validate_gh_argv(request.get("argv"))
-                    record = self.get_installation_token()
-                    env = _without_ambient_tokens(os.environ); env["GH_TOKEN"] = record.token
-                    gh = shutil.which("gh")
-                    if not gh or "/gh" not in gh: raise BrokerError("fixed gh executable is unavailable")
-                    proc = subprocess.run([gh, *request["argv"]], env=env, capture_output=True, timeout=30)
-                    body = {"returncode": proc.returncode, "stdout": _redact(proc.stdout.decode("utf-8", "replace"), (record.token,)), "stderr": _redact(proc.stderr.decode("utf-8", "replace"), (record.token,))}
-                    encoded = _json_bytes(body)
-                    if len(encoded) > 256 * 1024: raise BrokerError("proxy response exceeds safety bound")
-                    conn.sendall(encoded)
-                except Exception as exc:
-                    conn.sendall(_json_bytes({"returncode": 1, "stdout": "", "stderr": _redact(exc)}))
-                finally: conn.close()
-        thread = threading.Thread(target=serve, daemon=True); thread.start()
+                thread = threading.Thread(target=handle, args=(conn,))
+                request_threads.append(thread); thread.start()
+        thread = threading.Thread(target=serve); thread.start()
         env = _without_ambient_tokens(os.environ); env["GITHUB_APP_BROKER_SOCKET"] = socket_path
         try:
-            code, out, err = _run_child_bounded(argv, env)
+            code, out, err = _run_child_bounded(argv, env, timeout=None)
             return {"returncode": code, "stdout": _redact(out.decode("utf-8", "replace")), "stderr": _redact(err.decode("utf-8", "replace"))}
         finally:
-            stop.set(); server.close(); thread.join(timeout=2); socket_dir.cleanup(); self.revoke()
+            stop.set(); server.close(); thread.join(timeout=10)
+            for request_thread in request_threads: request_thread.join(timeout=CHILD_TIMEOUT_SECONDS + 2)
+            teardown_failed = any(t.is_alive() for t in request_threads)
+            socket_dir.cleanup()
+            revocation = self.revoke()
+            self._last_revocation = revocation
+            if teardown_failed:
+                raise BrokerError("broker request teardown could not be proven")
 
     def revoke(self) -> dict[str, Any]:
         token = self._pending_cleanup_token or (self._record.token if self._record is not None else None)
@@ -815,7 +873,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         broker = GitHubAppBroker(app_id=args.app_id, app_slug=args.app_slug, installation_id=args.installation_id, account=args.account, repository=args.repo, permissions=args.permissions)
         runner = getattr(broker, "execute_brokered_observer", broker.execute)
         result = runner(command_argv, args.fingerprint)
-        revocation = broker.close()
+        revocation = result.pop("revocation", None) or getattr(broker, "_last_revocation", None) or broker.close()
         result["revocation"] = revocation
         print(json.dumps(result, sort_keys=True))
         if revocation.get("attempted") and not revocation.get("revoked"):

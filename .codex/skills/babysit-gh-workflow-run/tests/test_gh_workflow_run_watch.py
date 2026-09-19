@@ -36,6 +36,18 @@ def temp_cwd(path):
 
 
 class GeminiWatcherTests(unittest.TestCase):
+    def test_broker_routes_text_bytes_and_download(self):
+        calls = []
+        def fake_request(path, argv):
+            calls.append((path, argv))
+            return {"returncode": 0, "stdout": "text\n", "stderr": "", "stdout_bytes": b"\x00zip"}
+        with patch.dict(os.environ, {"GITHUB_APP_BROKER_SOCKET": "/tmp/broker.sock"}), patch.dict(sys.modules, {"github_app_broker_proxy": types.SimpleNamespace(request=fake_request)}):
+            self.assertEqual("text\n", MODULE.gh_text(["run", "view", "1"], repo="o/r"))
+            self.assertEqual("text\n", MODULE.gh_text(["repo", "view", "--json", "nameWithOwner"], repo="o/r"))
+            self.assertEqual(b"\x00zip", MODULE.gh_bytes(["api", "/repos/o/r/logs"], repo="o/r"))
+            self.assertIsNone(MODULE.gh_download(["run", "download", "1"], repo="o/r"))
+        self.assertEqual([("/tmp/broker.sock", ["-R", "o/r", "run", "view", "1"]), ("/tmp/broker.sock", ["-R", "o/r", "repo", "view", "--json", "nameWithOwner"]), ("/tmp/broker.sock", ["api", "/repos/o/r/logs"]), ("/tmp/broker.sock", ["-R", "o/r", "run", "download", "1"])], calls)
+
     def test_target_display_key_includes_head_sha(self):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,
