@@ -224,7 +224,8 @@ jobs:
             git remote add upstream https://github.com/openai/codex.git
           fi
           git fetch origin --tags
-          git fetch upstream --tags
+          git fetch --no-tags upstream \
+            '+refs/tags/rust-v*:refs/tags/rust-v*'
 
       - name: Resolve release metadata
         id: meta
