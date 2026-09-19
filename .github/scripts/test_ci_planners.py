@@ -10516,6 +10516,18 @@ fi
         self.assertIn("--upstream-ref refs/remotes/origin/upstream-main", workflow)
         self.assertNotIn("--upstream-ref refs/remotes/upstream/main", workflow)
 
+    def test_sedna_release_fetches_only_upstream_rust_release_tags(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "git fetch --no-tags upstream \\\n"
+            "            '+refs/tags/rust-v*:refs/tags/rust-v*'",
+            workflow,
+        )
+        self.assertNotIn("git fetch upstream --tags", workflow)
+
     def test_sedna_release_dispatches_public_asset_verification_only(self) -> None:
         release_workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
             encoding="utf-8"
