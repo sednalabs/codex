@@ -15,6 +15,10 @@ import json
 import os
 import re
 import selectors
+import signal
+import socket
+import tempfile
+import threading
 import shutil
 import stat
 import subprocess
@@ -34,6 +38,9 @@ KEY_BASENAME = "github-app-private-key.pem"
 OPENSSL_PATH = "/usr/bin/openssl"
 MAX_HTTP_BODY = 1024 * 1024
 MAX_CHILD_OUTPUT = 256 * 1024
+MAX_IPC_REQUEST = 16 * 1024
+MAX_IPC_RESPONSE = 512 * 1024
+CHILD_TIMEOUT_SECONDS = 30
 CHILD_TERMINATION_GRACE_SECONDS = 5
 JWT_LIFETIME_SECONDS = 9 * 60
 REFRESH_THRESHOLD_SECONDS = 120
@@ -252,6 +259,19 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
 # Descriptive alias for callers that prefer noun-first naming.
 command_fingerprint = fingerprint_command
 
+def fingerprint_brokered_command(repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]) -> str:
+    """Bind observer argv to the fixed proxy helper and real gh executable."""
+    helper = Path(__file__).with_name("github_app_broker_proxy.py")
+    gh = shutil.which("gh")
+    if gh is None or not helper.is_file():
+        raise BrokerError("broker proxy sources are unavailable")
+    helper_resolved = helper.resolve(strict=True)
+    gh_resolved = Path(gh).resolve(strict=True)
+    _validate_source(helper_resolved)
+    _validate_source(gh_resolved)
+    payload = {"command": fingerprint_command(repository, permissions, argv), "helper": hashlib.sha256(helper_resolved.read_bytes()).hexdigest(), "gh": str(gh_resolved), "gh_sha256": hashlib.sha256(gh_resolved.read_bytes()).hexdigest()}
+    return hashlib.sha256(_json_bytes(payload)).hexdigest()
+
 
 def _looks_like_path(value: str) -> bool:
     if value.startswith("-"):
@@ -312,7 +332,88 @@ def _production_credentials_directory(value: str | None) -> Path:
     return Path(canonical)
 
 
-def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[int, bytes, bytes]:
+def _leader_exited_unreaped(process: subprocess.Popen[bytes]) -> bool:
+    """Observe a child exit without releasing its PID/process-group identity."""
+    try:
+        result = os.waitid(
+            os.P_PID,
+            process.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+    except ChildProcessError:
+        return True
+    return result is not None
+
+
+def _process_group_descendants(pgid: int, leader_pid: int) -> set[int] | None:
+    """Return live Linux processes in ``pgid`` other than the pinned leader."""
+    members: set[int] = set()
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return None
+    with entries:
+        for entry in entries:
+            if not entry.name.isdigit() or int(entry.name) == leader_pid:
+                continue
+            try:
+                # The comm field can contain spaces and parentheses; split only
+                # after its final closing parenthesis. pgrp is field five.
+                raw = Path(entry.path, "stat").read_text()
+                fields = raw[raw.rfind(")") + 2 :].split()
+                if len(fields) >= 3 and int(fields[2]) == pgid:
+                    members.add(int(entry.name))
+            except (OSError, ValueError):
+                continue
+    return members
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate a private child session while its leader PID is still pinned."""
+    deadline = time.monotonic() + CHILD_TERMINATION_GRACE_SECONDS
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # The leader is already gone; continue to the bounded wait/reap.
+        pass
+    while time.monotonic() < deadline:
+        descendants = _process_group_descendants(process.pid, process.pid)
+        if _leader_exited_unreaped(process) and descendants == set():
+            break
+        time.sleep(0.05)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # The group exited while escalation was in flight.
+            pass
+    try:
+        process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            # The group exited while escalation was in flight.
+            pass
+        process.wait()
+
+
+def _terminate_single_process(process: subprocess.Popen[bytes]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_child_bounded(
+    argv: Sequence[str],
+    environment: Mapping[str, str],
+    *,
+    timeout: float | None = CHILD_TIMEOUT_SECONDS,
+    terminate_group: bool = False,
+) -> tuple[int, bytes, bytes]:
     """Run one child while enforcing an in-memory output ceiling."""
     try:
         process = subprocess.Popen(
@@ -321,6 +422,7 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
+            start_new_session=terminate_group,
         )
     except OSError as exc:
         raise BrokerError("child command failed to start") from exc
@@ -337,10 +439,27 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
         selector.register(stream, selectors.EVENT_READ, data=label)
 
     output_exceeded = False
+    group_cleaned = False
+    started = time.monotonic()
     try:
         while selector.get_map():
-            events = selector.select(timeout=1)
-            if not events and process.poll() is not None:
+            remaining_time = None if timeout is None else timeout - (time.monotonic() - started)
+            if remaining_time is not None and remaining_time <= 0:
+                if terminate_group:
+                    _terminate_process_group(process)
+                else:
+                    _terminate_single_process(process)
+                raise BrokerError("child command timed out")
+            events = selector.select(timeout=1 if remaining_time is None else min(1, remaining_time))
+            leader_exited = (
+                _leader_exited_unreaped(process)
+                if terminate_group
+                else process.poll() is not None
+            )
+            if leader_exited and terminate_group and not group_cleaned:
+                _terminate_process_group(process)
+                group_cleaned = True
+            if not events and leader_exited:
                 for key in list(selector.get_map().values()):
                     selector.unregister(key.fileobj)
                     key.fileobj.close()
@@ -369,15 +488,34 @@ def _run_child_bounded(argv: Sequence[str], environment: Mapping[str, str]) -> t
     if output_exceeded:
         for _, stream in streams.values():
             stream.close()
-        process.terminate()
-        try:
-            process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+        if terminate_group:
+            _terminate_process_group(process)
+        else:
+            _terminate_single_process(process)
         raise BrokerError("child output exceeded the safety bound")
 
-    return process.wait(), bytes(buffers["stdout"]), bytes(buffers["stderr"])
+    if terminate_group and not group_cleaned:
+        while not _leader_exited_unreaped(process):
+            if timeout is not None and time.monotonic() - started >= timeout:
+                _terminate_process_group(process)
+                raise BrokerError("child command timed out")
+            time.sleep(0.01)
+        _terminate_process_group(process)
+        group_cleaned = True
+
+    if group_cleaned:
+        returncode = int(process.returncode or 0)
+        return returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
+    try:
+        wait_timeout = None if timeout is None else max(0.1, timeout - (time.monotonic() - started))
+        returncode = process.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        if terminate_group:
+            _terminate_process_group(process)
+        else:
+            _terminate_single_process(process)
+        raise BrokerError("child command timed out")
+    return returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
 
 
 class GitHubAppBroker:
@@ -685,6 +823,145 @@ class GitHubAppBroker:
         stderr = _redact(raw_stderr.decode("utf-8", "replace"), (record.token,))
         return {"identity": self.public_identity(record), "returncode": returncode, "stdout": stdout, "stderr": stderr}
 
+    def execute_brokered_observer(self, argv: Sequence[str], expected_fingerprint: str) -> dict[str, Any]:
+        """Run an unchanged observer while brokering each short-lived ``gh`` call."""
+        helper = Path(__file__).with_name("github_app_broker_proxy.py")
+        if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+            raise BrokerError("command fingerprint mismatch")
+        if not helper.is_file():
+            raise BrokerError("broker proxy helper is missing")
+        gh_path = shutil.which("gh")
+        if not gh_path:
+            raise BrokerError("fixed gh executable is unavailable")
+        gh_path = str(Path(gh_path).resolve(strict=True))
+        _validate_source(Path(gh_path))
+        from github_app_broker_proxy import _read_exact, validate_gh_argv
+
+        socket_dir = tempfile.TemporaryDirectory(prefix="gh-broker-", dir="/tmp")
+        socket_path = str(Path(socket_dir.name) / "broker.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(socket_path)
+            os.chmod(socket_path, 0o600)
+            server.listen(1)
+            server.settimeout(0.25)
+        except BaseException:
+            server.close()
+            socket_dir.cleanup()
+            raise
+        stop = threading.Event()
+
+        def handle(conn):
+            record: TokenRecord | None = None
+            try:
+                with conn:
+                    conn.settimeout(15)
+                    header = _read_exact(conn, 4)
+                    size = int.from_bytes(header, "big")
+                    if size > MAX_IPC_REQUEST: raise BrokerError("proxy request exceeds safety bound")
+                    request = json.loads(_read_exact(conn, size).decode("utf-8"))
+                    if not isinstance(request, dict) or set(request) != {"argv"}: raise BrokerError("malformed proxy request")
+                    request_argv = request["argv"]
+                    validate_gh_argv(request_argv, self.repository)
+                    if stop.is_set():
+                        raise BrokerError("broker channel is closed")
+                    if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+                        raise BrokerError("bound command source changed")
+                    record = self.get_installation_token()
+                    env = _without_ambient_tokens(os.environ)
+                    env["GH_TOKEN"] = record.token
+                    returncode, raw_stdout, raw_stderr = _run_child_bounded(
+                        [gh_path, *request_argv],
+                        env,
+                        timeout=CHILD_TIMEOUT_SECONDS,
+                        terminate_group=True,
+                    )
+                    safe_stdout = raw_stdout.replace(
+                        record.token.encode(), b"[REDACTED]"
+                    )
+                    body = {
+                        "returncode": returncode,
+                        "stdout": _redact(
+                            raw_stdout.decode("utf-8", "replace"),
+                            (record.token,),
+                        ),
+                        "stdout_b64": base64.b64encode(safe_stdout).decode("ascii"),
+                        "stderr": _redact(
+                            raw_stderr.decode("utf-8", "replace"),
+                            (record.token,),
+                        ),
+                    }
+                    encoded = _json_bytes(body)
+                    if len(encoded) > MAX_IPC_RESPONSE: raise BrokerError("proxy response exceeds safety bound")
+                    conn.sendall(len(encoded).to_bytes(4, "big") + encoded)
+            except Exception as exc:
+                secrets = (record.token,) if record is not None else ()
+                body = _json_bytes(
+                    {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": _redact(str(exc), secrets),
+                    }
+                )
+                if len(body) <= MAX_IPC_RESPONSE:
+                    try:
+                        conn.sendall(len(body).to_bytes(4, "big") + body)
+                    except OSError:
+                        # The proxy may have disconnected after a bounded
+                        # command failure; there is no response path left.
+                        pass
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if stop.is_set():
+                        break
+                    raise
+                # Watchers issue gh commands serially. Handling inline gives a
+                # hard concurrency bound of one and a simple teardown proof.
+                handle(conn)
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        env = _without_ambient_tokens(os.environ)
+        env["GITHUB_APP_BROKER_SOCKET"] = socket_path
+        result: dict[str, Any] | None = None
+        observer_error: BaseException | None = None
+        try:
+            code, out, err = _run_child_bounded(argv, env, timeout=None)
+            result = {
+                "returncode": code,
+                "stdout": _redact(out.decode("utf-8", "replace")),
+                "stderr": _redact(err.decode("utf-8", "replace")),
+            }
+        except Exception as exc:
+            observer_error = exc
+        finally:
+            stop.set()
+            server.close()
+            # A request is bounded by CHILD_TIMEOUT_SECONDS and is handled by
+            # this one server thread, so this join proves no token user remains.
+            thread.join()
+            socket_dir.cleanup()
+            revocation = self.revoke()
+            self._last_revocation = revocation
+        if observer_error is not None:
+            if revocation.get("attempted") and not revocation.get("revoked"):
+                raise BrokerError(
+                    f"{_redact(str(observer_error))}; installation token revocation was not proven"
+                ) from observer_error
+            raise observer_error
+        if revocation.get("attempted") and not revocation.get("revoked"):
+            raise BrokerError("installation token revocation was not proven")
+        if result is None:
+            raise BrokerError("observer did not produce a result")
+        result["revocation"] = revocation
+        return result
+
     def revoke(self) -> dict[str, Any]:
         token = self._pending_cleanup_token or (self._record.token if self._record is not None else None)
         if token is None:
@@ -756,11 +1033,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not command_argv:
             raise BrokerError("a command is required")
         if args.command == "fingerprint":
-            print(fingerprint_command(args.repo, args.permissions, command_argv))
+            print(fingerprint_brokered_command(args.repo, args.permissions, command_argv))
             return 0
         broker = GitHubAppBroker(app_id=args.app_id, app_slug=args.app_slug, installation_id=args.installation_id, account=args.account, repository=args.repo, permissions=args.permissions)
-        result = broker.execute(command_argv, args.fingerprint)
-        revocation = broker.close()
+        runner = getattr(broker, "execute_brokered_observer", broker.execute)
+        result = runner(command_argv, args.fingerprint)
+        revocation = result.pop("revocation", None) or getattr(broker, "_last_revocation", None) or broker.close()
         result["revocation"] = revocation
         print(json.dumps(result, sort_keys=True))
         if revocation.get("attempted") and not revocation.get("revoked"):

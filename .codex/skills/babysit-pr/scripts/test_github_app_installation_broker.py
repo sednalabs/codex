@@ -5,7 +5,9 @@ import base64
 import json
 import os
 import stat
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,6 +22,7 @@ from github_app_installation_broker import (
     _production_credentials_directory,
     _validate_private_key,
     build_jwt_claims,
+    fingerprint_brokered_command,
     fingerprint_command,
     main,
 )
@@ -207,7 +210,7 @@ class BrokerTests(unittest.TestCase):
             broker.get_installation_token()
         with self.assertRaises(BrokerError):
             broker.get_installation_token()
-        command = ["/bin/echo", "x"]
+        command = [str(Path("/bin/echo").resolve(strict=True)), "x"]
         fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
         with self.assertRaises(BrokerError):
             broker.execute(command, fingerprint)
@@ -238,7 +241,7 @@ class BrokerTests(unittest.TestCase):
             broker.get_installation_token()
         with self.assertRaises(BrokerError):
             broker.get_installation_token()
-        command = ["/bin/echo", "x"]
+        command = [str(Path("/bin/echo").resolve(strict=True)), "x"]
         fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
         with self.assertRaises(BrokerError):
             broker.execute(command, fingerprint)
@@ -270,7 +273,7 @@ class BrokerTests(unittest.TestCase):
         fake = FakeGitHub(token="opaque-installation-token")
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
-        command = ["/bin/echo", "opaque-installation-token"]
+        command = [str(Path("/bin/echo").resolve(strict=True)), "opaque-installation-token"]
         fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
         captured = {}
 
@@ -446,7 +449,106 @@ class BrokerTests(unittest.TestCase):
 
     def test_bounded_child_output_terminates(self):
         with self.assertRaises(BrokerError):
-            _run_child_bounded(["/bin/sh", "-c", "yes x"], {})
+            _run_child_bounded(["/bin/sh", "-c", "yes x"], {}, terminate_group=True)
+
+    def test_token_bearing_child_descendants_are_gone_before_return(self):
+        for inherit_pipes in (False, True):
+            with self.subTest(inherit_pipes=inherit_pipes), tempfile.TemporaryDirectory() as temp:
+                script = Path(temp) / "spawn_descendant.py"
+                pid_file = Path(temp) / "descendant.pid"
+                script.write_text(
+                    "import pathlib, subprocess, sys\n"
+                    "kwargs = {} if sys.argv[2] == 'inherit' else "
+                    "{'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}\n"
+                    "child = subprocess.Popen(['/bin/sleep', '60'], **kwargs)\n"
+                    "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+                )
+                script.chmod(0o755)
+                result = _run_child_bounded(
+                    [
+                        str(Path(sys.executable).resolve(strict=True)),
+                        str(script),
+                        str(pid_file),
+                        "inherit" if inherit_pipes else "redirect",
+                    ],
+                    {},
+                    timeout=5,
+                    terminate_group=True,
+                )
+                self.assertEqual(0, result[0])
+                descendant_pid = int(pid_file.read_text())
+                for _ in range(50):
+                    stat_path = Path(f"/proc/{descendant_pid}/stat")
+                    if not stat_path.exists():
+                        break
+                    fields = stat_path.read_text().split(")", 1)[1].split()
+                    if fields and fields[0] == "Z":
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("token-bearing descendant survived process-group cleanup")
+
+    def test_brokered_observer_keeps_token_out_of_watcher_and_returns_revocation(self):
+        fake = FakeGitHub(token="broker-only-secret")
+        directory, broker = make_broker(fake)
+        self.addCleanup(directory.cleanup)
+        scripts_dir = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            gh = temp_path / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os\n"
+                "print(os.environ['GH_TOKEN'])\n"
+            )
+            gh.chmod(0o755)
+            gh_resolved = str(gh.resolve(strict=True))
+            watcher = temp_path / "watcher.py"
+            watcher.write_text(
+                "import json, os, sys\n"
+                f"sys.path.insert(0, {str(scripts_dir)!r})\n"
+                "assert 'GH_TOKEN' not in os.environ\n"
+                "from github_app_broker_proxy import request\n"
+                "result = request(os.environ['GITHUB_APP_BROKER_SOCKET'], "
+                "['api', 'repos/example-org/codex/actions/runs/1'])\n"
+                "print(result['returncode'], result['stdout'])\n"
+            )
+            watcher.chmod(0o755)
+            command = [str(Path(sys.executable).resolve(strict=True)), str(watcher)]
+            environment = {"PATH": f"{temp}{os.pathsep}{os.environ.get('PATH', '')}"}
+            child_calls = []
+
+            def recording_child_runner(argv, child_env, **kwargs):
+                child_calls.append((list(argv), dict(kwargs)))
+                return _run_child_bounded(argv, child_env, **kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch(
+                "github_app_installation_broker._run_child_bounded",
+                side_effect=recording_child_runner,
+            ):
+                fingerprint = fingerprint_brokered_command(
+                    broker.repository, broker.permissions, command
+                )
+                result = broker.execute_brokered_observer(command, fingerprint)
+        self.assertEqual(0, result["returncode"], result)
+        self.assertEqual(
+            {"attempted": True, "revoked": True, "status": 204},
+            result["revocation"],
+        )
+        self.assertNotIn("broker-only-secret", json.dumps(result))
+        self.assertEqual("DELETE", fake.calls[-1][0])
+        self.assertIn((command, {"timeout": None}), child_calls)
+        self.assertTrue(
+            any(
+                call[0][0] == gh_resolved
+                and call[1] == {
+                    "timeout": 30,
+                    "terminate_group": True,
+                }
+                for call in child_calls
+            ),
+            child_calls,
+        )
 
     def test_cli_returns_nonzero_when_revocation_is_unproven(self):
         fake_result = {"returncode": 0, "stdout": "", "stderr": ""}
