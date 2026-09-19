@@ -100,11 +100,9 @@ def _validate_download_directory(value):
         raise ProxyError("download directory must be absolute")
     # Reconstruct from the allowlisted basename so the filesystem operation
     # never consumes an unchecked client-supplied path expression.
-    # lgtm [py/path-injection] -- the basename is restricted above and the
-    # operation is confined to the fixed temporary root.
     path = Path("/tmp") / match.group(1)
     try:
-        info = path.lstat()
+        info = path.lstat()  # lgtm [py/path-injection] -- strict basename allowlist and fixed root above.
     except OSError as exc:
         raise ProxyError("download directory is unavailable") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
