@@ -43,8 +43,13 @@ fn role_defaults(role_name: &str) -> RoleDefaults {
 
 /// Returns a soft model default owned by a role. Soft defaults are considered only when the
 /// caller and configured subagent defaults leave model selection unspecified.
-pub(crate) fn role_default_model(role_name: Option<&str>) -> Option<&'static str> {
-    role_name.and_then(|name| role_defaults(name).default_model)
+pub(crate) fn role_default_model(
+    role_name: Option<&str>,
+    is_builtin_role: bool,
+) -> Option<&'static str> {
+    is_builtin_role
+        .then(|| role_name.and_then(|name| role_defaults(name).default_model))
+        .flatten()
 }
 
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.

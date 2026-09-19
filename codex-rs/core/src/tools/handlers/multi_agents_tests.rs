@@ -104,16 +104,25 @@ fn spawn_agent_reasoning_effort_accepts_empty_support_metadata() {
 #[test]
 fn explorer_soft_model_default_has_explicit_and_configured_precedence() {
     assert_eq!(
-        resolve_spawn_agent_model_request(None, None, Some("explorer")),
+        resolve_spawn_agent_model_request(None, None, Some("explorer"), true),
         Some("gpt-5.6-luna")
     );
     assert_eq!(
-        resolve_spawn_agent_model_request(Some("gpt-5.6-terra"), None, Some("explorer")),
+        resolve_spawn_agent_model_request(
+            Some("gpt-5.6-terra"),
+            None,
+            Some("explorer"),
+            true,
+        ),
         Some("gpt-5.6-terra")
     );
     assert_eq!(
-        resolve_spawn_agent_model_request(None, Some("gpt-5.6-sol"), Some("explorer")),
+        resolve_spawn_agent_model_request(None, Some("gpt-5.6-sol"), Some("explorer"), true),
         Some("gpt-5.6-sol")
+    );
+    assert_eq!(
+        resolve_spawn_agent_model_request(None, None, Some("explorer"), false),
+        None
     );
 }
 
@@ -455,6 +464,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+    assert_eq!(snapshot.model, "gpt-5.6-luna");
 }
 
 #[tokio::test]
@@ -1078,10 +1088,11 @@ async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
+async fn multi_agent_v2_spawn_defaults_builtin_explorer_to_luna() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        effective_model: Option<String>,
     }
 
     let (mut session, mut turn) = make_session_and_context().await;
@@ -1109,7 +1120,8 @@ async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_name": "luna_model",
-                "model": "gpt-5.6-luna",
+                "agent_type": "explorer",
+                "expected_model": "gpt-5.6-luna",
                 "fork_turns": "none"
             })),
         ))
@@ -1126,6 +1138,7 @@ async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.6-luna");
+    assert_eq!(result.effective_model, Some("gpt-5.6-luna".to_string()));
 }
 
 #[tokio::test]

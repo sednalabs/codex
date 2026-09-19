@@ -269,6 +269,7 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
         requested_model,
         turn.config.agent_default_subagent_model.as_deref(),
         role_name,
+        role_name.is_some_and(|name| !turn.config.agent_roles.contains_key(name)),
     );
     let requested_reasoning_effort = requested_reasoning_effort
         .or_else(|| turn.config.agent_default_subagent_reasoning_effort.clone());
@@ -324,10 +325,11 @@ pub(crate) fn resolve_spawn_agent_model_request(
     explicit_model: Option<&str>,
     configured_model: Option<&str>,
     role_name: Option<&str>,
+    role_is_builtin: bool,
 ) -> Option<&str> {
     explicit_model
         .or(configured_model)
-        .or_else(|| role_default_model(role_name))
+        .or_else(|| role_default_model(role_name, role_is_builtin))
 }
 
 pub(crate) async fn apply_spawn_agent_service_tier(
