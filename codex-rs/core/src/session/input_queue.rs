@@ -772,9 +772,7 @@ mod tests {
             ))
             .await;
         assert!(!input_queue.has_trigger_turn_mailbox_items().await);
-        assert!(!input_queue
-            .has_pending_wait_input(&Mutex::new(None))
-            .await);
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
 
         input_queue
             .enqueue_mailbox_communication(make_mail(
@@ -785,9 +783,7 @@ mod tests {
             ))
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
-        assert!(input_queue
-            .has_pending_wait_input(&Mutex::new(None))
-            .await);
+        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
 
     #[tokio::test]

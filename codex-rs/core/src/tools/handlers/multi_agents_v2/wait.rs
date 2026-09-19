@@ -415,6 +415,7 @@ async fn mailbox_notifications(session: &Session) -> Vec<AgentNotificationSummar
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ready_wake_source(
     session: &Session,
     completion_rule: CompletionRule,
@@ -428,9 +429,8 @@ async fn ready_wake_source(
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
     } else if wake_on_mailbox
-        && (pending_input_activity.is_some_and(|activity| {
-            !exact_target_wait || activity != InputQueueActivity::Mailbox
-        })
+        && (pending_input_activity
+            .is_some_and(|activity| !exact_target_wait || activity != InputQueueActivity::Mailbox)
             || if exact_target_wait {
                 session
                     .input_queue
