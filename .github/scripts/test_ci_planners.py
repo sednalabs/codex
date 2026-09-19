@@ -7775,6 +7775,8 @@ class BazelCiModeScriptTests(unittest.TestCase):
                     ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
                     ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
                     ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+                    ".codex/skills/babysit-pr/scripts/github_app_broker_proxy.py",
+                    ".codex/skills/babysit-pr/scripts/test_github_app_broker_proxy.py",
                     ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
                     ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py",
                     ".codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py",
@@ -7782,7 +7784,7 @@ class BazelCiModeScriptTests(unittest.TestCase):
                     ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
                     ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py",
                 ],
-                statuses=["modified", "added"] * 5,
+                statuses=["modified", "added"] * 6,
             ),
             {"mode": "observer_only", "run_bazel": "false", "run_observer": "true"},
         )

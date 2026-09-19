@@ -57,14 +57,16 @@ redirect/cross-host rejection, bounded response bodies, strict JSON/type
 checks, and finite timeouts.
 
 Observer calls use `github_app_broker_proxy.py` over a private Unix socket with
-bounded four-byte length-prefixed frames. The broker accepts one request per
-connection, allows only the explicit read-only `pr`, `run`, and REST/GraphQL
-GET forms used by the observers, and rejects aliases, extensions, mutations,
-non-GET methods, and malformed or oversized frames. Real `gh` output is read
-non-blockingly with independent stdout/stderr ceilings and a finite timeout;
-the broker waits for every request and child process to terminate before
-closing the channel and revoking the token. The watcher receives only the
-socket path, never a token or token-bearing error.
+bounded four-byte length-prefixed frames. The broker serializes one request at
+a time, allows only the exact read-only `repo view`, `pr`, `run`, and
+repository-bound REST/GraphQL forms used by the observers, and rejects aliases,
+extensions, mutations, non-GET methods, unsafe output options, and malformed or
+oversized frames. Real `gh` output is read non-blockingly with independent
+stdout/stderr ceilings and a finite timeout; its private process group is empty
+before the request returns. The tokenless top-level watcher has no runtime
+timeout and can remain blocked across installation-token generations. The
+broker closes the channel before final revocation, and the watcher receives
+only the socket path, never a token or token-bearing error.
 
 Example (with generic credential naming):
 
@@ -92,14 +94,14 @@ token left by an interrupted process before retrying.
 
 ## Validation and promotion
 
-The secret-free test file uses only mocked HTTP responses and temporary test
-fixtures. It covers permission reduction and selected-repository binding, JWT
-claim construction without material exposure, cache reuse and near-expiry
-refresh, ambient-token stripping, fingerprint and path safety, body and
-redirect bounds, redaction, success/failure revocation, and the no-fallback
-boundary. Hosted `codex.agent-workflow-sanity` runs the broker's compile and
-test commands. Live installation/token proof, broader repositories, write
-permissions, and production commissioning remain outside the Phase A cutline.
+The secret-free tests use only mocked HTTP responses and temporary fixtures.
+They cover permission reduction and selected-repository binding, JWT claims,
+cache refresh, ambient-token stripping, fingerprint and path safety, framed
+IPC, exact read-only command shapes, process-group cleanup, token isolation,
+redaction, and final revocation receipts. Hosted
+`codex.agent-workflow-sanity` compiles and runs both broker and proxy suites.
+Live installation/token proof, broader repositories, write permissions, and
+production commissioning remain outside the Phase A cutline.
 
 ## Read-only PR observer mapping
 

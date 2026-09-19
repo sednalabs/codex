@@ -1,58 +1,196 @@
 #!/usr/bin/env python3
 """Bounded private client for broker-owned read-only GitHub CLI calls."""
-import base64, json, os, socket, struct
+import base64
+import json
+import os
+import re
+import socket
+import stat
+import struct
+from pathlib import Path
+from urllib.parse import urlparse
 
 MAX_REQUEST = 16 * 1024
 MAX_RESPONSE = 512 * 1024
 MAX_ARGUMENT = 4096
 IO_TIMEOUT = 15
-READ_COMMANDS = {"api", "pr", "run", "repo"}
-FORBIDDEN = {"rerun", "cancel", "dispatch", "merge", "comment", "edit", "close", "reopen"}
+_GRAPHQL_WRITE = re.compile(r"\b(?:mutation|subscription)\b", re.IGNORECASE)
+_REST_PATH = re.compile(r"^(?:actions|commits|issues|pulls)(?:/|\?|$)")
 
 class ProxyError(RuntimeError): pass
 
+def _pairs(values):
+    if len(values) % 2:
+        raise ProxyError("option value is missing")
+    return list(zip(values[::2], values[1::2]))
+
+
+def _validate_graphql(values, repository=None):
+    query = None
+    variables = {}
+    for option, value in _pairs(values):
+        if option in {"-X", "--method"}:
+            if value.upper() != "GET":
+                raise ProxyError("non-GET GraphQL operation rejected")
+            continue
+        if option not in {"-f", "--raw-field", "-F", "--field"} or "=" not in value:
+            raise ProxyError("unsupported GraphQL argument")
+        name, field_value = value.split("=", 1)
+        if name == "query":
+            if option not in {"-f", "--raw-field"} or query is not None:
+                raise ProxyError("GraphQL query field is invalid")
+            query = field_value
+        elif option not in {"-F", "--field"} or name not in {
+            "owner", "name", "number", "cursor"
+        }:
+            raise ProxyError("unsupported GraphQL variable")
+        else:
+            if name in variables:
+                raise ProxyError("duplicate GraphQL variable")
+            variables[name] = field_value
+    if query is None or not query.lstrip().lower().startswith("query"):
+        raise ProxyError("GraphQL read query is required")
+    # Be deliberately conservative: reject write-operation words even in
+    # comments or string literals rather than trying to implement a parser.
+    if _GRAPHQL_WRITE.search(query):
+        raise ProxyError("GraphQL mutation rejected")
+    if not {"owner", "name", "number"}.issubset(variables):
+        raise ProxyError("GraphQL repository binding is incomplete")
+    if repository:
+        owner, name = repository.split("/", 1)
+        if variables["owner"].lower() != owner.lower() or variables["name"].lower() != name.lower():
+            raise ProxyError("GraphQL repository binding rejected")
+    if not variables["number"].isdigit():
+        raise ProxyError("GraphQL pull request number is invalid")
+
+
+def _validate_rest(endpoint, values, repository):
+    normalized = endpoint.lstrip("/")
+    if repository:
+        prefix = f"repos/{repository}/"
+    else:
+        match = re.match(r"^repos/[^/]+/[^/]+/", normalized)
+        if match is None:
+            raise ProxyError("REST repository binding is required")
+        prefix = match.group(0)
+    if not normalized.startswith(prefix) or not _REST_PATH.match(normalized[len(prefix):]):
+        raise ProxyError("REST repository binding rejected")
+    explicit_get = False
+    has_fields = False
+    for option, value in _pairs(values):
+        if option in {"-X", "--method"}:
+            if value.upper() != "GET":
+                raise ProxyError("non-GET REST operation rejected")
+            explicit_get = True
+        elif option in {"-f", "--raw-field", "-F", "--field"}:
+            has_fields = True
+            if "=" not in value:
+                raise ProxyError("REST field is invalid")
+        else:
+            raise ProxyError("unsupported REST argument")
+    if has_fields and not explicit_get:
+        raise ProxyError("REST fields require an explicit GET")
+
+
+def _validate_download_directory(value):
+    path = Path(value)
+    if not path.is_absolute():
+        raise ProxyError("download directory must be absolute")
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ProxyError("download directory is unavailable") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ProxyError("download directory must be a real directory")
+    if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ProxyError("download directory is not private")
+    temp_root = Path(os.path.realpath("/tmp"))
+    resolved = Path(os.path.realpath(path))
+    if resolved.parent != temp_root or not resolved.name.startswith("gh-run-download-"):
+        raise ProxyError("download directory escaped the watcher temporary root")
+
+
 def validate_gh_argv(argv, repository=None):
-    if not isinstance(argv, list) or not argv: raise ProxyError("unsupported GitHub CLI operation")
-    if argv[0] == "-R":
-        if len(argv) < 3: raise ProxyError("repository binding is required")
-        argv = argv[2:]
+    if not isinstance(argv, list) or not argv:
+        raise ProxyError("unsupported GitHub CLI operation")
     if any(not isinstance(x, str) or not x or len(x) > MAX_ARGUMENT for x in argv):
         raise ProxyError("invalid GitHub CLI argument")
-    if argv[0] == "api":
-        if len(argv) < 2: raise ProxyError("API endpoint is required")
+    bound_repo = None
+    if argv[0] == "-R":
+        if len(argv) < 4 or (repository and argv[1].lower() != repository.lower()):
+            raise ProxyError("repository binding mismatch")
+        bound_repo = argv[1]
+        repository = repository or bound_repo
+        argv = argv[2:]
+
+    command = argv[0]
+    if command == "api":
+        if len(argv) < 2:
+            raise ProxyError("API endpoint is required")
         if argv[1] == "graphql":
-            for idx, value in enumerate(argv[2:]):
-                if value in {"-X", "--method"} and (idx + 3 > len(argv) or argv[idx + 3].upper() != "GET"):
-                    raise ProxyError("non-GET GraphQL operation rejected")
-            if not any(x.startswith(("-f", "--raw-field", "-F")) or x.startswith(("query=", "query:")) for x in argv[2:]):
-                raise ProxyError("GraphQL query is required")
-            query = " ".join(x for x in argv[2:] if "query" in x.lower()).lstrip()
-            query_text = query.split("=", 1)[1].lstrip() if "=" in query else query
-            if query_text.lower().startswith(("mutation", "subscription")) or " mutation" in query_text.lower():
-                raise ProxyError("GraphQL mutation rejected")
+            _validate_graphql(argv[2:], repository)
         else:
-            if repository:
-                prefix = "repos/" + repository + "/"
-                endpoint = argv[1].lstrip("/")
-                if not endpoint.startswith(prefix): raise ProxyError("REST repository binding rejected")
-            for idx, value in enumerate(argv[2:]):
-                if value in {"-X", "--method"}:
-                    if idx + 3 > len(argv) or argv[idx + 3].upper() != "GET": raise ProxyError("non-GET REST operation rejected")
-            if any(x.startswith(("-X=", "--method=")) and x.lower() not in {"-x=get", "--method=get"} for x in argv[2:]):
-                raise ProxyError("non-GET REST operation rejected")
-    elif argv[0] == "pr":
-        if len(argv) < 2 or argv[1] not in {"view", "checks", "status"}: raise ProxyError("read-only PR operation rejected")
-    elif argv[0] == "run":
-        if len(argv) < 2 or argv[1] not in {"view", "list", "download"}: raise ProxyError("read-only workflow operation rejected")
-    elif argv[0] == "repo":
-        if argv[1:] != ["view", "--json", "nameWithOwner"]: raise ProxyError("repository autodetection shape rejected")
+            _validate_rest(argv[1], argv[2:], repository)
+    elif command == "repo":
+        if argv[1:] != ["view", "--json", "nameWithOwner"]:
+            raise ProxyError("repository autodetection shape rejected")
+    elif command == "pr":
+        if bound_repo is None or argv[1] not in {"view", "checks"}:
+            raise ProxyError("read-only PR operation rejected")
+        if len(argv) == 4:
+            target = None
+            option_index = 2
+        elif len(argv) == 5:
+            target = argv[2]
+            option_index = 3
+        else:
+            raise ProxyError("PR output shape rejected")
+        if target is not None and not (target.isdigit() or (
+            urlparse(target).netloc == "github.com"
+            and urlparse(target).path.startswith(f"/{repository}/pull/")
+        )):
+            raise ProxyError("PR target is outside the bound repository")
+        if argv[option_index] != "--json" or not argv[option_index + 1]:
+            raise ProxyError("PR output shape rejected")
+    elif command == "run":
+        if bound_repo is None or len(argv) < 3:
+            raise ProxyError("read-only workflow operation rejected")
+        subcommand = argv[1]
+        if subcommand == "list":
+            pairs = _pairs(argv[2:])
+            allowed = {"--workflow", "--limit", "--json", "--branch"}
+            if any(option not in allowed for option, _ in pairs):
+                raise ProxyError("workflow list shape rejected")
+            names = [option for option, _ in pairs]
+            if any(names.count(name) != 1 for name in {"--workflow", "--limit", "--json"}):
+                raise ProxyError("workflow list shape rejected")
+            values = dict(pairs)
+            if values["--limit"] != "30" or not values["--workflow"] or not values["--json"]:
+                raise ProxyError("workflow list shape rejected")
+        elif subcommand == "view":
+            tail = argv[2:]
+            valid = (
+                len(tail) == 3 and tail[0].isdigit() and tail[1] == "--json" and bool(tail[2])
+            ) or (
+                len(tail) == 2 and tail[0].isdigit() and tail[1] == "--log-failed"
+            ) or (
+                len(tail) == 3 and tail[0] == "--job" and tail[1].isdigit() and tail[2] == "--log"
+            )
+            if not valid:
+                raise ProxyError("workflow view shape rejected")
+        elif subcommand == "download":
+            if (
+                len(argv) != 7
+                or not argv[2].isdigit()
+                or argv[3:5] != ["--name", "validation-summary"]
+                or argv[5] != "--dir"
+            ):
+                raise ProxyError("workflow download shape rejected")
+            _validate_download_directory(argv[6])
+        else:
+            raise ProxyError("read-only workflow operation rejected")
     else:
         raise ProxyError("unsupported GitHub CLI operation")
-    lowered = [x.lower() for x in argv]
-    if any(x in {"--web", "--jq", "--template"} or x.startswith(("--jq=", "--template=")) for x in lowered):
-        raise ProxyError("unsafe output option rejected")
-    if any(x in FORBIDDEN for x in lowered) or any(x.startswith("--ext") or x == "extension" for x in lowered):
-        raise ProxyError("mutating or extension operation rejected")
     return True
 
 def _read_frame(sock):

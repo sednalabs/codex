@@ -24,6 +24,8 @@ OBSERVER_ONLY_PATHS = frozenset(
         ".codex/skills/babysit-pr/scripts/test_gh_pr_watch.py",
         ".codex/skills/babysit-pr/scripts/github_app_installation_broker.py",
         ".codex/skills/babysit-pr/scripts/test_github_app_installation_broker.py",
+        ".codex/skills/babysit-pr/scripts/github_app_broker_proxy.py",
+        ".codex/skills/babysit-pr/scripts/test_github_app_broker_proxy.py",
         ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
         ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py",
         ".codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py",
