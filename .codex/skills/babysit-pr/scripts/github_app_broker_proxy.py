@@ -93,9 +93,14 @@ def _validate_rest(endpoint, values, repository):
 
 
 def _validate_download_directory(value):
-    path = Path(value)
-    if not path.is_absolute():
+    if not isinstance(value, str):
+        raise ProxyError("download directory must be a string")
+    match = re.fullmatch(r"/tmp/(gh-run-download-[A-Za-z0-9._-]+)", value)
+    if match is None:
         raise ProxyError("download directory must be absolute")
+    # Reconstruct from the allowlisted basename so the filesystem operation
+    # never consumes an unchecked client-supplied path expression.
+    path = Path("/tmp") / match.group(1)
     try:
         info = path.lstat()
     except OSError as exc:

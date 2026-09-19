@@ -374,6 +374,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
+        # The leader is already gone; continue to the bounded wait/reap.
         pass
     while time.monotonic() < deadline:
         descendants = _process_group_descendants(process.pid, process.pid)
@@ -384,6 +385,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # The group exited while escalation was in flight.
             pass
     try:
         process.wait(timeout=CHILD_TERMINATION_GRACE_SECONDS)
@@ -391,6 +393,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # The group exited while escalation was in flight.
             pass
         process.wait()
 
@@ -837,10 +840,15 @@ class GitHubAppBroker:
         socket_dir = tempfile.TemporaryDirectory(prefix="gh-broker-", dir="/tmp")
         socket_path = str(Path(socket_dir.name) / "broker.sock")
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(socket_path)
-        os.chmod(socket_path, 0o600)
-        server.listen(1)
-        server.settimeout(0.25)
+        try:
+            server.bind(socket_path)
+            os.chmod(socket_path, 0o600)
+            server.listen(1)
+            server.settimeout(0.25)
+        except BaseException:
+            server.close()
+            socket_dir.cleanup()
+            raise
         stop = threading.Event()
 
         def handle(conn):
@@ -892,12 +900,16 @@ class GitHubAppBroker:
                     {
                         "returncode": 1,
                         "stdout": "",
-                        "stderr": _redact(exc, secrets),
+                        "stderr": _redact(str(exc), secrets),
                     }
                 )
                 if len(body) <= MAX_IPC_RESPONSE:
-                    try: conn.sendall(len(body).to_bytes(4, "big") + body)
-                    except OSError: pass
+                    try:
+                        conn.sendall(len(body).to_bytes(4, "big") + body)
+                    except OSError:
+                        # The proxy may have disconnected after a bounded
+                        # command failure; there is no response path left.
+                        pass
 
         def serve():
             while not stop.is_set():
@@ -926,7 +938,7 @@ class GitHubAppBroker:
                 "stdout": _redact(out.decode("utf-8", "replace")),
                 "stderr": _redact(err.decode("utf-8", "replace")),
             }
-        except BaseException as exc:
+        except Exception as exc:
             observer_error = exc
         finally:
             stop.set()
@@ -940,7 +952,7 @@ class GitHubAppBroker:
         if observer_error is not None:
             if revocation.get("attempted") and not revocation.get("revoked"):
                 raise BrokerError(
-                    f"{_redact(observer_error)}; installation token revocation was not proven"
+                    f"{_redact(str(observer_error))}; installation token revocation was not proven"
                 ) from observer_error
             raise observer_error
         if revocation.get("attempted") and not revocation.get("revoked"):
