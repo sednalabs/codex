@@ -3758,7 +3758,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             "tools::handlers::multi_agents::tests::"
-            "multi_agent_v2_spawn_accepts_luna_compatibility_override",
+            "multi_agent_v2_spawn_defaults_builtin_explorer_to_luna",
             recipe,
         )
         self.assertIn(

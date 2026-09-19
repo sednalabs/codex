@@ -28,16 +28,10 @@ use toml::Value as TomlValue;
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
-struct RoleDefaults {
-    default_model: Option<&'static str>,
-}
-
-fn role_defaults(role_name: &str) -> RoleDefaults {
+fn builtin_role_default_model(role_name: &str) -> Option<&'static str> {
     match role_name {
-        "explorer" => RoleDefaults {
-            default_model: Some("gpt-5.6-luna"),
-        },
-        _ => RoleDefaults { default_model: None },
+        "explorer" => Some("gpt-5.6-luna"),
+        _ => None,
     }
 }
 
@@ -47,9 +41,11 @@ pub(crate) fn role_default_model(
     role_name: Option<&str>,
     is_builtin_role: bool,
 ) -> Option<&'static str> {
-    is_builtin_role
-        .then(|| role_name.and_then(|name| role_defaults(name).default_model))
-        .flatten()
+    if is_builtin_role {
+        role_name.and_then(builtin_role_default_model)
+    } else {
+        None
+    }
 }
 
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.

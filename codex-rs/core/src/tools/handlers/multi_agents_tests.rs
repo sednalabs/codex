@@ -104,7 +104,7 @@ fn spawn_agent_reasoning_effort_accepts_empty_support_metadata() {
 #[test]
 fn explorer_soft_model_default_has_explicit_and_configured_precedence() {
     assert_eq!(
-        resolve_spawn_agent_model_request(None, None, Some("explorer"), true),
+        resolve_spawn_agent_model_request(None, None, Some("explorer"), /*role_is_builtin*/ true),
         Some("gpt-5.6-luna")
     );
     assert_eq!(
@@ -112,16 +112,21 @@ fn explorer_soft_model_default_has_explicit_and_configured_precedence() {
             Some("gpt-5.6-terra"),
             None,
             Some("explorer"),
-            true,
+            /*role_is_builtin*/ true,
         ),
         Some("gpt-5.6-terra")
     );
     assert_eq!(
-        resolve_spawn_agent_model_request(None, Some("gpt-5.6-sol"), Some("explorer"), true),
+        resolve_spawn_agent_model_request(
+            None,
+            Some("gpt-5.6-sol"),
+            Some("explorer"),
+            /*role_is_builtin*/ true,
+        ),
         Some("gpt-5.6-sol")
     );
     assert_eq!(
-        resolve_spawn_agent_model_request(None, None, Some("explorer"), false),
+        resolve_spawn_agent_model_request(None, None, Some("explorer"), /*role_is_builtin*/ false),
         None
     );
 }
