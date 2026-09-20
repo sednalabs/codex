@@ -41,7 +41,6 @@ use tracing::warn;
 
 mod backfill;
 mod configured_identity_provenance;
-mod extension_storage;
 mod external_agent_config_imports;
 mod goals;
 mod logs;
