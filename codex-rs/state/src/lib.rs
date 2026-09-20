@@ -23,6 +23,7 @@ pub use model::CreatedProject;
 pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
+pub use model::Phase2AttestedBaseline;
 pub use model::Phase2JobClaimOutcome;
 pub use model::Project;
 pub use model::ProjectRoot;

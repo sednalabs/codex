@@ -1,6 +1,9 @@
+use anyhow::Result;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
+use sqlx::Row;
+use sqlx::sqlite::SqliteRow;
 use std::path::PathBuf;
 
 use super::ThreadMetadata;
@@ -17,6 +20,73 @@ pub struct Stage1Output {
     pub cwd: PathBuf,
     pub git_branch: Option<String>,
     pub generated_at: DateTime<Utc>,
+}
+
+/// Durable record proving a phase-2 output tree was produced from a known
+/// prepared input set by the configured consolidator path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase2AttestedBaseline {
+    pub memory_root_key: String,
+    pub output_tree_sha256: String,
+    pub schema_version: i64,
+    pub selection_sha256: String,
+    pub prepared_inputs_sha256: String,
+    pub consolidator_sha256: String,
+    pub completion_watermark: i64,
+    pub selected_count: i64,
+    pub attested_at: i64,
+}
+
+#[derive(Debug)]
+pub(crate) struct Stage1OutputRow {
+    thread_id: String,
+    rollout_path: String,
+    source_updated_at: i64,
+    raw_memory: String,
+    rollout_summary: String,
+    rollout_slug: Option<String>,
+    cwd: String,
+    git_branch: Option<String>,
+    generated_at: i64,
+}
+
+impl Stage1OutputRow {
+    pub(crate) fn try_from_row(row: &SqliteRow) -> Result<Self> {
+        Ok(Self {
+            thread_id: row.try_get("thread_id")?,
+            rollout_path: row.try_get("rollout_path")?,
+            source_updated_at: row.try_get("source_updated_at")?,
+            raw_memory: row.try_get("raw_memory")?,
+            rollout_summary: row.try_get("rollout_summary")?,
+            rollout_slug: row.try_get("rollout_slug")?,
+            cwd: row.try_get("cwd")?,
+            git_branch: row.try_get("git_branch")?,
+            generated_at: row.try_get("generated_at")?,
+        })
+    }
+}
+
+impl TryFrom<Stage1OutputRow> for Stage1Output {
+    type Error = anyhow::Error;
+
+    fn try_from(row: Stage1OutputRow) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            thread_id: ThreadId::try_from(row.thread_id)?,
+            rollout_path: PathBuf::from(row.rollout_path),
+            source_updated_at: epoch_seconds_to_datetime(row.source_updated_at)?,
+            raw_memory: row.raw_memory,
+            rollout_summary: row.rollout_summary,
+            rollout_slug: row.rollout_slug,
+            cwd: PathBuf::from(row.cwd),
+            git_branch: row.git_branch,
+            generated_at: epoch_seconds_to_datetime(row.generated_at)?,
+        })
+    }
+}
+
+fn epoch_seconds_to_datetime(secs: i64) -> Result<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp(secs, 0)
+        .ok_or_else(|| anyhow::anyhow!("invalid unix timestamp: {secs}"))
 }
 
 /// Result of trying to claim a stage-1 memory extraction job.
