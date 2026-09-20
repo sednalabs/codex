@@ -421,6 +421,8 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::InferenceCall(_)
+        | EventMsg::Unknown
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)
@@ -500,6 +502,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::InferenceCall(_)
+        | EventMsg::Unknown
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)

@@ -166,6 +166,8 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::InferenceCall(_)
+        | EventMsg::Unknown
         | EventMsg::SessionConfigured(_)
         | EventMsg::EnvironmentConnected(_)
         | EventMsg::EnvironmentDisconnected(_)
