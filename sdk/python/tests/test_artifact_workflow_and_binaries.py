@@ -238,25 +238,12 @@ def test_root_format_driver_covers_all_formatter_groups(
     )
     assert formatters[0].commands[-1].args == ("just", "--unstable", "--fmt")
     assert checks[0].commands[-1].args == ("just", "--unstable", "--fmt", "--check")
-    rustfmt_args = (
-        "rustfmt",
-        "--edition",
-        "2024",
-        "--config-path",
-        str(tmp_path / "codex-rs/rustfmt.toml"),
-        "--config",
-        "imports_granularity=Item,skip_children=true",
-    )
-    rust_files = (
-        os.path.join("..", "bazel", "rules", "example.rs"),
-        "new file.rs",
-        os.path.join("src", "lib.rs"),
-    )
+    rustfmt_args = ("cargo", "fmt", "--", "--config", "imports_granularity=Item")
     assert formatters[1].commands == (
-        script.Command(rustfmt_args + rust_files, tmp_path / "codex-rs"),
+        script.Command(rustfmt_args, tmp_path / "codex-rs"),
     )
     assert checks[1].commands == (
-        script.Command(rustfmt_args + ("--check",) + rust_files, tmp_path / "codex-rs"),
+        script.Command(rustfmt_args + ("--check",), tmp_path / "codex-rs"),
     )
     format_buildifier_args = formatters[2].commands[-1].args
     check_buildifier_args = checks[2].commands[-1].args
