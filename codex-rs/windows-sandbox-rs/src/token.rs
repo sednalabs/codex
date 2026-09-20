@@ -471,10 +471,11 @@ fn build_restricted_sid_entries(
     psid_restricted_code: *mut c_void,
     psid_logon: *mut c_void,
 ) -> Vec<SID_AND_ATTRIBUTES> {
-    let mut entries = vec![
-        unsafe { std::mem::zeroed() };
-        psid_capabilities.len() + extra_restricting_sids.len() + 2
-    ];
+    let mut entries: Vec<SID_AND_ATTRIBUTES> =
+        vec![
+            unsafe { std::mem::zeroed() };
+            psid_capabilities.len() + extra_restricting_sids.len() + 2
+        ];
     for (i, psid) in psid_capabilities.iter().enumerate() {
         entries[i].Sid = *psid;
         entries[i].Attributes = 0;
