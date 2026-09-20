@@ -10,7 +10,7 @@ struct ColumnMigrationRepair {
 }
 
 const COLUMN_MIGRATION_REPAIRS: &[ColumnMigrationRepair] = &[ColumnMigrationRepair {
-    version: 33,
+    version: 30,
     table_name: "threads",
     column_name: "thread_source",
 }];
@@ -145,4 +145,46 @@ async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repair_state_migrations;
+    use crate::migrations::STATE_MIGRATOR;
+    use sqlx::Row;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn repairs_deployed_thread_source_schema_with_embedded_migration_metadata() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        sqlx::query("CREATE TABLE threads (thread_source TEXT)")
+            .execute(&pool)
+            .await
+            .expect("deployed thread schema should be created");
+
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("thread source migration should be repaired");
+
+        let row =
+            sqlx::query("SELECT description, checksum FROM _sqlx_migrations WHERE version = 30")
+                .fetch_one(&pool)
+                .await
+                .expect("repaired migration row should exist");
+        let embedded = STATE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 30)
+            .expect("thread source migration should be embedded");
+        assert_eq!(
+            row.get::<String, _>("description"),
+            embedded.description.as_ref()
+        );
+        assert_eq!(
+            row.get::<Vec<u8>, _>("checksum"),
+            embedded.checksum.to_vec()
+        );
+    }
 }

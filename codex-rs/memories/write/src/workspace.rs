@@ -14,6 +14,21 @@ use std::path::Path;
 /// metadata is missing or unusable, and removes any stale generated `phase2_workspace_diff.md` file
 /// so that the next diff does not include a previous prompt artifact.
 pub async fn prepare_memory_workspace(root: &Path) -> anyhow::Result<()> {
+    match tokio::fs::symlink_metadata(root).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!(
+                "memory root must not be a symbolic link: {}",
+                root.display()
+            );
+        }
+        Ok(_) => {
+            remove_memory_symlinks(root).await?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("inspect memory root {}", root.display()));
+        }
+    }
     crate::ensure_layout(root)
         .await
         .with_context(|| format!("prepare memory workspace {}", root.display()))?;

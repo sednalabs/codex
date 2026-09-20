@@ -110,6 +110,34 @@ async fn prepare_memory_workspace_recovers_unusable_git_dir() {
     assert_eq!(diff.changes, Vec::new());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn prepare_memory_workspace_rejects_root_symlink_and_removes_nested_links()
+-> anyhow::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let home = TempDir::new()?;
+    let real_root = home.path().join("real-memory");
+    fs::create_dir_all(real_root.join("nested"))?;
+    fs::write(real_root.join("MEMORY.md"), "memory")?;
+    symlink(real_root.join("MEMORY.md"), real_root.join("nested/link"))?;
+
+    prepare_memory_workspace(&real_root).await?;
+    assert!(!real_root.join("nested/link").exists());
+
+    let root_link = home.path().join("memory-root-link");
+    symlink(&real_root, &root_link)?;
+    let error = prepare_memory_workspace(&root_link)
+        .await
+        .expect_err("memory root symlinks must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("memory root must not be a symbolic link")
+    );
+    Ok(())
+}
+
 #[test]
 fn previous_char_boundary_handles_multibyte_text() {
     let text = "aé";
