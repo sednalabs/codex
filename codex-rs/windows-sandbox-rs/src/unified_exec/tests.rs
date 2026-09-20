@@ -1020,7 +1020,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
                 fs::read_to_string(&outside_file).ok(),
                 protected_git_dir.is_dir(),
             ),
-            (0, false, false, false, None, false),
+            (0, false, false, false, Some("outside".to_string()), true),
             "stdout={stdout:?}\n{}",
             sandbox_log(codex_home.path())
         );

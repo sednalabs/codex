@@ -302,7 +302,9 @@ pub(crate) fn apply_legacy_session_acl_rules(
         }
         for p in &deny {
             for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
-                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
+                add_deny_write_ace(p, root_sid.sid.as_ptr()).with_context(|| {
+                    format!("apply deny-write capability ACE to {}", p.display())
+                })?;
             }
         }
         if !additional_deny_read_paths.is_empty() {
