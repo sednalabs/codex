@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::str::FromStr;
@@ -5,8 +6,11 @@ use std::str::FromStr;
 use schemars::JsonSchema;
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::InstanceType;
+use schemars::schema::ObjectValidation;
 use schemars::schema::Schema;
 use schemars::schema::SchemaObject;
+use schemars::schema::StringValidation;
+use schemars::schema::SubschemaValidation;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -479,8 +483,106 @@ impl JsonSchema for InferenceCallSource {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let known_source_types = ["direct", "host_continuity_check", "code_mode"];
+        let tagged_branch = |source_type: &str, required: &[&str]| {
+            let mut properties = BTreeMap::new();
+            properties.insert(
+                "type".to_string(),
+                Schema::Object(SchemaObject {
+                    instance_type: Some(InstanceType::String.into()),
+                    const_value: Some(JsonValue::String(source_type.to_string())),
+                    ..Default::default()
+                }),
+            );
+            for property in required
+                .iter()
+                .copied()
+                .filter(|property| *property != "type")
+            {
+                properties.insert(
+                    property.to_string(),
+                    Schema::Object(SchemaObject {
+                        instance_type: Some(InstanceType::String.into()),
+                        ..Default::default()
+                    }),
+                );
+            }
+            Schema::Object(SchemaObject {
+                instance_type: Some(InstanceType::Object.into()),
+                object: ObjectValidation {
+                    properties,
+                    required: required
+                        .iter()
+                        .map(|property| (*property).to_string())
+                        .collect(),
+                    additional_properties: Some(Box::new(Schema::Bool(true))),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+
+        let mut unknown_properties = BTreeMap::new();
+        unknown_properties.insert(
+            "type".to_string(),
+            Schema::Object(SchemaObject {
+                instance_type: Some(InstanceType::String.into()),
+                string: StringValidation {
+                    min_length: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
+        let mut known_type_schema = SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            enum_values: Some(
+                known_source_types
+                    .iter()
+                    .map(|source_type| JsonValue::String((*source_type).to_string()))
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        known_type_schema.string.min_length = Some(1);
+        let unknown_exclusion = Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::Object.into()),
+            object: ObjectValidation {
+                properties: {
+                    let mut properties = BTreeMap::new();
+                    properties.insert("type".to_string(), Schema::Object(known_type_schema));
+                    properties
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let unknown_branch = Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::Object.into()),
+            object: ObjectValidation {
+                properties: unknown_properties,
+                required: ["type".to_string()].into_iter().collect(),
+                additional_properties: Some(Box::new(Schema::Bool(true))),
+                ..Default::default()
+            },
+            subschemas: Some(Box::new(SubschemaValidation {
+                not: Some(Box::new(unknown_exclusion)),
+                ..Default::default()
+            })),
+            ..Default::default()
+        });
+
         Schema::Object(SchemaObject {
             instance_type: Some(InstanceType::Object.into()),
+            subschemas: Some(Box::new(SubschemaValidation {
+                any_of: Some(vec![
+                    tagged_branch("direct", &["type"]),
+                    tagged_branch("host_continuity_check", &["type"]),
+                    tagged_branch("code_mode", &["type", "cell_id", "runtime_tool_call_id"]),
+                    unknown_branch,
+                ]),
+                ..Default::default()
+            })),
             ..Default::default()
         })
     }
@@ -489,6 +591,10 @@ impl JsonSchema for InferenceCallSource {
 fn string_schema() -> Schema {
     Schema::Object(SchemaObject {
         instance_type: Some(InstanceType::String.into()),
+        string: StringValidation {
+            min_length: Some(1),
+            ..Default::default()
+        },
         ..Default::default()
     })
 }

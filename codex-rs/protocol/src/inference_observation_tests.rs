@@ -187,6 +187,24 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
 }
 
 #[test]
+fn inference_call_event_does_not_serialize_private_rollout_budget_units() -> Result<()> {
+    let mut event = inference_call_event(InferenceCallStatus::Completed);
+    event
+        .token_usage
+        .as_mut()
+        .expect("completed event usage")
+        .codex_rollout_budget_units = Some(serde_json::Number::from(42));
+
+    let wire = serde_json::to_value(EventMsg::InferenceCall(event))?;
+    assert!(
+        wire["token_usage"]
+            .get("codex_rollout_budget_units")
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
 fn inference_call_event_bounds_multibyte_fields_and_aggregate_size() -> Result<()> {
     let oversized_required = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1);
     let bounded_optional = "🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4);
@@ -467,7 +485,7 @@ fn inference_call_schema_and_typescript_describe_wire_shapes() -> Result<()> {
         .expect("code mode source branch");
     assert_eq!(
         code_mode_branch["required"],
-        json!(["type", "cell_id", "runtime_tool_call_id"])
+        json!(["cell_id", "runtime_tool_call_id", "type"])
     );
     assert_eq!(code_mode_branch["properties"]["cell_id"]["type"], "string");
     assert_eq!(
