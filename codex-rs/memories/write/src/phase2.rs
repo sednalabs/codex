@@ -12,11 +12,14 @@ use crate::runtime::SpawnedConsolidationAgent;
 use crate::sync_rollout_summaries_from_memories;
 use crate::workspace::memory_workspace_diff;
 use crate::workspace::prepare_memory_workspace;
+use crate::workspace::remove_memory_symlinks;
 use crate::workspace::reset_memory_workspace_baseline;
+use crate::workspace::validate_consolidation_artifacts_for_version;
 use crate::workspace::write_workspace_diff;
 use codex_config::Constrained;
 use codex_core::config::Config;
 use codex_features::Feature;
+use codex_protocol::MemoryVersion;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
@@ -139,7 +142,11 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             return;
         }
     };
-    if !workspace_diff.has_changes() {
+    if !workspace_diff.has_changes()
+        && validate_consolidation_artifacts_for_version(&root, config.memories.version)
+            .await
+            .is_ok()
+    {
         tracing::error!("Phase 2 no changes");
         let success_status = match no_workspace_change_attestation_status(db.as_ref(), &root).await
         {
@@ -227,6 +234,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         new_watermark,
         raw_memories.clone(),
         root,
+        config.memories.version,
         attestation_context,
         agent,
         phase_two_e2e_timer,
@@ -376,7 +384,6 @@ mod job {
 
 mod agent {
     use super::*;
-    use tracing::warn;
 
     pub(super) fn get_config(config: &Config) -> Option<Config> {
         let root = memory_root(&config.codex_home);
@@ -443,6 +450,7 @@ mod agent {
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
         memory_root: codex_utils_absolute_path::AbsolutePathBuf,
+        version: MemoryVersion,
         attestation_context: phase2_attestation::Phase2AttestationContext,
         agent: SpawnedConsolidationAgent,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
@@ -466,6 +474,17 @@ mod agent {
                     .map(|info| info.total_token_usage)
                 {
                     emit_token_usage_metrics(context.as_ref(), &token_usage);
+                }
+                if let Err(err) = context
+                    .shutdown_consolidation_agent(SpawnedConsolidationAgent { thread_id, thread })
+                    .await
+                {
+                    tracing::error!(
+                        "failed to shut down completed memory consolidation agent {thread_id}: {err}"
+                    );
+                    // Keep the lease until it expires so a failed shutdown cannot be
+                    // mistaken for a durable completion.
+                    return;
                 }
                 // Do not reset the workspace baseline if we lost the lock.
                 let still_owns_lock = match db
@@ -493,6 +512,14 @@ mod agent {
                     }
                 };
                 if still_owns_lock {
+                    if let Err(err) =
+                        validate_consolidation_artifacts_for_version(&memory_root, version).await
+                    {
+                        tracing::error!("memory consolidation artifacts are invalid: {err}");
+                        job::failed(context.as_ref(), &db, &claim, "failed_validate_artifacts")
+                            .await;
+                        return;
+                    }
                     let output_tree_sha256 = match phase2_attestation::validate_completed_run(
                         &memory_root,
                         &attestation_context,
@@ -547,20 +574,20 @@ mod agent {
                     }
                 }
             } else {
-                job::failed(context.as_ref(), &db, &claim, "failed_agent").await;
-            }
-
-            let cleanup_context = Arc::clone(&context);
-            tokio::spawn(async move {
-                if let Err(err) = cleanup_context
+                if let Err(err) = context
                     .shutdown_consolidation_agent(SpawnedConsolidationAgent { thread_id, thread })
                     .await
                 {
-                    warn!(
-                        "failed to auto-close global memory consolidation agent {thread_id}: {err}"
+                    tracing::error!(
+                        "failed to shut down failed memory consolidation agent {thread_id}: {err}"
                     );
+                    return;
                 }
-            });
+                if let Err(err) = remove_memory_symlinks(&memory_root).await {
+                    tracing::error!("failed removing memory workspace symbolic links: {err}");
+                }
+                job::failed(context.as_ref(), &db, &claim, "failed_agent").await;
+            }
         });
     }
 
@@ -630,6 +657,13 @@ mod agent {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "phase2_sandbox_tests.rs"]
+mod sandbox_tests;
+#[cfg(test)]
+#[path = "phase2_workspace_roots_tests.rs"]
+mod workspace_roots_tests;
 
 pub(super) fn get_watermark(
     claimed_watermark: i64,
