@@ -239,9 +239,7 @@ def test_root_format_driver_covers_all_formatter_groups(
     assert formatters[0].commands[-1].args == ("just", "--unstable", "--fmt")
     assert checks[0].commands[-1].args == ("just", "--unstable", "--fmt", "--check")
     rustfmt_args = ("cargo", "fmt", "--", "--config", "imports_granularity=Item")
-    assert formatters[1].commands == (
-        script.Command(rustfmt_args, tmp_path / "codex-rs"),
-    )
+    assert formatters[1].commands == (script.Command(rustfmt_args, tmp_path / "codex-rs"),)
     assert checks[1].commands == (
         script.Command(rustfmt_args + ("--check",), tmp_path / "codex-rs"),
     )
