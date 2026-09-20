@@ -41,7 +41,6 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const DISABLE_MAX_PRIVILEGE: u32 = 0x01;
 const LUA_TOKEN: u32 = 0x04;
-const WRITE_RESTRICTED: u32 = 0x08;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const WIN_WORLD_SID: i32 = 1;
 const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
@@ -492,7 +491,7 @@ unsafe fn create_token_with_caps_from(
     entries[logon_idx + 1].Attributes = 0;
 
     let mut new_token: HANDLE = 0;
-    let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
+    let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN;
     let ok = CreateRestrictedToken(
         base_token,
         flags,
