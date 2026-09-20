@@ -892,21 +892,16 @@ class GitHubAppBroker:
                     if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
                         raise BrokerError("bound command source changed")
                     record = self.get_installation_token()
-                    config_dir = tempfile.TemporaryDirectory(prefix="gh-broker-config-", dir="/tmp")
-                    home_dir = tempfile.TemporaryDirectory(prefix="gh-broker-home-", dir="/tmp")
-                    try:
-                        env = _hermetic_gh_environment(os.environ, record.token, config_dir.name, home_dir.name)
+                    with tempfile.TemporaryDirectory(prefix="gh-broker-config-", dir="/tmp") as config_dir, tempfile.TemporaryDirectory(prefix="gh-broker-home-", dir="/tmp") as home_dir:
+                        env = _hermetic_gh_environment(os.environ, record.token, config_dir, home_dir)
                         returncode, raw_stdout, raw_stderr = _run_child_bounded(
                             [gh_path, *request_argv],
                             env,
                             timeout=CHILD_TIMEOUT_SECONDS,
                             terminate_group=True,
                         )
-                    finally:
                         # _run_child_bounded has completed group teardown before
-                        # the hermetic config and HOME are removed.
-                        config_dir.cleanup()
-                        home_dir.cleanup()
+                        # the hermetic config and HOME contexts exit.
                     safe_stdout = raw_stdout.replace(
                         record.token.encode(), b"[REDACTED]"
                     )
