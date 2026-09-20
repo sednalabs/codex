@@ -39,7 +39,7 @@ OPENSSL_PATH = "/usr/bin/openssl"
 MAX_HTTP_BODY = 1024 * 1024
 MAX_CHILD_OUTPUT = 256 * 1024
 MAX_IPC_REQUEST = 16 * 1024
-MAX_IPC_RESPONSE = 512 * 1024
+MAX_IPC_RESPONSE = 2 * (((MAX_CHILD_OUTPUT + 2) // 3) * 4) + 8192
 CHILD_TIMEOUT_SECONDS = 30
 CHILD_TERMINATION_GRACE_SECONDS = 5
 JWT_LIFETIME_SECONDS = 9 * 60
@@ -61,6 +61,9 @@ TOKEN_ENV_NAMES = frozenset(
     }
 )
 TOKEN_ENV_RE = re.compile(r"^(?:GH|GITHUB)_.+(?:TOKEN|PAT|SECRET|PRIVATE_KEY)$")
+GH_HERMETIC_PASSTHROUGH = frozenset(
+    {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "LANG", "LC_ALL", "LANGUAGE", "TZ"}
+)
 APP_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 JWT_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{12,}(?![A-Za-z0-9_-])")
 
@@ -114,6 +117,22 @@ def _without_ambient_tokens(environment: Mapping[str, str]) -> dict[str, str]:
     for name in list(clean):
         if name in TOKEN_ENV_NAMES or TOKEN_ENV_RE.fullmatch(name):
             clean.pop(name, None)
+    return clean
+
+
+def _hermetic_gh_environment(environment: Mapping[str, str], token: str, config_dir: str, home_dir: str) -> dict[str, str]:
+    clean = {name: value for name, value in environment.items() if name in GH_HERMETIC_PASSTHROUGH}
+    clean.update(
+        {
+            "GH_TOKEN": token,
+            "GH_CONFIG_DIR": config_dir,
+            "GH_HOST": "github.com",
+            "GH_PROMPT_DISABLED": "1",
+            "GH_PAGER": "cat",
+            "GIT_PAGER": "cat",
+            "HOME": home_dir,
+        }
+    )
     return clean
 
 
@@ -346,7 +365,12 @@ def _leader_exited_unreaped(process: subprocess.Popen[bytes]) -> bool:
 
 
 def _process_group_descendants(pgid: int, leader_pid: int) -> set[int] | None:
-    """Return live Linux processes in ``pgid`` other than the pinned leader."""
+    """Return Linux ``/proc`` descendants, or ``None`` when proof is unavailable.
+
+    The strong descendant-set teardown proof therefore requires Linux with a
+    readable ``/proc``. The non-Linux fallback remains bounded and kills the
+    process group, but is deliberately not treated as equivalent proof.
+    """
     members: set[int] = set()
     try:
         entries = os.scandir("/proc")
@@ -860,7 +884,7 @@ class GitHubAppBroker:
                     size = int.from_bytes(header, "big")
                     if size > MAX_IPC_REQUEST: raise BrokerError("proxy request exceeds safety bound")
                     request = json.loads(_read_exact(conn, size).decode("utf-8"))
-                    if not isinstance(request, dict) or set(request) != {"argv"}: raise BrokerError("malformed proxy request")
+                    if not isinstance(request, dict) or set(request) != {"argv", "binary"} or not isinstance(request["binary"], bool): raise BrokerError("malformed proxy request")
                     request_argv = request["argv"]
                     validate_gh_argv(request_argv, self.repository)
                     if stop.is_set():
@@ -868,41 +892,36 @@ class GitHubAppBroker:
                     if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
                         raise BrokerError("bound command source changed")
                     record = self.get_installation_token()
-                    env = _without_ambient_tokens(os.environ)
-                    env["GH_TOKEN"] = record.token
-                    returncode, raw_stdout, raw_stderr = _run_child_bounded(
-                        [gh_path, *request_argv],
-                        env,
-                        timeout=CHILD_TIMEOUT_SECONDS,
-                        terminate_group=True,
-                    )
+                    with tempfile.TemporaryDirectory(prefix="gh-broker-config-", dir="/tmp") as config_dir, tempfile.TemporaryDirectory(prefix="gh-broker-home-", dir="/tmp") as home_dir:
+                        env = _hermetic_gh_environment(os.environ, record.token, config_dir, home_dir)
+                        returncode, raw_stdout, raw_stderr = _run_child_bounded(
+                            [gh_path, *request_argv],
+                            env,
+                            timeout=CHILD_TIMEOUT_SECONDS,
+                            terminate_group=True,
+                        )
+                        # _run_child_bounded has completed group teardown before
+                        # the hermetic config and HOME contexts exit.
                     safe_stdout = raw_stdout.replace(
                         record.token.encode(), b"[REDACTED]"
                     )
+                    safe_stderr = raw_stderr.replace(record.token.encode(), b"[REDACTED]")
                     body = {
                         "returncode": returncode,
-                        "stdout": _redact(
-                            raw_stdout.decode("utf-8", "replace"),
-                            (record.token,),
-                        ),
                         "stdout_b64": base64.b64encode(safe_stdout).decode("ascii"),
-                        "stderr": _redact(
-                            raw_stderr.decode("utf-8", "replace"),
-                            (record.token,),
-                        ),
+                        "stderr_b64": base64.b64encode(safe_stderr).decode("ascii"),
                     }
                     encoded = _json_bytes(body)
                     if len(encoded) > MAX_IPC_RESPONSE: raise BrokerError("proxy response exceeds safety bound")
                     conn.sendall(len(encoded).to_bytes(4, "big") + encoded)
             except Exception as exc:
                 secrets = (record.token,) if record is not None else ()
-                body = _json_bytes(
-                    {
-                        "returncode": 1,
-                        "stdout": "",
-                        "stderr": _redact(str(exc), secrets),
-                    }
-                )
+                body_data = {
+                    "returncode": 1,
+                    "stdout_b64": "",
+                    "stderr_b64": base64.b64encode(_redact(str(exc), secrets).encode()).decode("ascii"),
+                }
+                body = _json_bytes(body_data)
                 if len(body) <= MAX_IPC_RESPONSE:
                     try:
                         conn.sendall(len(body).to_bytes(4, "big") + body)

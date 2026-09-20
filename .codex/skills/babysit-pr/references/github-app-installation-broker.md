@@ -128,3 +128,7 @@ The read-only endpoint-to-permission contract is:
 | Broker validation metadata/contents reads | `metadata:read`, `contents:read` |
 
 The installation-token endpoint is GitHub's [`POST /app/installations/{installation_id}/access_tokens`](https://docs.github.com/en/rest/apps/installations#create-an-installation-access-token), and the issue-comment permission behavior is documented in the [list issue comments endpoint](https://docs.github.com/en/rest/issues/comments#list-issue-comments-for-a-repository). These links are references only; this watcher does not mint tokens or invoke either endpoint.
+
+The strong descendant-set teardown proof requires Linux with a readable `/proc`.
+On other platforms the broker retains a bounded process-group termination
+fallback, but does not claim that fallback is equivalent proof.

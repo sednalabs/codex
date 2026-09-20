@@ -10,11 +10,18 @@ import struct
 from urllib.parse import urlparse
 
 MAX_REQUEST = 16 * 1024
-MAX_RESPONSE = 512 * 1024
+MAX_CHILD_OUTPUT = 256 * 1024
+# One response carries one stdout representation plus stderr. Binary stdout is
+# base64-expanded by 4/3; JSON framing and field names have a fixed allowance.
+MAX_RESPONSE = 2 * (((MAX_CHILD_OUTPUT + 2) // 3) * 4) + 8192
 MAX_ARGUMENT = 4096
-IO_TIMEOUT = 15
+CONNECT_TIMEOUT = 15
+FRAME_TIMEOUT = 15
+RESPONSE_TIMEOUT = 45
 _GRAPHQL_WRITE = re.compile(r"\b(?:mutation|subscription)\b", re.IGNORECASE)
 _REST_PATH = re.compile(r"^(?:actions|commits|issues|pulls)(?:/|\?|$)")
+_MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id state position headCommit{oid}}}}}"
+_REVIEW_THREADS_QUERY = "query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line comments(first:100){nodes{databaseId url body createdAt author{login} pullRequestReview{databaseId url state author{login}}}}}}}}}"
 
 class ProxyError(RuntimeError): pass
 
@@ -53,8 +60,19 @@ def _validate_graphql(values, repository=None):
     # comments or string literals rather than trying to implement a parser.
     if _GRAPHQL_WRITE.search(query):
         raise ProxyError("GraphQL mutation rejected")
-    if not {"owner", "name", "number"}.issubset(variables):
-        raise ProxyError("GraphQL repository binding is incomplete")
+    normalized_query = re.sub(r"\s+", "", query)
+    normalized_merge = re.sub(r"\s+", "", _MERGE_QUEUE_QUERY)
+    normalized_review = re.sub(r"\s+", "", _REVIEW_THREADS_QUERY)
+    if normalized_query == normalized_merge:
+        expected_variables = {"owner", "name", "number"}
+    elif normalized_query == normalized_review:
+        expected_variables = {"owner", "name", "number"}
+        if "cursor" in variables:
+            expected_variables.add("cursor")
+    else:
+        raise ProxyError("unexpected GraphQL query template")
+    if set(variables) != expected_variables:
+        raise ProxyError("GraphQL variable set does not match the query template")
     if repository:
         owner, name = repository.split("/", 1)
         if variables["owner"].lower() != owner.lower() or variables["name"].lower() != name.lower():
@@ -209,13 +227,19 @@ def _read_exact(sock, size):
         out.extend(chunk)
     return bytes(out)
 
-def request(socket_path, argv):
+def request(socket_path, argv, *, binary=False):
+    return _request(socket_path, argv, binary=binary)
+
+
+def _request(socket_path, argv, *, binary):
     validate_gh_argv(argv)
-    payload = json.dumps({"argv": argv}, separators=(",", ":")).encode()
+    payload = json.dumps({"argv": argv, "binary": bool(binary)}, separators=(",", ":")).encode()
     if len(payload) > MAX_REQUEST: raise ProxyError("request exceeds safety bound")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(IO_TIMEOUT); sock.connect(socket_path)
+        sock.settimeout(CONNECT_TIMEOUT); sock.connect(socket_path)
+        sock.settimeout(FRAME_TIMEOUT)
         sock.sendall(struct.pack("!I", len(payload)) + payload)
+        sock.settimeout(RESPONSE_TIMEOUT)
         header = _read_exact(sock, 4)
         size = struct.unpack("!I", header)[0]
         if size > MAX_RESPONSE: raise ProxyError("response exceeds safety bound")
@@ -223,8 +247,15 @@ def request(socket_path, argv):
         if sock.recv(1): raise ProxyError("multiple broker responses")
     try: result = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ProxyError("malformed broker response") from exc
-    if not isinstance(result, dict) or "stdout" not in result or "stderr" not in result: raise ProxyError("malformed broker response")
-    if "stdout_b64" in result:
-        try: result["stdout_bytes"] = base64.b64decode(result["stdout_b64"], validate=True)
-        except (ValueError, TypeError): raise ProxyError("malformed binary broker response")
+    if not isinstance(result, dict) or "stdout_b64" not in result or "stderr_b64" not in result:
+        raise ProxyError("malformed broker response")
+    try:
+        result["stdout_bytes"] = base64.b64decode(result["stdout_b64"], validate=True)
+        result["stderr_bytes"] = base64.b64decode(result["stderr_b64"], validate=True)
+    except (ValueError, TypeError):
+        raise ProxyError("malformed binary broker response")
+    result["stdout"] = result["stdout_bytes"].decode("utf-8", "replace")
+    result["stderr"] = result["stderr_bytes"].decode("utf-8", "replace")
+    if binary and not isinstance(result["stdout_bytes"], bytes):
+        raise ProxyError("binary broker response omitted stdout")
     return result

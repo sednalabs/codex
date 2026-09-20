@@ -18,6 +18,9 @@ from github_app_installation_broker import (
     GitHubAppBroker,
     HttpResult,
     MAX_HTTP_BODY,
+    MAX_CHILD_OUTPUT,
+    MAX_IPC_RESPONSE,
+    _hermetic_gh_environment,
     _run_child_bounded,
     _production_credentials_directory,
     _validate_private_key,
@@ -451,6 +454,42 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(BrokerError):
             _run_child_bounded(["/bin/sh", "-c", "yes x"], {}, terminate_group=True)
 
+    def test_ipc_and_response_bounds_are_composable_without_sleeping(self):
+        self.assertGreaterEqual(MAX_IPC_RESPONSE, 2 * (((MAX_CHILD_OUTPUT + 2) // 3) * 4))
+        from github_app_broker_proxy import CONNECT_TIMEOUT, FRAME_TIMEOUT, RESPONSE_TIMEOUT
+        self.assertGreater(RESPONSE_TIMEOUT, 30 + 5)
+        self.assertLessEqual(CONNECT_TIMEOUT, FRAME_TIMEOUT)
+        worst = bytes((0, 10, 255)) * (MAX_CHILD_OUTPUT // 3)
+        encoded = ((len(worst) + 2) // 3) * 4
+        self.assertLessEqual(2 * encoded + 8192, MAX_IPC_RESPONSE)
+
+    def test_gh_child_environment_is_hermetic_and_network_locale_limited(self):
+        env = _hermetic_gh_environment(
+            {
+                "GH_TOKEN": "ambient",
+                "GH_CONFIG_DIR": "/unsafe/config",
+                "GH_HOST": "evil.example",
+                "HOME": "/unsafe/home",
+                "SSL_CERT_FILE": "/hostile/ca.pem",
+                "SSL_CERT_DIR": "/hostile/ca-dir",
+                "HTTPS_PROXY": "https://proxy.example",
+                "LANG": "C.UTF-8",
+                "UNRELATED": "removed",
+            },
+            "minted",
+            "/tmp/config",
+            "/tmp/home",
+        )
+        self.assertEqual("minted", env["GH_TOKEN"])
+        self.assertEqual("github.com", env["GH_HOST"])
+        self.assertEqual("/tmp/config", env["GH_CONFIG_DIR"])
+        self.assertEqual("/tmp/home", env["HOME"])
+        self.assertEqual("https://proxy.example", env["HTTPS_PROXY"])
+        self.assertEqual("C.UTF-8", env["LANG"])
+        self.assertNotIn("SSL_CERT_FILE", env)
+        self.assertNotIn("SSL_CERT_DIR", env)
+        self.assertNotIn("UNRELATED", env)
+
     def test_token_bearing_child_descendants_are_gone_before_return(self):
         for inherit_pipes in (False, True):
             with self.subTest(inherit_pipes=inherit_pipes), tempfile.TemporaryDirectory() as temp:
@@ -489,8 +528,9 @@ class BrokerTests(unittest.TestCase):
                     self.fail("token-bearing descendant survived process-group cleanup")
 
     def test_brokered_observer_keeps_token_out_of_watcher_and_returns_revocation(self):
-        fake = FakeGitHub(token="broker-only-secret")
-        directory, broker = make_broker(fake)
+        fake = FakeGitHub(token="broker-only-secret", expiry="2023-11-14T22:20:00Z")
+        clock = FakeClock(1_700_000_000)
+        directory, broker = make_broker(fake, clock=clock)
         self.addCleanup(directory.cleanup)
         scripts_dir = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory() as temp:
@@ -498,7 +538,9 @@ class BrokerTests(unittest.TestCase):
             gh = temp_path / "gh"
             gh.write_text(
                 "#!/usr/bin/env python3\n"
-                "import os\n"
+                "import os, pathlib\n"
+                "marker = pathlib.Path(os.environ['REFRESH_MARKER'])\n"
+                "if not marker.exists(): marker.write_text('first')\n"
                 "print(os.environ['GH_TOKEN'])\n"
             )
             gh.chmod(0o755)
@@ -509,13 +551,17 @@ class BrokerTests(unittest.TestCase):
                 f"sys.path.insert(0, {str(scripts_dir)!r})\n"
                 "assert 'GH_TOKEN' not in os.environ\n"
                 "from github_app_broker_proxy import request\n"
-                "result = request(os.environ['GITHUB_APP_BROKER_SOCKET'], "
+                "for _ in range(3):\n"
+                "    result = request(os.environ['GITHUB_APP_BROKER_SOCKET'], "
                 "['api', 'repos/example-org/codex/actions/runs/1'])\n"
-                "print(result['returncode'], result['stdout'])\n"
+                "    print(result['returncode'], result['stdout'])\n"
             )
             watcher.chmod(0o755)
             command = [str(Path(sys.executable).resolve(strict=True)), str(watcher)]
-            environment = {"PATH": f"{temp}{os.pathsep}{os.environ.get('PATH', '')}"}
+            environment = {
+                "PATH": f"{temp}{os.pathsep}{os.environ.get('PATH', '')}",
+                "REFRESH_MARKER": str(temp_path / "refresh.marker"),
+            }
             child_calls = []
 
             def recording_child_runner(argv, child_env, **kwargs):
@@ -529,6 +575,8 @@ class BrokerTests(unittest.TestCase):
                 fingerprint = fingerprint_brokered_command(
                     broker.repository, broker.permissions, command
                 )
+                broker.get_installation_token()
+                clock.value = 1_700_000_350
                 result = broker.execute_brokered_observer(command, fingerprint)
         self.assertEqual(0, result["returncode"], result)
         self.assertEqual(
@@ -536,6 +584,7 @@ class BrokerTests(unittest.TestCase):
             result["revocation"],
         )
         self.assertNotIn("broker-only-secret", json.dumps(result))
+        self.assertGreaterEqual(sum(call[0] == "POST" for call in fake.calls), 2)
         self.assertEqual("DELETE", fake.calls[-1][0])
         self.assertIn((command, {"timeout": None}), child_calls)
         self.assertTrue(
@@ -549,6 +598,75 @@ class BrokerTests(unittest.TestCase):
             ),
             child_calls,
         )
+
+    def test_real_pr_observer_runs_through_brokered_repertoire(self):
+        fake = FakeGitHub(token="broker-only-secret", expiry="2023-11-14T22:20:00Z")
+        clock = FakeClock(1_700_000_000)
+        directory, broker = make_broker(fake, clock=clock)
+        self.addCleanup(directory.cleanup)
+        scripts_dir = Path(__file__).resolve().parent
+        watcher = scripts_dir / "gh_pr_watch.py"
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            gh = temp_path / "gh"
+            argv_log = temp_path / "gh-argv.log"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, subprocess, sys\n"
+                f"pathlib.Path({str(argv_log)!r}).open('a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "assert os.environ.get('GH_HOST') == 'github.com'\n"
+                "assert os.environ.get('GH_PROMPT_DISABLED') == '1'\n"
+                "assert 'GH_TOKEN' in os.environ\n"
+                "subprocess.Popen(['/bin/sleep', '60'])\n"
+                "args = sys.argv[1:]\n"
+                "if 'pr' in args and 'view' in args:\n"
+                "    print(json.dumps({'number': 1, 'url': 'https://github.com/example-org/codex/pull/1', 'state': 'OPEN', 'mergedAt': None, 'closedAt': None, 'headRefName': 'feature', 'headRefOid': 'abc', 'headRepository': {'nameWithOwner': 'example-org/codex'}, 'headRepositoryOwner': {'login': 'example-org'}, 'baseRefName': 'main', 'baseRefOid': 'base', 'mergeable': 'MERGEABLE', 'mergeStateStatus': 'CLEAN', 'reviewDecision': ''}))\n"
+                "elif 'pr' in args and 'checks' in args:\n"
+                "    print('[]')\n"
+                "elif 'graphql' in args:\n"
+                "    print(json.dumps({'data': {'repository': {'pullRequest': {'mergeQueueEntry': None, 'reviewThreads': {'pageInfo': {'hasNextPage': False, 'endCursor': None}, 'nodes': []}}}}}))\n"
+                "elif 'api' in args and any('actions/runs' in item for item in args):\n"
+                "    print(json.dumps({'workflow_runs': []}))\n"
+                "elif 'api' in args:\n"
+                "    print('[]')\n"
+                "elif 'repo' in args and 'view' in args:\n"
+                "    print(json.dumps({'nameWithOwner': 'example-org/codex'}))\n"
+                "else:\n"
+                "    raise SystemExit('unexpected gh argv: ' + repr(args))\n"
+            )
+            gh.chmod(0o755)
+            environment = {"PATH": f"{temp}{os.pathsep}{os.environ.get('PATH', '')}"}
+            child_calls = []
+
+            def recording_child_runner(argv, child_env, **kwargs):
+                child_calls.append((list(argv), dict(kwargs)))
+                return _run_child_bounded(argv, child_env, **kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch(
+                "github_app_installation_broker._run_child_bounded",
+                side_effect=recording_child_runner,
+            ):
+                fingerprint = fingerprint_brokered_command(
+                    broker.repository,
+                    broker.permissions,
+                    [str(Path(sys.executable).resolve(strict=True)), str(watcher), "--pr", "1", "--repo", "example-org/codex", "--installation-observer", "--once"],
+                )
+                broker.get_installation_token()
+                clock.value = 1_700_000_350
+                result = broker.execute_brokered_observer(
+                    [str(Path(sys.executable).resolve(strict=True)), str(watcher), "--pr", "1", "--repo", "example-org/codex", "--installation-observer", "--once"],
+                    fingerprint,
+                )
+            logged = [json.loads(line) for line in argv_log.read_text().splitlines()]
+        self.assertEqual(0, result["returncode"], result)
+        self.assertEqual({"attempted": True, "revoked": True, "status": 204}, result["revocation"])
+        self.assertNotIn("broker-only-secret", json.dumps(result))
+        self.assertGreaterEqual(sum(call[0][0] == str(Path(sys.executable).resolve(strict=True)) for call in child_calls), 1)
+        self.assertGreaterEqual(sum(call[0][0].endswith("/gh") for call in child_calls), 4)
+        self.assertTrue(any("graphql" in args for args in logged))
+        self.assertTrue(any("checks" in args for args in logged))
+        self.assertTrue(any("pr" in args and "view" in args for args in logged))
+        self.assertGreaterEqual(sum(call[0] == "POST" for call in fake.calls), 2)
 
     def test_cli_returns_nonzero_when_revocation_is_unproven(self):
         fake_result = {"returncode": 0, "stdout": "", "stderr": ""}
