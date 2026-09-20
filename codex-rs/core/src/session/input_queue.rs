@@ -306,16 +306,16 @@ impl InputQueue {
             .any(|mail| mail.trigger_turn)
     }
 
-    /// Returns whether a mailbox message carries actionable plaintext for a
-    /// native wait. Result messages are parent-actionable even when they do
-    /// not request a new turn; encrypted or unavailable payloads must not
-    /// produce a successful actionable wake.
+    /// Returns whether a mailbox message carries an actionable wake signal for
+    /// a native wait. Explicit trigger-turn messages are actionable even when
+    /// their content is encrypted; result messages are actionable without a
+    /// new turn only after a nonempty plaintext payload is available.
     pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
         self.mailbox.lock().await.communications.iter().any(|mail| {
-            mail.encrypted_content.is_none()
-                && !mail.content.is_empty()
-                && (mail.trigger_turn
-                    || mail.origin
+            mail.trigger_turn
+                || (mail.encrypted_content.is_none()
+                    && !mail.content.is_empty()
+                    && mail.origin
                         == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
         })
     }
@@ -811,6 +811,23 @@ mod tests {
         );
         result.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
         input_queue.enqueue_mailbox_communication(result).await;
+
+        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_treats_encrypted_trigger_turn_as_actionable_wait_mail() {
+        let input_queue = InputQueue::new();
+        let encrypted_followup = InterAgentCommunication::new_encrypted(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            Vec::new(),
+            "continue".to_string(),
+            /*trigger_turn*/ true,
+        );
+        input_queue
+            .enqueue_mailbox_communication(encrypted_followup)
+            .await;
 
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
