@@ -37,6 +37,7 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
             output_tokens: 7,
             reasoning_output_tokens: 3,
             total_tokens: 18,
+            codex_rollout_budget_units: None,
         }),
         outcome_detail: Some("detail".to_string()),
         truncated_fields: None,

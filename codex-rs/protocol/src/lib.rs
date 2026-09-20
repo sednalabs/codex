@@ -22,7 +22,6 @@ pub mod approvals;
 pub mod capabilities;
 mod codex_error_info;
 pub mod config_types;
-pub mod custom_prompts;
 pub mod dynamic_tools;
 mod environment;
 pub mod error;

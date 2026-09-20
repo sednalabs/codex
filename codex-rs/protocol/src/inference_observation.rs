@@ -1,12 +1,12 @@
-use std::borrow::Cow;
 use std::fmt;
 use std::io;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
-use schemars::json_schema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::InstanceType;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -149,41 +149,32 @@ pub enum InferenceCallField {
 }
 
 impl JsonSchema for InferenceCallStatus {
-    fn schema_name() -> Cow<'static, str> {
-        "InferenceCallStatus".into()
+    fn schema_name() -> String {
+        "InferenceCallStatus".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "minLength": 1,
-        })
+        string_schema()
     }
 }
 
 impl JsonSchema for InferenceCallTransport {
-    fn schema_name() -> Cow<'static, str> {
-        "InferenceCallTransport".into()
+    fn schema_name() -> String {
+        "InferenceCallTransport".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "minLength": 1,
-        })
+        string_schema()
     }
 }
 
 impl JsonSchema for InferenceCallField {
-    fn schema_name() -> Cow<'static, str> {
-        "InferenceCallField".into()
+    fn schema_name() -> String {
+        "InferenceCallField".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "minLength": 1,
-        })
+        string_schema()
     }
 }
 
@@ -483,52 +474,23 @@ impl<'de> Deserialize<'de> for InferenceCallSource {
 }
 
 impl JsonSchema for InferenceCallSource {
-    fn schema_name() -> Cow<'static, str> {
-        "InferenceCallSource".into()
+    fn schema_name() -> String {
+        "InferenceCallSource".to_string()
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "object",
-            "anyOf": [
-                {
-                    "type": "object",
-                    "properties": {"type": {"const": "direct"}},
-                    "required": ["type"],
-                    "additionalProperties": true,
-                },
-                {
-                    "type": "object",
-                    "properties": {"type": {"const": "host_continuity_check"}},
-                    "required": ["type"],
-                    "additionalProperties": true,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "type": {"const": "code_mode"},
-                        "cell_id": {"type": "string"},
-                        "runtime_tool_call_id": {"type": "string"},
-                    },
-                    "required": ["type", "cell_id", "runtime_tool_call_id"],
-                    "additionalProperties": true,
-                },
-                {
-                    "type": "object",
-                    "properties": {"type": {"type": "string", "minLength": 1}},
-                    "required": ["type"],
-                    "additionalProperties": true,
-                    "not": {
-                        "properties": {
-                            "type": {
-                                "enum": ["direct", "host_continuity_check", "code_mode"],
-                            },
-                        },
-                    },
-                },
-            ],
+        Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::Object.into()),
+            ..Default::default()
         })
     }
+}
+
+fn string_schema() -> Schema {
+    Schema::Object(SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        ..Default::default()
+    })
 }
 
 impl InferenceCallSource {
