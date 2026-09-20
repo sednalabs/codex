@@ -67,3 +67,66 @@ fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
     assert!(has_network_proxy_sid?);
     Ok(())
 }
+
+fn fake_ptr(value: usize) -> *mut c_void {
+    std::ptr::without_provenance_mut(value)
+}
+
+#[test]
+fn restricted_sids_include_restricted_code_and_exclude_everyone() {
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let extras = [fake_ptr(0x30)];
+    let restricted_code = fake_ptr(0x40);
+    let logon = fake_ptr(0x50);
+    let everyone = fake_ptr(0x60);
+
+    let entries = build_restricted_sid_entries(&caps, &extras, restricted_code, logon);
+    let restricted = entries
+        .iter()
+        .map(|entry| (entry.Sid, entry.Attributes))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        restricted,
+        vec![
+            (caps[0], 0),
+            (caps[1], 0),
+            (extras[0], 0),
+            (restricted_code, 0),
+            (logon, 0),
+        ]
+    );
+    assert!(!entries.iter().any(|entry| entry.Sid == everyone));
+}
+
+#[test]
+fn default_dacl_keeps_everyone_for_ipc_compatibility() {
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let logon = fake_ptr(0x30);
+    let everyone = fake_ptr(0x40);
+
+    let dacl_sids = build_default_dacl_sids(&caps, &[], logon, everyone);
+
+    assert_eq!(dacl_sids, vec![logon, everyone, caps[0], caps[1]]);
+}
+
+#[test]
+fn elevated_user_is_in_default_dacl_but_everyone_is_not_restricting() {
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let user = fake_ptr(0x30);
+    let logon = fake_ptr(0x40);
+    let everyone = fake_ptr(0x50);
+
+    let restricted = build_restricted_sid_entries(&caps, &[user], fake_ptr(0x60), logon)
+        .iter()
+        .map(|entry| entry.Sid)
+        .collect::<Vec<_>>();
+    let dacl_sids = build_default_dacl_sids(&caps, &[user, caps[0], everyone], logon, everyone);
+
+    assert_eq!(
+        restricted,
+        vec![caps[0], caps[1], user, fake_ptr(0x60), logon]
+    );
+    assert_eq!(dacl_sids, vec![logon, everyone, caps[0], caps[1], user]);
+    assert!(!restricted.contains(&everyone));
+}
