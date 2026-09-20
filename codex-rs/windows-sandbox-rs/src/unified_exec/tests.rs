@@ -60,14 +60,13 @@ use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::Security::ACL;
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
-use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
-use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
 use windows_sys::Win32::Security::CopySid;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::GetLengthSid;
 use windows_sys::Win32::Security::GetSecurityDescriptorDacl;
 use windows_sys::Win32::Security::GetTokenInformation;
 use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::SetFileSecurityW;
 use windows_sys::Win32::Security::TOKEN_USER;
 use windows_sys::Win32::Security::TokenUser;
 use windows_sys::Win32::Storage::FileSystem::DELETE;
@@ -189,20 +188,12 @@ fn replace_with_restrictive_test_dacl(path: &Path, current_user_sid: &[u8]) -> R
             );
             anyhow::ensure!(found != 0 && dacl_present != 0 && !dacl.is_null());
 
-            let mut path_wide = to_wide(path);
-            let status = SetNamedSecurityInfoW(
-                path_wide.as_mut_ptr(),
-                SE_FILE_OBJECT,
+            let status = SetFileSecurityW(
+                to_wide(path).as_ptr(),
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                dacl,
-                std::ptr::null_mut(),
+                security_descriptor,
             );
-            anyhow::ensure!(
-                status == ERROR_SUCCESS,
-                "SetNamedSecurityInfoW failed: {status}"
-            );
+            anyhow::ensure!(status == ERROR_SUCCESS, "SetFileSecurityW failed: {status}");
             Ok(())
         })();
         let _ = LocalFree(security_descriptor as HLOCAL);
