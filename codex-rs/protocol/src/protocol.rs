@@ -33,6 +33,14 @@ use crate::dynamic_tools::DynamicToolCallRequest;
 use crate::dynamic_tools::DynamicToolResponse;
 use crate::dynamic_tools::DynamicToolSpec;
 use crate::error::Result as CodexResult;
+pub use crate::inference_observation::INFERENCE_CALL_CORRELATION_ID_MAX_BYTES;
+pub use crate::inference_observation::INFERENCE_CALL_EVENT_MAX_BYTES;
+pub use crate::inference_observation::INFERENCE_CALL_ID_MAX_BYTES;
+pub use crate::inference_observation::INFERENCE_CALL_STRING_MAX_BYTES;
+pub use crate::inference_observation::InferenceCallEvent;
+pub use crate::inference_observation::InferenceCallField;
+pub use crate::inference_observation::InferenceCallStatus;
+pub use crate::inference_observation::InferenceCallTransport;
 use crate::items::AgentMessageDelivery;
 use crate::items::AsyncUserInputQuestion;
 use crate::items::TurnItem;
@@ -1539,6 +1547,9 @@ pub enum EventMsg {
     RawResponseItem(RawResponseItemEvent),
     RawResponseCompleted(RawResponseCompletedEvent),
 
+    /// Payload-free lifecycle observation for one client-side inference attempt.
+    InferenceCall(InferenceCallEvent),
+
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
     HookStarted(HookStartedEvent),
@@ -1572,6 +1583,10 @@ pub enum EventMsg {
 
     /// Path-based v2 sub-agent activity.
     SubAgentActivity(SubAgentActivityEvent),
+
+    /// Event type introduced by a newer producer and intentionally ignored by this reader.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS, EnumIter)]
@@ -4624,30 +4639,26 @@ mod tests {
 
         assert_eq!(
             meta.dynamic_tools,
-            Some(vec![DynamicToolSpec::Namespace(
-                crate::dynamic_tools::DynamicToolNamespaceSpec {
-                    name: "legacy_app".to_string(),
-                    description: String::new(),
-                    tools: vec![
-                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
-                            crate::dynamic_tools::DynamicToolFunctionSpec {
-                                name: "lookup_ticket".to_string(),
-                                description: "Look up a ticket".to_string(),
-                                input_schema: json!({"type": "object", "properties": {}}),
-                                defer_loading: true,
-                            },
-                        ),
-                        crate::dynamic_tools::DynamicToolNamespaceTool::Function(
-                            crate::dynamic_tools::DynamicToolFunctionSpec {
-                                name: "update_ticket".to_string(),
-                                description: "Update a ticket".to_string(),
-                                input_schema: json!({"type": "object", "properties": {}}),
-                                defer_loading: false,
-                            },
-                        ),
-                    ],
+            Some(vec![
+                DynamicToolSpec {
+                    namespace: Some("legacy_app".to_string()),
+                    name: "lookup_ticket".to_string(),
+                    description: "Look up a ticket".to_string(),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                    defer_loading: true,
+                    persist_on_resume: true,
+                    capability: None,
                 },
-            )])
+                DynamicToolSpec {
+                    namespace: Some("legacy_app".to_string()),
+                    name: "update_ticket".to_string(),
+                    description: "Update a ticket".to_string(),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                    defer_loading: false,
+                    persist_on_resume: true,
+                    capability: None,
+                },
+            ])
         );
         Ok(())
     }
