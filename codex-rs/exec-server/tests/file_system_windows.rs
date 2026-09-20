@@ -46,6 +46,32 @@ use crate::support::create_file_system_context;
 use crate::support::is_unsupported_restricted_token_host;
 use crate::support::workspace_write_sandbox;
 
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+        let original = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 fn create_directory_junction(target: &Path, alias: &Path) -> Result<()> {
     let output = Command::new("cmd")
         .args(["/C", "mklink", "/J"])
@@ -445,6 +471,40 @@ async fn file_system_remote_fs_helper_respects_windows_sandbox_write_policy(
         "sandboxed fs helper must not create blocked file after error: {error}"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(codex_home)]
+async fn file_system_local_fs_helper_allows_windows_workspace_root_write() -> Result<()> {
+    let codex_home = tempfile::TempDir::new()?;
+    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let context = create_file_system_context(FileSystemImplementation::Local).await?;
+    let workspace = tempfile::TempDir::new()?;
+    let workspace_path = std::fs::canonicalize(workspace.path())?;
+    let workspace_uri = PathUri::from_host_native_path(&workspace_path)?;
+    let target_path = workspace_path.join("allowed.txt");
+    let target_uri = PathUri::from_host_native_path(&target_path)?;
+    let permissions = PermissionProfile::workspace_write_with(
+        &[],
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    let mut sandbox = FileSystemSandboxContext::from_permission_profile(permissions, workspace_uri);
+    sandbox.windows_sandbox_selection = WindowsSandboxSelection::RestrictedToken;
+
+    context
+        .file_system
+        .write_file(
+            &target_uri,
+            b"allowed".to_vec(),
+            WriteFileOptions::default(),
+            Some(&sandbox),
+        )
+        .await?;
+
+    assert_eq!(std::fs::read(target_path)?, b"allowed");
     Ok(())
 }
 
