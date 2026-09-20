@@ -882,6 +882,10 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         }
         let protected_git_dir = workspace.join(".git");
         fs::create_dir(&protected_git_dir).expect("create protected .git directory");
+        // Model the existing protected-child contract explicitly: workspace capability
+        // grants must not be inherited into `.git` and make its metadata writable.
+        replace_with_restrictive_test_dacl(&protected_git_dir, &current_user_sid)
+            .expect("protect .git fixture DACL");
 
         let workspace_file = workspace.join("workspace-delete.txt");
         let temp_file = temp_root.join("temp-delete.txt");
