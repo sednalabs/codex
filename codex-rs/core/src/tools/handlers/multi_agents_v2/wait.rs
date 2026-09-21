@@ -17,6 +17,7 @@ use codex_protocol::items::AgentNotificationSummary;
 use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::future;
@@ -143,6 +144,15 @@ impl Handler {
         if args.native_event_wait && !native_event_capable {
             return Err(FunctionCallError::RespondToModel(
                 "native_event_wait requires native_event_wait and mailbox_wake capabilities"
+                    .to_string(),
+            ));
+        }
+        if args.native_event_wait
+            && args.targets.is_empty()
+            && !targetless_native_wait_allowed(&turn.session_source)
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "targetless native_event_wait is reserved for root and orchestrator agents; provide at least one target"
                     .to_string(),
             ));
         }
@@ -321,6 +331,19 @@ impl Handler {
 
         Ok(boxed_tool_output(result))
     }
+}
+
+/// A targetless native wait has no status subscription to complete it and its
+/// lease expiry is deliberately renewed by the runtime. Keep that mailbox-only
+/// surface for the root and explicitly designated orchestrators, which own
+/// coordination across turns. Leaf and unclassified subagents must name the
+/// child they are awaiting so a decision-complete result cannot strand their
+/// parent behind an indefinitely renewed wait.
+fn targetless_native_wait_allowed(session_source: &SessionSource) -> bool {
+    !session_source.is_non_root_agent()
+        || session_source
+            .get_agent_role()
+            .is_some_and(|role| role.eq_ignore_ascii_case("orchestrator"))
 }
 
 fn lease_timer_enabled(native_event_wait: bool, timeout_ms: i64) -> bool {
@@ -827,6 +850,7 @@ async fn wait_for_wake_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::protocol::SubAgentSource;
 
     #[tokio::test]
     async fn positive_native_lease_reports_each_rearm_before_terminal_wake() {
@@ -992,6 +1016,37 @@ mod tests {
         assert!(lease_timer_enabled(
             /*native_event_wait*/ false, /*timeout_ms*/ 0
         ));
+    }
+
+    #[test]
+    fn targetless_native_wait_is_reserved_for_root_and_orchestrator_agents() {
+        let root = SessionSource::VSCode;
+        let orchestrator = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: Some("orchestrator".to_string()),
+        });
+        let reviewer = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: Some("reviewer".to_string()),
+        });
+        let unclassified = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        });
+
+        assert!(targetless_native_wait_allowed(&root));
+        assert!(targetless_native_wait_allowed(&orchestrator));
+        assert!(!targetless_native_wait_allowed(&reviewer));
+        assert!(!targetless_native_wait_allowed(&unclassified));
     }
 
     #[test]

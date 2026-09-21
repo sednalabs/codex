@@ -1323,7 +1323,7 @@ fn wait_agent_tool_parameters_v2(
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
                 Some(
-                    "Optional agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all. Omit to wait only for mailbox activity or timeout."
+                    "Optional agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all. Omit to wait only for mailbox activity or timeout; targetless native event waits are reserved for root and orchestrator agents, so leaf agents must provide at least one target."
                         .to_string(),
                 ),
             ),
@@ -1370,7 +1370,7 @@ fn wait_agent_tool_parameters_v2(
 
 fn wait_agent_v2_description(include_runtime_capability: bool) -> String {
     if include_runtime_capability {
-        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. Omit `targets` to wait only for mailbox activity or timeout. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
+        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. Omit `targets` only for root or orchestrator mailbox waits; leaf agents must provide at least one target, especially when using native event waits. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
             .to_string()
     } else {
         "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until an agent reaches terminal status or the timeout expires. Prefer longer timeouts to avoid busy polling."

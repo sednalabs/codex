@@ -24,6 +24,7 @@ Behavior rules:
 4. Monitoring behavior:
    - Prefer structured watcher/helper surfaces over ad-hoc polling
    - Use long blocking waits by default rather than chatty short polling
+   - Always provide an exact wait target; targetless native event waits are reserved for the root or an explicitly designated orchestrator.
    - Do not hallucinate progress or completion
    - Return only when there is a meaningful delta, a terminal outcome, or an explicitly allowed actionable blocker
 
