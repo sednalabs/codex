@@ -156,6 +156,17 @@ bazel-lock-check:
 bazel-test:
     bazel test --test_tag_filters=-argument-comment-lint //... --keep_going
 
+# Validation-only P4 execution-consumer probe. This recipe is evidence-only
+# and must not enter the product candidate.
+[no-cd]
+p4-execution-consumer-probe:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core unified_exec_uses_remote_exec_server_when_configured --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-exec-server --test exec_process shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-exec-server --test exec_process remote_exec_process_recovers_after_transport_disconnect -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-http-client route_aware_pool_uses_respect_system_proxy_route_for_exact_url --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-websocket-client loopback_direct --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures --lib -- --test-threads=1
+
 [no-cd]
 [unix]
 bazel-clippy:
