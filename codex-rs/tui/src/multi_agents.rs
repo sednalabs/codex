@@ -11,6 +11,7 @@ use crate::text_formatting::truncate_text;
 use chrono::Utc;
 use codex_app_server_protocol::AgentNotificationContent;
 use codex_app_server_protocol::AgentNotificationSummary;
+use codex_app_server_protocol::AgentWakeCause;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
@@ -730,18 +731,62 @@ fn waiting_end(
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let pending = pending_wait_thread_ids(receiver_thread_ids, agents_states);
-    let title = if matches!(
-        completion_reason,
-        Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox)
-    ) {
-        "Mailbox update received"
-    } else if pending.is_empty() {
-        "Finished waiting"
-    } else {
-        "Mailbox update received"
+    let wake_cause = notifications.iter().find_map(|notification| {
+        notification
+            .disposition
+            .as_ref()
+            .and_then(|disposition| disposition.actual_wake_cause)
+    });
+    let title = match wake_cause {
+        Some(AgentWakeCause::ChildActionableMessage) => "Woken by child actionable message",
+        Some(AgentWakeCause::ChildTerminalTransition) => "Woken by child terminal transition",
+        Some(AgentWakeCause::OperatorMessage) => "Woken by operator message",
+        Some(AgentWakeCause::UnrelatedMailboxEvent) => "Woken by unrelated mailbox event",
+        Some(AgentWakeCause::TimeoutLeaseExpiry) => "Wait lease expired",
+        Some(AgentWakeCause::CancellationInterruption) => "Wait interrupted",
+        Some(AgentWakeCause::PersistentGoalContinuation) => "Woken by goal continuation",
+        Some(AgentWakeCause::RuntimeSystemEvent) => "Woken by runtime event",
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Terminal)
+        ) =>
+        {
+            "Woken by child terminal transition"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Timeout)
+        ) =>
+        {
+            "Wait lease expired"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::SubscriptionLoss)
+        ) =>
+        {
+            "Woken by runtime event"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox)
+        ) =>
+        {
+            "Mailbox wake (cause unavailable)"
+        }
+        None if pending.is_empty() => "Finished waiting",
+        None => "Wake cause unavailable",
     };
     let mut details =
         wait_complete_lines(receiver_thread_ids, agents_states, &pending, agent_metadata);
+    if let Some(notification) = notifications.first()
+        && let Some(disposition) = notification.disposition.as_ref()
+    {
+        let queued_count = disposition.queued_update_count.unwrap_or_default();
+        details.push(Line::from(format!(
+            "Wake cause is separate from queued updates; {queued_count} queued update(s) retained for one later delivery"
+        )));
+    }
     details.extend(notification_lines(notifications));
     collab_event(title_text(title), details)
 }
@@ -749,7 +794,7 @@ fn waiting_end(
 fn notification_lines(notifications: &[AgentNotificationSummary]) -> Vec<Line<'static>> {
     notifications
         .iter()
-        .map(|notification| {
+        .filter_map(|notification| {
             let content = match &notification.content {
                 AgentNotificationContent::PlaintextPreview { text, truncated }
                 | AgentNotificationContent::SenderSummary { text, truncated } => {
@@ -759,15 +804,16 @@ fn notification_lines(notifications: &[AgentNotificationSummary]) -> Vec<Line<'s
                         if *truncated { "..." } else { "" }
                     )
                 }
-                AgentNotificationContent::EncryptedUnavailable => {
-                    ": [encrypted content unavailable]".to_string()
-                }
-                AgentNotificationContent::Unavailable => ": [content unavailable]".to_string(),
+                // Ciphertext/unavailable envelopes are runtime metadata, not
+                // user-readable updates. They must not be rendered alongside
+                // the later plaintext delivery.
+                AgentNotificationContent::EncryptedUnavailable
+                | AgentNotificationContent::Unavailable => return None,
             };
-            Line::from(format!(
+            Some(Line::from(format!(
                 "Notification from {}{}",
                 notification.sender_agent_path, content
-            ))
+            )))
         })
         .collect()
 }

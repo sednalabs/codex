@@ -6,6 +6,6 @@ expression: snapshot
   └ Robie [explorer]
     Bob [worker]
 
-• Mailbox update received
+• Wake cause unavailable
   └ Robie [explorer]: Completed - 39916800
     Still pending: Bob [worker]

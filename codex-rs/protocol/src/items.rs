@@ -357,6 +357,70 @@ pub enum AgentNotificationContent {
     Unavailable,
 }
 
+/// The sender's requested delivery behavior. Queue-only progress must not be
+/// mistaken for a request to resume the recipient's model turn.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeliveryIntent {
+    QueueOnly,
+    ActionableWakeRequested,
+    TerminalHandoff,
+    InterruptEmergency,
+}
+
+/// The event that actually ended a native wait. This is deliberately separate
+/// from sender intent: a queued message can be delivered during a later turn
+/// without having caused that turn.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWakeCause {
+    OperatorMessage,
+    ChildActionableMessage,
+    ChildTerminalTransition,
+    UnrelatedMailboxEvent,
+    TimeoutLeaseExpiry,
+    CancellationInterruption,
+    PersistentGoalContinuation,
+    RuntimeSystemEvent,
+}
+
+/// Runtime observations attached to a bounded mailbox delivery. Unknown
+/// provider/UI boundaries stay `None`; no field implies a provider wake.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentDeliveryDisposition {
+    pub intent: AgentDeliveryIntent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub enqueued_at_ms: Option<u64>,
+    #[serde(default)]
+    pub ended_active_wait: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_set_relation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_turn_started: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivered_to_model_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivered_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub displayed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actual_wake_cause: Option<AgentWakeCause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queued_update_count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 pub struct AgentNotificationSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,6 +434,9 @@ pub struct AgentNotificationSummary {
     #[ts(optional)]
     pub sender_thread_id: Option<ThreadId>,
     pub content: AgentNotificationContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub disposition: Option<AgentDeliveryDisposition>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

@@ -21,10 +21,13 @@ use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmen
 use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
 use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::approvals::GuardianUserAuthorization as CoreGuardianUserAuthorization;
+use codex_protocol::items::AgentDeliveryDisposition as CoreAgentDeliveryDisposition;
+use codex_protocol::items::AgentDeliveryIntent as CoreAgentDeliveryIntent;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 use codex_protocol::items::AgentNotificationContent as CoreAgentNotificationContent;
 use codex_protocol::items::AgentNotificationOrigin as CoreAgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary as CoreAgentNotificationSummary;
+use codex_protocol::items::AgentWakeCause as CoreAgentWakeCause;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
@@ -1429,6 +1432,66 @@ pub enum AgentNotificationContent {
     Unavailable,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum AgentDeliveryIntent {
+    QueueOnly,
+    ActionableWakeRequested,
+    TerminalHandoff,
+    InterruptEmergency,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum AgentWakeCause {
+    OperatorMessage,
+    ChildActionableMessage,
+    ChildTerminalTransition,
+    UnrelatedMailboxEvent,
+    TimeoutLeaseExpiry,
+    CancellationInterruption,
+    PersistentGoalContinuation,
+    RuntimeSystemEvent,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentDeliveryDisposition {
+    pub intent: AgentDeliveryIntent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub enqueued_at_ms: Option<u64>,
+    #[serde(default)]
+    pub ended_active_wait: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_set_relation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_turn_started: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivered_to_model_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivered_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub displayed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actual_wake_cause: Option<AgentWakeCause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queued_update_count: Option<usize>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1439,6 +1502,53 @@ pub struct AgentNotificationSummary {
     pub sender_agent_path: String,
     pub sender_thread_id: Option<String>,
     pub content: AgentNotificationContent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub disposition: Option<AgentDeliveryDisposition>,
+}
+
+impl From<CoreAgentDeliveryIntent> for AgentDeliveryIntent {
+    fn from(value: CoreAgentDeliveryIntent) -> Self {
+        match value {
+            CoreAgentDeliveryIntent::QueueOnly => Self::QueueOnly,
+            CoreAgentDeliveryIntent::ActionableWakeRequested => Self::ActionableWakeRequested,
+            CoreAgentDeliveryIntent::TerminalHandoff => Self::TerminalHandoff,
+            CoreAgentDeliveryIntent::InterruptEmergency => Self::InterruptEmergency,
+        }
+    }
+}
+
+impl From<CoreAgentWakeCause> for AgentWakeCause {
+    fn from(value: CoreAgentWakeCause) -> Self {
+        match value {
+            CoreAgentWakeCause::OperatorMessage => Self::OperatorMessage,
+            CoreAgentWakeCause::ChildActionableMessage => Self::ChildActionableMessage,
+            CoreAgentWakeCause::ChildTerminalTransition => Self::ChildTerminalTransition,
+            CoreAgentWakeCause::UnrelatedMailboxEvent => Self::UnrelatedMailboxEvent,
+            CoreAgentWakeCause::TimeoutLeaseExpiry => Self::TimeoutLeaseExpiry,
+            CoreAgentWakeCause::CancellationInterruption => Self::CancellationInterruption,
+            CoreAgentWakeCause::PersistentGoalContinuation => Self::PersistentGoalContinuation,
+            CoreAgentWakeCause::RuntimeSystemEvent => Self::RuntimeSystemEvent,
+        }
+    }
+}
+
+impl From<CoreAgentDeliveryDisposition> for AgentDeliveryDisposition {
+    fn from(value: CoreAgentDeliveryDisposition) -> Self {
+        Self {
+            intent: value.intent.into(),
+            enqueued_at_ms: value.enqueued_at_ms,
+            ended_active_wait: value.ended_active_wait,
+            wait_id: value.wait_id,
+            target_set_relation: value.target_set_relation,
+            parent_turn_started: value.parent_turn_started,
+            delivered_to_model_at_ms: value.delivered_to_model_at_ms,
+            delivered_turn_id: value.delivered_turn_id,
+            displayed_at_ms: value.displayed_at_ms,
+            actual_wake_cause: value.actual_wake_cause.map(Into::into),
+            queued_update_count: value.queued_update_count,
+        }
+    }
 }
 
 impl From<CoreAgentNotificationSummary> for AgentNotificationSummary {
@@ -1466,6 +1576,7 @@ impl From<CoreAgentNotificationSummary> for AgentNotificationSummary {
                 }
                 CoreAgentNotificationContent::Unavailable => AgentNotificationContent::Unavailable,
             },
+            disposition: value.disposition.map(Into::into),
         }
     }
 }

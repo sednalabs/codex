@@ -474,9 +474,11 @@ async fn steer_interrupts_wait_agent_and_is_sent_in_follow_up_request() {
     let wait_output = function_call_output_text(&second, WAIT_CALL_ID).expect("wait_agent output");
     let wait_output = serde_json::from_str::<Value>(wait_output).expect("parse wait_agent output");
     assert_eq!(wait_output.get("timed_out"), Some(&json!(false)));
-    assert_eq!(
-        wait_output.get("message"),
-        Some(&json!("Wait woke due to mailbox activity."))
+    assert!(
+        wait_output
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("Wait woke due to mailbox activity."))
     );
 
     server.shutdown().await;

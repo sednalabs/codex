@@ -9,11 +9,15 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::items::AgentDeliveryDisposition;
+use codex_protocol::items::AgentDeliveryIntent;
 use codex_protocol::items::AgentNotificationContent;
 use codex_protocol::items::AgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary;
+use codex_protocol::items::AgentWakeCause;
 use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
@@ -26,6 +30,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
@@ -67,6 +73,8 @@ pub(crate) fn resolve_wait_timeout_ms(
 enum WakeSource {
     TargetCompletion,
     Mailbox,
+    OperatorMessage,
+    RuntimeSystemEvent,
     Timeout,
     SubscriptionLoss,
 }
@@ -75,9 +83,22 @@ impl WakeSource {
     fn completion_reason(self) -> CollabWaitingCompletionReason {
         match self {
             WakeSource::TargetCompletion => CollabWaitingCompletionReason::Terminal,
-            WakeSource::Mailbox => CollabWaitingCompletionReason::Mailbox,
+            WakeSource::Mailbox | WakeSource::OperatorMessage | WakeSource::RuntimeSystemEvent => {
+                CollabWaitingCompletionReason::Mailbox
+            }
             WakeSource::Timeout => CollabWaitingCompletionReason::Timeout,
             WakeSource::SubscriptionLoss => CollabWaitingCompletionReason::SubscriptionLoss,
+        }
+    }
+
+    fn wake_cause(self) -> AgentWakeCause {
+        match self {
+            Self::TargetCompletion => AgentWakeCause::ChildTerminalTransition,
+            Self::Mailbox => AgentWakeCause::ChildActionableMessage,
+            Self::OperatorMessage => AgentWakeCause::OperatorMessage,
+            Self::RuntimeSystemEvent => AgentWakeCause::RuntimeSystemEvent,
+            Self::Timeout => AgentWakeCause::TimeoutLeaseExpiry,
+            Self::SubscriptionLoss => AgentWakeCause::RuntimeSystemEvent,
         }
     }
 }
@@ -242,7 +263,14 @@ impl Handler {
                         receiver_agents.clone(),
                         agents_states,
                         CollabWaitingCompletionReason::SubscriptionLoss,
-                        mailbox_notifications(session.as_ref()).await,
+                        mailbox_snapshot(
+                            session.as_ref(),
+                            &call_id,
+                            target_set_relation(receiver_thread_ids.is_empty()),
+                            WakeSource::SubscriptionLoss,
+                        )
+                        .await
+                        .notifications,
                     )
                     .await;
                     return Err(collab_agent_error(*id, err));
@@ -253,9 +281,10 @@ impl Handler {
         let return_when = wait_capability
             .filter(|capability| capability.return_when)
             .map_or(ReturnWhen::Any, |_| args.return_when);
-        // Targetless waits retain broad mailbox eligibility. Exact-target waits
-        // use the typed actionable-input predicate below; native mode only
-        // changes lease expiry.
+        // All waits use the typed actionable-input predicate below. Targetless
+        // root/orchestrator waits retain their native lifecycle and lease
+        // behavior, but ordinary queue-only progress remains durable instead
+        // of ending the active wait.
         let wake_on_mailbox = wait_capability.is_some_and(|capability| capability.mailbox_wake);
         let native_event_wait = args.native_event_wait && native_event_capable;
         let completion_rule = CompletionRule::new(return_when);
@@ -310,11 +339,28 @@ impl Handler {
         }
         let statuses_by_id = merge_wait_end_statuses(final_statuses.clone(), pending_statuses);
         let pending_thread_ids = pending_wait_thread_ids(&receiver_thread_ids, &statuses_by_id);
+        let mailbox = mailbox_snapshot(
+            session.as_ref(),
+            &call_id,
+            target_set_relation(receiver_thread_ids.is_empty()),
+            wake_source,
+        )
+        .await;
         let result = WaitAgentResult::new(
             receiver_thread_ids.clone(),
             pending_thread_ids,
             completion_reason,
-            mailbox_notifications(session.as_ref()).await,
+            mailbox.notifications,
+            mailbox.provenance,
+        );
+        tracing::debug!(
+            target: "codex.native_wait",
+            call_id = %call_id,
+            wake_cause = ?result.wake_provenance.wake_cause,
+            queued_update_count = result.wake_provenance.queued_update_count,
+            helper_returned_at_ms = result.wake_provenance.helper_returned_at_ms,
+            provider_turn_started = ?result.wake_provenance.provider_turn_started,
+            "native_wait_helper_returned"
         );
 
         emit_wait_completion(
@@ -386,43 +432,213 @@ pub(crate) struct WaitAgentResult {
     pub(crate) timed_out: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) wake_notifications: Option<Vec<AgentNotificationSummary>>,
+    /// Structured cause/disposition receipt. `provider_turn_started` remains
+    /// unknown unless an authoritative provider boundary supplied evidence.
+    #[serde(default)]
+    pub(crate) wake_provenance: WakeProvenance,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WakeProvenance {
+    pub(crate) wake_cause: AgentWakeCause,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sender_agent_path: Option<AgentPath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sender_thread_id: Option<ThreadId>,
+    pub(crate) wait_id: String,
+    pub(crate) target_set_relation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) causal_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) causal_event_time_ms: Option<u64>,
+    pub(crate) queued_update_count: usize,
+    pub(crate) queued_update_sequences: Vec<u64>,
+    /// Entries observed in the queue that did not cause this wake. This
+    /// includes ordinary progress and any encrypted/unavailable envelopes.
+    pub(crate) noncausal_update_sequences: Vec<u64>,
+    /// Sender intent and runtime disposition for every observed queued update;
+    /// message payloads are intentionally not copied into this receipt.
+    pub(crate) queued_updates: Vec<QueuedUpdateReceipt>,
+    pub(crate) helper_returned_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_turn_started: Option<bool>,
+}
+
+impl Default for WakeProvenance {
+    fn default() -> Self {
+        Self {
+            wake_cause: AgentWakeCause::RuntimeSystemEvent,
+            actor: None,
+            sender_agent_path: None,
+            sender_thread_id: None,
+            wait_id: "test".to_string(),
+            target_set_relation: "unknown".to_string(),
+            causal_event_id: None,
+            causal_event_time_ms: None,
+            queued_update_count: 0,
+            queued_update_sequences: Vec::new(),
+            noncausal_update_sequences: Vec::new(),
+            queued_updates: Vec::new(),
+            helper_returned_at_ms: 0,
+            provider_turn_started: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct QueuedUpdateReceipt {
+    pub(crate) sequence: u64,
+    pub(crate) sender_agent_path: AgentPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sender_thread_id: Option<ThreadId>,
+    pub(crate) intent: AgentDeliveryIntent,
+    pub(crate) enqueued_at_ms: u64,
+    pub(crate) ended_active_wait: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivered_to_model_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) displayed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) actual_wake_cause: Option<AgentWakeCause>,
 }
 
 const MAX_NOTIFICATION_PREVIEW_CHARS: usize = 240;
 
-async fn mailbox_notifications(session: &Session) -> Vec<AgentNotificationSummary> {
-    session
-        .input_queue
-        .snapshot_mailbox_communications()
-        .await
+#[derive(Debug)]
+struct MailboxSnapshot {
+    notifications: Vec<AgentNotificationSummary>,
+    provenance: WakeProvenance,
+}
+
+async fn mailbox_snapshot(
+    session: &Session,
+    wait_id: &str,
+    target_set_relation: String,
+    wake_source: WakeSource,
+) -> MailboxSnapshot {
+    let entries = session.input_queue.snapshot_mailbox_communications().await;
+    let queued_update_sequences = entries.iter().map(|(_, sequence, _)| *sequence).collect();
+    let queued_update_count = entries.len();
+    let causal_entry = (wake_source == WakeSource::Mailbox)
+        .then(|| {
+            entries.iter().find(|(communication, _, _)| {
+                communication.trigger_turn
+                    || communication.origin == Some(AgentCommunicationOrigin::Result)
+            })
+        })
+        .flatten()
+        .cloned();
+    let wake_cause = if wake_source == WakeSource::Mailbox {
+        causal_entry
+            .as_ref()
+            .map(|(communication, _, _)| {
+                if communication.origin == Some(AgentCommunicationOrigin::Result) {
+                    AgentWakeCause::ChildTerminalTransition
+                } else {
+                    AgentWakeCause::ChildActionableMessage
+                }
+            })
+            .unwrap_or(AgentWakeCause::UnrelatedMailboxEvent)
+    } else {
+        wake_source.wake_cause()
+    };
+    let causal_event_id = causal_entry
+        .as_ref()
+        .and_then(|(communication, sequence, _)| {
+            communication
+                .id
+                .as_ref()
+                .map(ToString::to_string)
+                .or_else(|| Some(format!("mailbox-sequence-{sequence}")))
+        });
+    let causal_event_time_ms = causal_entry
+        .as_ref()
+        .map(|(_, _, enqueued_at_ms)| *enqueued_at_ms);
+    let causal_sequence = causal_entry.as_ref().map(|(_, sequence, _)| *sequence);
+    let noncausal_update_sequences = entries
+        .iter()
+        .map(|(_, sequence, _)| *sequence)
+        .filter(|sequence| Some(*sequence) != causal_sequence)
+        .collect();
+    let queued_updates = entries
+        .iter()
+        .map(|(communication, sequence, enqueued_at_ms)| {
+            let is_causal = causal_sequence == Some(*sequence);
+            let intent = if communication.origin == Some(AgentCommunicationOrigin::Result) {
+                AgentDeliveryIntent::TerminalHandoff
+            } else if communication.trigger_turn {
+                AgentDeliveryIntent::ActionableWakeRequested
+            } else {
+                AgentDeliveryIntent::QueueOnly
+            };
+            QueuedUpdateReceipt {
+                sequence: *sequence,
+                sender_agent_path: communication.author.clone(),
+                sender_thread_id: session
+                    .services
+                    .agent_control
+                    .agent_id_for_path(&communication.author),
+                intent,
+                enqueued_at_ms: *enqueued_at_ms,
+                ended_active_wait: is_causal,
+                delivered_to_model_at_ms: None,
+                displayed_at_ms: None,
+                actual_wake_cause: is_causal.then_some(wake_cause),
+            }
+        })
+        .collect();
+    let sender_agent_path = causal_entry
+        .as_ref()
+        .map(|(communication, _, _)| communication.author.clone());
+    let sender_thread_id = sender_agent_path
+        .as_ref()
+        .and_then(|path| session.services.agent_control.agent_id_for_path(path));
+    let actor = sender_agent_path.as_ref().map(ToString::to_string);
+
+    // Only the causal actionable/terminal plaintext is copied into the wait
+    // result. The mailbox itself remains the durable source for every queued
+    // update, so unrelated progress is delivered to the resumed model once
+    // rather than being duplicated by a notification (or an
+    // encrypted-unavailable summary).
+    let notifications = entries
         .into_iter()
-        .map(|(communication, sequence)| {
+        .filter_map(|(communication, sequence, enqueued_at_ms)| {
+            if communication.encrypted_content.is_some()
+                || communication.content.is_empty()
+                || (!communication.trigger_turn
+                    && communication.origin != Some(AgentCommunicationOrigin::Result))
+            {
+                return None;
+            }
             let sender_thread_id = session
                 .services
                 .agent_control
                 .agent_id_for_path(&communication.author);
-            let content = if communication.encrypted_content.is_some() {
-                AgentNotificationContent::EncryptedUnavailable
-            } else if communication.content.is_empty() {
-                AgentNotificationContent::Unavailable
+            let preview = communication
+                .content
+                .chars()
+                .take(MAX_NOTIFICATION_PREVIEW_CHARS)
+                .collect::<String>();
+            let mut bounded = communication.content.chars();
+            let _ = bounded
+                .by_ref()
+                .take(MAX_NOTIFICATION_PREVIEW_CHARS)
+                .count();
+            let truncated = bounded.next().is_some();
+            let intent = if communication.origin == Some(AgentCommunicationOrigin::Result) {
+                AgentDeliveryIntent::TerminalHandoff
             } else {
-                let preview = communication
-                    .content
-                    .chars()
-                    .take(MAX_NOTIFICATION_PREVIEW_CHARS)
-                    .collect::<String>();
-                let mut bounded = communication.content.chars();
-                let _ = bounded
-                    .by_ref()
-                    .take(MAX_NOTIFICATION_PREVIEW_CHARS)
-                    .count();
-                let truncated = bounded.next().is_some();
-                AgentNotificationContent::PlaintextPreview {
-                    text: preview,
-                    truncated,
-                }
+                AgentDeliveryIntent::ActionableWakeRequested
             };
-            AgentNotificationSummary {
+            let is_causal = causal_entry
+                .as_ref()
+                .is_some_and(|(_, causal_sequence, _)| *causal_sequence == sequence);
+            if !is_causal {
+                return None;
+            }
+            Some(AgentNotificationSummary {
                 communication_id: communication.id,
                 sequence,
                 origin: if communication.origin == Some(AgentCommunicationOrigin::Result) {
@@ -432,10 +648,65 @@ async fn mailbox_notifications(session: &Session) -> Vec<AgentNotificationSummar
                 },
                 sender_agent_path: communication.author,
                 sender_thread_id,
-                content,
-            }
+                content: AgentNotificationContent::PlaintextPreview {
+                    text: preview,
+                    truncated,
+                },
+                disposition: Some(AgentDeliveryDisposition {
+                    intent,
+                    enqueued_at_ms: Some(enqueued_at_ms),
+                    ended_active_wait: is_causal,
+                    wait_id: Some(wait_id.to_string()),
+                    target_set_relation: Some(target_set_relation.clone()),
+                    // A wait result is emitted from the active parent turn;
+                    // provider sampling after this boundary remains unknown.
+                    parent_turn_started: Some(true),
+                    delivered_to_model_at_ms: None,
+                    delivered_turn_id: None,
+                    displayed_at_ms: None,
+                    actual_wake_cause: is_causal.then_some(wake_cause),
+                    queued_update_count: Some(queued_update_count),
+                }),
+            })
         })
-        .collect()
+        .collect();
+
+    MailboxSnapshot {
+        notifications,
+        provenance: WakeProvenance {
+            wake_cause,
+            actor,
+            sender_agent_path,
+            sender_thread_id,
+            wait_id: wait_id.to_string(),
+            target_set_relation,
+            causal_event_id,
+            causal_event_time_ms,
+            queued_update_count,
+            queued_update_sequences,
+            noncausal_update_sequences,
+            queued_updates,
+            helper_returned_at_ms: current_time_ms(),
+            // The core runtime has no authoritative provider-turn callback at
+            // this seam; retain unknown rather than inferring a wake/spend.
+            provider_turn_started: None,
+        },
+    }
+}
+
+fn target_set_relation(targetless: bool) -> String {
+    if targetless {
+        "targetless_root_orchestrator".to_string()
+    } else {
+        "exact_target_set".to_string()
+    }
+}
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -446,25 +717,17 @@ async fn ready_wake_source(
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
     pending_input_activity: Option<InputQueueActivity>,
-    exact_target_wait: bool,
+    _exact_target_wait: bool,
     status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
     } else if wake_on_mailbox
-        && (pending_input_activity
-            .is_some_and(|activity| !exact_target_wait || activity != InputQueueActivity::Mailbox)
-            || if exact_target_wait {
-                session
-                    .input_queue
-                    .has_pending_wait_input(&session.active_turn)
-                    .await
-            } else {
-                session
-                    .input_queue
-                    .has_pending_input(&session.active_turn)
-                    .await
-            })
+        && (pending_input_activity.is_some_and(|activity| activity != InputQueueActivity::Mailbox)
+            || session
+                .input_queue
+                .has_pending_wait_input(&session.active_turn)
+                .await)
     {
         let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
         final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
@@ -476,7 +739,11 @@ async fn ready_wake_source(
         {
             Some(WakeSource::SubscriptionLoss)
         } else {
-            Some(WakeSource::Mailbox)
+            Some(match pending_input_activity {
+                Some(InputQueueActivity::Steer) => WakeSource::OperatorMessage,
+                Some(InputQueueActivity::TerminalCompletion) => WakeSource::RuntimeSystemEvent,
+                _ => WakeSource::Mailbox,
+            })
         }
     } else {
         None
@@ -489,8 +756,9 @@ impl WaitAgentResult {
         pending_ids: Vec<ThreadId>,
         completion_reason: CollabWaitingCompletionReason,
         notifications: Vec<AgentNotificationSummary>,
+        wake_provenance: WakeProvenance,
     ) -> Self {
-        let message = match completion_reason {
+        let base_message = match completion_reason {
             CollabWaitingCompletionReason::Terminal => "Wait completed.",
             CollabWaitingCompletionReason::Mailbox => "Wait woke due to mailbox activity.",
             CollabWaitingCompletionReason::Timeout => "Wait timed out.",
@@ -498,13 +766,19 @@ impl WaitAgentResult {
                 "Wait ended because its event subscription was lost."
             }
         };
+        let message = format!(
+            "{base_message} wake_cause={}; queued_updates={}; provider_turn_started=unknown.",
+            wake_cause_label(wake_provenance.wake_cause),
+            wake_provenance.queued_update_count,
+        );
         Self {
-            message: message.to_string(),
+            message,
             requested_ids,
             pending_ids,
             completion_reason,
             timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
             wake_notifications: (!notifications.is_empty()).then_some(notifications),
+            wake_provenance,
         }
     }
 
@@ -527,11 +801,25 @@ impl WaitAgentResult {
         if let Some(notifications) = &self.wake_notifications {
             output.insert("wake_notifications".to_string(), json!(notifications));
         }
+        output.insert("wake_provenance".to_string(), json!(self.wake_provenance));
         JsonValue::Object(output)
     }
 
     fn output_json_text(&self, capabilities: ToolRuntimeCapabilities) -> String {
         self.output_value(capabilities).to_string()
+    }
+}
+
+fn wake_cause_label(cause: AgentWakeCause) -> &'static str {
+    match cause {
+        AgentWakeCause::OperatorMessage => "operator_message",
+        AgentWakeCause::ChildActionableMessage => "child_actionable_message",
+        AgentWakeCause::ChildTerminalTransition => "child_terminal_transition",
+        AgentWakeCause::UnrelatedMailboxEvent => "unrelated_mailbox_event",
+        AgentWakeCause::TimeoutLeaseExpiry => "timeout_lease_expiry",
+        AgentWakeCause::CancellationInterruption => "cancellation_interruption",
+        AgentWakeCause::PersistentGoalContinuation => "persistent_goal_continuation",
+        AgentWakeCause::RuntimeSystemEvent => "runtime_system_event",
     }
 }
 
@@ -682,7 +970,7 @@ async fn wait_for_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
-    exact_target_wait: bool,
+    _exact_target_wait: bool,
     call_id: &str,
     native_event_wait: bool,
     lease_timer_enabled: bool,
@@ -766,17 +1054,10 @@ async fn wait_for_wake_source(
             input_activity_changed = input_activity_rx.changed(), if wake_on_mailbox || native_event_wait => {
                 match input_activity_changed {
                     Ok(())
-                        if if exact_target_wait {
-                            session
-                                .input_queue
-                                .has_pending_wait_input(&session.active_turn)
-                                .await
-                        } else {
-                            session
-                                .input_queue
-                                .has_pending_input(&session.active_turn)
-                                .await
-                        } =>
+                        if session
+                            .input_queue
+                            .has_pending_wait_input(&session.active_turn)
+                            .await =>
                     {
                         let latest = collect_current_wait_statuses(
                             session.as_ref(),
@@ -796,7 +1077,13 @@ async fn wait_for_wake_source(
                         } else if status_loss {
                             return WakeSource::SubscriptionLoss;
                         }
-                        return WakeSource::Mailbox;
+                        return match *input_activity_rx.borrow() {
+                            InputQueueActivity::Steer => WakeSource::OperatorMessage,
+                            InputQueueActivity::TerminalCompletion => {
+                                WakeSource::RuntimeSystemEvent
+                            }
+                            InputQueueActivity::Mailbox => WakeSource::Mailbox,
+                        };
                     }
                     Err(_) => {
                         // The mailbox subscription is gone. End the pending
@@ -916,6 +1203,10 @@ mod tests {
             CollabWaitingCompletionReason::Mailbox
         );
         assert_eq!(
+            WakeSource::RuntimeSystemEvent.wake_cause(),
+            AgentWakeCause::RuntimeSystemEvent
+        );
+        assert_eq!(
             WakeSource::Timeout.completion_reason(),
             CollabWaitingCompletionReason::Timeout
         );
@@ -932,6 +1223,7 @@ mod tests {
             Vec::new(),
             CollabWaitingCompletionReason::SubscriptionLoss,
             Vec::new(),
+            WakeProvenance::default(),
         );
         assert!(!result.timed_out);
         assert!(result.message.contains("subscription"));
@@ -1058,11 +1350,16 @@ mod tests {
             vec![pending_id],
             CollabWaitingCompletionReason::Timeout,
             Vec::new(),
+            WakeProvenance::default(),
         );
 
         let output = result.output_value(ToolRuntimeCapabilities::upstream_default());
 
-        assert_eq!(output["message"], json!("Wait timed out."));
+        assert!(
+            output["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Wait timed out."))
+        );
         assert_eq!(output["requested_ids"], json!([requested_id]));
         assert_eq!(output["timed_out"], json!(true));
         assert!(

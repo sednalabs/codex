@@ -4,6 +4,128 @@
       "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
       "type": "string"
     },
+    "AgentDeliveryDisposition": {
+      "properties": {
+        "actualWakeCause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentWakeCause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deliveredToModelAtMs": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deliveredTurnId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "displayedAtMs": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endedActiveWait": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enqueuedAtMs": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intent": {
+          "$ref": "#/$defs/AgentDeliveryIntent"
+        },
+        "parentTurnStarted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queuedUpdateCount": {
+          "anyOf": [
+            {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targetSetRelation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waitId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "intent"
+      ],
+      "type": "object"
+    },
+    "AgentDeliveryIntent": {
+      "enum": [
+        "queue_only",
+        "actionable_wake_requested",
+        "terminal_handoff",
+        "interrupt_emergency"
+      ],
+      "type": "string"
+    },
     "AgentNotificationContent": {
       "oneOf": [
         {
@@ -98,6 +220,16 @@
         "content": {
           "$ref": "#/$defs/AgentNotificationContent"
         },
+        "disposition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentDeliveryDisposition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "origin": {
           "$ref": "#/$defs/AgentNotificationOrigin"
         },
@@ -123,6 +255,19 @@
         "content"
       ],
       "type": "object"
+    },
+    "AgentWakeCause": {
+      "enum": [
+        "operator_message",
+        "child_actionable_message",
+        "child_terminal_transition",
+        "unrelated_mailbox_event",
+        "timeout_lease_expiry",
+        "cancellation_interruption",
+        "persistent_goal_continuation",
+        "runtime_system_event"
+      ],
+      "type": "string"
     },
     "ByteRange": {
       "properties": {

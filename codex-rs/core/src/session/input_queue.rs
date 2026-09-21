@@ -13,6 +13,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::Notify;
@@ -46,6 +48,7 @@ pub(crate) struct TurnInputQueue {
 struct MailboxQueue {
     communications: VecDeque<InterAgentCommunication>,
     sequences: VecDeque<u64>,
+    enqueued_at_ms: VecDeque<u64>,
 }
 
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
@@ -213,6 +216,16 @@ impl InputQueue {
             (0..communication_count)
                 .map(|_| self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed)),
         );
+        let enqueued_at_ms = current_time_ms();
+        mailbox
+            .enqueued_at_ms
+            .extend(std::iter::repeat(enqueued_at_ms).take(communication_count));
+        tracing::trace!(
+            target: "codex.native_wait",
+            queued_update_count = communication_count,
+            enqueued_at_ms,
+            "mailbox_updates_enqueued"
+        );
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
@@ -228,13 +241,19 @@ impl InputQueue {
             .into_iter()
             .map(|communication| {
                 let sequence = self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed);
-                (communication, sequence)
+                (communication, sequence, current_time_ms())
             })
             .collect();
-        for (communication, sequence) in queued.into_iter().rev() {
+        for (communication, sequence, enqueued_at_ms) in queued.into_iter().rev() {
             mailbox.communications.push_front(communication);
             mailbox.sequences.push_front(sequence);
+            mailbox.enqueued_at_ms.push_front(enqueued_at_ms);
         }
+        tracing::trace!(
+            target: "codex.native_wait",
+            queued_update_count = mailbox.enqueued_at_ms.len(),
+            "mailbox_updates_prepended"
+        );
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
@@ -247,14 +266,17 @@ impl InputQueue {
     /// preserved.
     pub(crate) async fn snapshot_mailbox_communications(
         &self,
-    ) -> Vec<(InterAgentCommunication, u64)> {
+    ) -> Vec<(InterAgentCommunication, u64, u64)> {
         let mailbox = self.mailbox.lock().await;
         mailbox
             .communications
             .iter()
             .zip(mailbox.sequences.iter())
+            .zip(mailbox.enqueued_at_ms.iter())
             .take(Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
-            .map(|(communication, sequence)| (communication.clone(), *sequence))
+            .map(|((communication, sequence), enqueued_at_ms)| {
+                (communication.clone(), *sequence, *enqueued_at_ms)
+            })
             .collect()
     }
 
@@ -311,18 +333,20 @@ impl InputQueue {
     /// their content is encrypted; result messages are actionable without a
     /// new turn only after a nonempty plaintext payload is available.
     pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
-        self.mailbox.lock().await.communications.iter().any(|mail| {
-            mail.trigger_turn
-                || (mail.encrypted_content.is_none()
-                    && !mail.content.is_empty()
-                    && mail.origin
-                        == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
-        })
+        self.mailbox
+            .lock()
+            .await
+            .communications
+            .iter()
+            .any(is_actionable_wait_communication)
     }
 
-    /// Returns whether pending input would be actionable for an exact-target
-    /// wait. Queue-only mailbox messages remain durable, but do not wake a
-    /// wait that is observing specific agents.
+    /// This predicate is intentionally used for both exact-target and
+    /// targetless waits. Ordinary queue-only progress remains durable but must
+    /// not wake a parent merely because the mailbox is non-empty.
+    ///
+    /// Queue-only mailbox messages remain durable, but do not wake a wait that
+    /// is observing specific agents.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
@@ -336,7 +360,17 @@ impl InputQueue {
             match active.as_ref() {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
-                    if !turn_state.pending_input.items.is_empty() {
+                    if turn_state
+                        .pending_input
+                        .items
+                        .iter()
+                        .any(|input| match input {
+                            TurnInput::InterAgentCommunication(communication) => {
+                                is_actionable_wait_communication(communication)
+                            }
+                            TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => true,
+                        })
+                    {
                         return true;
                     }
                     turn_state.accepts_mailbox_delivery_for_current_turn()
@@ -360,6 +394,7 @@ impl InputQueue {
         let mut mailbox = self.mailbox.lock().await;
         let communications = mailbox.communications.drain(..).collect();
         mailbox.sequences.clear();
+        mailbox.enqueued_at_ms.clear();
         communications
     }
 
@@ -527,6 +562,21 @@ impl InputQueue {
         }
         self.has_pending_mailbox_items().await || self.has_pending_terminal_completions().await
     }
+}
+
+fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
+    communication.trigger_turn
+        || (communication.encrypted_content.is_none()
+            && !communication.content.is_empty()
+            && communication.origin
+                == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
+}
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or_default()
 }
 
 impl TurnInputQueue {
@@ -830,6 +880,45 @@ mod tests {
             .await;
 
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_does_not_wake_for_pending_queue_only_turn_input() {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "queued",
+                    /*trigger_turn*/ false,
+                ))],
+            )
+            .await;
+        assert!(!input_queue.has_pending_wait_input(&active_turn).await);
+
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "wake",
+                    /*trigger_turn*/ true,
+                ))],
+            )
+            .await;
+        assert!(input_queue.has_pending_wait_input(&active_turn).await);
     }
 
     #[tokio::test]

@@ -6060,6 +6060,128 @@
         },
         "type": "object"
       },
+      "AgentDeliveryDisposition": {
+        "properties": {
+          "actualWakeCause": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentWakeCause"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveredToModelAtMs": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveredTurnId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayedAtMs": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "endedActiveWait": {
+            "default": false,
+            "type": "boolean"
+          },
+          "enqueuedAtMs": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intent": {
+            "$ref": "#/definitions/v2/AgentDeliveryIntent"
+          },
+          "parentTurnStarted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queuedUpdateCount": {
+            "anyOf": [
+              {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetSetRelation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waitId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "type": "object"
+      },
+      "AgentDeliveryIntent": {
+        "enum": [
+          "queue_only",
+          "actionable_wake_requested",
+          "terminal_handoff",
+          "interrupt_emergency"
+        ],
+        "type": "string"
+      },
       "AgentMessageDeltaNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -6219,6 +6341,16 @@
           "content": {
             "$ref": "#/definitions/v2/AgentNotificationContent"
           },
+          "disposition": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentDeliveryDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "origin": {
             "$ref": "#/definitions/v2/AgentNotificationOrigin"
           },
@@ -6244,6 +6376,19 @@
           "content"
         ],
         "type": "object"
+      },
+      "AgentWakeCause": {
+        "enum": [
+          "operator_message",
+          "child_actionable_message",
+          "child_terminal_transition",
+          "unrelated_mailbox_event",
+          "timeout_lease_expiry",
+          "cancellation_interruption",
+          "persistent_goal_continuation",
+          "runtime_system_event"
+        ],
+        "type": "string"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,
