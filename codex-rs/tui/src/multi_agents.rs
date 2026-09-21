@@ -779,13 +779,13 @@ fn waiting_end(
     };
     let mut details =
         wait_complete_lines(receiver_thread_ids, agents_states, &pending, agent_metadata);
-    if let Some(notification) = notifications.first()
-        && let Some(disposition) = notification.disposition.as_ref()
-    {
-        let queued_count = disposition.queued_update_count.unwrap_or_default();
-        details.push(Line::from(format!(
-            "Wake cause is separate from queued updates; {queued_count} queued update(s) retained for one later delivery"
-        )));
+    if let Some(notification) = notifications.first() {
+        if let Some(disposition) = notification.disposition.as_ref() {
+            let queued_count = disposition.queued_update_count.unwrap_or_default();
+            details.push(Line::from(format!(
+                "Wake cause is separate from queued updates; {queued_count} queued update(s) retained for one later delivery"
+            )));
+        }
     }
     details.extend(notification_lines(notifications));
     collab_event(title_text(title), details)

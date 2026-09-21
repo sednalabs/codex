@@ -46,9 +46,13 @@ pub(crate) struct TurnInputQueue {
 
 #[derive(Default)]
 struct MailboxQueue {
-    communications: VecDeque<InterAgentCommunication>,
-    sequences: VecDeque<u64>,
-    enqueued_at_ms: VecDeque<u64>,
+    entries: VecDeque<MailboxEntry>,
+}
+
+struct MailboxEntry {
+    communication: InterAgentCommunication,
+    sequence: u64,
+    enqueued_at_ms: u64,
 }
 
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
@@ -211,15 +215,16 @@ impl InputQueue {
         }
         let communication_count = communications.len();
         let mut mailbox = self.mailbox.lock().await;
-        mailbox.communications.extend(communications);
-        mailbox.sequences.extend(
-            (0..communication_count)
-                .map(|_| self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed)),
-        );
         let enqueued_at_ms = current_time_ms();
-        mailbox
-            .enqueued_at_ms
-            .extend(std::iter::repeat(enqueued_at_ms).take(communication_count));
+        mailbox.entries.extend(
+            communications
+                .into_iter()
+                .map(|communication| MailboxEntry {
+                    communication,
+                    sequence: self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed),
+                    enqueued_at_ms,
+                }),
+        );
         tracing::trace!(
             target: "codex.native_wait",
             queued_update_count = communication_count,
@@ -239,26 +244,25 @@ impl InputQueue {
         let mut mailbox = self.mailbox.lock().await;
         let queued: Vec<_> = communications
             .into_iter()
-            .map(|communication| {
-                let sequence = self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed);
-                (communication, sequence, current_time_ms())
+            .map(|communication| MailboxEntry {
+                communication,
+                sequence: self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed),
+                enqueued_at_ms: current_time_ms(),
             })
             .collect();
-        for (communication, sequence, enqueued_at_ms) in queued.into_iter().rev() {
-            mailbox.communications.push_front(communication);
-            mailbox.sequences.push_front(sequence);
-            mailbox.enqueued_at_ms.push_front(enqueued_at_ms);
+        for entry in queued.into_iter().rev() {
+            mailbox.entries.push_front(entry);
         }
         tracing::trace!(
             target: "codex.native_wait",
-            queued_update_count = mailbox.enqueued_at_ms.len(),
+            queued_update_count = mailbox.entries.len(),
             "mailbox_updates_prepended"
         );
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
-        !self.mailbox.lock().await.communications.is_empty()
+        !self.mailbox.lock().await.entries.is_empty()
     }
 
     /// Nondestructive mailbox read used by native wait reporting. The delivery
@@ -269,13 +273,15 @@ impl InputQueue {
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
         let mailbox = self.mailbox.lock().await;
         mailbox
-            .communications
+            .entries
             .iter()
-            .zip(mailbox.sequences.iter())
-            .zip(mailbox.enqueued_at_ms.iter())
             .take(Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
-            .map(|((communication, sequence), enqueued_at_ms)| {
-                (communication.clone(), *sequence, *enqueued_at_ms)
+            .map(|entry| {
+                (
+                    entry.communication.clone(),
+                    entry.sequence,
+                    entry.enqueued_at_ms,
+                )
             })
             .collect()
     }
@@ -323,9 +329,9 @@ impl InputQueue {
         self.mailbox
             .lock()
             .await
-            .communications
+            .entries
             .iter()
-            .any(|mail| mail.trigger_turn)
+            .any(|entry| entry.communication.trigger_turn)
     }
 
     /// Returns whether a mailbox message carries an actionable wake signal for
@@ -336,9 +342,9 @@ impl InputQueue {
         self.mailbox
             .lock()
             .await
-            .communications
+            .entries
             .iter()
-            .any(is_actionable_wait_communication)
+            .any(|entry| is_actionable_wait_communication(&entry.communication))
     }
 
     /// This predicate is intentionally used for both exact-target and
@@ -392,10 +398,11 @@ impl InputQueue {
 
     pub(crate) async fn drain_mailbox_communications(&self) -> Vec<InterAgentCommunication> {
         let mut mailbox = self.mailbox.lock().await;
-        let communications = mailbox.communications.drain(..).collect();
-        mailbox.sequences.clear();
-        mailbox.enqueued_at_ms.clear();
-        communications
+        mailbox
+            .entries
+            .drain(..)
+            .map(|entry| entry.communication)
+            .collect()
     }
 
     pub(crate) async fn turn_state_for_sub_id(

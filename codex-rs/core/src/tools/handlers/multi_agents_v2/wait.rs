@@ -605,6 +605,12 @@ async fn mailbox_snapshot(
     let notifications = entries
         .into_iter()
         .filter_map(|(communication, sequence, enqueued_at_ms)| {
+            let is_causal = causal_entry
+                .as_ref()
+                .is_some_and(|(_, causal_sequence, _)| *causal_sequence == sequence);
+            if !is_causal {
+                return None;
+            }
             if communication.encrypted_content.is_some()
                 || communication.content.is_empty()
                 || (!communication.trigger_turn
@@ -632,12 +638,6 @@ async fn mailbox_snapshot(
             } else {
                 AgentDeliveryIntent::ActionableWakeRequested
             };
-            let is_causal = causal_entry
-                .as_ref()
-                .is_some_and(|(_, causal_sequence, _)| *causal_sequence == sequence);
-            if !is_causal {
-                return None;
-            }
             Some(AgentNotificationSummary {
                 communication_id: communication.id,
                 sequence,
