@@ -167,6 +167,11 @@ p4-execution-consumer-probe:
     RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-websocket-client loopback_direct --lib -- --test-threads=1
     RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures --lib -- --test-threads=1
 
+# The hosted lane catalog calls this stable recipe name; keep the alias in the
+# validation-only overlay so no product recipe is changed.
+[no-cd]
+exec-server-targeted: p4-execution-consumer-probe
+
 [no-cd]
 [unix]
 bazel-clippy:
