@@ -306,6 +306,20 @@ impl InputQueue {
             .any(|mail| mail.trigger_turn)
     }
 
+    /// Returns whether a mailbox message carries an actionable wake signal for
+    /// a native wait. Explicit trigger-turn messages are actionable even when
+    /// their content is encrypted; result messages are actionable without a
+    /// new turn only after a nonempty plaintext payload is available.
+    pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
+        self.mailbox.lock().await.communications.iter().any(|mail| {
+            mail.trigger_turn
+                || (mail.encrypted_content.is_none()
+                    && !mail.content.is_empty()
+                    && mail.origin
+                        == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
+        })
+    }
+
     /// Returns whether pending input would be actionable for an exact-target
     /// wait. Queue-only mailbox messages remain durable, but do not wake a
     /// wait that is observing specific agents.
@@ -330,7 +344,7 @@ impl InputQueue {
                 None => true,
             }
         };
-        (accepts_mailbox_delivery && self.has_trigger_turn_mailbox_items().await)
+        (accepts_mailbox_delivery && self.has_actionable_wait_mailbox_items().await)
             || self.has_pending_terminal_completions().await
     }
 
@@ -784,6 +798,63 @@ mod tests {
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_treats_plaintext_result_as_actionable_wait_mail() {
+        let input_queue = InputQueue::new();
+        let mut result = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "child completed",
+            /*trigger_turn*/ false,
+        );
+        result.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+        input_queue.enqueue_mailbox_communication(result).await;
+
+        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_treats_encrypted_trigger_turn_as_actionable_wait_mail() {
+        let input_queue = InputQueue::new();
+        let encrypted_followup = InterAgentCommunication::new_encrypted(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            Vec::new(),
+            "continue".to_string(),
+            /*trigger_turn*/ true,
+        );
+        input_queue
+            .enqueue_mailbox_communication(encrypted_followup)
+            .await;
+
+        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_does_not_wake_for_encrypted_or_unavailable_result_mail() {
+        let input_queue = InputQueue::new();
+        let mut encrypted = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "",
+            /*trigger_turn*/ false,
+        );
+        encrypted.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+        encrypted.encrypted_content = Some("opaque".to_string());
+        input_queue.enqueue_mailbox_communication(encrypted).await;
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+
+        let mut unavailable = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "",
+            /*trigger_turn*/ false,
+        );
+        unavailable.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+        input_queue.enqueue_mailbox_communication(unavailable).await;
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
 
     #[tokio::test]
