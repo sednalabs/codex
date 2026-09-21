@@ -846,8 +846,6 @@ def _normalize_status_rollup_check(item):
         if item.get("conclusion") not in (None, ""):
             raise GhCommandError("Malformed StatusContext status-check rollup entry")
         bucket = "pending" if state in {"EXPECTED", "PENDING"} else "pass" if state == "SUCCESS" else "fail"
-    else:
-        raise GhCommandError("Unknown status-check rollup entry shape")
     return {
         "name": name,
         "state": state,
