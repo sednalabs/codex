@@ -860,6 +860,60 @@ mod tests {
         .unwrap();
         assert_eq!(summary, (1, 0, 1));
 
+        let complete_thread_id = "usage-fail-closed-complete-thread";
+        sqlx::query(
+            "INSERT INTO usage_threads (thread_id, root_thread_id, source) VALUES (?, ?, ?)",
+        )
+        .bind(complete_thread_id)
+        .bind(complete_thread_id)
+        .bind("cli")
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO usage_provider_calls (provider_call_id, thread_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, input_tokens_uncached, input_tokens_cached, output_tokens, total_tokens, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("usage-fail-closed-complete-call")
+        .bind(complete_thread_id)
+        .bind("openai")
+        .bind("gpt-5.6-luna")
+        .bind("gpt-5.6-luna")
+        .bind("default")
+        .bind("default")
+        .bind("runtime_contract")
+        .bind(0_i64)
+        .bind("chatgpt_credits")
+        .bind("plus")
+        .bind("2026-08-01T00:00:00Z")
+        .bind(10_i64)
+        .bind(2_i64)
+        .bind(4_i64)
+        .bind(16_i64)
+        .bind("error")
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+
+        let complete_pricing = sqlx::query_as::<_, (String, Option<f64>, Option<f64>, Option<String>)>(
+            "SELECT pricing_status, rate_card_estimated_total_credits, estimated_total_credits, credit_source FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        )
+        .bind("usage-fail-closed-complete-call")
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap();
+        assert_eq!(
+            complete_pricing,
+            ("provider_usage_missing".to_string(), None, None, None)
+        );
+        let complete_summary = sqlx::query_as::<_, (i64, i64, i64, Option<f64>)>(
+            "SELECT provider_call_count, priced_call_count, unpriced_call_count, priced_credits_total FROM usage_thread_credit_summary WHERE thread_id = ?",
+        )
+        .bind(complete_thread_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap();
+        assert_eq!(complete_summary, (1, 0, 1, None));
+
         runtime.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

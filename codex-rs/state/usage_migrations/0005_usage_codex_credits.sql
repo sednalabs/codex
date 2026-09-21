@@ -281,7 +281,8 @@ priced AS (
         r.effective_to AS rate_effective_to,
         r.source_url AS rate_source_url,
         r.source_observed_at AS rate_source_observed_at,
-        CASE WHEN c.matching_policy_count = 1
+        CASE WHEN p.status = 'ok'
+                  AND c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
                   AND p.input_tokens_uncached IS NOT NULL
                   AND p.input_tokens_cached IS NOT NULL
@@ -289,7 +290,8 @@ priced AS (
                   AND COALESCE(p.input_tokens_cache_write, 0) = 0
              THEN p.input_tokens_uncached * r.credits_per_1m_uncached_input / 1000000.0
         END AS uncached_input_credits,
-        CASE WHEN c.matching_policy_count = 1
+        CASE WHEN p.status = 'ok'
+                  AND c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
                   AND p.input_tokens_uncached IS NOT NULL
                   AND p.input_tokens_cached IS NOT NULL
@@ -297,7 +299,8 @@ priced AS (
                   AND COALESCE(p.input_tokens_cache_write, 0) = 0
              THEN p.input_tokens_cached * r.credits_per_1m_cached_input / 1000000.0
         END AS cached_input_credits,
-        CASE WHEN c.matching_policy_count = 1
+        CASE WHEN p.status = 'ok'
+                  AND c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
                   AND p.input_tokens_uncached IS NOT NULL
                   AND p.input_tokens_cached IS NOT NULL
@@ -387,7 +390,8 @@ SELECT
     END AS pricing_notes,
     CASE
         WHEN provider_reported_credits IS NOT NULL THEN 'provider_reported'
-        WHEN matching_policy_count = 1
+        WHEN status = 'ok'
+         AND matching_policy_count = 1
          AND matching_rate_count = 1
          AND input_tokens_uncached IS NOT NULL
          AND input_tokens_cached IS NOT NULL
