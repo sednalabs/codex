@@ -166,6 +166,12 @@ bazel-clippy:
 bazel-argument-comment-lint:
     bazel build --config=argument-comment-lint -- $({{ justfile_directory() }}/tools/argument-comment-lint/list-bazel-targets.sh)
 
+# Validation-only P2C usage DB and provenance foundation smoke. This recipe is
+# intentionally present only on the hosted-proof overlay, not the product
+# candidate branch.
+core-ledger-smoke:
+    cargo test -p codex-state --lib -- --test-threads=1
+
 build-for-release:
     bazel build //codex-rs/cli:release_binaries
 
