@@ -736,6 +736,8 @@ mod tests {
             "migrate_memories",
             "open_queue",
             "migrate_queue",
+            "open_usage",
+            "migrate_usage",
             "ensure_backfill_state",
             "post_init_query",
         ]
@@ -743,6 +745,59 @@ mod tests {
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
         assert_eq!(phases, expected);
+
+        runtime.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn init_creates_usage_ledger_with_provenance_schema() {
+        let codex_home = unique_temp_dir();
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize");
+
+        assert!(tokio::fs::try_exists(sqlite.usage_db_path()).await.unwrap());
+        let usage_pool = runtime.usage_pool();
+        assert!(!usage_pool.is_closed());
+
+        for table in [
+            "usage_provider_calls",
+            "usage_codex_credit_rates",
+            "usage_codex_credit_policies",
+        ] {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+            )
+            .bind(table)
+            .fetch_one(usage_pool.as_ref())
+            .await
+            .unwrap();
+            assert_eq!(exists, 1, "missing usage table {table}");
+        }
+
+        let columns = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM pragma_table_info('usage_provider_calls')",
+        )
+        .fetch_all(usage_pool.as_ref())
+        .await
+        .unwrap();
+        for column in [
+            "requested_model",
+            "actual_model_used",
+            "final_model",
+            "model_snapshot",
+            "input_tokens_cache_write",
+            "requested_service_tier",
+            "actual_service_tier",
+            "provider_reported_credits",
+        ] {
+            assert!(
+                columns.iter().any(|name| name == column),
+                "missing usage column {column}"
+            );
+        }
 
         runtime.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
