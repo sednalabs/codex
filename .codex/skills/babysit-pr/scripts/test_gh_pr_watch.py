@@ -175,6 +175,54 @@ def test_get_pr_checks_accepts_supported_status_rollup_shapes(monkeypatch, entry
     assert len(checks) == 1
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING"],
+)
+def test_check_run_nonterminal_statuses_accept_null_conclusion(status):
+    check = gh_pr_watch._normalize_status_rollup_check(
+        {"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": None}
+    )
+    assert check["bucket"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "conclusion, expected_bucket",
+    [
+        ("ACTION_REQUIRED", "fail"),
+        ("TIMED_OUT", "fail"),
+        ("CANCELLED", "fail"),
+        ("FAILURE", "fail"),
+        ("SUCCESS", "pass"),
+        ("NEUTRAL", "pass"),
+        ("SKIPPED", "pass"),
+        ("STARTUP_FAILURE", "fail"),
+        ("STALE", "fail"),
+    ],
+)
+def test_check_run_terminal_conclusions_are_classified(conclusion, expected_bucket):
+    check = gh_pr_watch._normalize_status_rollup_check(
+        {"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": conclusion}
+    )
+    assert check["bucket"] == expected_bucket
+
+
+@pytest.mark.parametrize("state", ["EXPECTED", "PENDING"])
+def test_status_context_pending_states_are_pending(state):
+    check = gh_pr_watch._normalize_status_rollup_check(
+        {"__typename": "StatusContext", "context": "ci", "state": state}
+    )
+    assert check["bucket"] == "pending"
+
+
+@pytest.mark.parametrize("state", ["ERROR", "FAILURE", "SUCCESS"])
+def test_status_context_terminal_states_are_classified(state):
+    check = gh_pr_watch._normalize_status_rollup_check(
+        {"__typename": "StatusContext", "context": "ci", "state": state}
+    )
+    assert check["bucket"] == ("pass" if state == "SUCCESS" else "fail")
+
+
 @pytest.fixture(autouse=True)
 def default_queue_absent(monkeypatch, request):
     if request.node.name.startswith(("test_collect_snapshot_reads_graphql", "test_collect_malformed_queue")):
