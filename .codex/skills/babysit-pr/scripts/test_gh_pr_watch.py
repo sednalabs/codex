@@ -108,6 +108,25 @@ def test_get_pr_checks_falls_back_to_status_rollup(monkeypatch):
     assert checks[0]["bucket"] == "pass"
 
 
+@pytest.mark.parametrize(
+    "rollup_payload, expected_message",
+    [
+        ([], "Malformed `statusCheckRollup` fallback payload"),
+        ({"statusCheckRollup": {}}, "Malformed `statusCheckRollup` fallback list"),
+        ({"statusCheckRollup": ["not-an-entry"]}, "Malformed status-check rollup entry"),
+    ],
+)
+def test_get_pr_checks_rejects_malformed_status_rollup(monkeypatch, rollup_payload, expected_message):
+    def fake_gh_json(args, repo=None):
+        if args[:2] == ["pr", "checks"]:
+            raise gh_pr_watch.GhCommandError("unknown flag: --json")
+        return rollup_payload
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", fake_gh_json)
+    with pytest.raises(gh_pr_watch.GhCommandError, match=expected_message):
+        gh_pr_watch.get_pr_checks("123", "openai/codex")
+
+
 @pytest.fixture(autouse=True)
 def default_queue_absent(monkeypatch, request):
     if request.node.name.startswith(("test_collect_snapshot_reads_graphql", "test_collect_malformed_queue")):

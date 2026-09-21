@@ -794,7 +794,12 @@ def get_pr_checks(pr_spec, repo):
             rollup_cmd.append(parsed["value"])
         rollup_cmd.extend(["--json", "statusCheckRollup"])
         rollup = gh_json(rollup_cmd, repo=repo)
-        data = [_normalize_status_rollup_check(item) for item in (rollup.get("statusCheckRollup") or [])]
+        if not isinstance(rollup, dict):
+            raise GhCommandError("Malformed `statusCheckRollup` fallback payload")
+        rollup_checks = rollup.get("statusCheckRollup")
+        if not isinstance(rollup_checks, list):
+            raise GhCommandError("Malformed `statusCheckRollup` fallback list")
+        data = [_normalize_status_rollup_check(item) for item in rollup_checks]
     if data is None:
         return []
     if not isinstance(data, list):
@@ -804,7 +809,7 @@ def get_pr_checks(pr_spec, repo):
 
 def _normalize_status_rollup_check(item):
     if not isinstance(item, dict):
-        return {}
+        raise GhCommandError("Malformed status-check rollup entry")
     status = str(item.get("status") or item.get("state") or "").upper()
     conclusion = str(item.get("conclusion") or "").upper()
     state = conclusion or status

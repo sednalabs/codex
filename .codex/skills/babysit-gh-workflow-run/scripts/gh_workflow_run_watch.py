@@ -1411,8 +1411,11 @@ def _list_run_jobs_rest(repo, run_id):
         page_jobs = payload.get("jobs")
         if not isinstance(page_jobs, list):
             raise GhCommandError(f"Malformed GitHub REST {context}: missing list `jobs`")
+        page_offset = len(jobs)
         for job_index, job in enumerate(page_jobs):
-            normalized = _normalize_rest_job(job, run_id=run_id, job_index=job_index)
+            normalized = _normalize_rest_job(
+                job, run_id=run_id, job_index=page_offset + job_index
+            )
             if normalized["databaseId"] in seen_job_ids:
                 raise GhCommandError(f"GitHub REST {context} repeated job id {normalized['databaseId']}")
             seen_job_ids.add(normalized["databaseId"])
