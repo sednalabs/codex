@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+import unittest.mock as mock
 
 
 MODULE_PATH = Path(
@@ -467,7 +467,7 @@ class GhPrWatchTests(unittest.TestCase):
                 "id": "3436299330",
                 "created_at": "2026-06-18T14:00:00Z",
                 "body": "Done, resolved.",
-                "author": "agent-grant-codex",
+                "author": "test-observer",
                 "url": "https://github.com/sednalabs/agent-ops/pull/519#discussion_r3436299330",
             }
         ]
@@ -487,7 +487,7 @@ class GhPrWatchTests(unittest.TestCase):
                 "id": "3436299330",
                 "created_at": "2026-06-18T14:00:00Z",
                 "body": "Done, resolved.",
-                "author": "agent-grant-codex",
+                "author": "test-observer",
                 "url": "https://github.com/sednalabs/agent-ops/pull/519#discussion_r3436299330",
             }
         ]
@@ -947,7 +947,6 @@ class GhPrWatchTests(unittest.TestCase):
         self.assertNotEqual(MODULE.snapshot_change_key(base), MODULE.snapshot_change_key(successor))
 
     def test_build_effective_ci_state_handles_stale_fallback(self):
-        state = {}
         ci_context = {
             "stale_head_sha": "older",
             "stale_failed_runs": [{"run_id": 1}],
@@ -1033,7 +1032,7 @@ class GhPrWatchTests(unittest.TestCase):
                     }
                 )
             )
-            args.state_file = str(state_path)
+            args.state_file = state_path.name
 
             with mock.patch.object(MODULE, "detect_local_git_context", return_value={}), mock.patch.object(
                 MODULE, "resolve_pr", return_value=pr
@@ -1046,11 +1045,13 @@ class GhPrWatchTests(unittest.TestCase):
             ), mock.patch.object(
                 MODULE, "failed_jobs_for_run", return_value=[]
             ), mock.patch.object(
-                MODULE, "get_authenticated_login", return_value="agent-grant-codex"
+                MODULE, "get_authenticated_login", return_value="test-observer"
             ), mock.patch.object(
                 MODULE, "fetch_new_review_items", return_value=([], [])
             ), mock.patch.object(
                 MODULE, "get_review_threads", return_value=[]
+            ), mock.patch.object(
+                MODULE.tempfile, "gettempdir", return_value=str(state_path.parent)
             ), mock.patch.object(
                 MODULE.time, "time", return_value=1_030
             ):

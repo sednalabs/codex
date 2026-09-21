@@ -228,6 +228,16 @@ class ProofIdentityTests(unittest.TestCase):
         emit.assert_called_once_with(retry_success)
         self.assertEqual(sleep.call_count, 2)
 
+    def test_exact_run_rejects_wrong_host_head_before_diagnosis(self):
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "head_sha": "deadbeef"}
+        args = types.SimpleNamespace(no_gemini_diagnosis=True)
+        with patch.object(MODULE, "view_run", return_value=self._run_view()), patch.object(
+            MODULE, "load_validation_summary", return_value=None
+        ):
+            snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
+        self.assertEqual(snapshot["actions"], ["stop_run_head_mismatch"])
+        self.assertTrue(MODULE._payload_has_terminal_wait_blocker({"actions": snapshot["actions"]}))
+
     def _run_view(self, *, status="completed", conclusion="success"):
         return {
             "databaseId": 42,

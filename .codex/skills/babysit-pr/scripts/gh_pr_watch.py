@@ -231,7 +231,7 @@ def parse_args():
         default=3,
         help="Max rerun cycles per head SHA before stop recommendation",
     )
-    parser.add_argument("--state-file", help="Path to state JSON file")
+    parser.add_argument("--state-file", help="State JSON filename in the system temporary directory (no directory paths)")
     parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
     parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
     parser.add_argument(
@@ -323,7 +323,11 @@ def parse_args():
         parser.error(
             "bare PR numbers require --repo OWNER/REPO; use a full PR URL when delegating"
         )
-    if args.repo and not re.fullmatch(r"[^/\s]+/[^/\s]+", args.repo):
+    if args.repo and (
+        len(args.repo.split("/")) != 2
+        or not all(args.repo.split("/"))
+        or any(char.isspace() for char in args.repo)
+    ):
         parser.error("--repo must use the exact OWNER/REPO shape")
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
@@ -970,9 +974,32 @@ def save_state(path, state):
         raise
 
 
+STATE_FILE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def safe_state_file_name(name):
+    base_name = os.path.basename(name)
+    if base_name != name or base_name in {".", ".."}:
+        raise RuntimeError("--state-file must be a file name, not a path")
+    if not STATE_FILE_NAME_RE.fullmatch(base_name):
+        raise RuntimeError(
+            "--state-file may contain only letters, numbers, '.', '_', and '-'"
+        )
+    return base_name
+
+
 def default_state_file_for(pr):
     repo_slug = pr["repo"].replace("/", "-")
-    return Path(f"/tmp/codex-babysit-pr-{repo_slug}-pr{pr['number']}.json")
+    file_name = safe_state_file_name(
+        f"codex-babysit-pr-{repo_slug}-pr{pr['number']}.json"
+    )
+    return Path(tempfile.gettempdir()) / file_name
+
+
+def state_file_for(args, pr):
+    if args.state_file:
+        return Path(tempfile.gettempdir()) / safe_state_file_name(args.state_file)
+    return default_state_file_for(pr)
 
 
 def reset_seen_feedback_state(state):
@@ -1181,22 +1208,35 @@ def failed_jobs_for_run(run_id, repo):
                 "conclusion": conclusion,
                 "html_url": str(job.get("html_url") or ""),
                 "startup_failure": startup_failure,
+                "logs_endpoint": f"repos/{repo}/actions/jobs/{job['id']}/logs" if job.get("id") else None,
             }
         )
     return failed_jobs
 
 
-def failed_runs_from_workflow_runs(runs, head_sha, repo=None):
+def failed_runs_from_workflow_runs(runs, head_sha, repo=None, cache=None):
     failed_runs = []
+    jobs_cache = cache if cache is not None else {}
     for run in runs:
         if not isinstance(run, dict):
             continue
         if str(run.get("head_sha") or "") != head_sha:
             continue
         conclusion = str(run.get("conclusion") or "")
-        if conclusion not in FAILED_RUN_CONCLUSIONS:
+        completed = str(run.get("status") or "").lower() == "completed"
+        if completed and conclusion not in FAILED_RUN_CONCLUSIONS:
             continue
-        failed_jobs = failed_jobs_for_run(run.get("id"), repo) if repo and run.get("id") else []
+        attempt = run.get("run_attempt")
+        cache_key = (repo, str(run.get("id")), head_sha, attempt)
+        reusable = completed and isinstance(attempt, int) and not isinstance(attempt, bool)
+        if reusable and cache_key in jobs_cache:
+            failed_jobs = jobs_cache[cache_key]
+        else:
+            failed_jobs = failed_jobs_for_run(run.get("id"), repo) if repo and run.get("id") else []
+            if reusable:
+                jobs_cache[cache_key] = failed_jobs
+        if conclusion not in FAILED_RUN_CONCLUSIONS and not failed_jobs:
+            continue
         failed_runs.append(
             {
                 "run_id": run.get("id"),
@@ -1286,10 +1326,13 @@ def normalize_issue_comments(items):
     return out
 
 
-def normalize_review_comments(items):
+def normalize_review_comments(items, review_states=None):
+    review_states = review_states or {}
     out = []
     for item in items:
         if not isinstance(item, dict):
+            continue
+        if review_states.get(str(item.get("pull_request_review_id") or "")) == "PENDING":
             continue
         line = item.get("line")
         if line is None:
@@ -1314,6 +1357,8 @@ def normalize_reviews(items):
     out = []
     for item in items:
         if not isinstance(item, dict):
+            continue
+        if str(item.get("state") or "").upper() == "PENDING":
             continue
         out.append(
             {
@@ -1370,13 +1415,30 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, inc
     review_payload = gh_api_list_paginated(endpoints["review"], repo=repo)
 
     issue_items = normalize_issue_comments(issue_payload)
-    review_comment_items = normalize_review_comments(review_comment_payload)
+    review_states = {
+        str(item.get("id")): str(item.get("state") or "").upper()
+        for item in review_payload
+        if isinstance(item, dict) and item.get("id") not in (None, "")
+    }
+    pending_review_ids = {
+        review_id for review_id, review_state in review_states.items() if review_state == "PENDING"
+    }
+    pending_review_comment_ids = {
+        str(item.get("id"))
+        for item in review_comment_payload
+        if isinstance(item, dict)
+        and item.get("id") not in (None, "")
+        and str(item.get("pull_request_review_id") or "") in pending_review_ids
+    }
+    review_comment_items = normalize_review_comments(review_comment_payload, review_states)
     review_items = normalize_reviews(review_payload)
     all_items = issue_items + review_comment_items + review_items
 
     seen_issue = {str(x) for x in state.get("seen_issue_comment_ids") or []}
     seen_review_comment = {str(x) for x in state.get("seen_review_comment_ids") or []}
     seen_review = {str(x) for x in state.get("seen_review_ids") or []}
+    seen_review_comment.difference_update(pending_review_comment_ids)
+    seen_review.difference_update(pending_review_ids)
 
     # On a brand-new state file, surface existing review activity instead of
     # silently treating it as seen. This avoids missing already-pending review
@@ -2425,7 +2487,7 @@ def collect_snapshot(args):
     local_git_context = detect_local_git_context()
     pr = resolve_pr(args.pr, repo_override=args.repo)
     validate_pr_resolution(args.pr, args.repo, pr, local_git_context)
-    state_path = Path(args.state_file) if args.state_file else default_state_file_for(pr)
+    state_path = state_file_for(args, pr)
     state, fresh_state = load_state(state_path)
     maybe_reset_seen_feedback(args, state)
     pr["merge_queue"] = reconcile_merge_queue_entry(pr, state)
@@ -2433,27 +2495,6 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
-    # After resolving `--pr auto`, reuse the concrete PR number.
-    raw_checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
-    checks, no_checks_policy = apply_no_checks_policy(pr, raw_checks)
-    checks_summary = summarize_check_runs(checks)
-    check_details = summarize_check_details(checks)
-    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
-    failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"], repo=pr["repo"])
-    ci_head_context = build_ci_head_context(pr, state, checks, checks_summary, failed_runs)
-    (
-        effective_checks_summary,
-        checks_source,
-        stale_fallback,
-        ci_head_message,
-        stale_failed_runs,
-    ) = build_effective_ci_state(pr["head_sha"], checks_summary, ci_head_context)
-    effective_failed_runs = stale_failed_runs if checks_source == "stale_fallback" else failed_runs
-    ci_startup_blockers = startup_blockers_from_failed_runs(effective_failed_runs)
-    effective_check_details = (
-        build_stale_check_details(stale_failed_runs) if checks_source == "stale_fallback" else check_details
-    )
     # GitHub App installation tokens do not support GET /user. In the explicit
     # observer mode, leave identity unbound and retain conservative association
     # and approved-bot filtering for review activity.
@@ -2491,6 +2532,31 @@ def collect_snapshot(args):
         "blocking_top_level_review_submission_count": top_level_reviews["blocking_review_count"],
         "ignored_thread_selectors": [str(value) for value in args.ignore_review_thread or []],
     }
+    # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
+    # After resolving `--pr auto`, reuse the concrete PR number.
+    raw_checks = get_pr_checks(str(pr["number"]), repo=pr["repo"])
+    checks, no_checks_policy = apply_no_checks_policy(pr, raw_checks)
+    checks_summary = summarize_check_runs(checks)
+    check_details = summarize_check_details(checks)
+    workflow_runs = get_workflow_runs_for_sha(pr["repo"], pr["head_sha"])
+    if not hasattr(args, "_workflow_jobs_cache"):
+        args._workflow_jobs_cache = {}
+    failed_runs = failed_runs_from_workflow_runs(
+        workflow_runs, pr["head_sha"], repo=pr["repo"], cache=args._workflow_jobs_cache
+    )
+    ci_head_context = build_ci_head_context(pr, state, checks, checks_summary, failed_runs)
+    (
+        effective_checks_summary,
+        checks_source,
+        stale_fallback,
+        ci_head_message,
+        stale_failed_runs,
+    ) = build_effective_ci_state(pr["head_sha"], checks_summary, ci_head_context)
+    effective_failed_runs = stale_failed_runs if checks_source == "stale_fallback" else failed_runs
+    ci_startup_blockers = startup_blockers_from_failed_runs(effective_failed_runs)
+    effective_check_details = (
+        build_stale_check_details(stale_failed_runs) if checks_source == "stale_fallback" else check_details
+    )
     merge_blockers = build_merge_blockers(
         pr,
         effective_checks_summary,

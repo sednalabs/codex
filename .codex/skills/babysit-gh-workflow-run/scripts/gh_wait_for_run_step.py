@@ -12,7 +12,6 @@ from gh_workflow_run_watch import (
     detect_ref,
     detect_repo,
     list_workflow_runs,
-    parse_target_arg,
     view_run,
 )
 

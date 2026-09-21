@@ -4100,6 +4100,7 @@ def _payload_has_terminal_wait_blocker(payload):
         "stop_dispatch_host_branch_mismatch",
         "stop_operator_help_required",
         "stop_run_appearance_timeout",
+        "stop_run_head_mismatch",
         "stop_run_waiting_for_approval",
         "stop_validation_target_identity_mismatch",
     }
