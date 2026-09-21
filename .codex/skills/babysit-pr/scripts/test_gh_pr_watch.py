@@ -136,6 +136,7 @@ def test_get_pr_checks_rejects_malformed_status_rollup(monkeypatch, rollup_paylo
         {"__typename": "StatusContext", "context": "", "state": "SUCCESS"},
         {"__typename": "StatusContext", "context": "ci", "state": "UNKNOWN"},
         {"__typename": "Other", "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"__typename": "Other", "context": "ci", "state": "SUCCESS"},
     ],
 )
 def test_get_pr_checks_rejects_incomplete_status_rollup_dict(monkeypatch, entry):

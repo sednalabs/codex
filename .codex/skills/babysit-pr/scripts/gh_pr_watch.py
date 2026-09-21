@@ -811,7 +811,14 @@ def _normalize_status_rollup_check(item):
     if not isinstance(item, dict):
         raise GhCommandError("Malformed status-check rollup entry")
     typename = str(item.get("__typename") or "").strip()
-    if typename == "CheckRun" or "status" in item or "conclusion" in item:
+    if typename and typename not in {"CheckRun", "StatusContext"}:
+        raise GhCommandError("Unknown status-check rollup entry shape")
+    has_check_run_keys = any(key in item for key in ("name", "status", "conclusion"))
+    has_status_context_keys = any(key in item for key in ("context", "state"))
+    if not typename and has_check_run_keys == has_status_context_keys:
+        raise GhCommandError("Ambiguous status-check rollup entry shape")
+    is_check_run = typename == "CheckRun" or (not typename and has_check_run_keys)
+    if is_check_run:
         name = str(item.get("name") or "").strip()
         status = str(item.get("status") or "").upper()
         conclusion_value = item.get("conclusion")
@@ -831,7 +838,7 @@ def _normalize_status_rollup_check(item):
         bucket = "pending" if status != "COMPLETED" else (
             "pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} else "fail"
         )
-    elif typename == "StatusContext" or "state" in item or "context" in item:
+    else:
         name = str(item.get("context") or "").strip()
         state = str(item.get("state") or "").upper()
         if not name or state not in {"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}:
