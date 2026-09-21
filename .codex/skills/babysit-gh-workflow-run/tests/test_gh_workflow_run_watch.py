@@ -852,7 +852,7 @@ class GeminiWatcherTests(unittest.TestCase):
 
     def test_parse_target_arg_accepts_host_ref(self):
         target = MODULE.parse_target_arg(
-            "workflow=validation-lab,ref=validation/w2902,host-ref=main,head-sha=abc123"
+            "workflow=validation-lab,ref=validation/candidate,host-ref=main,head-sha=abc123"
         )
         self.assertEqual(target["host_ref"], "main")
 
@@ -1091,10 +1091,10 @@ class GeminiWatcherTests(unittest.TestCase):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,
             "workflow": "validation-lab.yml",
-            "ref": "validation/w2902-subagent-confirm",
+            "ref": "validation/candidate-confirm",
             "head_sha": "9f95361ef183d194ffcba7c376b3e298d6e49ead",
             "min_run_id": None,
-            "spec": "workflow=validation-lab.yml,ref=validation/w2902-subagent-confirm,head-sha=9f95361",
+            "spec": "workflow=validation-lab.yml,ref=validation/candidate-confirm,head-sha=9f95361",
         }
         mismatch_run = {
             "databaseId": 23950570058,
@@ -1268,11 +1268,11 @@ class GeminiWatcherTests(unittest.TestCase):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,
             "workflow": "validation-lab.yml",
-            "ref": "validation/w2902-subagent-confirm",
+            "ref": "validation/candidate-confirm",
             "host_ref": None,
             "head_sha": "9f95361ef183d194ffcba7c376b3e298d6e49ead",
             "min_run_id": None,
-            "spec": "workflow=validation-lab.yml,ref=validation/w2902-subagent-confirm,head-sha=9f95361",
+            "spec": "workflow=validation-lab.yml,ref=validation/candidate-confirm,head-sha=9f95361",
         }
         mismatch_run = {
             "databaseId": 23950570058,
