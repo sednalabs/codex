@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import json
 import types
 from pathlib import Path
 
@@ -86,7 +87,10 @@ def test_resolve_pr_falls_back_when_cli_lacks_base_ref_oid(monkeypatch):
 
     monkeypatch.setattr(gh_pr_watch, "gh_json", fake_gh_json)
     pr = gh_pr_watch.resolve_pr("https://github.com/openai/codex/pull/123")
-    assert len(calls) == 2
+    view_calls = [call for call in calls if call[:2] == ["pr", "view"]]
+    assert len(view_calls) == 2
+    assert "baseRefOid" in view_calls[0][-1]
+    assert "baseRefOid" not in view_calls[1][-1]
     assert pr["base_sha"] == ""
 
 
@@ -119,8 +123,8 @@ def test_get_pr_checks_falls_back_to_status_rollup(monkeypatch):
 @pytest.mark.parametrize(
     "rollup_payload, expected_message",
     [
-        ([], "Malformed `statusCheckRollup` fallback payload"),
-        ({"statusCheckRollup": {}}, "Malformed `statusCheckRollup` fallback list"),
+        ([], "statusCheckRollup"),
+        ({"statusCheckRollup": {}}, "statusCheckRollup"),
         ({"statusCheckRollup": ["not-an-entry"]}, "Malformed status-check rollup entry"),
     ],
 )

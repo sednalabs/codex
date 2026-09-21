@@ -1721,6 +1721,8 @@ class GeminiWatcherTests(unittest.TestCase):
             [
                 "gh_workflow_run_watch.py",
                 "--watch-until-terminal",
+                "--retry-settle-seconds",
+                "0",
                 "--wait-for",
                 "all_done",
                 "--poll-seconds",
