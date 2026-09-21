@@ -1,5 +1,6 @@
 use crate::context::ContextualUserFragment;
 use crate::context::TerminalCompletionNotification;
+use crate::context::TerminalCompletionStatus;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
