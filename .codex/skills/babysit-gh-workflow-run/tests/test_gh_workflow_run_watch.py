@@ -1250,6 +1250,7 @@ class GeminiWatcherTests(unittest.TestCase):
             snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
 
         self.assertEqual(list_mock.call_count, 2)
+        self.assertEqual(snapshot1["run"]["id"], 101)
         self.assertEqual(view_mock.call_args_list[1].args[1], 202)
         self.assertEqual(snapshot2["run"]["id"], 202)
         self.assertTrue(snapshot2["followed_newer_run"])
