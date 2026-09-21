@@ -195,6 +195,10 @@ argument-comment-lint *args:
 argument-comment-lint-from-source *args:
     {{ python }} {{ justfile_directory() }}/tools/argument-comment-lint/run.py {args}
 
+# Hosted-only validation slice for inference-observation schemars compatibility.
+inference-observation-contract-targeted:
+    cargo test --locked -p codex-protocol protocol::inference_observation::tests --lib -- --test-threads=1
+
 # Tail logs from the state SQLite database
 [unix]
 log *args:
