@@ -1,11 +1,131 @@
 use super::*;
 use crate::SortDirection;
 use codex_protocol::SanitizedGitUrl;
+use codex_protocol::dynamic_tools::{
+    DynamicToolFunctionSpec, DynamicToolNamespaceSpec, DynamicToolNamespaceTool, DynamicToolSpec,
+};
 use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
 impl StateRuntime {
+    /// Load the dynamic tools captured for a thread's initial session metadata.
+    ///
+    /// Older databases may contain only the original flat columns; those rows are
+    /// still returned as function tools. Invalid persisted JSON is an error so a
+    /// caller cannot resume with silently changed tool semantics.
+    pub async fn get_dynamic_tools(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<Vec<DynamicToolSpec>>> {
+        let rows = sqlx::query(
+            r#"
+SELECT name, description, input_schema, defer_loading, namespace, namespace_description
+FROM thread_dynamic_tools
+WHERE thread_id = ?
+ORDER BY position ASC
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut tools = Vec::with_capacity(rows.len());
+        for row in rows {
+            let input_schema: String = row.try_get("input_schema")?;
+            let input_schema = serde_json::from_str(&input_schema)?;
+            let function = DynamicToolFunctionSpec {
+                name: row.try_get("name")?,
+                description: row.try_get("description")?,
+                input_schema,
+                defer_loading: row.try_get("defer_loading")?,
+            };
+            let namespace: Option<String> = row.try_get("namespace")?;
+            if let Some(namespace) = namespace {
+                let description: Option<String> = row.try_get("namespace_description")?;
+                if let Some(DynamicToolSpec::Namespace(existing)) = tools.last_mut()
+                    && existing.name == namespace
+                {
+                    existing
+                        .tools
+                        .push(DynamicToolNamespaceTool::Function(function));
+                } else {
+                    tools.push(DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+                        name: namespace,
+                        description: description.unwrap_or_default(),
+                        tools: vec![DynamicToolNamespaceTool::Function(function)],
+                    }));
+                }
+            } else {
+                tools.push(DynamicToolSpec::Function(function));
+            }
+        }
+        Ok(Some(tools))
+    }
+
+    /// Persist initial dynamic tools exactly once, in one transaction.
+    pub async fn persist_dynamic_tools(
+        &self,
+        thread_id: ThreadId,
+        tools: Option<&[DynamicToolSpec]>,
+    ) -> anyhow::Result<()> {
+        let Some(tools) = tools else {
+            return Ok(());
+        };
+        if tools.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        let mut position = 0_i64;
+        for tool in tools {
+            let (namespace, namespace_description, functions): (
+                Option<&str>,
+                Option<&str>,
+                Vec<&DynamicToolFunctionSpec>,
+            ) = match tool {
+                DynamicToolSpec::Function(function) => (None, None, vec![function]),
+                DynamicToolSpec::Namespace(namespace) => (
+                    Some(namespace.name.as_str()),
+                    Some(namespace.description.as_str()),
+                    namespace
+                        .tools
+                        .iter()
+                        .map(|tool| match tool {
+                            DynamicToolNamespaceTool::Function(function) => function,
+                        })
+                        .collect(),
+                ),
+            };
+            for function in functions {
+                let input_schema = serde_json::to_string(&function.input_schema)?;
+                sqlx::query(
+                    r#"
+INSERT INTO thread_dynamic_tools (
+    thread_id, position, name, description, input_schema, defer_loading,
+    persist_on_resume, capability_json, namespace, namespace_description
+) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)
+ON CONFLICT(thread_id, position) DO NOTHING
+                    "#,
+                )
+                .bind(thread_id.to_string())
+                .bind(position)
+                .bind(function.name.as_str())
+                .bind(function.description.as_str())
+                .bind(input_schema)
+                .bind(function.defer_loading)
+                .bind(namespace)
+                .bind(namespace_description)
+                .execute(&mut *tx)
+                .await?;
+                position = position.saturating_add(1);
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
             r#"
@@ -1081,6 +1201,13 @@ ON CONFLICT(id) DO UPDATE SET
         {
             return Err(err);
         }
+        if let Some(dynamic_tools) = extract_dynamic_tools(items)
+            && let Err(err) = self
+                .persist_dynamic_tools(builder.id, dynamic_tools.as_deref())
+                .await
+        {
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -1357,6 +1484,13 @@ pub(super) fn extract_memory_mode(items: &[RolloutItem]) -> Option<String> {
     })
 }
 
+pub(super) fn extract_dynamic_tools(items: &[RolloutItem]) -> Option<Option<Vec<DynamicToolSpec>>> {
+    items.iter().find_map(|item| match item {
+        RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.dynamic_tools.clone()),
+        _ => None,
+    })
+}
+
 fn thread_spawn_parent_thread_id_from_source_str(source: &str) -> Option<ThreadId> {
     let parsed_source = serde_json::from_str(source)
         .or_else(|_| serde_json::from_value::<SessionSource>(Value::String(source.to_string())));
@@ -1584,6 +1718,59 @@ mod tests {
     use std::path::PathBuf;
 
     const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
+
+    #[tokio::test]
+    async fn dynamic_tools_round_trip_flat_and_namespaced_specs() -> Result<()> {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000777")?;
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.clone(),
+            ))
+            .await?;
+        let function = DynamicToolFunctionSpec {
+            name: "flat".to_string(),
+            description: "flat tool".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            defer_loading: true,
+        };
+        let namespaced = DynamicToolNamespaceSpec {
+            name: "android".to_string(),
+            description: "brokered tools".to_string(),
+            tools: vec![DynamicToolNamespaceTool::Function(
+                DynamicToolFunctionSpec {
+                    name: "tap".to_string(),
+                    description: "tap tool".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    defer_loading: false,
+                },
+            )],
+        };
+        let specs = vec![
+            DynamicToolSpec::Function(function),
+            DynamicToolSpec::Namespace(namespaced),
+        ];
+        runtime
+            .persist_dynamic_tools(thread_id, Some(&specs))
+            .await?;
+        assert_eq!(
+            runtime.get_dynamic_tools(thread_id).await?,
+            Some(specs.clone())
+        );
+        runtime
+            .persist_dynamic_tools(thread_id, Some(&[] as &[DynamicToolSpec]))
+            .await?;
+        assert_eq!(runtime.get_dynamic_tools(thread_id).await?, Some(specs));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn upsert_thread_keeps_creation_memory_mode_for_existing_rows() {
         let codex_home = unique_temp_dir();
