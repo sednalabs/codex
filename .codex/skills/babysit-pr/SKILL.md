@@ -1,6 +1,6 @@
 ---
 name: babysit-pr
-description: Watch an open GitHub pull request from the current branch, a PR number, or a PR URL; monitor CI, reviewer feedback, and mergeability; fix valid branch-caused issues, rerun likely flaky failures up to 3 times, and keep monitoring until the PR is merged, ready to merge, or blocked on user help. For blocking babysitter waits, use `--watch-until-action`; use `--watch` only for active foreground JSONL consumption.
+description: "Watch a GitHub PR through CI, review, and mergeability; fix branch-caused issues and bounded flakes until ready, merged, or blocked. Always use the bundled blocking watcher."
 ---
 
 # PR Babysitter
@@ -9,158 +9,119 @@ description: Watch an open GitHub pull request from the current branch, a PR num
 Babysit a PR persistently until one of these terminal outcomes occurs:
 
 - The PR is merged or closed.
-- CI is successful, there are no unaddressed review comments surfaced by the watcher, required review approval is not blocking merge, and there are no potential merge conflicts (PR is mergeable / not reporting conflict risk).
+- CI is successful, there are no unaddressed review comments surfaced by the watcher, required review approval is not blocking merge, there are no potential merge conflicts (PR is mergeable / not reporting conflict risk), and the PR is not actively waiting in GitHub's merge queue.
 - A situation requires user help (for example CI infrastructure issues, repeated flaky failures after retry budget is exhausted, permission problems, or ambiguity that cannot be resolved safely).
 
 Do not stop merely because a single snapshot returns `idle` while checks are still pending.
 
-## Protected queue coordinator contract
+A readiness-only leaf returns its proof to the named queue-admission owner.
+Queue entry is not merged delivery: an already-active queue watch remains
+owned until merge, closure, or an actionable failure. Any separately authorized
+watcher handoff needs an accepting successor and explicit process/state custody;
+do not invent a helper terminal receipt or abandon a running watcher.
 
-When this skill is used as the read-only coordinator for a protected queue, one
-coordinator owns the queue view and its handoff record. The observer's cutline
-is one exact queue-entry snapshot; it does not claim queue throughput, merge
-authority, or a ready horizon. Keep independent entries moving when another
-entry is `UNMERGEABLE`: isolate that state to the PR owner, record its exact
-blocker, and leave the other entries eligible for their own owner-controlled
-progress.
-
-Each entry must carry one exact identity record before it is watched:
-repository and PR number, PR owner, head SHA, base ref and base SHA, an
-explicit queue-entry reference and synthetic candidate SHA/source, static
-ancestry evidence proving that the synthetic candidate contains the exact PR
-head and current base, the complete workflow run/attempt set, and the active
-protection ruleset IDs, conditions, and revision. A queue ID is not a queue
-ref; neither is a PR head a synthetic `G`. A display branch, a green check, or
-an owner name without these bindings is not an entry identity.
-
-Stage identity is kept separate across the delivery path:
-
-| Stage | Required identity |
-| --- | --- |
-| `validation-ref` | Exact repository/ref and workflow input, with the full candidate SHA and its run/`G` identity; a ref name alone is only a selector. |
-| `pull_request` | Repository/PR, PR owner, full head SHA, base ref/SHA, workflow/run/`G`, and the `pull_request` event. |
-| `merge_group` | Queue entry/ref, synthetic candidate SHA, selected workflow/run/`G`, and ancestry proving the exact PR head and current base are included. |
-| `post-main` | Resulting merge SHA on `main`, selected post-main workflow/run/`G`, and the `push` event; this is fresh evidence after landing, not a reused PR or queue result. |
-
-Workflow/run aliases are normalized as one identity record: conflicting aliases
-or duplicate run IDs invalidate the complete set, and workflow reads must consume
-all provider pages before conclusions are drawn. A queue entry reference must be
-present as an authoritative field and must be distinct from the provider queue ID.
-
-`ALLGREEN` is a scoped queue-readiness label only. It is emitted only when the
-exact synthetic `merge_group` candidate has exactly one terminal-successful
-`merge_group` run for each of `CI required` and `CodeQL required`, with matching
-full SHA and positive attempt, no unrelated/empty runs, static ancestry proof,
-and applicable ruleset identity. It never authorizes a merge or substitutes
-for fresh post-main proof when landing applies.
-
-Use the bundled `gh_pr_watch.py` in one helper-owned blocking mode
-(`--watch-until-action` for an owner that may need to act, or
-`--watch-until-terminal` for a delegated check wait) only for a separately
-owned PR-local wait. The queue observer is strictly one-shot and never invokes
-that helper: its receipt schema is not compatible with the PR watcher receipt,
-and it cannot accept or validate invented provenance fields. The helper covers
-PR-local checks/reviews only; it is not a merge-queue, ruleset, or synthetic
-candidate event watcher. Do not recreate any cadence with repeated `--once`
-calls, raw `gh`/API polling, or a second watcher. After any separately-owned
-helper wake, rehydrate the queue, ruleset, head, and run surfaces and bind a
-new wait before relying on the result.
-
-Stop the affected wait and rebind before any further conclusion after a new
-head SHA, base SHA/ref, validation ref, queue entry/candidate or queue head,
-run/`G`, owner, required workflow, or ruleset/protection revision appears. A
-changed or removed queue candidate, a stale run, or an `UNMERGEABLE` result
-invalidates that entry's prior evidence; it does not invalidate independent
-entries. Never borrow an older exact-SHA result for a successor candidate.
-
-The coordinator is an observer and handoff surface, not a mutation authority.
-It must not bypass protection, direct merge, rebase/update branches, resolve
-review threads, cancel or rerun unrelated work, alter queue/ruleset settings,
-or perform raw polling against a provider. Report the exact owner action and
-evidence needed instead. Existing PR babysitter repair, review, retry, and landing
-semantics below remain in force for an explicitly authorized owner; observing
-an entry or emitting `ALLGREEN` grants none of that authority.
+For protected queue observation, read [Protected queue observation](references/protected-queue-observation.md) before using the bundled companion helper. Its scope and evidence contract are separate from a PR-local or single-run wait.
 
 ## Operating Model
-
-### Merge-queue observer boundary
-
-The bundled `gh_merge_queue_shepherd.py` is read-only and one-shot. It does
-not enqueue, dequeue, merge, rerun, or alter rulesets. A snapshot with missing
-queue ref, synthetic source, ancestry, required workflow evidence, ruleset
-conditions/revision, or recognized queue state is deliberately unbound.
-Ancestry is accepted only from the allowlisted `hosted-static-ancestry-v1`
-schema; a caller-provided or `fabricated` source is never evidence. The
-GraphQL adapter exposes only fields returned authoritatively by the provider;
-it does not derive a queue ref from an entry ID or a synthetic SHA from a raw
-head field. Its supported query currently returns the entry ID, position,
-state, base commit, synthetic head commit, and pull-request identity. It does
-not return `queueEntryRef`, queue attempt, or `ancestryEvidence`; those fields
-remain unbound and are reported as an explicit external hosted prerequisite.
-When the provider cannot return the required structural evidence, the runbook
-outcome is `identity_mismatch_rebind_required` and a hosted follow-up must
-obtain that evidence before claiming `ALLGREEN`.
-
-The observer does not implement a delegated wait. PR-local helper output is
-kept on its own owner-controlled surface and is never treated as a queue
-identity receipt. This prevents the bundled `gh_pr_watch.py` receipt (which
-lacks queue-observer helper/version/mode, run-set, required-conclusion,
-thread-state, and fingerprint fields) from being accepted as if it supplied
-queue evidence.
 
 - Use `--watch-until-terminal` for delegated wait seams when current-head checks must finish before handoff. Use `--watch-until-action` for a repair owner that should wake on review feedback or a failure that can be acted on immediately.
 - Use `--watch` only when the lane is actively consuming the live JSONL stream in the foreground.
 - Use `--once` for one-shot diagnosis or local debugging, not for a full babysitting handoff.
 - Blocking waits emit one final receipt and no per-poll progress by default. Use `--progress` only for deliberate interactive debugging; never enable it for a delegated wait whose output will be sent back to a model.
 - Blocking waits return a compact action-complete receipt by default. Use `--verbose-details` only for debugging when the compact receipt and saved state file are insufficient.
+- Use the bundled watcher helper script, `scripts/gh_pr_watch.py`, as the monitoring surface; do not replace it with ad hoc `gh`/API polling loops.
+- Bind every explicit target to its repository in the command itself. Delegated
+  prose does not scope `gh`: pass the full PR URL, or pass a bare number together
+  with `--repo OWNER/REPO`. The helper rejects unqualified bare numbers.
+- Treat this as the PR-local shepherd surface. If the seam stops being PR-local, or if an exact failing workflow run needs deeper or terminal-complete evidence, hand the exact run to `$babysit-gh-workflow-run` rather than improvising raw workflow polling.
+- Treat an observed active `mergeQueueEntry` (including `AWAITING_CHECKS`) as a nonterminal queue wait even if the ordinary mergeability fields look clean. Its queue state and queue head SHA are merge evidence; a failed, removed, or unreadable queue outcome is an actionable stop, not `stop_ready_to_merge`.
+- While that merge-queue entry remains active, keep ordinary PR-check failures visible in `check_details` and `merge_blockers` but do not classify an old or non-required PR-check failure as queue failure. The queue is the authoritative terminal-state machine at that point; wait for merge, queue failure/removal, or independently actionable review feedback.
+- For a source, workflow, or head failure, read the exact causal run/job evidence before classifying it. Pending checks are `WAIT`, not `BLOCK`; a known branch-caused repair is actionable and must not wait for unrelated trailing jobs. Keep terminal-complete evidence collection available when a named consumer or governing contract requires it, but do not continue collecting unrelated terminal checks after an actionable candidate failure when repair is next.
 - After any fix commit or flaky rerun, restart the same monitoring mode immediately and keep exactly one watcher session active for the PR.
-
-The source watcher records a compact `watch_decision` and a `watch_schedule`
-receipt keyed by the exact repository, PR number, and observed head SHA. An
-unexplained `mergeStateStatus=BLOCKED` is reported as the actionable
-`action_required_merge_policy_blocked` outcome. Readiness remains fail-closed,
-and this blocker keeps the next wake bounded at the configured poll interval;
-it must not enter green-state backoff. These receipts are observer state only:
-they do not authorize merge, rerun, review, credential, or other provider
-mutation.
-
-An active merge-queue entry in `QUEUED` or `AWAITING_CHECKS` likewise keeps the
-watcher on the configured base cadence, including when checks are green. A
-missing or unreadable pending queue head is not readiness evidence and remains
-on that base cadence. Queue-entry identity changes are part of snapshot change
-detection, so re-enqueue, replacement, or removal cannot silently retain a
-green-state backoff. Ordinary green PRs with no active queue entry retain the
-existing bounded backoff.
+- Read `merge_blockers` in each snapshot; it now summarizes blocker kinds explicitly (review threads, review-gate status, merge-conflict/dirty state, pending checks, failing checks).
+- An unexplained `merge_policy_blocked` result is an action-required state even
+  when all checks are green. The watcher emits `action_required_merge_policy_blocked`
+  with the exact PR head and compact check, review, and blocker counts; ignored
+  review threads remain policy evidence and never become approval. Persisted
+  watcher state records the last exact-head decision and scheduled wake so a
+  successor can distinguish an actionable blocker from a legitimate queue wait.
+- Read `ci_startup_blockers` before diagnosing a failed check. A failed job with
+  no runner and no steps is startup infrastructure evidence; the helper reads
+  its annotations, identifies GitHub billing/spending-limit refusals when
+  present, stops with `stop_ci_startup_blocked`, and never recommends a blind
+  rerun for that state.
 
 ## Inputs
 Accept any of the following:
 
 - No PR argument: infer the PR from the current branch (`--pr auto`)
-- PR number together with explicit `--repo OWNER/REPO`
+- PR number together with `--repo OWNER/REPO`
 - PR URL
-
-Bare PR numbers without `--repo` are rejected because repository-context inference can silently select an unrelated PR with the same number.
 
 ## Core Workflow
 
-1. When the user asks to "monitor"/"watch"/"babysit" a PR, invoke one blocking watcher. Prefer `--watch-until-terminal` for a delegated check wait and `--watch-until-action` for a repair owner that should wake on actionable review or CI state. Use the continuous stream (`--watch`) only for deliberate foreground debugging.
+1. When the user asks to "monitor"/"watch"/"babysit" a PR, invoke one blocking watcher. Prefer `--watch-until-terminal` for a delegated check wait and `--watch-until-action` for a repair owner that should wake on actionable review or CI state. Use `--watch` only for deliberate foreground debugging.
 2. Run the watcher script to snapshot PR/CI/review state (or consume each streamed snapshot from `--watch` / the final result from `--watch-until-action`).
 3. Inspect the `actions` list in the JSON response.
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
-5. If the failure is likely caused by the current branch, patch code locally, commit, and push. Do not patch random flaky tests, CI infrastructure, dependency outages, runner issues, or other failures that are unrelated to the branch.
-6. If `process_review_comment` is present, inspect surfaced published review items and decide whether to address them.
-7. If a review item is actionable and correct, patch code locally, commit, push, and then resolve the associated review thread only when allowed by the GitHub state mutation policy below.
-8. Every Gemini Code Assist thread on a PR touched by the lane must receive a substantive, evidence-backed threaded reply and be resolved before the lane can be called clean, ready, or complete. This includes outdated threads. If a thread is genuinely blocked, leave it open with an explicit blocker and do not report terminal readiness. Re-read the live thread ledger at the final exact head.
-9. Do not post replies to human-authored review comments/threads unless the user explicitly confirms the exact response. If a human review item is non-actionable, already addressed, or not valid, surface the item and recommended response to the user instead of replying on GitHub.
-10. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
-11. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
-12. On every loop, look for newly surfaced review feedback before acting on CI failures or mergeability state, then verify mergeability / merge-conflict status (for example via `gh pr view`) alongside CI.
-13. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
-14. If you had been using `--watch` or `--watch-until-action` before pausing to patch/commit/push, relaunch that same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
-14. Repeat polling until the watcher reaches a terminal stop condition such as `stop_ready_to_merge`, `stop_pr_closed`, or a user-help-required blocker. A green + review-clean + mergeable PR is only a stopping point when the chosen watcher mode treats it as actionable.
-15. Maintain terminal/session ownership: while babysitting is active, keep consuming watcher output in the same turn; do not leave a detached watcher process running and then end the turn as if monitoring were complete. When the lane is using a blocking terminal wait, prefer `--watch-until-action` so the process exits on actionable or terminal state instead of streaming forever.
+   - If `checks_source` is `stale_fallback`, treat old-HEAD failures as context only and continue waiting for the current-head diagnostics to stabilize before rerun/branch-fix decisions.
+   - If `ci_startup_blockers` is nonempty, use its no-runner/no-steps
+     annotation evidence. Do not attribute the failure to the candidate or
+     rerun it; stop for the external infrastructure or billing intervention.
+5. If the failure is likely caused by the current branch, patch code locally, commit, and push.
+6. If `process_review_comment` is present, inspect surfaced review items and decide whether to address them.
+7. If a review item is actionable and correct, patch code locally, commit, and push.
+8. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
+9. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
+10. On every loop, verify mergeability / merge-conflict status (for example via `gh pr view`) in addition to CI and review state.
+11. After any push or rerun action, immediately return to step 1 and continue the watcher loop on the updated SHA/state.
+12. If you had been using a watcher mode before pausing to patch/commit/push, relaunch the same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
+13. Repeat the watcher loop until the PR is green + review-clean + mergeable and not in an active queue, `stop_pr_closed` appears, or a user-help-required blocker is reached.
+14. Maintain terminal/session ownership: while babysitting is active, keep consuming watcher output in the same turn; do not leave a detached watcher process running and then end the turn as if monitoring were complete. When the lane is using a blocking terminal wait, prefer `--watch-until-action` so the process exits on actionable or terminal state instead of streaming forever.
+
+## Branch-Advancing-Safe Validation
+
+Use this ritual whenever a PR branch, Dependabot branch, or base branch may advance while checks are running. This is the default for security, dependency, release, and public-repo stewardship work.
+
+1. Capture the intended PR head before relying on any check result:
+   `gh pr view <pr-url> --json headRefOid,baseRefOid,headRefName,baseRefName,mergeStateStatus,statusCheckRollup`.
+2. Treat `headRefOid` as the validation identity. A workflow run, check rollup, or review result proves only the head SHA it reports, not the branch name by itself.
+3. When watching workflow/ref runs outside the PR watcher, pass the exact head SHA whenever it is known:
+   `--target "workflow=<name>,ref=<branch>,head-sha=<headRefOid>,min-run-id=<optional-lower-bound>"`.
+4. If the watcher reports stale current-head context, `failed_runs_stale`, `checks_source=stale_fallback`, `followed_newer_run`, a cancelled superseded run, or any mismatch between the watched run head and the latest `headRefOid`, discard that run as merge evidence. Keep it only as diagnostic context, re-read the PR, and restart validation on the new head.
+5. If the base branch advanced while the PR remained open, re-read mergeability and branch currency. Use the repository's normal update-branch/rebase path when required, then treat the resulting `headRefOid` as a new validation identity.
+6. Immediately before merging, re-read the PR and require all of these to describe the same latest head SHA:
+   current `headRefOid`, green required checks, review-clean state, mergeable/non-conflict state, and any workflow-run evidence cited in Ops.
+7. Merge with a head guard whenever using `gh`:
+   `gh pr merge <pr> --squash --delete-branch --match-head-commit <headRefOid>` (adjust merge method only to match repo policy).
+8. If GitHub rejects the guarded merge because the head changed, do not retry the same command with the new SHA blindly. Re-run the validation loop for the new `headRefOid`.
+9. Record evidence with the trusted PR number, exact `headRefOid`, base SHA if relevant, workflow run ids or check names, and whether any stale runs were discarded.
+
+The short version: branch names are pointers; `headRefOid` is the proof target.
 
 ## Commands
+
+### GitHub authentication and rate-limit recovery
+
+For workstation runs, a future local integration may set the provisional
+`CODEX_GITHUB_APP_TOKEN_COMMAND` to an executable
+command that prints one short-lived GitHub App installation token on stdout.
+The watcher invokes it without a shell, passes `CODEX_GITHUB_REPOSITORY` when
+known, never includes its stdout/stderr in diagnostics, and caches the token for
+the process. Existing `GH_TOKEN`, `GITHUB_TOKEN`, and interactive `gh` auth
+remain the fallback only when the helper hook is absent. A configured helper
+that fails is fatal. On an authentication rejection, the helper is refreshed
+once;
+if GitHub reports a rate limit, the watcher reads the authoritative
+`rate_limit` reset where possible and performs one bounded sleep before retrying
+the same exact-head operation. It never retries recursively or changes the
+watched PR/run identity.
+
+This hook is not an active broker integration: the accepted broker work exists
+on repository `main`, while this installed skill currently lacks the broker
+module and direct local compatibility/expiry continuity remain open. Do not
+invent credentials or claim App-token use until that integration is installed
+and read back.
 
 ### One-shot snapshot
 
@@ -174,7 +135,7 @@ python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --once
 python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-action
 ```
 
-### Terminal wait for delegated CI lanes
+### Terminal current-head check wait
 
 ```bash
 python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-terminal
@@ -183,7 +144,7 @@ python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-
 ### Ignore a known review thread while watching
 
 ```bash
-python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number-or-url> --repo <owner/repo> --watch-until-action --ignore-review-thread <thread-url-or-id>
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <pr-url> --watch-until-action --ignore-review-thread <thread-url-or-id>
 ```
 
 ### Continuous watch (foreground JSONL)
@@ -217,42 +178,39 @@ provider mutation, so a partial batch cannot silently reset its retry budget.
 ### Explicit PR target
 
 ```bash
-python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number-or-url> --once
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <pr-url> --once
+
+# A bare number is accepted only with an exact repository binding:
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number> --repo <owner/repo> --once
 ```
 
 ### GitHub App installation observer
 
-When a separately governed broker has supplied a short-lived GitHub App
+When the separately governed broker has supplied a short-lived GitHub App
 installation token, opt into the read-only observer path explicitly:
 
 ```bash
 python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py \
-  --pr <number-or-url> --installation-observer --once
+  --pr <number-or-url> --repo <owner/repo> --installation-observer --once
 ```
 
-This mode does not call `gh api user` because installation tokens have no
-`/user` endpoint. Review filtering remains conservative when identity is
-unbound: `OWNER`, `MEMBER`, `COLLABORATOR`, and approved Codex bots are
-actionable, while untrusted/`NONE` authors remain ignored. It does not mint,
-print, or persist tokens and does not broaden the watcher's read-only scope.
+This mode skips `gh api user`, which installation tokens do not support, and
+keeps review filtering conservative. It cannot be combined with
+`--retry-failed-now`; the broker and watcher must not print or persist the
+token. Long waits still require the separate token-expiry continuity contract.
 
 ## CI Failure Classification
 Use `gh` commands to inspect failed runs before deciding to rerun.
 
 - `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
-- `gh api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100`
-- `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/codex-gh-job-<job-id>-logs.zip`
-- `gh run view <run-id> --log-failed` as a fallback after the overall workflow run is complete
+- `gh run view <run-id> --log-failed`
 
-`gh run view --log-failed` is workflow-run scoped and may not expose failed-job logs until the overall run finishes. For faster diagnosis, poll the run's jobs first and, as soon as a specific job has failed, fetch that job's logs directly from the Actions job logs endpoint. The watcher includes a `failed_jobs` list with each failed job's `job_id` and `logs_endpoint` when GitHub exposes one.
-
-Prefer treating failures as branch-related when failed-job logs point to changed code (compile/test/lint/typecheck/snapshots/static analysis in touched areas).
+Prefer treating failures as branch-related when logs point to changed code (compile/test/lint/typecheck/snapshots/static analysis in touched areas).
 
 Prefer treating failures as flaky/unrelated when logs show transient infra/external issues (timeouts, runner provisioning failures, registry/network outages, GitHub Actions infra errors).
 
-Do not attempt to fix flaky/unrelated failures by changing tests, build scripts, CI configuration, dependency pins, or infrastructure-adjacent code unless the logs clearly connect the failure to the PR branch. For flaky/unrelated failures, rerun only when the watcher recommends `retry_failed_checks`; otherwise wait or stop for user help.
-
 If classification is ambiguous, perform one manual diagnosis attempt before choosing rerun.
+If the exact failed run needs deeper or terminal-complete workflow evidence, hand it to `$babysit-gh-workflow-run` rather than staying in ad hoc `gh` inspection.
 
 Read `.codex/skills/babysit-pr/references/heuristics.md` for a concise checklist.
 
@@ -263,53 +221,37 @@ The watcher surfaces review items from:
 - Inline review comments
 - Review submissions (COMMENT / APPROVED / CHANGES_REQUESTED)
 
-Only act on published feedback. Ignore review submissions in GitHub's `PENDING` state and inline
-comments attached to those pending reviews. Do not mark pending review feedback as seen; it should
-be eligible to surface after the reviewer submits the review.
+It intentionally surfaces actionable review bot feedback (for example comments/reviews from `chatgpt-codex-connector[bot]` and `gemini-code-assist[bot]`) in addition to human reviewer feedback. Operational bot issue comments such as quota/usage notices are intentionally ignored and should not trip `process_review_comment`.
+For safety, the watcher only auto-surfaces trusted human review authors (for example repo OWNER/MEMBER/COLLABORATOR, plus the authenticated operator) and approved review bots when the artifact is an actual review/review-comment signal rather than generic PR issue chatter.
+On a fresh watcher state file, existing pending review feedback may be surfaced immediately (not only comments that arrive after monitoring starts). This is intentional so already-open review comments are not missed.
 
-It intentionally surfaces Codex reviewer bot feedback (for example comments/reviews from `chatgpt-codex-connector[bot]`) in addition to human reviewer feedback. Most unrelated bot noise should still be ignored.
-For safety, the watcher only auto-surfaces trusted human review authors (for example repo OWNER/MEMBER/COLLABORATOR, plus the authenticated operator) and approved review bots such as Codex.
-On a fresh watcher state file, existing unaddressed published review feedback may be surfaced immediately (not only comments that arrive after monitoring starts). This is intentional so already-open review comments are not missed.
+For Gemini Code Assist feedback, route the specific thread through `$gemini-code-review-feedback` before replying or resolving it. That workflow records a precise accepted, partially accepted, already-addressed, or not-applicable disposition that can become useful persistent review memory after merge. Do not use a reaction, a generic acknowledgement, or silent thread resolution as the feedback signal.
+An informational bot review that explicitly reports no review comments and no
+feedback is not actionable and must not interrupt a pending-CI wait. Concrete
+top-level feedback, unresolved inline threads, and change requests remain
+actionable.
+
+A bot top-level review submission tied to an older PR head is historical and
+must not interrupt a newer exact-head watch. Current-head bot feedback,
+unresolved inline threads, and trusted human review submissions remain
+actionable.
 
 When you agree with a comment and it is actionable:
 
 1. Patch code locally.
 2. Commit with `codex: address PR review feedback (#<n>)`.
 3. Push to the PR head branch.
-4. After the push succeeds, resolve the associated GitHub review thread only when allowed by the GitHub state mutation policy below.
-5. Resume watching on the new SHA immediately (do not stop after reporting the push).
-6. If monitoring was running in `--watch` mode, restart `--watch` immediately after the push in the same turn; do not wait for the user to ask again.
+4. Resume watching on the new SHA immediately (do not stop after reporting the push).
+5. If monitoring was running in `--watch` or `--watch-until-action` mode, restart that watcher mode immediately after the push in the same turn; do not wait for the user to ask again.
 
-Do not post replies to human-authored GitHub review comments/threads automatically. If you disagree with a human comment, believe it is non-actionable/already addressed, or need to answer a question, report the item to the user with a suggested response and wait for explicit confirmation before posting anything on GitHub. If the user approves a response, prefix it with `[codex]` so it is clear the response is automated and not from the human user.
-If the watcher later surfaces your own approved reply because the authenticated operator is treated as a trusted review author, treat that self-authored item as already handled and do not reply again.
+If you disagree or the comment is non-actionable/already addressed, record it as handled by continuing the watcher loop (the script de-duplicates surfaced items via state after surfacing them).
 If a code review comment/thread is already marked as resolved in GitHub, treat it as non-actionable and safely ignore it unless new unresolved follow-up feedback appears.
 `--watch-until-action` should verify the live unresolved-thread state before stopping on review feedback: open unresolved review threads remain actionable, but stale already-resolved review history should not trigger `action_required`.
 If the operator knows a particular unresolved thread should be ignored for this babysitting run, pass `--ignore-review-thread <thread-url-or-id>` and keep that ignore list stable across restarts of the same watcher lane.
+CI diagnostics are now current-head-first: older failed workflow runs for superseded heads are tracked as `failed_runs_stale` and surfaced in `ci_head_context` as background context while `checks_source` remains authoritative for actioning.
+Current-head `failed_runs` now also carry exact failed-job references when GitHub exposes them, so handing off to the workflow-run watcher can use the concrete run/job pair instead of a heuristic run-level guess.
 
-## GitHub State Mutation Policy
-
-You can read any PR state you need for monitoring. Writes must comply with this policy.
-
-You can push PRs to update the code under review or to force CI re-runs as described above.
-
-You can resolve review comment threads from the human who requested babysitting or from the Codex
-review bot. When resolving, leave a comment prefixed with `[from Codex]: ` and explain what changes
-you made and which commit includes them. Don't touch review threads if other humans other than the
-user who requested babysitting have participated.
-
-Before making any changes, fetch the PR state yourself instead of relying on the PR watcher script's
-output.
-
-Unless explicitly asked, do not:
-
-* comment on other humans' review threads, communicate with the user in chat instead
-* resolve review threads from humans other than the user
-* interact with humans other than the user
-* mark PRs as drafts or ready for review
-* close or reopen PRs
-
-In general, never act on GitHub in ways that would make it hard to tell whether you or the user did
-something visible to other humans. When in doubt, ask the user for clarification in chat.
+The watcher now surfaces richer review summaries: `review_state` includes recent top-level review submissions (`top_level_review_submissions`) and merge-blocking review submission signals, while `merge_blockers` explicitly reports why merge is blocked (including review threads, review-gate state, merge-conflict/dirty conditions, and CI check health).
 
 ## Git Safety Rules
 
@@ -328,41 +270,29 @@ Commit message defaults:
 - `codex: address PR review feedback (#<n>)`
 
 ## Monitoring Loop Pattern
-Use this loop in a live Codex session:
 
-1. Run `--once`.
-2. Read `actions`.
-3. First check whether the PR is now merged or otherwise closed; if so, report that terminal state and stop polling immediately.
-4. Check CI summary, new review items, and mergeability/conflict status.
-5. Diagnose CI failures and classify branch-related vs flaky/unrelated. If the overall run is still pending but `failed_jobs` already includes a failed job, fetch that job's logs and diagnose immediately instead of waiting for the whole workflow run to finish. Patch only when the failure is branch-related.
-6. For each surfaced review item from another author, patch/commit/push if it is actionable, then resolve it only when allowed by the GitHub state mutation policy above. If it is non-actionable, already addressed, or requires a written answer, surface it to the user with a suggested response instead of posting automatically. If a later snapshot surfaces your own approved reply, treat it as informational and continue without responding again.
-7. Process actionable review comments before flaky reruns when both are present; if a review fix requires a commit, push it and skip rerunning failed checks on the old SHA.
-8. Retry failed checks only when `retry_failed_checks` is present and you are not about to replace the current SHA with a review/CI fix commit. Do not make code changes for unrelated flakes or infrastructure failures just to get CI green.
-9. If you pushed a commit, resolved an eligible review thread, or triggered a rerun, report the action briefly and continue polling (do not stop). If a human review comment needs a written GitHub response, stop and ask for confirmation before posting.
-10. After a review-fix push, proactively restart continuous monitoring (`--watch`) in the same turn unless a strict stop condition has already been reached.
-11. If everything is passing, mergeable, not blocked on required review approval, and there are no unaddressed review items, report that the PR is currently ready to merge but keep the watcher running so new review comments are surfaced quickly while the PR remains open.
-12. If blocked on a user-help-required issue (infra outage, exhausted flaky retries, unclear reviewer request, permissions), report the blocker and stop.
-13. Otherwise sleep according to the polling cadence below and repeat.
+The helper owns polling. Invoke it once in a blocking mode and wait for its single final receipt. Do not build a model-driven loop from repeated `--once` calls.
+
+1. Run `--watch-until-terminal` for a delegated check wait, or `--watch-until-action` for a repair owner.
+2. Read the single returned receipt and its `actions`.
+3. Process review feedback before retrying an old-head flaky failure when both are present.
+4. After a fix push or authorized rerun, invoke the same blocking mode once for the new exact head.
+5. Hand an exact workflow run to `$babysit-gh-workflow-run` when deeper workflow evidence is required.
 
 When the user explicitly asks to monitor/watch/babysit a PR, select one blocking helper mode and let it own its internal GitHub cadence. Repeated `--once` snapshots are only for debugging, local testing, or an explicitly requested one-shot check.
-Do not stop to ask the user whether to continue polling; continue autonomously until a strict stop condition is met or the user explicitly interrupts.
-Do not hand control back to the user after a review-fix push just because a new SHA was created; restarting the watcher and re-entering the poll loop is part of the same babysitting task.
-If a foreground `--watch` process is still running and no strict stop condition has been reached, the babysitting task is still in progress; keep streaming/consuming watcher output instead of ending the turn. If the lane is blocked on a terminal wait, use `--watch-until-action` so the watcher exits when there is a strict stop or actionable work to surface.
+Do not stop to ask the user whether to continue waiting; continue autonomously until a strict stop condition is met or the user explicitly interrupts.
+Do not hand control back after a review-fix push merely because a new SHA was created; starting one new blocking watcher invocation for that new exact head is part of the same task.
+If a deliberate foreground `--watch` process is running, keep consuming it until a strict stop. Delegated lanes use the bounded blocking modes instead.
 
-## Polling Cadence
-Use adaptive polling and continue monitoring even after CI turns green:
+## Internal GitHub Cadence
 
-- While CI is not green (pending/running/queued or failing): poll every 1 minute.
-- After CI turns green: start at every 1 minute, then back off exponentially when there is no change. For foreground `--watch`, cap at every 1 hour. For `--watch-until-action`, cap at every 20 minutes so new review/check regressions surface in bounded time without chatty polling.
-- Reset the green-state polling interval back to 1 minute whenever anything changes (new commit/SHA, check status changes, new review comments, mergeability changes, review decision changes).
-- If CI stops being green again (new commit, rerun, or regression): return to 1-minute polling.
-- If any poll shows the PR is merged or otherwise closed: stop polling immediately and report the terminal state.
+The helper adapts its internal GitHub cadence and stops immediately when the PR is merged or closed. This is not authority to reproduce the cadence through model turns or repeated shell invocations.
 
 ## Stop Conditions (Strict)
 Stop only when one of the following is true:
 
 - PR merged or closed (stop as soon as a poll/snapshot confirms this).
-- PR is ready to merge: CI succeeded, no surfaced unaddressed review comments, not blocked on required review approval, and no merge conflict risk.
+- PR is ready to merge: CI succeeded, no surfaced unaddressed review comments, not blocked on required review approval, no merge conflict risk, and no active queue.
 - User intervention is required and Codex cannot safely proceed alone.
 
 Keep polling when:
@@ -371,16 +301,17 @@ Keep polling when:
 - CI is still running/queued.
 - Review state is quiet but CI is not terminal.
 - CI is green but mergeability is unknown/pending.
-- CI is green and mergeable, but the PR is still open and you are waiting for possible new review comments or merge-conflict changes per the green-state cadence.
-- The PR is green but blocked on review approval (`REVIEW_REQUIRED` / similar); continue polling on the green-state cadence and surface any new review comments without asking for confirmation to keep watching.
+- CI is green and mergeable, but the PR is still open and the agreed monitor handoff requires watching the protected queue or review gate.
+- The PR is green but blocked on review approval (`REVIEW_REQUIRED` / similar); use the single blocking watcher and surface new review comments, but do not invent a periodic model-driven cadence.
 
 ## Output Expectations
-Blocking waits produce no periodic model-visible heartbeat. The helper returns one final receipt; `--progress` is an explicit debugging-only exception. The final summary includes:
+Return one concise final receipt from a blocking wait:
 
-- Treat push confirmations, intermediate CI snapshots, and review-action updates as progress updates only; do not emit the final summary or end the babysitting session unless a strict stop condition is met.
-- A user request to "monitor" is not satisfied by a couple of sample polls; remain in the loop until a strict stop condition or an explicit user interruption.
-- A review-fix commit + push is not a completion event; immediately resume monitoring in the same turn and continue reporting progress updates.
-- Do not send the final summary while a watcher terminal is still running unless the watcher has emitted/confirmed a strict stop condition; otherwise continue with progress updates. For blocking waits, prefer `--watch-until-action` so the process itself returns when a meaningful state change occurs.
+- Blocking waits produce no periodic model-visible heartbeat. The helper returns one final receipt; `--progress` is an explicit debugging-only exception.
+- Treat push confirmations and review-fix actions as nonterminal; start one new blocking wait for the successor head.
+- A user request to "monitor" is satisfied by the agreed blocking watcher outcome and its actual receipt, not by sample polls or queue entry alone. A readiness-only leaf must not remain open solely for hypothetical future comments once its strict ready condition is met.
+- A review-fix commit + push is not a completion event; immediately resume the appropriate blocking mode in the same turn.
+- Do not send the final summary while a watcher process is still running unless it has emitted a strict stop condition.
 
 - Final PR SHA
 - CI status summary

@@ -297,7 +297,7 @@ def normalize_queue_entry(raw: Mapping[str, Any] | None) -> dict[str, Any] | Non
         return None
     if not isinstance(raw, Mapping):
         raise QueueObserverError("queue entry payload is not an object")
-    conflicts: list[str] = []
+    conflicts: list[str] = list(raw.get("alias_conflicts") or [])
     group, group_conflict = _resolve_aliases(
         [(raw, ("merge_group", "mergeGroup"))],
         normalize=lambda value: dict(value) if isinstance(value, Mapping) else value,
@@ -601,7 +601,7 @@ def binding_missing(binding: Mapping[str, Any], *, require_queue: bool = True) -
         missing.append("queue_state_unknown")
     ancestry = binding.get("ancestry")
     expected = {"pr_head_sha": binding.get("head_sha"), "base_sha": binding.get("base_sha"), "synthetic_sha": binding.get("merge_group_sha")}
-    if not isinstance(ancestry, Mapping):
+    if not isinstance(ancestry, Mapping) or not ancestry:
         missing.append("ancestry")
     else:
         for field, value in expected.items():

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Watch GitHub Actions workflow runs for remote validation babysitting."""
 
-import argparse
-import copy
 import io
+import argparse
 import json
 import os
 import re
@@ -17,6 +16,9 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from github_watch_auth import AuthState, is_auth_failure, is_rate_limited, is_retry_safe, rate_resource, redact, wait_for_reset
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
@@ -33,6 +35,8 @@ GEMINI_SUPPORTING_JOB_CHAR_BUDGET = 3_500
 GEMINI_META_JOB_CHAR_BUDGET = 2_500
 GEMINI_FAILURE_OVERVIEW_MAX_JOBS = 8
 VALIDATION_CHECKPOINT_PROFILES = {"checkpoint", "broad", "full", "artifact", "smoke"}
+HEAVY_VALIDATION_RESULTS_ARTIFACT = "heavy-validation-results"
+HEAVY_VALIDATION_RESULTS_FILENAME = "heavy-validation.json"
 
 GEMINI_DIAGNOSIS_SCHEMA = {
     "type": "object",
@@ -107,6 +111,8 @@ HIGH_SIGNAL_FAILURE_PATTERNS = (
     re.compile(r"test result:\s*FAILED\b", re.IGNORECASE),
     re.compile(r"error:\s*test (?:run )?failed\b", re.IGNORECASE),
     re.compile(r"Traceback \(most recent call last\):"),
+    re.compile(r"##\[error\].*?\bfailed with exit code\s+\d+\b", re.IGNORECASE),
+    re.compile(r"\b(?:timed out|timeout exceeded|deadline exceeded)\b", re.IGNORECASE),
 )
 EXACT_TEST_FAILURE_RE = re.compile(r"\btest\s+([A-Za-z0-9_:-]+)\s+\.\.\.\s+FAILED\b", re.IGNORECASE)
 NEXTEST_FAILURE_RE = re.compile(r"\bFAIL\b.*?\)\s+(.+)$")
@@ -163,12 +169,9 @@ TARGET_KIND_WORKFLOW = "workflow"
 FOLLOWED_RUN_RELIST_MULTIPLIER = 5
 FOLLOWED_RUN_RELIST_MIN_SECONDS = 60
 HOST_MISMATCH_RECHECK_MIN_SECONDS = 60
-DEFAULT_RETRY_SETTLE_SECONDS = 90
-# A run-id target follows the latest attempt for that id.  Revalidate a cached
-# terminal success periodically so reruns and head changes cannot stay hidden.
-TERMINAL_SUCCESS_REVALIDATION_MIN_SECONDS = 60
 
 _GH_ENV = None
+_GH_AUTH = AuthState()
 
 
 class GhCommandError(RuntimeError):
@@ -211,8 +214,9 @@ def parse_args():
         "--head-sha",
         default=None,
         help=(
-            "Optional exact or prefix head SHA to pin a workflow/ref watch to a specific run "
-            "generation."
+            "Optional exact or prefix workflow-host SHA to pin a workflow/ref watch to a "
+            "specific run generation. This is GitHub's run headSha, not a separately checked "
+            "validation target."
         ),
     )
     parser.add_argument(
@@ -224,16 +228,34 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--validation-target-ref",
+        default=None,
+        help=(
+            "Optional expected ref checked by a workflow with a separate validation-target "
+            "contract. This does not select the GitHub run."
+        ),
+    )
+    parser.add_argument(
+        "--validation-target-sha",
+        default=None,
+        help=(
+            "Optional expected exact or prefix SHA checked by a workflow with a separate "
+            "validation-target contract. This does not select the GitHub run."
+        ),
+    )
+    parser.add_argument(
         "--target",
         action="append",
         default=[],
         help=(
             "Target spec to watch. Repeatable. Supported forms: "
-            "'run-id=<id>[,head-sha=<sha>]' or "
-            "'workflow=<name>,ref=<ref>[,host-ref=<branch>][,head-sha=<sha>][,min-run-id=<id>]'."
+            "'run-id=<id>[,validation-target-ref=<ref>][,validation-target-sha=<sha>]' or "
+            "'workflow=<name>,ref=<ref>[,host-ref=<branch>][,head-sha=<workflow-host-sha>]"
+            "[,validation-target-ref=<ref>][,validation-target-sha=<sha>][,min-run-id=<id>]'."
         ),
     )
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
+    parser.add_argument("--retry-settle-seconds", type=int, default=90, help="Seconds to allow a same-run automatic retry after terminal failure; 0 disables")
     parser.add_argument("--poll-seconds", type=int, default=60, help="Watch poll interval")
     parser.add_argument(
         "--appearance-timeout-seconds",
@@ -286,16 +308,6 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--retry-settle-seconds",
-        type=int,
-        default=DEFAULT_RETRY_SETTLE_SECONDS,
-        help=(
-            "After a terminal failure, keep a terminal wait open for this long so an automatic "
-            "GitHub rerun can advance the same run id before the failure is handed back. Set to "
-            "0 to disable the retry grace period."
-        ),
-    )
-    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable output (default behavior for --once and --watch modes)",
@@ -340,12 +352,12 @@ def parse_args():
     parser.set_defaults(no_gemini_diagnosis=True)
     args = parser.parse_args()
 
+    if args.retry_settle_seconds < 0:
+        parser.error("--retry-settle-seconds must be >= 0")
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
     if args.appearance_timeout_seconds is not None and args.appearance_timeout_seconds < 0:
         parser.error("--appearance-timeout-seconds must be >= 0")
-    if args.retry_settle_seconds < 0:
-        parser.error("--retry-settle-seconds must be >= 0")
     if args.gemini_timeout_seconds is not None and args.gemini_timeout_seconds <= 0:
         parser.error("--gemini-timeout-seconds must be > 0")
     if args.min_run_id is not None and args.min_run_id <= 0:
@@ -360,7 +372,7 @@ def parse_args():
         args.once = True
     if watch_mode_enabled:
         args.watch_until_action = True
-        if args.watch_until_terminal:
+        if getattr(args, "watch_until_terminal", False):
             args.require_terminal_run = True
     if args.appearance_timeout_seconds is None:
         args.appearance_timeout_seconds = 300 if args.watch_until_action else 0
@@ -393,28 +405,50 @@ def parse_target_arg(spec):
     if not fields:
         raise GhCommandError(f"Target spec '{raw}' is missing key=value pairs.")
 
+    validation_target_ref = (
+        fields.get("validation-target-ref")
+        or fields.get("validation_target_ref")
+        or fields.get("target-ref")
+        or fields.get("target_ref")
+    )
+    validation_target_sha = (
+        fields.get("validation-target-sha")
+        or fields.get("validation_target_sha")
+        or fields.get("target-sha")
+        or fields.get("target_sha")
+    )
+
     if "run-id" in fields or "run_id" in fields:
-        key = "run-id" if "run-id" in fields else "run_id"
-        allowed_keys = {key, "head-sha", "head_sha"}
-        unexpected_keys = sorted(set(fields) - allowed_keys)
-        if unexpected_keys:
+        allowed = {
+            "run-id",
+            "run_id",
+            "validation-target-ref",
+            "validation_target_ref",
+            "target-ref",
+            "target_ref",
+            "validation-target-sha",
+            "validation_target_sha",
+            "target-sha",
+            "target_sha",
+        }
+        unsupported = sorted(set(fields) - allowed)
+        if unsupported:
             raise GhCommandError(
-                f"'run-id' target only accepts optional head-sha; got {unexpected_keys}: '{raw}'."
+                f"'run-id' target includes unsupported fields {unsupported}: '{raw}'."
             )
+        key = "run-id" if "run-id" in fields else "run_id"
         run_id = fields[key]
         try:
             value = int(run_id)
         except ValueError as err:
             raise GhCommandError(f"Invalid run-id '{run_id}' in target '{raw}'.") from err
-        target = {
+        return {
             "kind": TARGET_KIND_RUN_ID,
             "run_id": value,
+            "validation_target_ref": validation_target_ref,
+            "validation_target_sha": validation_target_sha,
             "spec": raw,
         }
-        head_sha = fields.get("head-sha") or fields.get("head_sha")
-        if head_sha:
-            target["head_sha"] = head_sha
-        return target
 
     workflow = fields.get("workflow")
     if not workflow:
@@ -426,7 +460,13 @@ def parse_target_arg(spec):
     ref = fields.get("ref", "auto")
     if not ref:
         raise GhCommandError(f"Target spec '{raw}' has empty ref.")
-    head_sha = fields.get("head-sha") or fields.get("head_sha") or fields.get("commit")
+    head_sha = (
+        fields.get("workflow-host-sha")
+        or fields.get("workflow_host_sha")
+        or fields.get("head-sha")
+        or fields.get("head_sha")
+        or fields.get("commit")
+    )
     host_ref = (
         fields.get("host-ref")
         or fields.get("host_ref")
@@ -448,6 +488,8 @@ def parse_target_arg(spec):
         "ref": ref,
         "host_ref": host_ref,
         "head_sha": head_sha,
+        "validation_target_ref": validation_target_ref,
+        "validation_target_sha": validation_target_sha,
         "min_run_id": min_run_id,
         "spec": raw,
     }
@@ -464,12 +506,22 @@ def build_targets(args):
                 {
                     "kind": TARGET_KIND_RUN_ID,
                     "run_id": args.run_id,
-                    "head_sha": args.head_sha,
+                    "validation_target_ref": args.validation_target_ref,
+                    "validation_target_sha": args.validation_target_sha,
                     "spec": ",".join(
                         part
                         for part in (
                             f"run-id={args.run_id}",
-                            f"head-sha={args.head_sha}" if args.head_sha else "",
+                            (
+                                f"validation-target-ref={args.validation_target_ref}"
+                                if args.validation_target_ref
+                                else ""
+                            ),
+                            (
+                                f"validation-target-sha={args.validation_target_sha}"
+                                if args.validation_target_sha
+                                else ""
+                            ),
                         )
                         if part
                     ),
@@ -484,6 +536,8 @@ def build_targets(args):
                     "ref": args.ref,
                     "host_ref": args.host_ref,
                     "head_sha": args.head_sha,
+                    "validation_target_ref": args.validation_target_ref,
+                    "validation_target_sha": args.validation_target_sha,
                     "min_run_id": args.min_run_id,
                     "spec": ",".join(
                         part
@@ -492,6 +546,16 @@ def build_targets(args):
                             f"ref={args.ref}",
                             f"host-ref={args.host_ref}" if args.host_ref else "",
                             f"head-sha={args.head_sha}" if args.head_sha else "",
+                            (
+                                f"validation-target-ref={args.validation_target_ref}"
+                                if args.validation_target_ref
+                                else ""
+                            ),
+                            (
+                                f"validation-target-sha={args.validation_target_sha}"
+                                if args.validation_target_sha
+                                else ""
+                            ),
                             f"min-run-id={args.min_run_id}" if args.min_run_id else "",
                         )
                         if part
@@ -558,13 +622,15 @@ def _ensure_env_dir(env, var, kind):
     env[var] = tempfile.mkdtemp(prefix=f"gh-{var.lower()}-")
 
 
-def _prepare_gh_env():
+def _prepare_gh_env(repo=None, force_refresh=False):
     global _GH_ENV
     if _GH_ENV is not None:
+        _GH_AUTH.apply(_GH_ENV, repo=repo, force_refresh=force_refresh)
         return _GH_ENV
     env = os.environ.copy()
     _ensure_config_dir(env, "GH_CONFIG_DIR")
     _ensure_env_dir(env, "GH_CACHE_DIR", "cache")
+    _GH_AUTH.apply(env, repo=repo, force_refresh=force_refresh)
     _GH_ENV = env
     return env
 
@@ -572,11 +638,11 @@ def _prepare_gh_env():
 def _format_gh_error(cmd, err):
     stdout = (err.stdout or "").strip()
     stderr = (err.stderr or "").strip()
-    parts = [f"GitHub CLI command failed: {' '.join(cmd)}"]
+    parts = [f"GitHub CLI command failed: {' '.join(cmd)} (auth_source={_GH_AUTH.source})"]
     if stdout:
-        parts.append(f"stdout: {stdout}")
+        parts.append(f"stdout: {redact(stdout, (_GH_AUTH._token,))}")
     if stderr:
-        parts.append(f"stderr: {stderr}")
+        parts.append(f"stderr: {redact(stderr, (_GH_AUTH._token,))}")
     return "\n".join(parts)
 
 
@@ -595,19 +661,21 @@ def gh_text(args, repo=None):
     if repo and (not args or args[0] != "api"):
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_prepare_gh_env(),
-        )
-    except FileNotFoundError as err:
-        raise GhCommandError("`gh` command not found") from err
-    except subprocess.CalledProcessError as err:
-        raise GhCommandError(_format_gh_error(cmd, err)) from err
-    return proc.stdout
+    env = _prepare_gh_env(repo=repo)
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
+            return proc.stdout
+        except FileNotFoundError as err:
+            raise GhCommandError("`gh` command not found") from err
+        except subprocess.CalledProcessError as err:
+            message = _format_gh_error(cmd, err)
+            if attempt == 0 and is_retry_safe(args) and is_auth_failure(message):
+                if _GH_AUTH.refresh(env, repo=repo):
+                    continue
+            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+                continue
+            raise GhCommandError(message) from err
 
 
 def gh_json(args, repo=None):
@@ -629,24 +697,26 @@ def gh_download(args, repo=None):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError("brokered GitHub CLI download failed")
+            raise GhCommandError(f"brokered GitHub CLI download failed: {result.get('stderr', '')}")
         return
     cmd = ["gh"]
     if repo and (not args or args[0] != "api"):
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_prepare_gh_env(),
-        )
-    except FileNotFoundError as err:
-        raise GhCommandError("`gh` command not found") from err
-    except subprocess.CalledProcessError as err:
-        raise GhCommandError(_format_gh_error(cmd, err)) from err
+    env = _prepare_gh_env(repo=repo)
+    for attempt in range(3):
+        try:
+            subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
+            return
+        except FileNotFoundError as err:
+            raise GhCommandError("`gh` command not found") from err
+        except subprocess.CalledProcessError as err:
+            message = _format_gh_error(cmd, err)
+            if attempt == 0 and is_retry_safe(args) and is_auth_failure(message) and _GH_AUTH.refresh(env, repo=repo):
+                continue
+            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+                continue
+            raise GhCommandError(message) from err
 
 
 def gh_bytes(args, repo=None):
@@ -658,24 +728,29 @@ def gh_bytes(args, repo=None):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args, binary=True)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError("brokered GitHub CLI binary request failed")
-        return result.get("stdout_bytes", b"")
+            raise GhCommandError(f"brokered GitHub CLI binary request failed: {result.get('stderr', '')}")
+        stdout_bytes = result.get("stdout_bytes")
+        if not isinstance(stdout_bytes, bytes):
+            raise GhCommandError("brokered GitHub CLI response omitted binary output")
+        return stdout_bytes
     cmd = ["gh"]
     if repo and (not args or args[0] != "api"):
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            env=_prepare_gh_env(),
-        )
-    except FileNotFoundError as err:
-        raise GhCommandError("`gh` command not found") from err
-    except subprocess.CalledProcessError as err:
-        raise GhCommandError(_format_gh_error(cmd, err)) from err
-    return proc.stdout
+    env = _prepare_gh_env(repo=repo)
+    for attempt in range(3):
+        try:
+            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, env=env)
+            return proc.stdout
+        except FileNotFoundError as err:
+            raise GhCommandError("`gh` command not found") from err
+        except subprocess.CalledProcessError as err:
+            message = _format_gh_error(cmd, err)
+            if attempt == 0 and is_retry_safe(args) and is_auth_failure(message) and _GH_AUTH.refresh(env, repo=repo):
+                continue
+            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+                continue
+            raise GhCommandError(message) from err
 
 
 def _strip_export_prefix(value):
@@ -811,7 +886,6 @@ def _focused_validation_summary_text(summary, limit=5000):
             "failed_lane_count": context.get("failed_lane_count"),
             "failure_structure": context.get("failure_structure"),
             "recommended_follow_up": context.get("recommended_follow_up"),
-            "head_freshness": context.get("head_freshness"),
             "first_blocker": context.get("first_blocker"),
             "candidate_next_slices": context.get("candidate_next_slices"),
         },
@@ -857,64 +931,7 @@ def _list_or_empty(value):
     return value if isinstance(value, list) else []
 
 
-def _compact_head_freshness(summary_head_freshness, *, run_view=None, target=None, has_failure=False, candidate_next_slices=None):
-    head_freshness = dict(_dict_or_empty(summary_head_freshness))
-    run_head_sha = str(_dict_or_empty(run_view).get("headSha") or "").strip()
-    target_head_sha = str(_dict_or_empty(target).get("head_sha") or "").strip()
-    if not head_freshness and not (run_head_sha and target_head_sha):
-        return None
-
-    if run_head_sha and target_head_sha:
-        run_head_status = "current" if _matches_head_sha_prefix(run_head_sha, target_head_sha) else "stale"
-        head_freshness["run_head_status"] = run_head_status
-        head_freshness["latest_head_sha_supplied"] = True
-        if run_head_status == "stale" and has_failure:
-            rerun = dict(_dict_or_empty(head_freshness.get("recommended_rerun")))
-            rerun_lanes = _list_or_empty(rerun.get("lane_ids"))
-            candidate_lanes = [
-                str(candidate.get("lane_id") or "").strip()
-                for candidate in _list_or_empty(candidate_next_slices)
-                if isinstance(candidate, dict)
-                and str(candidate.get("lane_id") or "").strip()
-                and not str(candidate.get("lane_id") or "").strip().startswith("setup-class:")
-            ]
-            if rerun_lanes or candidate_lanes:
-                head_freshness["failed_lane_classification"] = "needs_targeted_latest_head_proof"
-                if not rerun_lanes:
-                    rerun["lane_ids"] = candidate_lanes[:5]
-                    rerun["lane_count"] = len(rerun["lane_ids"])
-                    rerun["profile"] = "targeted"
-                    rerun["needed"] = True
-                    rerun["reason"] = "stale failed lane evidence needs latest-head proof before repair"
-                    head_freshness["recommended_rerun"] = rerun
-            else:
-                head_freshness["failed_lane_classification"] = "stale"
-
-    rerun = _dict_or_empty(head_freshness.get("recommended_rerun"))
-    compact_rerun = {
-        "needed": bool(rerun.get("needed")),
-        "profile": str(rerun.get("profile") or "").strip() or None,
-        "lane_ids": [
-            str(item).strip()
-            for item in _list_or_empty(rerun.get("lane_ids"))
-            if str(item).strip()
-        ],
-        "reason": str(rerun.get("reason") or "").strip() or None,
-    }
-    compact = {
-        "run_head_status": str(head_freshness.get("run_head_status") or "").strip() or None,
-        "failed_lane_classification": str(head_freshness.get("failed_lane_classification") or "").strip() or None,
-        "latest_head_sha_supplied": bool(head_freshness.get("latest_head_sha_supplied")),
-        "recommended_rerun": {
-            key: value
-            for key, value in compact_rerun.items()
-            if value not in (None, "", [], {})
-        },
-    }
-    return {key: value for key, value in compact.items() if value not in (None, "", [], {})} or None
-
-
-def _derive_validation_mode_context(validation_summary, *, run_view=None, failed_jobs=None, target=None):
+def _derive_validation_mode_context(validation_summary, *, run_view=None, failed_jobs=None):
     summary_root = _dict_or_empty(validation_summary)
     selection = _dict_or_empty(summary_root.get("selection"))
     summary_branch = _dict_or_empty(summary_root.get("summary"))
@@ -957,26 +974,6 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         failure_structure = "cascading"
     else:
         failure_structure = "unknown"
-
-    has_failure = bool(
-        failed_lane_count
-        or first_failure
-        or direct_non_meta_jobs
-        or non_cancelled_jobs
-        or cancelled_job_count
-    )
-    head_freshness = _compact_head_freshness(
-        summary_branch.get("head_freshness"),
-        run_view=run_view,
-        target=target,
-        has_failure=has_failure,
-        candidate_next_slices=candidate_next_slices,
-    )
-    if head_freshness and has_failure and not head_freshness.get("failed_lane_classification"):
-        if cancelled_job_count and not non_cancelled_jobs:
-            head_freshness["failed_lane_classification"] = "cancelled"
-        elif head_freshness.get("run_head_status") == "current":
-            head_freshness["failed_lane_classification"] = "active"
 
     if normalized_profile == "targeted":
         recommended_follow_up = "targeted_repair"
@@ -1042,9 +1039,6 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         "candidate_next_slice_count": len(candidate_next_slices),
         "failure_structure": failure_structure,
         "recommended_follow_up": recommended_follow_up,
-        "head_freshness": head_freshness,
-        "failed_lane_classification": _dict_or_empty(head_freshness).get("failed_lane_classification"),
-        "recommended_rerun": _dict_or_empty(head_freshness).get("recommended_rerun"),
         "preferred_signal_source": "validation_summary" if summary_root else "logs",
         "first_blocker": first_blocker,
         "candidate_next_slices": summarized_candidates,
@@ -1207,6 +1201,30 @@ def is_sha_like(value):
     return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
 
 
+def _normalized_workflow_selector(value):
+    normalized = str(value or "").strip().lower().split("@", 1)[0]
+    basename = Path(normalized).name
+    if basename.endswith((".yml", ".yaml")):
+        basename = basename.rsplit(".", 1)[0]
+    return " ".join(part for part in re.split(r"[^a-z0-9]+", basename) if part)
+
+
+def _workflow_run_matches_selector(run, workflow):
+    expected = _normalized_workflow_selector(workflow)
+    if not expected:
+        return False
+    candidates = (
+        run.get("workflowName"),
+        run.get("name"),
+        run.get("path"),
+    )
+    return any(
+        _normalized_workflow_selector(candidate) == expected
+        for candidate in candidates
+        if candidate
+    )
+
+
 def _normalized_head_sha_prefixes(expected_head_sha):
     if not expected_head_sha:
         return []
@@ -1222,7 +1240,6 @@ def _normalized_head_sha_prefixes(expected_head_sha):
             prefixes.append(normalized)
     return prefixes
 
-
 def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
     observed = str(run_head_sha or "").strip().lower()
     if not observed:
@@ -1231,55 +1248,6 @@ def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
     if not expected_prefixes:
         return True
     return any(observed.startswith(prefix) for prefix in expected_prefixes)
-
-
-def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None):
-    fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
-    cmd = ["run", "list", "--workflow", workflow, "--limit", "30", "--json", fields]
-    branch_filter = host_ref if host_ref is not None else ref
-    if branch_filter and not is_sha_like(branch_filter):
-        cmd.extend(["--branch", branch_filter])
-    data = gh_json(cmd, repo=repo)
-    if data is None:
-        return []
-    if not isinstance(data, list):
-        raise GhCommandError("Unexpected payload from `gh run list`")
-    matches = []
-    for run in data:
-        if not isinstance(run, dict):
-            continue
-        head_branch = str(run.get("headBranch") or "")
-        run_head_sha = str(run.get("headSha") or "")
-        if ref:
-            if is_sha_like(ref):
-                if not _matches_head_sha_prefix(run_head_sha, ref):
-                    continue
-            elif branch_filter and head_branch != branch_filter:
-                continue
-        if expected_head_sha and not _matches_head_sha_prefix(run_head_sha, expected_head_sha):
-            continue
-        run_id = int(run.get("databaseId") or 0)
-        if minimum_run_id is not None and run_id < int(minimum_run_id):
-            continue
-        matches.append(run)
-    matches.sort(key=lambda run: int(run.get("databaseId") or 0), reverse=True)
-    return matches
-
-
-def _followed_run_relist_interval_seconds(poll_seconds):
-    return max(FOLLOWED_RUN_RELIST_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
-
-
-def _host_mismatch_recheck_interval_seconds(poll_seconds):
-    return max(HOST_MISMATCH_RECHECK_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
-
-
-def _terminal_success_revalidation_interval_seconds(poll_seconds):
-    return max(
-        TERMINAL_SUCCESS_REVALIDATION_MIN_SECONDS,
-        int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER,
-    )
-
 
 def _run_attempt(run_view):
     """Return the API's attempt identity, tolerating older fixture spellings."""
@@ -1293,8 +1261,191 @@ def _run_attempt(run_view):
     except (TypeError, ValueError):
         return None
 
+def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
+    """Keep terminal waits open briefly for a rerun of the same Actions run.
+
+    GitHub can start a new attempt after an initial attempt has already reached
+    ``completed``. The run id is unchanged, so a watcher that returns on the
+    first failure can race the rerun and prompt a duplicate dispatch. Track the
+    run id plus attempt number and require one quiet settle window before
+    surfacing a terminal failure. A status change to queued/in-progress clears
+    the window and is then handled by the ordinary terminal-wait logic.
+    """
+    if int(settle_seconds or 0) <= 0:
+        return False
+
+    now = time.monotonic()
+    observed = retry_state.setdefault("terminal_failures", {})
+    active_keys = set()
+    pending = False
+    for target in _list_or_empty(payload.get("targets")):
+        if not isinstance(target, dict):
+            continue
+        run = _dict_or_empty(target.get("run"))
+        status = str(run.get("status") or "").lower()
+        conclusion = str(run.get("conclusion") or "").lower()
+        if status != "completed" or conclusion not in FAILED_CONCLUSIONS:
+            continue
+
+        try:
+            target_key = target_to_display_key(target)
+        except Exception:  # noqa: BLE001 - malformed remote payloads must not stop the watcher.
+            target_key = f"run-id:{run.get('id') or 'unknown'}"
+        active_keys.add(target_key)
+        try:
+            run_id = int(run.get("id") or 0)
+        except (TypeError, ValueError):
+            run_id = 0
+        signature = (
+            run_id,
+            str(run.get("attempt") or "").strip(),
+        )
+        record = observed.get(target_key)
+        if not isinstance(record, dict) or record.get("signature") != signature:
+            observed[target_key] = {"signature": signature, "started_at": now}
+            pending = True
+            continue
+        if now - float(record["started_at"]) < int(settle_seconds):
+            pending = True
+
+    for target_key in list(observed):
+        if target_key not in active_keys:
+            observed.pop(target_key, None)
+    return pending
+
+
+def _workflow_run_matches_target(
+    run,
+    *,
+    ref,
+    branch_filter,
+    expected_head_sha,
+    minimum_run_id,
+):
+    head_branch = str(run.get("headBranch") or "")
+    run_head_sha = str(run.get("headSha") or "")
+    if ref:
+        if is_sha_like(ref):
+            if not _matches_head_sha_prefix(run_head_sha, ref):
+                return False
+        elif branch_filter and head_branch != branch_filter:
+            return False
+    if expected_head_sha and not _matches_head_sha_prefix(run_head_sha, expected_head_sha):
+        return False
+    run_id = int(run.get("databaseId") or 0)
+    return minimum_run_id is None or run_id >= int(minimum_run_id)
+
+
+def _normalize_actions_api_run(run):
+    workflow_name = run.get("name") or ""
+    return {
+        "databaseId": run.get("id"),
+        "displayTitle": run.get("display_title"),
+        "event": run.get("event"),
+        "headBranch": run.get("head_branch"),
+        "headSha": run.get("head_sha"),
+        "name": workflow_name,
+        "number": run.get("run_number"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "url": run.get("html_url"),
+        "workflowName": workflow_name,
+        "path": run.get("path"),
+        "createdAt": run.get("created_at"),
+        "updatedAt": run.get("updated_at"),
+        "retrievedVia": "actions_api_workflow_discovery_fallback",
+    }
+
+
+def _list_workflow_runs_via_actions_api(repo, workflow, branch_filter):
+    query = "per_page=100"
+    if branch_filter and not is_sha_like(branch_filter):
+        query += f"&branch={urllib.parse.quote(str(branch_filter), safe='-._~/')}"
+    payload = gh_json(["api", f"repos/{repo}/actions/runs?{query}"])
+    if not isinstance(payload, dict) or not isinstance(payload.get("workflow_runs"), list):
+        raise GhCommandError("Unexpected workflow-runs payload from the direct Actions API")
+    return [
+        _normalize_actions_api_run(run)
+        for run in payload["workflow_runs"]
+        if isinstance(run, dict) and _workflow_run_matches_selector(run, workflow)
+    ]
+
+
+def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None):
+    fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
+    cmd = ["run", "list", "--workflow", workflow, "--limit", "30", "--json", fields]
+    branch_filter = host_ref if host_ref is not None else ref
+    if branch_filter and not is_sha_like(branch_filter):
+        cmd.extend(["--branch", branch_filter])
+    primary_error = None
+    try:
+        data = gh_json(cmd, repo=repo)
+    except GhCommandError as err:
+        primary_error = err
+        data = []
+    if data is None:
+        data = []
+    if not isinstance(data, list):
+        raise GhCommandError("Unexpected payload from `gh run list`")
+    # With an explicit host ref, `ref` is the logical validation target and is
+    # not a selector for the workflow run.  In particular, a validation SHA
+    # must not be compared with the workflow host's headSha; that identity is
+    # proven later from target-bound artifacts.  Without host_ref, preserve the
+    # normal same-ref branch/SHA selection semantics.
+    run_selector_ref = None if host_ref is not None else ref
+    matches = []
+    for run in data:
+        if not isinstance(run, dict):
+            continue
+        if _workflow_run_matches_target(
+            run,
+            ref=run_selector_ref,
+            branch_filter=branch_filter,
+            expected_head_sha=expected_head_sha,
+            minimum_run_id=minimum_run_id,
+        ):
+            matches.append(run)
+    if not matches:
+        try:
+            fallback_runs = _list_workflow_runs_via_actions_api(
+                repo,
+                workflow,
+                branch_filter,
+            )
+        except GhCommandError as fallback_error:
+            if primary_error is not None:
+                raise GhCommandError(
+                    "Unable to discover workflow runs through either GitHub CLI run list "
+                    f"or the direct Actions API.\nPrimary error: {primary_error}\n"
+                    f"Fallback error: {fallback_error}"
+                ) from fallback_error
+            raise
+        matches = [
+            run
+            for run in fallback_runs
+            if _workflow_run_matches_target(
+                run,
+                ref=run_selector_ref,
+                branch_filter=branch_filter,
+                expected_head_sha=expected_head_sha,
+                minimum_run_id=minimum_run_id,
+            )
+        ]
+    matches.sort(key=lambda run: int(run.get("databaseId") or 0), reverse=True)
+    return matches
+
+
+def _followed_run_relist_interval_seconds(poll_seconds):
+    return max(FOLLOWED_RUN_RELIST_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
+
+
+def _host_mismatch_recheck_interval_seconds(poll_seconds):
+    return max(HOST_MISMATCH_RECHECK_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
+
 
 def view_run(repo, run_id):
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+        raise GhCommandError(f"Invalid GitHub Actions run id: {run_id!r}")
     fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
     try:
         data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
@@ -1340,51 +1491,151 @@ def _normalize_actions_api_job(job):
     }
 
 
+
+def _rest_required_text(payload, key, context):
+    if key not in payload or not isinstance(payload[key], str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing string `{key}`")
+    value = payload[key]
+    if not value.strip():
+        raise GhCommandError(f"Malformed GitHub REST {context}: empty `{key}`")
+    return value
+
+def _rest_required_id(payload, key, context):
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
+    return value
+
+def _rest_optional_timestamp(payload, key, context):
+    if key not in payload:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `{key}`")
+    value = payload[key]
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
+    return value
+
+def _normalize_rest_step(step, *, job_index, step_index):
+    context = f"job {job_index} step {step_index}"
+    if not isinstance(step, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+    number = _rest_required_id(step, "number", context)
+    name = _rest_required_text(step, "name", context)
+    status = _rest_required_text(step, "status", context)
+    if "conclusion" not in step:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `conclusion`")
+    conclusion = step["conclusion"]
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `conclusion`")
+    return {"name": name, "number": number, "status": status, "conclusion": conclusion,
+            "startedAt": _rest_optional_timestamp(step, "started_at", context),
+            "completedAt": _rest_optional_timestamp(step, "completed_at", context)}
+
+def _normalize_rest_job(job, *, run_id, job_index):
+    context = f"job {job_index}"
+    if not isinstance(job, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+    job_id = _rest_required_id(job, "id", context)
+    observed_run_id = _rest_required_id(job, "run_id", context)
+    if observed_run_id != run_id:
+        raise GhCommandError(f"GitHub REST {context} belongs to run {observed_run_id}, expected {run_id}")
+    name = _rest_required_text(job, "name", context)
+    status = _rest_required_text(job, "status", context)
+    if "conclusion" not in job:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `conclusion`")
+    conclusion = job["conclusion"]
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `conclusion`")
+    html_url = _rest_required_text(job, "html_url", context)
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing list `steps`")
+    return {"databaseId": job_id, "name": name, "status": status, "conclusion": conclusion,
+            "url": html_url, "startedAt": _rest_optional_timestamp(job, "started_at", context),
+            "completedAt": _rest_optional_timestamp(job, "completed_at", context),
+            "steps": [_normalize_rest_step(step, job_index=job_index, step_index=step_index)
+                       for step_index, step in enumerate(steps)]}
+
+def _list_run_jobs_rest(repo, run_id):
+    jobs, expected_total, seen_job_ids = [], None, set()
+    for page in range(1, 1001):
+        endpoint = f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}"
+        payload = gh_json(["api", endpoint], repo=repo)
+        context = f"jobs page {page} for run {run_id}"
+        if not isinstance(payload, dict):
+            raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+        total_count = payload.get("total_count")
+        if isinstance(total_count, bool) or not isinstance(total_count, int) or total_count < 0:
+            raise GhCommandError(f"Malformed GitHub REST {context}: invalid `total_count`")
+        if expected_total is None:
+            expected_total = total_count
+        elif total_count != expected_total:
+            raise GhCommandError(f"GitHub REST {context} changed `total_count` from {expected_total} to {total_count}")
+        page_jobs = payload.get("jobs")
+        if not isinstance(page_jobs, list):
+            raise GhCommandError(f"Malformed GitHub REST {context}: missing list `jobs`")
+        page_offset = len(jobs)
+        for job_index, job in enumerate(page_jobs):
+            normalized = _normalize_rest_job(
+                job, run_id=run_id, job_index=page_offset + job_index
+            )
+            if normalized["databaseId"] in seen_job_ids:
+                raise GhCommandError(f"GitHub REST {context} repeated job id {normalized['databaseId']}")
+            seen_job_ids.add(normalized["databaseId"])
+            jobs.append(normalized)
+        if len(jobs) > expected_total:
+            raise GhCommandError(f"GitHub REST {context} returned {len(jobs)} jobs, exceeding total_count {expected_total}")
+        if len(jobs) == expected_total:
+            return jobs
+        if not page_jobs:
+            raise GhCommandError(f"GitHub REST {context} ended at {len(jobs)} jobs, expected {expected_total}")
+    raise GhCommandError(f"GitHub REST jobs pagination exceeded 1000 pages for run {run_id}")
+
 def _view_run_via_actions_api(repo, run_id):
     run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"])
-    jobs_payload = gh_json(
-        ["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]
-    )
     if not isinstance(run, dict):
-        raise GhCommandError("Unexpected run payload from the direct Actions API")
-    if not isinstance(jobs_payload, dict) or not isinstance(jobs_payload.get("jobs"), list):
-        raise GhCommandError("Unexpected jobs payload from the direct Actions API")
-    workflow_name = run.get("name") or ""
+        raise GhCommandError(f"Malformed GitHub REST run {run_id}: expected object")
+    context = f"run {run_id}"
+    observed_run_id = _rest_required_id(run, "id", context)
+    if observed_run_id != run_id:
+        raise GhCommandError(f"GitHub REST run id {observed_run_id} does not match requested run {run_id}")
+    repository = run.get("repository")
+    if not isinstance(repository, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `repository`")
+    observed_repo = _rest_required_text(repository, "full_name", context).strip().lower()
+    if observed_repo != str(repo).strip().lower():
+        raise GhCommandError(f"GitHub REST run repository {observed_repo!r} does not match requested {repo!r}")
+    workflow_name = _rest_required_text(run, "name", context)
     return {
-        "databaseId": run.get("id"),
-        "attempt": run.get("run_attempt"),
-        "displayTitle": run.get("display_title"),
-        "event": run.get("event"),
+        "databaseId": observed_run_id,
+        "displayTitle": _rest_required_text(run, "display_title", context),
+        "event": _rest_required_text(run, "event", context),
         "headBranch": run.get("head_branch"),
-        "headSha": run.get("head_sha"),
+        "headSha": _rest_required_text(run, "head_sha", context),
+        "attempt": _run_attempt(run),
         "name": workflow_name,
-        "number": run.get("run_number"),
-        "status": run.get("status"),
+        "number": _rest_required_id(run, "run_number", context),
+        "status": _rest_required_text(run, "status", context),
         "conclusion": run.get("conclusion"),
-        "url": run.get("html_url"),
+        "url": _rest_required_text(run, "html_url", context),
         "workflowName": workflow_name,
-        "createdAt": run.get("created_at"),
-        "updatedAt": run.get("updated_at"),
-        "jobs": [
-            _normalize_actions_api_job(job)
-            for job in jobs_payload["jobs"]
-            if isinstance(job, dict)
-        ],
+        "createdAt": _rest_optional_timestamp(run, "created_at", context),
+        "updatedAt": _rest_optional_timestamp(run, "updated_at", context),
+        "jobs": _list_run_jobs_rest(repo, run_id),
         "retrievedVia": "actions_api_fallback",
     }
 
 
-def load_validation_summary(repo, run_id):
+def _load_run_json_artifact(repo, run_id, artifact_name, filename):
     with tempfile.TemporaryDirectory(prefix="gh-run-download-") as tmpdir:
         try:
             gh_download(
-                ["run", "download", str(run_id), "--name", "validation-summary", "--dir", tmpdir],
+                ["run", "download", str(run_id), "--name", artifact_name, "--dir", tmpdir],
                 repo=repo,
             )
         except GhCommandError:
             return None
 
-        candidates = sorted(Path(tmpdir).rglob("validation-summary.json"))
+        candidates = sorted(Path(tmpdir).rglob(filename))
         if not candidates:
             return None
         try:
@@ -1392,6 +1643,94 @@ def load_validation_summary(repo, run_id):
         except (OSError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
+
+
+def _list_run_artifact_names(repo, run_id):
+    payload = gh_json(
+        ["api", f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100"]
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("artifacts"), list):
+        raise GhCommandError("Unexpected artifacts payload from the direct Actions API")
+    return [
+        str(artifact.get("name") or "").strip()
+        for artifact in payload["artifacts"]
+        if isinstance(artifact, dict) and str(artifact.get("name") or "").strip()
+    ]
+
+
+def _select_surface_acceptance_artifact(artifact_names, validation_target_sha):
+    prefix = "ops-mcp-surface-acceptance-"
+    candidates = [name for name in artifact_names if name.startswith(prefix)]
+    expected_sha = str(validation_target_sha or "").strip().lower()
+    if expected_sha:
+        exact = [
+            name
+            for name in candidates
+            if _shas_match(name[len(prefix) :], expected_sha)
+        ]
+        return exact[0] if len(exact) == 1 else None
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _select_heavy_validation_results_artifact(artifact_names):
+    candidates = [
+        name
+        for name in artifact_names
+        if name == HEAVY_VALIDATION_RESULTS_ARTIFACT
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def load_validation_summary(
+    repo,
+    run_id,
+    validation_target_sha=None,
+    validation_target_ref=None,
+):
+    summary = _load_run_json_artifact(
+        repo,
+        run_id,
+        "validation-summary",
+        "validation-summary.json",
+    )
+    if not validation_target_sha and not validation_target_ref:
+        return summary
+    try:
+        artifact_names = _list_run_artifact_names(repo, run_id)
+    except GhCommandError:
+        return summary
+
+    heavy_artifact = _select_heavy_validation_results_artifact(artifact_names)
+    heavy_results = None
+    if heavy_artifact:
+        heavy_results = _load_run_json_artifact(
+            repo,
+            run_id,
+            heavy_artifact,
+            HEAVY_VALIDATION_RESULTS_FILENAME,
+        )
+
+    receipt_artifact = _select_surface_acceptance_artifact(
+        artifact_names,
+        validation_target_sha,
+    )
+    if not receipt_artifact and heavy_results is None:
+        return summary
+    combined = dict(summary or {})
+    if heavy_results is not None:
+        combined["heavy_validation_results"] = heavy_results
+        combined["heavy_validation_results_artifact"] = heavy_artifact
+    if receipt_artifact:
+        receipt = _load_run_json_artifact(
+            repo,
+            run_id,
+            receipt_artifact,
+            "ops-mcp-surface-acceptance-receipt.json",
+        )
+        if receipt is not None:
+            combined["ops_mcp_surface_acceptance_receipt"] = receipt
+            combined["ops_mcp_surface_acceptance_artifact"] = receipt_artifact
+    return combined
 
 
 def _strip_ansi(text):
@@ -1570,10 +1909,12 @@ def _extract_structured_failure_signals(text, *, limit=4):
     assertions = []
     failure_locations = []
     evidence_lines = []
+    weak_signals = []
     seen_tests = set()
     seen_assertions = set()
     seen_locations = set()
     seen_lines = set()
+    seen_weak_signals = set()
 
     for entry in _parse_gh_log_entries(text):
         message = (entry.get("message") or "").strip()
@@ -1583,6 +1924,9 @@ def _extract_structured_failure_signals(text, *, limit=4):
         if _line_has_high_signal(message) and message not in seen_lines:
             seen_lines.add(message)
             evidence_lines.append(message)
+        elif _line_is_failure_like(message) and message not in seen_weak_signals:
+            seen_weak_signals.add(message)
+            weak_signals.append(message)
 
         match = EXACT_TEST_FAILURE_RE.search(message)
         if match:
@@ -1626,6 +1970,7 @@ def _extract_structured_failure_signals(text, *, limit=4):
         "assertions": assertions[:limit],
         "failure_locations": failure_locations[:limit],
         "evidence_lines": evidence_lines[: max(limit * 2, 6)],
+        "weak_signals": weak_signals[: max(limit * 2, 6)],
     }
 
 
@@ -1637,6 +1982,7 @@ def _signals_have_actionable_detail(signals):
         or signals.get("assertions")
         or signals.get("failure_locations")
         or signals.get("evidence_lines")
+        or signals.get("weak_signals")
     )
 
 
@@ -1646,6 +1992,7 @@ def _collect_structured_failure_signals(log_sources):
         "assertions": [],
         "failure_locations": [],
         "evidence_lines": [],
+        "weak_signals": [],
     }
     seen = {key: set() for key in combined}
     for source in log_sources:
@@ -2674,8 +3021,10 @@ def _diagnose_failure(*, repo, run_view, validation_summary, model, timeout_seco
         structured_failure_signals=structured_failure_signals,
         validation_context=validation_context,
     )
-    if not _signals_have_actionable_detail(structured_failure_signals) and not _validation_summary_has_actionable_detail(
-        validation_summary
+    if not _should_attempt_gemini_diagnosis(
+        structured_failure_signals=structured_failure_signals,
+        validation_summary=validation_summary,
+        run_view=run_view,
     ):
         raise GeminiDiagnosisError(
             "Skipped Gemini diagnosis to avoid low-value token spend: focused failure evidence did not yield an exact test, assertion, source location, or structured validation blocker signal.",
@@ -2698,6 +3047,14 @@ def _diagnose_failure(*, repo, run_view, validation_summary, model, timeout_seco
             telemetry=getattr(err, "telemetry", None),
         ) from err
     return diagnosis, evidence, telemetry
+
+
+def _should_attempt_gemini_diagnosis(*, structured_failure_signals, validation_summary, run_view):
+    if _signals_have_actionable_detail(structured_failure_signals):
+        return True
+    if _validation_summary_has_actionable_detail(validation_summary):
+        return True
+    return bool(_failed_jobs_from_run_view(run_view))
 
 
 def _collect_failure_evidence(*, repo, run_view, validation_summary):
@@ -2751,11 +3108,14 @@ def summarize_jobs(run_view):
 
 def target_to_display_key(target):
     if target["kind"] == TARGET_KIND_RUN_ID:
-        key = f"run-id:{target['run_id']}"
-        head_sha = str(target.get("head_sha") or "").strip()
-        if head_sha:
-            key = f"{key}|head-sha:{head_sha}"
-        return key
+        parts = [f"run-id:{target['run_id']}"]
+        validation_target_ref = str(target.get("validation_target_ref") or "").strip()
+        if validation_target_ref:
+            parts.append(f"validation-target-ref:{validation_target_ref}")
+        validation_target_sha = str(target.get("validation_target_sha") or "").strip()
+        if validation_target_sha:
+            parts.append(f"validation-target-sha:{validation_target_sha}")
+        return "|".join(parts)
     parts = [f"workflow:{target['workflow']}", f"ref:{target['ref']}"]
     host_ref = str(target.get("host_ref") or "").strip()
     if host_ref:
@@ -2763,6 +3123,12 @@ def target_to_display_key(target):
     head_sha = str(target.get("head_sha") or "").strip()
     if head_sha:
         parts.append(f"head-sha:{head_sha}")
+    validation_target_ref = str(target.get("validation_target_ref") or "").strip()
+    if validation_target_ref:
+        parts.append(f"validation-target-ref:{validation_target_ref}")
+    validation_target_sha = str(target.get("validation_target_sha") or "").strip()
+    if validation_target_sha:
+        parts.append(f"validation-target-sha:{validation_target_sha}")
     min_run_id = target.get("min_run_id")
     if min_run_id is not None:
         parts.append(f"min-run-id:{int(min_run_id)}")
@@ -2826,6 +3192,279 @@ def _maybe_detect_dispatch_host_branch_mismatch(repo, target, resolved_ref, stat
     return dispatch_host_mismatch
 
 
+def _normalized_ref(value):
+    normalized = str(value or "").strip()
+    if normalized.startswith("refs/heads/"):
+        return normalized[len("refs/heads/") :]
+    return normalized
+
+
+def _shas_match(left, right):
+    left_normalized = str(left or "").strip().lower()
+    right_normalized = str(right or "").strip().lower()
+    if not left_normalized or not right_normalized:
+        return False
+    return left_normalized.startswith(right_normalized) or right_normalized.startswith(
+        left_normalized
+    )
+
+
+def _append_identity_evidence(evidence, *, field, value, source):
+    if not isinstance(value, (str, int)):
+        return
+    normalized = str(value or "").strip()
+    if not normalized:
+        return
+    evidence.append(
+        {
+            "field": field,
+            "value": normalized,
+            "source": source,
+        }
+    )
+
+
+def _extract_validation_target_evidence(validation_summary):
+    summary = _dict_or_empty(validation_summary)
+    evidence = []
+
+    explicit_target = _dict_or_empty(summary.get("validation_target"))
+    _append_identity_evidence(
+        evidence,
+        field="ref",
+        value=explicit_target.get("ref") or explicit_target.get("target_ref"),
+        source="validation_summary.validation_target.ref",
+    )
+    _append_identity_evidence(
+        evidence,
+        field="sha",
+        value=explicit_target.get("sha") or explicit_target.get("target_sha"),
+        source="validation_summary.validation_target.sha",
+    )
+
+    proof_identity = _dict_or_empty(summary.get("proof_identity"))
+    _append_identity_evidence(
+        evidence,
+        field="ref",
+        value=proof_identity.get("validation_target_ref"),
+        source="validation_summary.proof_identity.validation_target_ref",
+    )
+    _append_identity_evidence(
+        evidence,
+        field="sha",
+        value=proof_identity.get("validation_target_sha"),
+        source="validation_summary.proof_identity.validation_target_sha",
+    )
+
+    _append_identity_evidence(
+        evidence,
+        field="ref",
+        value=summary.get("target_ref"),
+        source="validation_summary.target_ref",
+    )
+    _append_identity_evidence(
+        evidence,
+        field="sha",
+        value=summary.get("target_sha"),
+        source="validation_summary.target_sha",
+    )
+
+    heavy_results = _dict_or_empty(summary.get("heavy_validation_results"))
+    _append_identity_evidence(
+        evidence,
+        field="ref",
+        value=heavy_results.get("target_ref") or heavy_results.get("ref"),
+        source="heavy_validation_results.target_ref",
+    )
+    _append_identity_evidence(
+        evidence,
+        field="sha",
+        value=heavy_results.get("target_sha") or heavy_results.get("sha"),
+        source="heavy_validation_results.target_sha",
+    )
+
+    ci_proof = _dict_or_empty(summary.get("ci_proof_v1"))
+    if ci_proof:
+        ci_proof_ref = (
+            ci_proof.get("target_ref")
+            or ci_proof.get("head_ref")
+            or ci_proof.get("ref")
+        )
+        ci_proof_ref_field = (
+            "target_ref"
+            if ci_proof.get("target_ref")
+            else ("head_ref" if ci_proof.get("head_ref") else "ref")
+        )
+        _append_identity_evidence(
+            evidence,
+            field="ref",
+            value=ci_proof_ref,
+            source=f"validation_summary.ci_proof_v1.{ci_proof_ref_field}",
+        )
+        ci_proof_sha = ci_proof.get("target_sha") or ci_proof.get("head_sha")
+        ci_proof_sha_field = "target_sha" if ci_proof.get("target_sha") else "head_sha"
+        _append_identity_evidence(
+            evidence,
+            field="sha",
+            value=ci_proof_sha,
+            source=f"validation_summary.ci_proof_v1.{ci_proof_sha_field}",
+        )
+
+    surface_receipt = _dict_or_empty(
+        summary.get("ops_mcp_surface_acceptance_receipt")
+    )
+    if surface_receipt:
+        _append_identity_evidence(
+            evidence,
+            field="ref",
+            value=surface_receipt.get("target_ref"),
+            source="ops_mcp_surface_acceptance_receipt.target_ref",
+        )
+        _append_identity_evidence(
+            evidence,
+            field="sha",
+            value=(
+                surface_receipt.get("target_revision")
+                or surface_receipt.get("target_sha")
+            ),
+            source="ops_mcp_surface_acceptance_receipt.target_revision",
+        )
+
+    values_by_field = {"ref": [], "sha": []}
+    sources = []
+    for item in evidence:
+        field = item["field"]
+        value = item["value"]
+        comparable = _normalized_ref(value) if field == "ref" else value.lower()
+        if not any(
+            (
+                comparable == existing["comparable"]
+                if field == "ref"
+                else _shas_match(comparable, existing["comparable"])
+            )
+            for existing in values_by_field[field]
+        ):
+            values_by_field[field].append(
+                {
+                    "value": value,
+                    "comparable": comparable,
+                }
+            )
+        if item["source"] not in sources:
+            sources.append(item["source"])
+
+    conflicts = {
+        field: [item["value"] for item in values]
+        for field, values in values_by_field.items()
+        if len(values) > 1
+    }
+    return {
+        "ref": values_by_field["ref"][0]["value"] if values_by_field["ref"] else None,
+        "sha": values_by_field["sha"][0]["value"] if values_by_field["sha"] else None,
+        "sources": sources[:6],
+        "conflicts": conflicts,
+    }
+
+
+def _has_separate_validation_target_contract(target, run_view, observed):
+    if (
+        str(target.get("host_ref") or "").strip()
+        or str(target.get("validation_target_ref") or "").strip()
+        or str(target.get("validation_target_sha") or "").strip()
+    ):
+        return True
+    if _dict_or_empty(observed.get("conflicts")):
+        return True
+    observed_ref = str(observed.get("ref") or "").strip()
+    workflow_host_ref = str(run_view.get("headBranch") or "").strip()
+    if (
+        observed_ref
+        and workflow_host_ref
+        and _normalized_ref(observed_ref) != _normalized_ref(workflow_host_ref)
+    ):
+        return True
+    observed_sha = str(observed.get("sha") or "").strip()
+    workflow_host_sha = str(run_view.get("headSha") or "").strip()
+    return bool(
+        observed_sha
+        and workflow_host_sha
+        and not _shas_match(observed_sha, workflow_host_sha)
+    )
+
+
+def _build_proof_identity(*, target, run_view, resolved_ref, validation_summary):
+    workflow_host_ref = str(run_view.get("headBranch") or "").strip()
+    workflow_host_sha = str(run_view.get("headSha") or "").strip()
+    observed = _extract_validation_target_evidence(validation_summary)
+    separate_contract = _has_separate_validation_target_contract(
+        target,
+        run_view,
+        observed,
+    )
+
+    identity = {
+        "workflow_host_ref": workflow_host_ref or None,
+        "workflow_host_sha": workflow_host_sha or None,
+    }
+    if not separate_contract:
+        identity.update(
+            {
+                "validation_target_ref": workflow_host_ref or None,
+                "validation_target_sha": workflow_host_sha or None,
+                "validation_target_status": (
+                    "same_as_workflow_host"
+                    if workflow_host_ref or workflow_host_sha
+                    else "unknown"
+                ),
+                "validation_target_sources": ["github_run"],
+            }
+        )
+        return {key: value for key, value in identity.items() if value not in (None, "", [], {})}
+
+    expected_ref = str(target.get("validation_target_ref") or "").strip()
+    if not expected_ref and target.get("kind") == TARGET_KIND_WORKFLOW:
+        expected_ref = str(resolved_ref or target.get("ref") or "").strip()
+    expected_sha = str(target.get("validation_target_sha") or "").strip()
+    observed_ref = str(observed.get("ref") or "").strip()
+    observed_sha = str(observed.get("sha") or "").strip()
+    conflicts = _dict_or_empty(observed.get("conflicts"))
+
+    mismatch = bool(conflicts)
+    if expected_ref and observed_ref:
+        mismatch = mismatch or _normalized_ref(expected_ref) != _normalized_ref(observed_ref)
+    if expected_sha and observed_sha:
+        mismatch = mismatch or not _shas_match(expected_sha, observed_sha)
+
+    expected_fields = [value for value in (expected_ref, expected_sha) if value]
+    observed_fields = [value for value in (observed_ref, observed_sha) if value]
+    fully_evidenced = (
+        (not expected_ref or bool(observed_ref))
+        and (not expected_sha or bool(observed_sha))
+        and bool(observed_fields)
+    )
+    if mismatch:
+        status = "mismatch"
+    elif not observed_fields:
+        status = "unknown"
+    elif expected_fields and fully_evidenced:
+        status = "verified"
+    else:
+        status = "partial"
+
+    identity.update(
+        {
+            "expected_validation_target_ref": expected_ref or None,
+            "expected_validation_target_sha": expected_sha or None,
+            "validation_target_ref": observed_ref or None,
+            "validation_target_sha": observed_sha or None,
+            "validation_target_status": status,
+            "validation_target_sources": observed.get("sources") or None,
+            "validation_target_conflicts": conflicts or None,
+        }
+    )
+    return {key: value for key, value in identity.items() if value not in (None, "", [], {})}
+
+
 def normalize_snapshot(
     run_view,
     *,
@@ -2848,10 +3487,17 @@ def normalize_snapshot(
     if status == "completed":
         run_id = int(run_view.get("databaseId") or 0)
         if run_id > 0:
-            validation_summary = load_validation_summary(repo, run_id)
+            validation_summary = load_validation_summary(
+                repo,
+                run_id,
+                validation_target_sha=target.get("validation_target_sha"),
+                validation_target_ref=target.get("validation_target_ref"),
+            )
 
     if not run_view:
         actions = ["idle"]
+    elif status.lower() == "waiting":
+        actions = ["stop_run_waiting_for_approval"]
     elif status != "completed" or status.lower() in PENDING_STATUSES:
         actions = ["diagnose_run_failure"] if failed_jobs else ["idle"]
     elif conclusion in SUCCESS_CONCLUSIONS:
@@ -2865,8 +3511,18 @@ def normalize_snapshot(
         validation_summary,
         run_view=run_view,
         failed_jobs=failed_jobs,
-        target=target,
     )
+    proof_identity = _build_proof_identity(
+        target=target,
+        run_view=run_view,
+        resolved_ref=resolved_ref,
+        validation_summary=validation_summary,
+    )
+    if proof_identity.get("validation_target_status") == "mismatch":
+        mismatch_action = "stop_validation_target_identity_mismatch"
+        actions = [mismatch_action] + (
+            ["diagnose_run_failure"] if "diagnose_run_failure" in actions else []
+        )
     diagnosis_status = _build_diagnosis_status(
         actions=actions,
         gemini_diagnosis=gemini_diagnosis,
@@ -2880,8 +3536,8 @@ def normalize_snapshot(
         "resolved_ref": resolved_ref,
         "run": {
             "id": run_view.get("databaseId"),
-            "attempt": _run_attempt(run_view),
             "number": run_view.get("number"),
+            "attempt": _run_attempt(run_view),
             "name": str(run_view.get("displayTitle") or run_view.get("name") or ""),
             "workflow_name": str(run_view.get("workflowName") or target.get("workflow", "")),
             "url": str(run_view.get("url") or ""),
@@ -2893,6 +3549,7 @@ def normalize_snapshot(
             "created_at": str(run_view.get("createdAt") or ""),
             "updated_at": str(run_view.get("updatedAt") or ""),
         },
+        "proof_identity": proof_identity,
         "failed_jobs": failed_jobs,
         "validation_summary": validation_summary,
         "appearance_wait": appearance_wait,
@@ -3003,8 +3660,8 @@ def _compact_run_payload(run_payload):
         return run_payload
     compact = {
         "id": run.get("id"),
-        "attempt": run.get("attempt"),
         "number": run.get("number"),
+        "attempt": run.get("attempt"),
         "workflow_name": run.get("workflow_name"),
         "url": run.get("url"),
         "head_branch": run.get("head_branch"),
@@ -3060,9 +3717,30 @@ def _compact_validation_context(validation_context):
         "first_blocker": context.get("first_blocker"),
         "candidate_next_slices": context.get("candidate_next_slices"),
         "failed_lane_count": context.get("failed_lane_count"),
-        "head_freshness": context.get("head_freshness"),
     }
     return {key: value for key, value in compact.items() if value not in (None, [], {}, "")} or None
+
+
+def _compact_proof_identity(proof_identity):
+    identity = _dict_or_empty(proof_identity)
+    if not identity:
+        return None
+    allowed = {
+        "workflow_host_ref",
+        "workflow_host_sha",
+        "expected_validation_target_ref",
+        "expected_validation_target_sha",
+        "validation_target_ref",
+        "validation_target_sha",
+        "validation_target_status",
+        "validation_target_sources",
+        "validation_target_conflicts",
+    }
+    return {
+        key: value
+        for key, value in identity.items()
+        if key in allowed and value not in (None, "", [], {})
+    } or None
 
 
 def _compact_snapshot(snapshot, *, verbose_details):
@@ -3075,10 +3753,22 @@ def _compact_snapshot(snapshot, *, verbose_details):
         compact["target"] = {
             key: value
             for key, value in target.items()
-            if key in {"kind", "run_id", "workflow", "ref", "host_ref", "head_sha", "min_run_id"}
+            if key
+            in {
+                "kind",
+                "run_id",
+                "workflow",
+                "ref",
+                "host_ref",
+                "head_sha",
+                "validation_target_ref",
+                "validation_target_sha",
+                "min_run_id",
+            }
             and value not in (None, "", [])
         }
     compact["run"] = _compact_run_payload(compact.get("run"))
+    compact["proof_identity"] = _compact_proof_identity(compact.get("proof_identity"))
     compact["failed_jobs"] = _compact_failed_jobs(compact.get("failed_jobs"))
     compact["appearance_wait"] = _compact_appearance_wait(compact.get("appearance_wait"))
     compact["validation_context"] = _compact_validation_context(compact.get("validation_context"))
@@ -3090,36 +3780,12 @@ def _compact_snapshot(snapshot, *, verbose_details):
 
 
 def target_state_from_target(args, target, repo, remembered):
+    if target["kind"] == TARGET_KIND_RUN_ID:
+        _GH_AUTH.deadline = None
     key = target_to_display_key(target)
     state = remembered.setdefault(key, {})
     gemini_cache = remembered.setdefault("__gemini_cache__", {})
     if target["kind"] == TARGET_KIND_RUN_ID:
-        now = int(time.time())
-        success_cache = state.get("terminal_success_cache")
-        revalidate_after = _terminal_success_revalidation_interval_seconds(
-            getattr(args, "poll_seconds", 10)
-        )
-        if isinstance(success_cache, dict):
-            cached_run_id = int(success_cache.get("run_id") or 0)
-            cached_head_sha = str(success_cache.get("head_sha") or "")
-            expected_head_sha = target.get("head_sha")
-            cache_age = max(0, now - int(success_cache.get("observed_at") or 0))
-            identity_matches = (
-                cached_run_id == int(target["run_id"])
-                and (not expected_head_sha or _matches_head_sha_prefix(cached_head_sha, expected_head_sha))
-            )
-            cached_snapshot = success_cache.get("snapshot")
-            if (
-                identity_matches
-                and cache_age < revalidate_after
-                and isinstance(cached_snapshot, dict)
-            ):
-                # Keep the cached observation immutable; acknowledgement handling
-                # annotates snapshots in place.
-                return _apply_acknowledged_actions(
-                    copy.deepcopy(cached_snapshot), getattr(args, "ack_action", [])
-                )
-
         run_view = view_run(repo, target["run_id"])
         snapshot = normalize_snapshot(
             run_view,
@@ -3129,27 +3795,12 @@ def target_state_from_target(args, target, repo, remembered):
             resolved_ref=str(run_view.get("headBranch") or str(target.get("ref") or "")),
             gemini_disabled=args.no_gemini_diagnosis,
         )
-        expected_head_sha = str(target.get("head_sha") or "").strip()
-        observed_head_sha = str(run_view.get("headSha") or "").strip()
-        if expected_head_sha and not _matches_head_sha_prefix(
-            observed_head_sha, expected_head_sha
-        ):
-            # A run-id target must never turn a stale or incomplete head read
-            # into terminal-success evidence for the requested candidate.
+        expected_head = target.get("head_sha")
+        if expected_head and not _matches_head_sha_prefix(run_view.get("headSha"), expected_head):
             snapshot["actions"] = ["stop_run_head_mismatch"]
-        if snapshot.get("actions") == ["stop_run_succeeded"]:
-            state["terminal_success_cache"] = {
-                "run_id": int(run_view.get("databaseId") or target["run_id"]),
-                "head_sha": str(run_view.get("headSha") or ""),
-                "run_attempt": _run_attempt(run_view),
-                "observed_at": now,
-                "snapshot": copy.deepcopy(snapshot),
-            }
-        else:
-            # Nonterminal and failed observations must remain fresh every poll.
-            state.pop("terminal_success_cache", None)
+            return snapshot
         state["last_run_id"] = int(run_view.get("databaseId") or target["run_id"])
-        if snapshot.get("actions") == ["diagnose_run_failure"]:
+        if "diagnose_run_failure" in (snapshot.get("actions") or []):
             run_id = int(run_view.get("databaseId") or target["run_id"])
             cached = gemini_cache.get(run_id)
             if cached is None:
@@ -3209,6 +3860,13 @@ def target_state_from_target(args, target, repo, remembered):
     expected_head_sha = target.get("head_sha")
     host_ref = str(target.get("host_ref") or "").strip() or None
     now = int(time.time())
+    timeout_seconds = int(args.appearance_timeout_seconds or 0)
+    wait_started_at = int(state.get("appearance_wait_started_at") or now)
+    _GH_AUTH.deadline = (
+        time.monotonic() + max(0, wait_started_at + timeout_seconds - now)
+        if timeout_seconds > 0
+        else None
+    )
     follow_relist_after = _followed_run_relist_interval_seconds(args.poll_seconds)
     cached_run_id = state.get("last_run_id")
     next_run_list_at = int(state.get("next_run_list_at") or 0)
@@ -3216,6 +3874,7 @@ def target_state_from_target(args, target, repo, remembered):
     followed_newer_run = False
     if cached_run_id is not None and now < next_run_list_at:
         state.pop("appearance_wait_started_at", None)
+        _GH_AUTH.deadline = None
         run_view = view_run(repo, int(cached_run_id))
         latest_run_id = int(cached_run_id)
     else:
@@ -3232,7 +3891,6 @@ def target_state_from_target(args, target, repo, remembered):
             wait_started_at = int(state.get("appearance_wait_started_at") or now)
             state["appearance_wait_started_at"] = wait_started_at
             elapsed_seconds = max(0, now - wait_started_at)
-            timeout_seconds = int(args.appearance_timeout_seconds or 0)
             timed_out = timeout_seconds > 0 and elapsed_seconds >= timeout_seconds
             dispatch_host_mismatch = _maybe_detect_dispatch_host_branch_mismatch(
                 repo,
@@ -3282,6 +3940,7 @@ def target_state_from_target(args, target, repo, remembered):
             return _apply_acknowledged_actions(snapshot, getattr(args, "ack_action", []))
 
         latest = matching_runs[0]
+        _GH_AUTH.deadline = None
         latest_run_id = int(latest["databaseId"])
         state.pop("appearance_wait_started_at", None)
         last_run_id = state.get("last_run_id")
@@ -3300,7 +3959,7 @@ def target_state_from_target(args, target, repo, remembered):
         gemini_disabled=args.no_gemini_diagnosis,
     )
     state["last_run_id"] = latest_run_id
-    if resolved.get("actions") == ["diagnose_run_failure"]:
+    if "diagnose_run_failure" in (resolved.get("actions") or []):
         cached = gemini_cache.get(latest_run_id)
         if cached is None:
             if args.no_gemini_diagnosis:
@@ -3435,83 +4094,37 @@ def _payload_has_unready_failure_logs(payload):
     return False
 
 
-def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
-    """Keep terminal waits open briefly for a rerun of the same Actions run.
+def _payload_has_terminal_wait_blocker(payload):
+    early_stop_actions = {
+        "stop_dispatch_host_branch_mismatch",
+        "stop_operator_help_required",
+        "stop_run_appearance_timeout",
+        "stop_run_head_mismatch",
+        "stop_run_waiting_for_approval",
+        "stop_validation_target_identity_mismatch",
+    }
+    return bool(early_stop_actions.intersection(payload.get("actions") or []))
 
-    GitHub can start a new attempt after an initial attempt has already reached
-    ``completed``. The run id is unchanged, so a watcher that returns on the
-    first failure can race the rerun and prompt a duplicate dispatch. Track the
-    run id plus attempt number and require one quiet settle window before
-    surfacing a terminal failure. A status change to queued/in-progress clears
-    the window and is then handled by the ordinary terminal-wait logic.
-    """
-    if int(settle_seconds or 0) <= 0:
-        return False
 
-    now = time.monotonic()
-    observed = retry_state.setdefault("terminal_failures", {})
-    active_keys = set()
-    pending = False
-    for target in _list_or_empty(payload.get("targets")):
-        if not isinstance(target, dict):
-            continue
-        run = _dict_or_empty(target.get("run"))
-        status = str(run.get("status") or "").lower()
-        conclusion = str(run.get("conclusion") or "").lower()
-        if status != "completed" or conclusion not in FAILED_CONCLUSIONS:
-            continue
-
-        try:
-            target_key = target_to_display_key(target)
-        except Exception:  # noqa: BLE001 - malformed remote payloads must not stop the watcher.
-            target_key = f"run-id:{run.get('id') or 'unknown'}"
-        active_keys.add(target_key)
-        try:
-            run_id = int(run.get("id") or 0)
-        except (TypeError, ValueError):
-            run_id = 0
-        signature = (
-            run_id,
-            str(run.get("attempt") or "").strip(),
+def _payload_all_targets_terminal(payload):
+    summary = _dict_or_empty(payload.get("summary"))
+    targets_total = int(summary.get("targets_total") or 0)
+    if targets_total > 0:
+        terminal_total = (
+            int(summary.get("targets_terminal_success") or 0)
+            + int(summary.get("targets_terminal_failure") or 0)
+            + int(summary.get("targets_terminal_other") or 0)
         )
-        record = observed.get(target_key)
-        if not isinstance(record, dict) or record.get("signature") != signature:
-            observed[target_key] = {"signature": signature, "started_at": now}
-            pending = True
-            continue
-        if now - float(record.get("started_at") or now) < int(settle_seconds):
-            pending = True
-
-    for target_key in list(observed):
-        if target_key not in active_keys:
-            observed.pop(target_key, None)
-    return pending
-
-
-def _payload_all_terminal_success(payload):
-    targets = _list_or_empty(payload.get("targets"))
-    if not targets or any(not isinstance(target, dict) for target in targets):
+        if terminal_total == targets_total:
+            return True
+    targets = payload.get("targets") or []
+    if not targets:
         return False
-    return all(
-        _list_or_empty(target.get("actions")) == ["stop_run_succeeded"]
-        for target in targets
-    )
-
-
-def _invalidate_cached_terminal_successes(targets, remembered):
-    invalidated = False
     for target in targets:
-        try:
-            key = target_to_display_key(target)
-        except Exception:  # noqa: BLE001 - malformed target data must not stop the watcher.
-            continue
-        state = remembered.get(key)
-        if not isinstance(state, dict):
-            continue
-        if isinstance(state.get("terminal_success_cache"), dict):
-            state.pop("terminal_success_cache", None)
-            invalidated = True
-    return invalidated
+        run = _dict_or_empty(_dict_or_empty(target).get("run"))
+        if str(run.get("status") or "").lower() != "completed":
+            return False
+    return True
 
 
 def emit(payload):
@@ -3525,21 +4138,18 @@ def watch_until_action(args, repo):
     retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
-        if args.wait_for == "all_done" and _payload_all_terminal_success(payload):
-            # A bounded cache is safe for ordinary waiting, but aggregate
-            # terminal success needs one authoritative final read.  A rerun can
-            # otherwise become pending within the cache window and be hidden
-            # while a sibling target finishes.
-            if _invalidate_cached_terminal_successes(targets, remembered):
-                payload = resolve_snapshot(args, repo, targets, remembered)
         if args.require_terminal_run and _payload_has_pending_retry_settle(
-            payload,
-            retry_state,
-            getattr(args, "retry_settle_seconds", 0),
+            payload, retry_state, getattr(args, "retry_settle_seconds", 0)
         ):
             time.sleep(args.poll_seconds)
             continue
         if args.require_terminal_run and _payload_has_in_progress_failure(payload):
+            time.sleep(args.poll_seconds)
+            continue
+        if getattr(args, "watch_until_terminal", False):
+            if _payload_has_terminal_wait_blocker(payload) or _payload_all_targets_terminal(payload):
+                emit(payload)
+                return
             time.sleep(args.poll_seconds)
             continue
         actions = payload.get("actions") or []

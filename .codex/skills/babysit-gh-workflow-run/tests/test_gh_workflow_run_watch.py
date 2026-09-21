@@ -10,7 +10,7 @@ import urllib.error
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 
 MODULE_PATH = Path(
@@ -35,107 +35,18 @@ def temp_cwd(path):
         os.chdir(previous)
 
 
-class GeminiWatcherTests(unittest.TestCase):
-    def test_broker_routes_text_bytes_and_download(self):
-        calls = []
-        def fake_request(path, argv, *, binary=False):
-            calls.append((path, argv, binary))
-            return {"returncode": 0, "stdout": "text\n", "stderr": "", "stdout_bytes": b"\x00zip"}
-        with patch.dict(os.environ, {"GITHUB_APP_BROKER_SOCKET": "/tmp/broker.sock"}), patch.dict(sys.modules, {"github_app_broker_proxy": types.SimpleNamespace(request=fake_request)}):
-            self.assertEqual("text\n", MODULE.gh_text(["run", "view", "1"], repo="o/r"))
-            self.assertEqual("text\n", MODULE.gh_text(["repo", "view", "--json", "nameWithOwner"], repo="o/r"))
-            self.assertEqual(b"\x00zip", MODULE.gh_bytes(["api", "/repos/o/r/logs"], repo="o/r"))
-            self.assertIsNone(MODULE.gh_download(["run", "download", "1"], repo="o/r"))
-        self.assertEqual([("/tmp/broker.sock", ["-R", "o/r", "run", "view", "1"], False), ("/tmp/broker.sock", ["-R", "o/r", "repo", "view", "--json", "nameWithOwner"], False), ("/tmp/broker.sock", ["api", "/repos/o/r/logs"], True), ("/tmp/broker.sock", ["-R", "o/r", "run", "download", "1"], False)], calls)
+class GhProcessBoundaryTests(unittest.TestCase):
+    def test_gh_helpers_pin_executable_and_never_enable_shell(self):
+        for helper_name in ("gh_text", "gh_download", "gh_bytes"):
+            with self.subTest(helper=helper_name), patch.dict(os.environ, {}, clear=True), patch.object(
+                MODULE, "_prepare_gh_env", return_value={}
+            ), patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(stdout="{}")) as run:
+                getattr(MODULE, helper_name)(["api", "repos/owner/repo/actions/runs/42"], repo="owner/repo")
+            self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo/actions/runs/42"])
+            self.assertIs(run.call_args.kwargs["shell"], False)
 
-    def test_target_display_key_includes_head_sha(self):
-        target = {
-            "kind": MODULE.TARGET_KIND_WORKFLOW,
-            "workflow": "validation-lab",
-            "ref": "integration/test",
-            "head_sha": "abc123",
-        }
-        self.assertEqual(
-            MODULE.target_to_display_key(target),
-            "workflow:validation-lab|ref:integration/test|head-sha:abc123",
-        )
 
-    def test_target_display_key_includes_min_run_id(self):
-        target = {
-            "kind": MODULE.TARGET_KIND_WORKFLOW,
-            "workflow": "validation-lab",
-            "ref": "integration/test",
-            "head_sha": "abc123",
-            "min_run_id": 456,
-        }
-        self.assertEqual(
-            MODULE.target_to_display_key(target),
-            "workflow:validation-lab|ref:integration/test|head-sha:abc123|min-run-id:456",
-        )
-
-    def test_target_display_key_includes_run_id_head_sha(self):
-        target = {
-            "kind": MODULE.TARGET_KIND_RUN_ID,
-            "run_id": 123,
-            "head_sha": "abc123",
-        }
-        self.assertEqual(MODULE.target_to_display_key(target), "run-id:123|head-sha:abc123")
-
-    def test_parse_target_arg_accepts_min_run_id(self):
-        target = MODULE.parse_target_arg(
-            "workflow=validation-lab,ref=integration/test,head-sha=abc123,min-run-id=456"
-        )
-        self.assertEqual(target["min_run_id"], 456)
-
-    def test_parse_target_arg_accepts_run_id_head_sha(self):
-        target = MODULE.parse_target_arg("run-id=123,head-sha=abc123")
-
-        self.assertEqual(target["kind"], MODULE.TARGET_KIND_RUN_ID)
-        self.assertEqual(target["run_id"], 123)
-        self.assertEqual(target["head_sha"], "abc123")
-
-    def test_parse_target_arg_accepts_host_ref(self):
-        target = MODULE.parse_target_arg(
-            "workflow=validation-lab,ref=validation/w2902,host-ref=main,head-sha=abc123"
-        )
-        self.assertEqual(target["host_ref"], "main")
-
-    def test_parse_target_arg_rejects_invalid_min_run_id(self):
-        with self.assertRaises(MODULE.GhCommandError):
-            MODULE.parse_target_arg(
-                "workflow=validation-lab,ref=integration/test,min-run-id=not-a-number"
-            )
-
-    def test_list_workflow_runs_filters_by_min_run_id(self):
-        runs = [
-            {
-                "databaseId": 100,
-                "headBranch": "integration/test",
-                "headSha": "abc123def0",
-                "status": "completed",
-                "conclusion": "failure",
-            },
-            {
-                "databaseId": 200,
-                "headBranch": "integration/test",
-                "headSha": "abc123dead",
-                "status": "queued",
-                "conclusion": "",
-            },
-            {
-                "databaseId": 300,
-                "headBranch": "other",
-                "headSha": "abc123ffff",
-                "status": "queued",
-                "conclusion": "",
-            },
-        ]
-        with patch.object(MODULE, "gh_json", return_value=runs):
-            filtered = MODULE.list_workflow_runs("owner/repo", "validation-lab", "integration/test", "abc123", minimum_run_id=150)
-
-        self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0]["databaseId"], 200)
-
+class ProofIdentityTests(unittest.TestCase):
     def test_list_workflow_runs_matches_expected_head_sha_case_insensitively(self):
         runs = [
             {
@@ -178,6 +89,1006 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["databaseId"], 100)
 
+    def test_parse_args_rejects_negative_retry_settle_seconds(self):
+        with patch.object(
+            sys,
+            "argv",
+            ["gh_workflow_run_watch.py", "--retry-settle-seconds", "-1"],
+        ), self.assertRaises(SystemExit):
+            MODULE.parse_args()
+
+    def test_retry_settle_tracks_run_attempt_and_clears_when_retry_starts(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+        }
+        first_failure = {
+            "targets": [
+                {
+                    "target": target,
+                    "run": {
+                        "id": 42,
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        retry_in_progress = {
+            "targets": [
+                {
+                    "target": target,
+                    "run": {
+                        "id": 42,
+                        "attempt": 2,
+                        "status": "in_progress",
+                        "conclusion": "",
+                    },
+                }
+            ]
+        }
+        state = {}
+        with patch.object(MODULE.time, "monotonic", return_value=100.0):
+            self.assertTrue(
+                MODULE._payload_has_pending_retry_settle(first_failure, state, 90)
+            )
+        self.assertIn("terminal_failures", state)
+        self.assertFalse(
+            MODULE._payload_has_pending_retry_settle(retry_in_progress, state, 90)
+        )
+        self.assertEqual(state["terminal_failures"], {})
+
+    def test_retry_settle_expires_after_a_quiet_failure_window(self):
+        payload = {
+            "targets": [
+                {
+                    "target": {
+                        "kind": MODULE.TARGET_KIND_RUN_ID,
+                        "run_id": 42,
+                    },
+                    "run": {
+                        "id": 42,
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        state = {}
+        with patch.object(MODULE.time, "monotonic", side_effect=[100.0, 191.0]):
+            self.assertTrue(
+                MODULE._payload_has_pending_retry_settle(payload, state, 90)
+            )
+            self.assertFalse(
+                MODULE._payload_has_pending_retry_settle(payload, state, 90)
+            )
+
+    def test_retry_settle_falls_back_for_malformed_remote_run_identity(self):
+        payload = {
+            "targets": [
+                {
+                    "target": {"kind": "unexpected"},
+                    "run": {
+                        "id": "not-a-number",
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        self.assertTrue(
+            MODULE._payload_has_pending_retry_settle(payload, {}, 90)
+        )
+
+    def test_watch_until_terminal_waits_for_a_retry_of_the_same_run(self):
+        args = types.SimpleNamespace(
+            require_terminal_run=True,
+            retry_settle_seconds=90,
+            wait_for="first_action",
+            poll_seconds=1,
+            ack_action=[],
+            verbose_details=False,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42}
+        failed_attempt = {
+            "actions": ["diagnose_run_failure"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["diagnose_run_failure"],
+                    "run": {"id": 42, "attempt": 1, "status": "completed", "conclusion": "failure"},
+                }
+            ],
+        }
+        retry_running = {
+            "actions": ["diagnose_run_failure"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["diagnose_run_failure"],
+                    "run": {"id": 42, "attempt": 2, "status": "in_progress", "conclusion": ""},
+                }
+            ],
+        }
+        retry_success = {
+            "actions": ["stop_run_succeeded"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"id": 42, "attempt": 2, "status": "completed", "conclusion": "success"},
+                }
+            ],
+        }
+
+        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
+            MODULE,
+            "resolve_snapshot",
+            side_effect=[failed_attempt, retry_running, retry_success],
+        ), patch.object(MODULE, "emit") as emit, patch.object(
+            MODULE.time, "monotonic", return_value=100.0
+        ), patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+            MODULE.watch_until_action(args, "sednalabs/codex")
+
+        emit.assert_called_once_with(retry_success)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_exact_run_rejects_wrong_host_head_before_diagnosis(self):
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "head_sha": "deadbeef"}
+        args = types.SimpleNamespace(no_gemini_diagnosis=True)
+        with patch.object(MODULE, "view_run", return_value=self._run_view()), patch.object(
+            MODULE, "load_validation_summary", return_value=None
+        ):
+            snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
+        self.assertEqual(snapshot["actions"], ["stop_run_head_mismatch"])
+        self.assertTrue(MODULE._payload_has_terminal_wait_blocker({"actions": snapshot["actions"]}))
+
+    def _run_view(self, *, status="completed", conclusion="success"):
+        return {
+            "databaseId": 42,
+            "number": 7,
+            "displayTitle": "validation",
+            "workflowName": "validation-lab",
+            "url": "https://example.invalid/run/42",
+            "headBranch": "main",
+            "headSha": "1111111111111111111111111111111111111111",
+            "event": "workflow_dispatch",
+            "status": status,
+            "conclusion": conclusion,
+            "createdAt": "2026-07-26T00:00:00Z",
+            "updatedAt": "2026-07-26T00:05:00Z",
+            "jobs": [],
+        }
+
+    def _cross_ref_target(self):
+        return {
+            "kind": MODULE.TARGET_KIND_WORKFLOW,
+            "workflow": "validation-lab.yml",
+            "ref": "candidate/exact",
+            "host_ref": "main",
+            "head_sha": None,
+            "validation_target_ref": "candidate/exact",
+            "validation_target_sha": "2222222",
+            "min_run_id": None,
+            "spec": (
+                "workflow=validation-lab.yml,ref=candidate/exact,host-ref=main,"
+                "validation-target-sha=2222222"
+            ),
+        }
+
+    def test_same_head_run_keeps_legacy_run_fields_and_explicit_identity(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+            "spec": "run-id=42",
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=None):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=target,
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="main",
+            )
+
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+        self.assertEqual(snapshot["run"]["head_branch"], "main")
+        self.assertEqual(
+            snapshot["run"]["head_sha"],
+            "1111111111111111111111111111111111111111",
+        )
+        self.assertEqual(
+            snapshot["proof_identity"],
+            {
+                "workflow_host_ref": "main",
+                "workflow_host_sha": "1111111111111111111111111111111111111111",
+                "validation_target_ref": "main",
+                "validation_target_sha": "1111111111111111111111111111111111111111",
+                "validation_target_status": "same_as_workflow_host",
+                "validation_target_sources": ["github_run"],
+            },
+        )
+
+    def test_waiting_run_surfaces_environment_approval_gate(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+            "spec": "run-id=42",
+        }
+        snapshot = MODULE.normalize_snapshot(
+            self._run_view(status="waiting", conclusion=""),
+            target=target,
+            repo="owner/repo",
+            followed_newer_run=False,
+            resolved_ref="main",
+        )
+
+        self.assertEqual(snapshot["actions"], ["stop_run_waiting_for_approval"])
+        self.assertTrue(
+            MODULE._payload_has_terminal_wait_blocker(
+                {"actions": snapshot["actions"]}
+            )
+        )
+
+    def test_cross_ref_target_uses_authoritative_summary_not_run_head(self):
+        summary = {
+            "validation_target": {
+                "ref": "candidate/exact",
+                "sha": "2222222222222222222222222222222222222222",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["workflow_host_ref"], "main")
+        self.assertEqual(
+            identity["workflow_host_sha"],
+            "1111111111111111111111111111111111111111",
+        )
+        self.assertEqual(identity["validation_target_ref"], "candidate/exact")
+        self.assertEqual(
+            identity["validation_target_sha"],
+            "2222222222222222222222222222222222222222",
+        )
+        self.assertEqual(identity["validation_target_status"], "verified")
+        self.assertNotEqual(
+            identity["validation_target_sha"],
+            identity["workflow_host_sha"],
+        )
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+
+    def test_cross_ref_target_sha_does_not_filter_on_workflow_run_head_sha(self):
+        args = types.SimpleNamespace(
+            no_gemini_diagnosis=True,
+            gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
+            gemini_timeout_seconds=MODULE.GEMINI_DEFAULT_TIMEOUT_SECONDS,
+            appearance_timeout_seconds=300,
+            poll_seconds=10,
+            ack_action=[],
+            verbose_details=False,
+        )
+        target = self._cross_ref_target()
+        run_view = self._run_view()
+        listed_run = {
+            "databaseId": 42,
+            "headBranch": "main",
+            "headSha": run_view["headSha"],
+        }
+        summary = {
+            "validation_target": {
+                "ref": "candidate/exact",
+                "sha": "2222222222222222222222222222222222222222",
+            }
+        }
+
+        with patch.object(MODULE, "detect_ref", return_value="candidate/exact"), patch.object(
+            MODULE,
+            "list_workflow_runs",
+            return_value=[listed_run],
+        ) as list_runs, patch.object(
+            MODULE,
+            "view_run",
+            return_value=run_view,
+        ), patch.object(
+            MODULE,
+            "load_validation_summary",
+            return_value=summary,
+        ):
+            snapshot = MODULE.target_state_from_target(
+                args,
+                target,
+                "owner/repo",
+                {},
+            )
+
+        list_runs.assert_called_once_with(
+            "owner/repo",
+            "validation-lab.yml",
+            "candidate/exact",
+            None,
+            minimum_run_id=None,
+            host_ref="main",
+        )
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+        self.assertEqual(
+            snapshot["proof_identity"]["workflow_host_sha"],
+            "1111111111111111111111111111111111111111",
+        )
+        self.assertEqual(
+            snapshot["proof_identity"]["validation_target_sha"],
+            "2222222222222222222222222222222222222222",
+        )
+
+    def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
+        api_run = {
+            "id": 30440173012,
+            "repository": {"full_name": "owner/repo"},
+            "display_title": "Required Agent Ops",
+            "event": "pull_request",
+            "head_branch": "fix/project-ledger-rls-enforcement",
+            "head_sha": "a43e65e09e82773cc69647698dfcda3c963eb0bf",
+            "name": "required-agent-ops",
+            "run_number": 912,
+            "status": "in_progress",
+            "conclusion": None,
+            "html_url": "https://example.invalid/actions/runs/30440173012",
+            "created_at": "2026-07-29T09:00:00Z",
+            "updated_at": "2026-07-29T09:05:00Z",
+        }
+        api_jobs = {
+            "total_count": 1,
+            "jobs": [
+                {
+                    "id": 99,
+                    "run_id": 30440173012,
+                    "started_at": "2026-07-29T09:00:00Z",
+                    "completed_at": None,
+                    "name": "Required Agent Ops",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "html_url": "https://example.invalid/jobs/99",
+                    "steps": [
+                        {
+                            "number": 1,
+                            "started_at": "2026-07-29T09:00:00Z",
+                            "completed_at": None,
+                            "name": "Run",
+                            "status": "in_progress",
+                            "conclusion": None,
+                        }
+                    ],
+                }
+            ]
+        }
+        with patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=[
+                MODULE.GhCommandError(
+                    "HTTP 404: repos/owner/repo/actions/workflows/322643164"
+                ),
+                api_run,
+                api_jobs,
+            ],
+        ):
+            result = MODULE.view_run("owner/repo", 30440173012)
+
+        self.assertEqual(result["databaseId"], 30440173012)
+        self.assertEqual(result["workflowName"], "required-agent-ops")
+        self.assertEqual(result["headSha"], api_run["head_sha"])
+        self.assertEqual(result["jobs"][0]["databaseId"], 99)
+        self.assertEqual(result["jobs"][0]["steps"][0]["name"], "Run")
+        self.assertEqual(result["retrievedVia"], "actions_api_fallback")
+
+    def test_cross_ref_target_is_unknown_when_summary_has_no_identity_evidence(self):
+        with patch.object(MODULE, "load_validation_summary", return_value={"summary": {}}):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "unknown")
+        self.assertEqual(identity["expected_validation_target_ref"], "candidate/exact")
+        self.assertEqual(identity["expected_validation_target_sha"], "2222222")
+        self.assertNotIn("validation_target_ref", identity)
+        self.assertNotIn("validation_target_sha", identity)
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+
+    def test_cross_ref_target_reads_ci_proof_head_sha_as_partial_target_evidence(self):
+        summary = {
+            "ci_proof_v1": {
+                "schema_version": "ci-proof-v1",
+                "head_sha": "2222222222222222222222222222222222222222",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "partial")
+        self.assertNotIn("validation_target_ref", identity)
+        self.assertEqual(
+            identity["validation_target_sha"],
+            "2222222222222222222222222222222222222222",
+        )
+        self.assertEqual(
+            identity["validation_target_sources"],
+            ["validation_summary.ci_proof_v1.head_sha"],
+        )
+        self.assertNotEqual(
+            identity["validation_target_sha"],
+            identity["workflow_host_sha"],
+        )
+
+    def test_cross_ref_target_reads_surface_acceptance_receipt_sha(self):
+        summary = {
+            "ops_mcp_surface_acceptance_receipt": {
+                "schema_version": "ops-mcp-surface-acceptance-v1",
+                "target_revision": "2222222222222222222222222222222222222222",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "partial")
+        self.assertNotIn("validation_target_ref", identity)
+        self.assertEqual(
+            identity["validation_target_sha"],
+            "2222222222222222222222222222222222222222",
+        )
+        self.assertEqual(
+            identity["validation_target_sources"],
+            ["ops_mcp_surface_acceptance_receipt.target_revision"],
+        )
+
+    def test_cross_ref_target_reads_heavy_validation_results_identity(self):
+        summary = {
+            "heavy_validation_results": {
+                "target_ref": "candidate/exact",
+                "target_sha": "2222222222222222222222222222222222222222",
+                "outcome": "success",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        self.assertEqual(
+            snapshot["proof_identity"],
+            {
+                "workflow_host_ref": "main",
+                "workflow_host_sha": "1" * 40,
+                "expected_validation_target_ref": "candidate/exact",
+                "expected_validation_target_sha": "2222222",
+                "validation_target_ref": "candidate/exact",
+                "validation_target_sha": "2" * 40,
+                "validation_target_status": "verified",
+                "validation_target_sources": [
+                    "heavy_validation_results.target_ref",
+                    "heavy_validation_results.target_sha",
+                ],
+            },
+        )
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+
+    def test_cross_ref_target_heavy_validation_results_mismatch_fails_closed(self):
+        summary = {
+            "heavy_validation_results": {
+                "target_ref": "candidate/exact",
+                "target_sha": "3333333333333333333333333333333333333333",
+                "outcome": "success",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        self.assertEqual(snapshot["proof_identity"]["validation_target_status"], "mismatch")
+        self.assertEqual(snapshot["proof_identity"]["validation_target_sha"], "3" * 40)
+        self.assertEqual(snapshot["actions"], ["stop_validation_target_identity_mismatch"])
+
+    def test_cross_ref_target_malformed_heavy_validation_results_stays_unknown(self):
+        summary = {
+            "heavy_validation_results": {
+                "target_ref": ["candidate/exact"],
+                "target_sha": {"value": "2222222"},
+                "outcome": "success",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "unknown")
+        self.assertNotIn("validation_target_ref", identity)
+        self.assertNotIn("validation_target_sha", identity)
+
+    def test_cross_ref_target_missing_heavy_validation_results_stays_unknown(self):
+        with patch.object(MODULE, "load_validation_summary", return_value=None):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "unknown")
+        self.assertEqual(snapshot["actions"], ["stop_run_succeeded"])
+
+    def test_exact_run_discovers_separate_target_from_authoritative_summary(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+            "spec": "run-id=42",
+        }
+        summary = {
+            "ci_proof_v1": {
+                "schema_version": "ci-proof-v1",
+                "head_sha": "2222222222222222222222222222222222222222",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=target,
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="main",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["workflow_host_sha"], "1" * 40)
+        self.assertEqual(identity["validation_target_sha"], "2" * 40)
+        self.assertEqual(identity["validation_target_status"], "partial")
+        self.assertNotIn("expected_validation_target_sha", identity)
+
+    def test_contradictory_authoritative_target_evidence_fails_closed(self):
+        summary = {
+            "validation_target": {
+                "ref": "candidate/exact",
+                "sha": "2222222222222222222222222222222222222222",
+            },
+            "ci_proof_v1": {
+                "schema_version": "ci-proof-v1",
+                "head_sha": "3333333333333333333333333333333333333333",
+            },
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "mismatch")
+        self.assertEqual(
+            identity["validation_target_conflicts"]["sha"],
+            [
+                "2222222222222222222222222222222222222222",
+                "3333333333333333333333333333333333333333",
+            ],
+        )
+        self.assertEqual(
+            snapshot["actions"],
+            ["stop_validation_target_identity_mismatch"],
+        )
+
+    def test_authoritative_target_disagreeing_with_expectation_fails_closed(self):
+        summary = {
+            "validation_target": {
+                "ref": "candidate/exact",
+                "sha": "3333333333333333333333333333333333333333",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        identity = snapshot["proof_identity"]
+        self.assertEqual(identity["validation_target_status"], "mismatch")
+        self.assertEqual(identity["expected_validation_target_sha"], "2222222")
+        self.assertEqual(identity["validation_target_sha"], "3" * 40)
+        self.assertNotIn("validation_target_conflicts", identity)
+        self.assertEqual(
+            snapshot["actions"],
+            ["stop_validation_target_identity_mismatch"],
+        )
+
+    def test_matching_cross_ref_terminal_failure_keeps_failure_action(self):
+        summary = {
+            "validation_target": {
+                "ref": "candidate/exact",
+                "sha": "2222222222222222222222222222222222222222",
+            }
+        }
+        with patch.object(MODULE, "load_validation_summary", return_value=summary):
+            snapshot = MODULE.normalize_snapshot(
+                self._run_view(conclusion="failure"),
+                target=self._cross_ref_target(),
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="candidate/exact",
+            )
+
+        self.assertEqual(snapshot["proof_identity"]["validation_target_status"], "verified")
+        self.assertEqual(snapshot["actions"], ["diagnose_run_failure"])
+
+    def test_compact_identity_output_is_bounded_and_field_disciplined(self):
+        snapshot = {
+            "target": self._cross_ref_target(),
+            "repo": "owner/repo",
+            "resolved_ref": "candidate/exact",
+            "run": {
+                "id": 42,
+                "number": 7,
+                "workflow_name": "validation-lab",
+                "url": "https://example.invalid/run/42",
+                "head_branch": "main",
+                "head_sha": "1" * 40,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            "proof_identity": {
+                "workflow_host_ref": "main",
+                "workflow_host_sha": "1" * 40,
+                "expected_validation_target_ref": "candidate/exact",
+                "expected_validation_target_sha": "2" * 40,
+                "validation_target_ref": "candidate/exact",
+                "validation_target_sha": "2" * 40,
+                "validation_target_status": "verified",
+                "validation_target_sources": [
+                    "validation_summary.validation_target.ref",
+                    "validation_summary.validation_target.sha",
+                ],
+                "unexpected": "x" * 5000,
+            },
+            "validation_summary": {"large": "x" * 10000},
+            "failed_jobs": [],
+            "appearance_wait": None,
+            "validation_context": None,
+            "diagnosis_status": {"state": "not_needed"},
+            "actions": ["stop_run_succeeded"],
+            "ts": 1,
+        }
+
+        compact = MODULE._compact_snapshot(snapshot, verbose_details=False)
+        encoded = json.dumps(compact, sort_keys=True)
+
+        self.assertNotIn("repo", compact)
+        self.assertNotIn("validation_summary", compact)
+        self.assertNotIn("unexpected", compact["proof_identity"])
+        self.assertLess(len(encoded), 1800)
+        self.assertEqual(
+            set(compact["proof_identity"]),
+            {
+                "workflow_host_ref",
+                "workflow_host_sha",
+                "expected_validation_target_ref",
+                "expected_validation_target_sha",
+                "validation_target_ref",
+                "validation_target_sha",
+                "validation_target_status",
+                "validation_target_sources",
+            },
+        )
+
+
+class GeminiWatcherTests(unittest.TestCase):
+    def test_target_display_key_includes_head_sha(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_WORKFLOW,
+            "workflow": "validation-lab",
+            "ref": "integration/test",
+            "head_sha": "abc123",
+        }
+        self.assertEqual(
+            MODULE.target_to_display_key(target),
+            "workflow:validation-lab|ref:integration/test|head-sha:abc123",
+        )
+
+    def test_target_display_key_includes_min_run_id(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_WORKFLOW,
+            "workflow": "validation-lab",
+            "ref": "integration/test",
+            "head_sha": "abc123",
+            "min_run_id": 456,
+        }
+        self.assertEqual(
+            MODULE.target_to_display_key(target),
+            "workflow:validation-lab|ref:integration/test|head-sha:abc123|min-run-id:456",
+        )
+
+    def test_parse_target_arg_accepts_min_run_id(self):
+        target = MODULE.parse_target_arg(
+            "workflow=validation-lab,ref=integration/test,head-sha=abc123,min-run-id=456"
+        )
+        self.assertEqual(target["min_run_id"], 456)
+
+    def test_parse_target_arg_accepts_host_ref(self):
+        target = MODULE.parse_target_arg(
+            "workflow=validation-lab,ref=validation/candidate,host-ref=main,head-sha=abc123"
+        )
+        self.assertEqual(target["host_ref"], "main")
+
+    def test_parse_target_arg_separates_workflow_host_and_validation_target(self):
+        target = MODULE.parse_target_arg(
+            "workflow=validation-lab,ref=candidate/exact,host-ref=main,"
+            "workflow-host-sha=1111111,validation-target-ref=candidate/exact,"
+            "validation-target-sha=2222222"
+        )
+        self.assertEqual(target["host_ref"], "main")
+        self.assertEqual(target["head_sha"], "1111111")
+        self.assertEqual(target["validation_target_ref"], "candidate/exact")
+        self.assertEqual(target["validation_target_sha"], "2222222")
+
+    def test_parse_run_id_target_accepts_validation_target_expectation(self):
+        target = MODULE.parse_target_arg(
+            "run-id=42,validation-target-ref=candidate/exact,"
+            "validation-target-sha=2222222"
+        )
+        self.assertEqual(target["run_id"], 42)
+        self.assertEqual(target["validation_target_ref"], "candidate/exact")
+        self.assertEqual(target["validation_target_sha"], "2222222")
+
+    def test_parse_target_arg_rejects_invalid_min_run_id(self):
+        with self.assertRaises(MODULE.GhCommandError):
+            MODULE.parse_target_arg(
+                "workflow=validation-lab,ref=integration/test,min-run-id=not-a-number"
+            )
+
+    def test_list_workflow_runs_filters_by_min_run_id(self):
+        runs = [
+            {
+                "databaseId": 100,
+                "headBranch": "integration/test",
+                "headSha": "abc123def0",
+                "status": "completed",
+                "conclusion": "failure",
+            },
+            {
+                "databaseId": 200,
+                "headBranch": "integration/test",
+                "headSha": "abc123dead",
+                "status": "queued",
+                "conclusion": "",
+            },
+            {
+                "databaseId": 300,
+                "headBranch": "other",
+                "headSha": "abc123ffff",
+                "status": "queued",
+                "conclusion": "",
+            },
+        ]
+        with patch.object(MODULE, "gh_json", return_value=runs):
+            filtered = MODULE.list_workflow_runs("owner/repo", "validation-lab", "integration/test", "abc123", minimum_run_id=150)
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["databaseId"], 200)
+
+    def test_list_workflow_runs_uses_host_ref_when_logical_ref_is_validation_sha(self):
+        runs = [
+            {
+                "databaseId": 30774344041,
+                "headBranch": "main",
+                "headSha": "d7173346" + "0" * 32,
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        with patch.object(MODULE, "gh_json", return_value=runs):
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "validation-lab",
+                "31c58c3" + "0" * 33,
+                expected_head_sha=None,
+                host_ref="main",
+            )
+
+        self.assertEqual([run["databaseId"] for run in filtered], [30774344041])
+
+    def test_list_workflow_runs_same_ref_sha_still_selects_matching_host_sha(self):
+        runs = [
+            {
+                "databaseId": 101,
+                "headBranch": "main",
+                "headSha": "31c58c3" + "0" * 33,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "databaseId": 102,
+                "headBranch": "main",
+                "headSha": "d7173346" + "0" * 32,
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        with patch.object(MODULE, "gh_json", return_value=runs):
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "validation-lab",
+                "main",
+                expected_head_sha="31c58c3",
+            )
+
+        self.assertEqual([run["databaseId"] for run in filtered], [101])
+
+    def test_list_workflow_runs_falls_back_to_actions_api_for_deleted_workflow_id(self):
+        fallback_payload = {
+            "workflow_runs": [
+                {
+                    "id": 301,
+                    "name": "Required Agent Ops",
+                    "path": ".github/workflows/required-agent-ops.yml",
+                    "head_branch": "fix/exact",
+                    "head_sha": "abc123def456",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "html_url": "https://example.invalid/run/301",
+                    "run_number": 9,
+                },
+                {
+                    "id": 302,
+                    "name": "Unrelated Workflow",
+                    "path": ".github/workflows/unrelated.yml",
+                    "head_branch": "fix/exact",
+                    "head_sha": "abc123def456",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://example.invalid/run/302",
+                    "run_number": 4,
+                },
+            ]
+        }
+        with patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=[[], fallback_payload],
+        ):
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "required-agent-ops.yml",
+                "fix/exact",
+                "abc123",
+                minimum_run_id=300,
+            )
+
+        self.assertEqual([run["databaseId"] for run in filtered], [301])
+        self.assertEqual(
+            filtered[0]["retrievedVia"],
+            "actions_api_workflow_discovery_fallback",
+        )
+
+    def test_load_validation_summary_adds_exact_target_surface_receipt(self):
+        receipt = {
+            "schema_version": "ops-mcp-surface-acceptance-v1",
+            "target_revision": "abc123def456",
+            "selected_lanes": [
+                "ops-mcp-surface-artifacts",
+                "ops-mcp-contract-surface",
+            ],
+        }
+        with patch.object(
+            MODULE,
+            "_load_run_json_artifact",
+            side_effect=[{"validation": "summary"}, receipt],
+        ) as load_artifact, patch.object(
+            MODULE,
+            "_list_run_artifact_names",
+            return_value=[
+                "unrelated",
+                "ops-mcp-surface-acceptance-abc123def456",
+            ],
+        ):
+            summary = MODULE.load_validation_summary(
+                "owner/repo",
+                42,
+                validation_target_sha="abc123",
+            )
+
+        self.assertEqual(summary["validation"], "summary")
+        self.assertEqual(
+            summary["ops_mcp_surface_acceptance_receipt"],
+            receipt,
+        )
+        self.assertEqual(
+            summary["ops_mcp_surface_acceptance_artifact"],
+            "ops-mcp-surface-acceptance-abc123def456",
+        )
+        self.assertEqual(load_artifact.call_count, 2)
+
+    def test_load_validation_summary_adds_heavy_validation_results_artifact(self):
+        heavy_results = {
+            "target_ref": "candidate/exact",
+            "target_sha": "2222222222222222222222222222222222222222",
+            "outcome": "success",
+        }
+        with patch.object(
+            MODULE,
+            "_load_run_json_artifact",
+            side_effect=[None, heavy_results],
+        ) as load_artifact, patch.object(
+            MODULE,
+            "_list_run_artifact_names",
+            return_value=["heavy-validation-results"],
+        ):
+            summary = MODULE.load_validation_summary(
+                "owner/repo",
+                42,
+                validation_target_sha="2222222",
+                validation_target_ref="candidate/exact",
+            )
+
+        self.assertEqual(
+            summary,
+            {
+                "heavy_validation_results": heavy_results,
+                "heavy_validation_results_artifact": "heavy-validation-results",
+            },
+        )
+        self.assertEqual(
+            load_artifact.call_args_list[1].args,
+            ("owner/repo", 42, "heavy-validation-results", "heavy-validation.json"),
+        )
+
     def test_target_state_surfaces_dispatch_host_branch_mismatch(self):
         args = types.SimpleNamespace(
             no_gemini_diagnosis=True,
@@ -191,10 +1102,10 @@ class GeminiWatcherTests(unittest.TestCase):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,
             "workflow": "validation-lab.yml",
-            "ref": "validation/w2902-subagent-confirm",
+            "ref": "validation/candidate-confirm",
             "head_sha": "9f95361ef183d194ffcba7c376b3e298d6e49ead",
             "min_run_id": None,
-            "spec": "workflow=validation-lab.yml,ref=validation/w2902-subagent-confirm,head-sha=9f95361",
+            "spec": "workflow=validation-lab.yml,ref=validation/candidate-confirm,head-sha=9f95361",
         }
         mismatch_run = {
             "databaseId": 23950570058,
@@ -346,10 +1257,11 @@ class GeminiWatcherTests(unittest.TestCase):
                 newer_run_view,
             ],
         ) as view_mock, patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
-            MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
+            snapshot1 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
             snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
 
         self.assertEqual(list_mock.call_count, 2)
+        self.assertEqual(snapshot1["run"]["id"], 101)
         self.assertEqual(view_mock.call_args_list[1].args[1], 202)
         self.assertEqual(snapshot2["run"]["id"], 202)
         self.assertTrue(snapshot2["followed_newer_run"])
@@ -367,11 +1279,11 @@ class GeminiWatcherTests(unittest.TestCase):
         target = {
             "kind": MODULE.TARGET_KIND_WORKFLOW,
             "workflow": "validation-lab.yml",
-            "ref": "validation/w2902-subagent-confirm",
+            "ref": "validation/candidate-confirm",
             "host_ref": None,
             "head_sha": "9f95361ef183d194ffcba7c376b3e298d6e49ead",
             "min_run_id": None,
-            "spec": "workflow=validation-lab.yml,ref=validation/w2902-subagent-confirm,head-sha=9f95361",
+            "spec": "workflow=validation-lab.yml,ref=validation/candidate-confirm,head-sha=9f95361",
         }
         mismatch_run = {
             "databaseId": 23950570058,
@@ -392,123 +1304,6 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(snapshot1["actions"], ["stop_dispatch_host_branch_mismatch"])
         self.assertEqual(snapshot2["actions"], ["stop_dispatch_host_branch_mismatch"])
         self.assertEqual(snapshot2["appearance_wait"]["dispatch_host_mismatch"]["run_id"], 23950570058)
-
-    def test_run_id_caches_terminal_success_until_bounded_revalidation(self):
-        args = types.SimpleNamespace(
-            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
-            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
-            ack_action=[], poll_seconds=10,
-        )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
-                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
-        run_view = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
-                    "headBranch": "main", "status": "completed", "conclusion": "success",
-                    "jobs": []}
-        remembered = {}
-        with patch.object(MODULE, "view_run", return_value=run_view) as view_mock, \
-                patch.object(MODULE, "load_validation_summary", return_value=None), \
-                patch.object(MODULE.time, "time", side_effect=[100, 100, 110, 170, 170]):
-            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-        self.assertEqual(view_mock.call_count, 2)
-        self.assertEqual(view_mock.call_args_list, [call("owner/repo", 42), call("owner/repo", 42)])
-
-    def test_mixed_targets_reuse_success_without_skipping_pending_reads(self):
-        args = types.SimpleNamespace(
-            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
-            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
-            ack_action=[], poll_seconds=10, verbose_details=False,
-            wait_for="all_done",
-        )
-        success_target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
-                          "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
-        pending_target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 43,
-                          "head_sha": "def456", "spec": "run-id=43,head-sha=def456"}
-        success = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
-                   "headBranch": "main", "status": "completed", "conclusion": "success",
-                   "jobs": []}
-        pending = {"databaseId": 43, "attempt": 1, "headSha": "def456abc",
-                   "headBranch": "main", "status": "in_progress", "conclusion": "",
-                   "jobs": []}
-        remembered = {}
-        with patch.object(MODULE, "view_run", side_effect=[success, pending, pending]) as view_mock, \
-                patch.object(MODULE, "load_validation_summary", return_value=None), \
-                patch.object(MODULE.time, "time", return_value=100):
-            MODULE.evaluate_targets(args, "owner/repo", [success_target, pending_target], remembered)
-            MODULE.evaluate_targets(args, "owner/repo", [success_target, pending_target], remembered)
-        self.assertEqual(view_mock.call_count, 3)
-        self.assertEqual(view_mock.call_args_list, [
-            call("owner/repo", 42), call("owner/repo", 43), call("owner/repo", 43)
-        ])
-
-    def test_run_id_success_cache_revalidates_changed_attempt(self):
-        args = types.SimpleNamespace(
-            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
-            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
-            ack_action=[], poll_seconds=10,
-        )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
-                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
-        first = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
-                 "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
-        rerun = {"databaseId": 42, "attempt": 2, "headSha": "abc123def",
-                 "headBranch": "main", "status": "in_progress", "conclusion": "", "jobs": []}
-        remembered = {}
-        with patch.object(MODULE, "view_run", side_effect=[first, rerun]) as view_mock, \
-                patch.object(MODULE, "load_validation_summary", return_value=None), \
-                patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
-            first_snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            second_snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-        self.assertEqual(view_mock.call_count, 2)
-        self.assertEqual(first_snapshot["actions"], ["stop_run_succeeded"])
-        self.assertEqual(second_snapshot["run"]["status"], "in_progress")
-        self.assertEqual(second_snapshot["run"]["attempt"], 2)
-        self.assertEqual(second_snapshot["actions"], ["idle"])
-
-    def test_run_id_success_cache_revalidates_changed_head(self):
-        args = types.SimpleNamespace(
-            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
-            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
-            ack_action=[], poll_seconds=10,
-        )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
-                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
-        first = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
-                 "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
-        changed_head = {"databaseId": 42, "attempt": 1, "headSha": "def456abc",
-                        "headBranch": "main", "status": "completed", "conclusion": "success", "jobs": []}
-        remembered = {}
-        with patch.object(MODULE, "view_run", side_effect=[first, changed_head]) as view_mock, \
-                patch.object(MODULE, "load_validation_summary", return_value=None), \
-                patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
-            MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            snapshot = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-        self.assertEqual(view_mock.call_count, 2)
-        self.assertEqual(snapshot["run"]["head_sha"], "def456abc")
-        self.assertNotEqual(snapshot["run"]["head_sha"], target["head_sha"])
-        self.assertEqual(snapshot["actions"], ["stop_run_head_mismatch"])
-
-    def test_run_id_nonterminal_failure_is_refreshed_each_poll(self):
-        args = types.SimpleNamespace(
-            no_gemini_diagnosis=True, gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
-            gemini_timeout_seconds=5, appearance_timeout_seconds=0,
-            ack_action=[], poll_seconds=10,
-        )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42,
-                  "head_sha": "abc123", "spec": "run-id=42,head-sha=abc123"}
-        failed = {"databaseId": 42, "attempt": 1, "headSha": "abc123def",
-                  "headBranch": "main", "status": "in_progress", "conclusion": "",
-                  "jobs": [{"databaseId": 501, "name": "Tests — ubuntu",
-                            "status": "completed", "conclusion": "failure"}]}
-        remembered = {}
-        with patch.object(MODULE, "view_run", side_effect=[failed, failed]) as view_mock, \
-                patch.object(MODULE.time, "time", return_value=100):
-            first = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            second = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-        self.assertEqual(view_mock.call_count, 2)
-        self.assertEqual(first["actions"], ["diagnose_run_failure"])
-        self.assertEqual(second["actions"], ["diagnose_run_failure"])
 
     def test_launcher_runs_without_path_when_python_override_is_set(self):
         launcher = Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch"
@@ -559,71 +1354,26 @@ class GeminiWatcherTests(unittest.TestCase):
                 self.assertEqual(keys, ["alpha", "beta"])
                 self.assertEqual(os.environ["GEMINI_API_KEY"], "alpha")
 
-    def test_parse_args_requires_explicit_gemini_opt_in(self):
-        with patch.dict(os.environ, {"GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI": "0"}, clear=True):
+    def test_parse_args_requires_deliberate_gemini_opt_in(self):
+        with patch.dict(
+            os.environ,
+            {
+                "GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI": "0",
+                "GH_WORKFLOW_RUN_WATCH_ENABLE_GEMINI": "1",
+            },
+            clear=True,
+        ):
             with patch.object(sys, "argv", ["gh_workflow_run_watch.py", "--once"]):
                 args = MODULE.parse_args()
             self.assertTrue(args.no_gemini_diagnosis)
 
-            with patch.object(sys, "argv", ["gh_workflow_run_watch.py", "--once", "--gemini-diagnosis"]):
+            with patch.object(
+                sys,
+                "argv",
+                ["gh_workflow_run_watch.py", "--once", "--gemini-diagnosis"],
+            ):
                 args = MODULE.parse_args()
             self.assertFalse(args.no_gemini_diagnosis)
-
-    def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
-        api_run = {
-            "id": 30440173012,
-            "run_attempt": 2,
-            "display_title": "Required Agent Ops",
-            "event": "pull_request",
-            "head_branch": "fix/project-ledger-rls-enforcement",
-            "head_sha": "a43e65e09e82773cc69647698dfcda3c963eb0bf",
-            "name": "required-agent-ops",
-            "run_number": 912,
-            "status": "in_progress",
-            "conclusion": None,
-            "html_url": "https://example.invalid/actions/runs/30440173012",
-            "created_at": "2026-07-29T09:00:00Z",
-            "updated_at": "2026-07-29T09:05:00Z",
-        }
-        api_jobs = {
-            "jobs": [
-                {
-                    "id": 99,
-                    "name": "Required Agent Ops",
-                    "status": "in_progress",
-                    "conclusion": None,
-                    "html_url": "https://example.invalid/jobs/99",
-                    "steps": [
-                        {
-                            "number": 1,
-                            "name": "Run",
-                            "status": "in_progress",
-                            "conclusion": None,
-                        }
-                    ],
-                }
-            ]
-        }
-        with patch.object(
-            MODULE,
-            "gh_json",
-            side_effect=[
-                MODULE.GhCommandError(
-                    "HTTP 404: repos/owner/repo/actions/workflows/322643164"
-                ),
-                api_run,
-                api_jobs,
-            ],
-        ):
-            result = MODULE.view_run("owner/repo", 30440173012)
-
-        self.assertEqual(result["databaseId"], 30440173012)
-        self.assertEqual(result["attempt"], 2)
-        self.assertEqual(result["workflowName"], "required-agent-ops")
-        self.assertEqual(result["headSha"], api_run["head_sha"])
-        self.assertEqual(result["jobs"][0]["databaseId"], 99)
-        self.assertEqual(result["jobs"][0]["steps"][0]["name"], "Run")
-        self.assertEqual(result["retrievedVia"], "actions_api_fallback")
 
     def test_parse_args_collects_ack_action(self):
         with patch.object(
@@ -651,15 +1401,6 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertTrue(args.watch_until_terminal)
         self.assertTrue(args.watch_until_action)
         self.assertTrue(args.require_terminal_run)
-        self.assertEqual(args.retry_settle_seconds, MODULE.DEFAULT_RETRY_SETTLE_SECONDS)
-
-    def test_parse_args_rejects_negative_retry_settle_seconds(self):
-        with patch.object(
-            sys,
-            "argv",
-            ["gh_workflow_run_watch.py", "--retry-settle-seconds", "-1"],
-        ), self.assertRaises(SystemExit):
-            MODULE.parse_args()
 
     def test_parse_args_wait_until_terminal_alias(self):
         with patch.object(
@@ -749,6 +1490,44 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(status["state"], "skipped")
         self.assertEqual(alerts, [])
 
+    def test_extract_structured_failure_signals_keeps_timeout_exit_code_as_weak_signal(self):
+        text = """
+2026-04-12T00:46:07Z ##[error]The process '/usr/bin/sh' failed with exit code 124
+2026-04-12T00:46:07Z step timed out while waiting for connectedDebugAndroidTest
+"""
+
+        signals = MODULE._extract_structured_failure_signals(text)
+
+        self.assertTrue(any("failed with exit code 124" in line for line in signals["evidence_lines"]))
+        self.assertTrue(any("timed out while waiting for connectedDebugAndroidTest" in line for line in signals["evidence_lines"]))
+        self.assertTrue(MODULE._signals_have_actionable_detail(signals))
+
+    def test_should_attempt_gemini_diagnosis_when_failed_job_exists_without_exact_test_signal(self):
+        run_view = {
+            "jobs": [
+                {
+                    "databaseId": 7,
+                    "name": "android shell",
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ]
+        }
+
+        should_attempt = MODULE._should_attempt_gemini_diagnosis(
+            structured_failure_signals={
+                "failing_tests": [],
+                "assertions": [],
+                "failure_locations": [],
+                "evidence_lines": [],
+                "weak_signals": [],
+            },
+            validation_summary=None,
+            run_view=run_view,
+        )
+
+        self.assertTrue(should_attempt)
+
     def test_payload_has_in_progress_failure_even_with_mixed_aggregate_actions(self):
         payload = {
             "actions": ["stop_run_succeeded", "diagnose_run_failure"],
@@ -765,92 +1544,6 @@ class GeminiWatcherTests(unittest.TestCase):
         }
 
         self.assertTrue(MODULE._payload_has_in_progress_failure(payload))
-
-    def test_retry_settle_tracks_run_attempt_and_clears_when_retry_starts(self):
-        target = {
-            "kind": MODULE.TARGET_KIND_RUN_ID,
-            "run_id": 42,
-        }
-        first_failure = {
-            "targets": [
-                {
-                    "target": target,
-                    "run": {
-                        "id": 42,
-                        "attempt": 1,
-                        "status": "completed",
-                        "conclusion": "failure",
-                    },
-                }
-            ]
-        }
-        retry_in_progress = {
-            "targets": [
-                {
-                    "target": target,
-                    "run": {
-                        "id": 42,
-                        "attempt": 2,
-                        "status": "in_progress",
-                        "conclusion": "",
-                    },
-                }
-            ]
-        }
-        state = {}
-        with patch.object(MODULE.time, "monotonic", return_value=100.0):
-            self.assertTrue(
-                MODULE._payload_has_pending_retry_settle(first_failure, state, 90)
-            )
-        self.assertIn("terminal_failures", state)
-        self.assertFalse(
-            MODULE._payload_has_pending_retry_settle(retry_in_progress, state, 90)
-        )
-        self.assertEqual(state["terminal_failures"], {})
-
-    def test_retry_settle_expires_after_a_quiet_failure_window(self):
-        payload = {
-            "targets": [
-                {
-                    "target": {
-                        "kind": MODULE.TARGET_KIND_RUN_ID,
-                        "run_id": 42,
-                    },
-                    "run": {
-                        "id": 42,
-                        "attempt": 1,
-                        "status": "completed",
-                        "conclusion": "failure",
-                    },
-                }
-            ]
-        }
-        state = {}
-        with patch.object(MODULE.time, "monotonic", side_effect=[100.0, 191.0]):
-            self.assertTrue(
-                MODULE._payload_has_pending_retry_settle(payload, state, 90)
-            )
-            self.assertFalse(
-                MODULE._payload_has_pending_retry_settle(payload, state, 90)
-            )
-
-    def test_retry_settle_falls_back_for_malformed_remote_run_identity(self):
-        payload = {
-            "targets": [
-                {
-                    "target": {"kind": "unexpected"},
-                    "run": {
-                        "id": "not-a-number",
-                        "attempt": 1,
-                        "status": "completed",
-                        "conclusion": "failure",
-                    },
-                }
-            ]
-        }
-        self.assertTrue(
-            MODULE._payload_has_pending_retry_settle(payload, {}, 90)
-        )
 
     def test_watch_until_action_waits_for_terminal_failures_per_target(self):
         args = types.SimpleNamespace(
@@ -1033,72 +1726,6 @@ class GeminiWatcherTests(unittest.TestCase):
         emit.assert_called_once_with(terminal_payload_without_logs)
         sleep.assert_not_called()
 
-    def test_watch_until_action_final_success_barrier_observes_same_head_rerun(self):
-        args = types.SimpleNamespace(
-            require_terminal_run=False,
-            wait_for="all_done",
-            poll_seconds=1,
-            ack_action=[],
-            verbose_details=False,
-        )
-        target = {
-            "kind": MODULE.TARGET_KIND_RUN_ID,
-            "run_id": 42,
-            "head_sha": "abc123",
-            "spec": "run-id=42,head-sha=abc123",
-        }
-
-        def payload(actions, status, attempt):
-            return {
-                "actions": actions,
-                "summary": {"targets_idle": 1 if actions == ["idle"] else 0},
-                "targets": [
-                    {
-                        "target": target,
-                        "actions": actions,
-                        "run": {
-                            "id": 42,
-                            "attempt": attempt,
-                            "head_sha": "abc123",
-                            "status": status,
-                            "conclusion": "success" if status == "completed" else "",
-                        },
-                    }
-                ],
-            }
-
-        snapshots = iter(
-            [
-                payload(["stop_run_succeeded"], "completed", 1),
-                payload(["idle"], "in_progress", 2),
-                payload(["stop_run_succeeded"], "completed", 2),
-            ]
-        )
-        remembered_seeded = False
-
-        def resolve(_args, _repo, _targets, remembered):
-            nonlocal remembered_seeded
-            if not remembered_seeded:
-                remembered[MODULE.target_to_display_key(target)] = {
-                    "terminal_success_cache": {"run_id": 42}
-                }
-                remembered_seeded = True
-            return next(snapshots)
-
-        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
-            MODULE, "resolve_snapshot", side_effect=resolve
-        ) as resolve_mock, patch.object(MODULE, "emit") as emit, patch.object(
-            MODULE.time, "sleep", return_value=None
-        ) as sleep:
-            MODULE.watch_until_action(args, "sednalabs/codex")
-
-        self.assertEqual(resolve_mock.call_count, 3)
-        emitted = emit.call_args.args[0]
-        self.assertEqual(emitted["targets"][0]["run"]["attempt"], 2)
-        self.assertEqual(emitted["targets"][0]["run"]["status"], "completed")
-        self.assertEqual(emitted["actions"], ["stop_run_succeeded"])
-        sleep.assert_called_once_with(1)
-
     def test_watch_until_terminal_mode_stays_until_terminal(self):
         with patch.object(
             sys,
@@ -1106,12 +1733,12 @@ class GeminiWatcherTests(unittest.TestCase):
             [
                 "gh_workflow_run_watch.py",
                 "--watch-until-terminal",
+                "--retry-settle-seconds",
+                "0",
                 "--wait-for",
                 "all_done",
                 "--poll-seconds",
                 "1",
-                "--retry-settle-seconds",
-                "0",
             ],
         ):
             args = MODULE.parse_args()
@@ -1153,61 +1780,154 @@ class GeminiWatcherTests(unittest.TestCase):
         emit.assert_called_once_with(terminal_payload)
         sleep.assert_called_once_with(1)
 
-    def test_watch_until_terminal_waits_for_a_retry_of_the_same_run(self):
-        args = types.SimpleNamespace(
-            require_terminal_run=True,
-            retry_settle_seconds=90,
-            wait_for="first_action",
-            poll_seconds=1,
-            ack_action=[],
-            verbose_details=False,
-        )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42}
-        failed_attempt = {
-            "actions": ["diagnose_run_failure"],
-            "summary": {"targets_idle": 0},
-            "targets": [
-                {
-                    "target": target,
-                    "actions": ["diagnose_run_failure"],
-                    "run": {"id": 42, "attempt": 1, "status": "completed", "conclusion": "failure"},
-                }
+    def test_watch_until_terminal_multi_target_ignores_single_success_until_all_terminal(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "gh_workflow_run_watch.py",
+                "--watch-until-terminal",
+                "--poll-seconds",
+                "1",
             ],
-        }
-        retry_running = {
-            "actions": ["diagnose_run_failure"],
-            "summary": {"targets_idle": 0},
-            "targets": [
-                {
-                    "target": target,
-                    "actions": ["diagnose_run_failure"],
-                    "run": {"id": 42, "attempt": 2, "status": "in_progress", "conclusion": ""},
-                }
-            ],
-        }
-        retry_success = {
+        ):
+            args = MODULE.parse_args()
+        self.assertEqual(args.wait_for, "first_action")
+        early_payload = {
             "actions": ["stop_run_succeeded"],
-            "summary": {"targets_idle": 0},
+            "summary": {
+                "targets_total": 2,
+                "targets_terminal_success": 1,
+                "targets_terminal_failure": 0,
+                "targets_terminal_other": 0,
+            },
             "targets": [
                 {
-                    "target": target,
                     "actions": ["stop_run_succeeded"],
-                    "run": {"id": 42, "attempt": 2, "status": "completed", "conclusion": "success"},
-                }
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["idle"],
+                    "run": {"status": "queued", "conclusion": ""},
+                },
             ],
         }
-
-        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
+        terminal_payload = {
+            "actions": ["stop_run_succeeded"],
+            "summary": {
+                "targets_total": 2,
+                "targets_terminal_success": 2,
+                "targets_terminal_failure": 0,
+                "targets_terminal_other": 0,
+            },
+            "targets": [
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+            ],
+        }
+        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}, {"kind": "dummy"}]), patch.object(
             MODULE,
             "resolve_snapshot",
-            side_effect=[failed_attempt, retry_running, retry_success],
-        ), patch.object(MODULE, "emit") as emit, patch.object(
-            MODULE.time, "monotonic", return_value=100.0
-        ), patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+            side_effect=[early_payload, terminal_payload],
+        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
             MODULE.watch_until_action(args, "sednalabs/codex")
 
-        emit.assert_called_once_with(retry_success)
-        self.assertEqual(sleep.call_count, 2)
+        emit.assert_called_once_with(terminal_payload)
+        sleep.assert_called_once_with(1)
+
+    def test_watch_until_terminal_all_done_ignores_terminal_action_while_target_runs(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "gh_workflow_run_watch.py",
+                "--watch-until-terminal",
+                "--wait-for",
+                "all_done",
+                "--poll-seconds",
+                "1",
+            ],
+        ):
+            args = MODULE.parse_args()
+        early_payload = {
+            "actions": ["stop_run_succeeded", "stop_run_terminal", "idle"],
+            "summary": {
+                "targets_total": 4,
+                "targets_idle": 1,
+                "targets_terminal_success": 2,
+                "targets_terminal_failure": 0,
+                "targets_terminal_other": 1,
+            },
+            "targets": [
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["stop_run_terminal"],
+                    "run": {"status": "completed", "conclusion": "skipped"},
+                },
+                {
+                    "actions": ["idle"],
+                    "run": {"status": "in_progress", "conclusion": ""},
+                },
+            ],
+        }
+        final_payload = {
+            "actions": ["stop_run_succeeded", "stop_run_terminal"],
+            "summary": {
+                "targets_total": 4,
+                "targets_idle": 0,
+                "targets_terminal_success": 3,
+                "targets_terminal_failure": 0,
+                "targets_terminal_other": 1,
+            },
+            "targets": [
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+                {
+                    "actions": ["stop_run_terminal"],
+                    "run": {"status": "completed", "conclusion": "skipped"},
+                },
+                {
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"status": "completed", "conclusion": "success"},
+                },
+            ],
+        }
+        with patch.object(
+            MODULE,
+            "build_targets",
+            return_value=[{"kind": "dummy"}] * 4,
+        ), patch.object(
+            MODULE,
+            "resolve_snapshot",
+            side_effect=[early_payload, final_payload],
+        ), patch.object(MODULE, "emit") as emit, patch.object(
+            MODULE.time,
+            "sleep",
+            return_value=None,
+        ) as sleep:
+            MODULE.watch_until_action(args, "sednalabs/codex")
+
+        emit.assert_called_once_with(final_payload)
+        sleep.assert_called_once_with(1)
 
 
     def test_redaction_and_runner_path_mapping(self):
@@ -1639,31 +2359,6 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(context["recommended_follow_up"], "frontier_harvest")
         self.assertEqual(context["first_blocker"]["lane_id"], "lane-a")
 
-    def test_derive_validation_mode_context_marks_stale_run_for_latest_head_proof(self):
-        context = MODULE._derive_validation_mode_context(
-            {
-                "selection": {"profile": "frontier", "lane_set": "subagents"},
-                "summary": {
-                    "failed_lane_count": 1,
-                    "first_failure": {"lane_id": "lane-a", "signal": "panic"},
-                    "candidate_next_slices": [{"lane_id": "lane-a", "signal": "panic"}],
-                },
-            },
-            run_view={"headSha": "1111111111111111111111111111111111111111"},
-            target={"head_sha": "2222222222222222222222222222222222222222"},
-            failed_jobs=[{"id": 10, "name": "lane-a", "conclusion": "failure"}],
-        )
-
-        self.assertEqual(context["head_freshness"]["run_head_status"], "stale")
-        self.assertEqual(
-            context["failed_lane_classification"],
-            "needs_targeted_latest_head_proof",
-        )
-        self.assertEqual(
-            context["recommended_rerun"]["lane_ids"],
-            ["lane-a"],
-        )
-
     def test_derive_validation_mode_context_prefers_targeted_repair_for_one_direct_failure(self):
         context = MODULE._derive_validation_mode_context(
             None,
@@ -1760,6 +2455,62 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(snapshot2["gemini_telemetry"], telemetry)
         self.assertEqual(snapshot1["failed_jobs"][0]["id"], 9001)
         self.assertEqual(snapshot1["diagnosis_status"]["state"], "available")
+
+    def test_diagnose_failure_attempts_gemini_for_timeout_only_failure(self):
+        run_view = {
+            "jobs": [
+                {
+                    "databaseId": 9001,
+                    "name": "android shell",
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ]
+        }
+        log_sources = [
+            {
+                "kind": "failed_job_log",
+                "label": "android shell",
+                "job_id": 9001,
+                "job_name": "android shell",
+                "retrieved_via": "gh run view --job --log",
+                "text": "##[error]The process '/usr/bin/sh' failed with exit code 124\nstep timed out while waiting for connectedDebugAndroidTest\n",
+            }
+        ]
+        diagnosis = {
+            "model": MODULE.GEMINI_DEFAULT_MODEL,
+            "summary": "timeout-shaped failure",
+            "likely_root_cause": "shell smoke step exceeded its time budget",
+            "confidence": "medium",
+            "next_steps": ["inspect shell smoke timeout and artifact timings"],
+            "suspect_paths": [".github/scripts/run_validation_android_shell_smoke.sh"],
+            "evidence_notes": ["exit code 124 in failed job log"],
+        }
+        telemetry = {"model": MODULE.GEMINI_DEFAULT_MODEL, "attempts": 1, "latency_ms": 11, "usage_metadata": None}
+
+        with patch.object(MODULE, "_resolve_repo_root", return_value=None), patch.object(
+            MODULE, "_derive_validation_mode_context", return_value={"failure_structure": "single_blocker"}
+        ), patch.object(MODULE, "_collect_log_sources", return_value=log_sources), patch.object(
+            MODULE, "_collect_code_context", return_value=[]
+        ), patch.object(
+            MODULE, "_call_gemini_diagnosis", return_value=(diagnosis, telemetry)
+        ):
+            got_diagnosis, evidence, got_telemetry = MODULE._diagnose_failure(
+                repo="owner/repo",
+                run_view=run_view,
+                validation_summary=None,
+                model=MODULE.GEMINI_DEFAULT_MODEL,
+                timeout_seconds=5.0,
+            )
+
+        self.assertEqual(got_diagnosis, diagnosis)
+        self.assertEqual(got_telemetry, telemetry)
+        self.assertTrue(
+            any(
+                "failed with exit code 124" in line
+                for line in evidence["structured_failure_signals"]["evidence_lines"]
+            )
+        )
 
     def test_target_state_skips_gemini_when_disabled(self):
         run_view = {

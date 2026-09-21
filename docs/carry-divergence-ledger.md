@@ -3647,6 +3647,22 @@ this carry.
 
 ## Exact-head PR watcher policy carry
 
+## Virtual workflow watcher identity carry
+
+The workflow watcher preserves the maintained queue, exact-head, and failure
+receipt behavior while adding a strict REST fallback for GitHub virtual or
+uncatalogued workflow runs. The fallback validates repository, run, job, and
+step identity and consumes every paginated job page according to a stable
+`total_count`; malformed, incomplete, duplicate, or wrong-target responses
+remain operator errors. The PR watcher also retains its current merge-queue
+and broker boundaries while falling back to `statusCheckRollup` when an older
+GitHub CLI cannot emit `gh pr checks --json`.
+
+Focused regressions cover wrong run/job identity, incomplete pagination, and
+the compatibility check-rollup path. The carry must not import ambient Gemini
+diagnosis, overloaded target SHA semantics, credentials, or a second watcher
+control plane.
+
 The canonical PR watcher keeps its existing read-only observer and review/check
 contracts while recording a compact decision receipt and the next scheduled wake
 against the exact repository, PR number, and observed head SHA. An unexplained
