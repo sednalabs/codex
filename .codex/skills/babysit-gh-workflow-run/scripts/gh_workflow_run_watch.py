@@ -664,7 +664,7 @@ def gh_text(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            proc = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
             return proc.stdout
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
@@ -706,7 +706,7 @@ def gh_download(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+            subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
             return
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
@@ -740,7 +740,7 @@ def gh_bytes(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            proc = subprocess.run(cmd, check=True, capture_output=True, env=env)
+            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, env=env)
             return proc.stdout
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
@@ -1607,7 +1607,6 @@ def _view_run_via_actions_api(repo, run_id):
     workflow_name = _rest_required_text(run, "name", context)
     return {
         "databaseId": observed_run_id,
-        "attempt": run.get("run_attempt"),
         "displayTitle": _rest_required_text(run, "display_title", context),
         "event": _rest_required_text(run, "event", context),
         "headBranch": run.get("head_branch"),

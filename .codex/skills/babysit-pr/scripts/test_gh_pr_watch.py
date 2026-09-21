@@ -1137,3 +1137,13 @@ def test_collect_snapshot_reviews_first_and_rediscovers_exact_head(monkeypatch, 
         assert events.index("reviews") < events.index("checks") < events.index(expected_head)
         assert ("login" in events) is not installation_observer
         assert state_path == tmp_path / "state.json"
+
+
+def test_state_write_cannot_escape_configured_temp_root(monkeypatch, tmp_path):
+    state_root = tmp_path / "state-root"
+    outside = tmp_path / "outside.json"
+    outside.write_text("preserve")
+    monkeypatch.setattr(gh_pr_watch.tempfile, "gettempdir", lambda: str(state_root))
+    gh_pr_watch.save_state(outside, {"head_sha": "abc123"})
+    assert outside.read_text() == "preserve"
+    assert json.loads((state_root / outside.name).read_text()) == {"head_sha": "abc123"}

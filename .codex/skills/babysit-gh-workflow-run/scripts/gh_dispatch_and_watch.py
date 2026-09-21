@@ -483,7 +483,7 @@ def _run_watcher(
     if validation_target_sha:
         command.extend(["--validation-target-sha", str(validation_target_sha)])
 
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run([str(WATCHER_LAUNCHER_PATH), *command[1:]], shell=False, capture_output=True, text=True, check=False)
     if result.stdout:
         sys.stdout.write(result.stdout)
         if not result.stdout.endswith("\n"):

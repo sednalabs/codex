@@ -35,6 +35,17 @@ def temp_cwd(path):
         os.chdir(previous)
 
 
+class GhProcessBoundaryTests(unittest.TestCase):
+    def test_gh_helpers_pin_executable_and_never_enable_shell(self):
+        for helper_name in ("gh_text", "gh_download", "gh_bytes"):
+            with self.subTest(helper=helper_name), patch.dict(os.environ, {}, clear=True), patch.object(
+                MODULE, "_prepare_gh_env", return_value={}
+            ), patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(stdout="{}")) as run:
+                getattr(MODULE, helper_name)(["api", "repos/owner/repo/actions/runs/42"], repo="owner/repo")
+            self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo/actions/runs/42"])
+            self.assertIs(run.call_args.kwargs["shell"], False)
+
+
 class ProofIdentityTests(unittest.TestCase):
     def test_list_workflow_runs_matches_expected_head_sha_case_insensitively(self):
         runs = [
