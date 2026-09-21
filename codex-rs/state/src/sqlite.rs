@@ -33,7 +33,7 @@ const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
-const USAGE_DB_FILENAME: &str = "usage_5.sqlite";
+const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
 
 #[derive(Clone, Copy)]
 struct RuntimeDbSpec {
