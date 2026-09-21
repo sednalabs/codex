@@ -804,6 +804,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_credit_summary_fails_closed_for_non_success_calls() {
+        let codex_home = unique_temp_dir();
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite, "test-provider".to_string())
+            .await
+            .expect("state runtime should initialize");
+        let pool = runtime.usage_pool();
+        let thread_id = "usage-fail-closed-thread";
+
+        sqlx::query(
+            "INSERT INTO usage_threads (thread_id, root_thread_id, source) VALUES (?, ?, ?)",
+        )
+        .bind(thread_id)
+        .bind(thread_id)
+        .bind("cli")
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO usage_provider_calls (provider_call_id, thread_id, provider, requested_model, actual_model_used, requested_service_tier, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("usage-fail-closed-call")
+        .bind(thread_id)
+        .bind("openai")
+        .bind("gpt-5.6-luna")
+        .bind("gpt-5.6-luna")
+        .bind("default")
+        .bind("default")
+        .bind("runtime_contract")
+        .bind(0_i64)
+        .bind("chatgpt_credits")
+        .bind("plus")
+        .bind("2026-08-01T00:00:00Z")
+        .bind("error")
+        .execute(pool.as_ref())
+        .await
+        .unwrap();
+
+        let pricing_status = sqlx::query_scalar::<_, String>(
+            "SELECT pricing_status FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        )
+        .bind("usage-fail-closed-call")
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap();
+        assert_eq!(pricing_status, "provider_usage_missing");
+
+        let summary = sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT provider_call_count, priced_call_count, unpriced_call_count FROM usage_thread_credit_summary WHERE thread_id = ?",
+        )
+        .bind(thread_id)
+        .fetch_one(pool.as_ref())
+        .await
+        .unwrap();
+        assert_eq!(summary, (1, 0, 1));
+
+        runtime.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn init_restores_independent_thread_timestamp_maxima() {
         let codex_home = unique_temp_dir();
         let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());

@@ -355,6 +355,7 @@ SELECT
     CASE
         WHEN provider_reported_credits IS NOT NULL THEN 'provider_reported'
         WHEN status IS NULL
+          OR status <> 'ok'
           OR total_tokens IS NULL
           OR input_tokens_uncached IS NULL
           OR input_tokens_cached IS NULL
