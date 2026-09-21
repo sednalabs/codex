@@ -40,11 +40,13 @@ use std::time::Instant;
 use tracing::warn;
 
 mod backfill;
+mod configured_identity_provenance;
 mod external_agent_config_imports;
 mod goals;
 mod logs;
 mod memories;
 mod memory_versions;
+pub(super) mod migration_repair;
 mod projects;
 mod queued_items;
 mod recovery;
@@ -57,6 +59,7 @@ mod thread_section_order;
 mod thread_sections;
 mod threads;
 
+pub use configured_identity_provenance::ConfiguredIdentityProvenance;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;

@@ -1,3 +1,4 @@
+use crate::remove_memory_symlinks;
 use anyhow::Context;
 use codex_git_utils::GitBaselineDiff;
 use codex_git_utils::diff_since_latest_init;
@@ -126,39 +127,6 @@ pub fn is_valid_v2_summary(summary: &str) -> bool {
         ]
         .iter()
         .all(|heading| summary.lines().any(|line| line.trim() == *heading))
-}
-
-pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {
-    let mut directories = vec![root.to_path_buf()];
-    let mut removed = 0;
-
-    while let Some(directory) = directories.pop() {
-        let mut entries = tokio::fs::read_dir(directory).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let file_type = entry.file_type().await?;
-            if file_type.is_symlink() {
-                #[cfg(windows)]
-                if file_type.is_symlink_dir() {
-                    tokio::fs::remove_dir(&path).await?;
-                } else {
-                    tokio::fs::remove_file(&path).await?;
-                }
-                #[cfg(not(windows))]
-                tokio::fs::remove_file(&path).await?;
-
-                tracing::warn!(
-                    "removed symbolic link from memory workspace: {}",
-                    path.display()
-                );
-                removed += 1;
-            } else if file_type.is_dir() {
-                directories.push(path);
-            }
-        }
-    }
-
-    Ok(removed)
 }
 
 /// Removes the generated `phase2_workspace_diff.md` prompt artifact.

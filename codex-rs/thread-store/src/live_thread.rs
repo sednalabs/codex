@@ -10,6 +10,7 @@ use codex_rollout::RolloutPersistenceTelemetry;
 use codex_rollout::measure_and_filter_rollout_items;
 use codex_rollout::persisted_rollout_items;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tracing::warn;
 
 use crate::AppendThreadItemsParams;
@@ -39,6 +40,8 @@ pub struct LiveThread {
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
+    /// Serializes canonical mutation and metadata projection across cloned handles.
+    persistence_operation_semaphore: Arc<Semaphore>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
@@ -145,6 +148,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -173,6 +177,7 @@ impl LiveThread {
                 })?,
         );
         let live_thread = guard.acquire(Self::create(thread_store, params)).await?;
+        let _operation_permit = live_thread.acquire_persistence_operation().await?;
         live_thread
             .persist_appended_items(inherited_model_context)
             .await?;
@@ -225,6 +230,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -236,6 +242,7 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         let items = self.persist_appended_items(raw_items).await?;
         if items.is_empty() {
             return Ok(());
@@ -290,6 +297,7 @@ impl LiveThread {
     }
 
     pub async fn persist(&self, context: PersistContext) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         if context.allows_background_persistence() {
             self.flush_pending_metadata_update_for_existing_history()
                 .await?;
@@ -301,12 +309,14 @@ impl LiveThread {
     }
 
     pub async fn flush(&self) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         self.thread_store.flush_thread(self.thread_id).await?;
         self.flush_pending_metadata_update_for_existing_history()
             .await
     }
 
     pub async fn shutdown(&self) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         let metadata_result = self
             .flush_pending_metadata_update_for_existing_history()
             .await;
@@ -323,6 +333,7 @@ impl LiveThread {
     }
 
     pub async fn discard(&self) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         self.thread_store.discard_thread(self.thread_id).await
     }
 
@@ -357,6 +368,7 @@ impl LiveThread {
         mode: ThreadMemoryMode,
         include_archived: bool,
     ) -> ThreadStoreResult<()> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         self.flush_pending_metadata_update().await?;
         self.thread_store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -380,6 +392,7 @@ impl LiveThread {
         patch: ThreadMetadataPatch,
         include_archived: bool,
     ) -> ThreadStoreResult<StoredThread> {
+        let _operation_permit = self.acquire_persistence_operation().await?;
         self.flush_pending_metadata_update().await?;
         let updated = self
             .thread_store
@@ -418,6 +431,18 @@ impl LiveThread {
     async fn flush_pending_metadata_update(&self) -> ThreadStoreResult<()> {
         let update = self.metadata_sync.lock().await.take_pending_update();
         self.apply_pending_metadata_update(update).await
+    }
+
+    async fn acquire_persistence_operation(
+        &self,
+    ) -> ThreadStoreResult<tokio::sync::OwnedSemaphorePermit> {
+        self.persistence_operation_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ThreadStoreError::Internal {
+                message: "thread persistence operation semaphore closed".to_owned(),
+            })
     }
 
     async fn flush_pending_metadata_update_for_existing_history(&self) -> ThreadStoreResult<()> {
