@@ -180,7 +180,7 @@ fn inference_call_event_has_payload_free_wire_shape_and_legacy_defaults() -> Res
         }
     );
 
-    let declaration = InferenceCallEvent::decl(&ts_rs::Config::default());
+    let declaration = InferenceCallEvent::decl();
     assert!(declaration.contains("truncated_fields?"));
     assert!(declaration.contains("omitted_fields?"));
     Ok(())
@@ -504,8 +504,8 @@ fn inference_call_schema_and_typescript_describe_wire_shapes() -> Result<()> {
         json!(["direct", "host_continuity_check", "code_mode"])
     );
 
-    let status_decl = InferenceCallStatus::decl(&ts_rs::Config::default());
-    let source_decl = InferenceCallSource::decl(&ts_rs::Config::default());
+    let status_decl = InferenceCallStatus::decl();
+    let source_decl = InferenceCallSource::decl();
     assert!(status_decl.contains("string"));
     assert!(source_decl.contains("code_mode"));
     assert!(source_decl.contains("cell_id"));
