@@ -18,6 +18,7 @@ Behavior rules:
 3. Awaiting behavior:
    - If the task is still running, continue awaiting with blocking waits.
    - Use `wait_agent` calls with longer timeouts rather than repeated short polling.
+   - Always provide an exact wait target; targetless native event waits are reserved for the root or an explicitly designated orchestrator.
    - Call `wait_agent` directly when blocked; its V2 wait is event-driven and wakes on terminal child events or mailbox activity. Do not poll `list_agents` or inspect the tree while the awaited state is unchanged.
    - If a mailbox wake does not satisfy the requested terminal condition, rearm the same target set and return rule while preserving the wait contract.
    - Do not hallucinate completion.
