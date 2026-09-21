@@ -509,7 +509,7 @@ impl JsonSchema for InferenceCallSource {
             }
             Schema::Object(SchemaObject {
                 instance_type: Some(InstanceType::Object.into()),
-                object: ObjectValidation {
+                object: Some(Box::new(ObjectValidation {
                     properties,
                     required: required
                         .iter()
@@ -517,7 +517,7 @@ impl JsonSchema for InferenceCallSource {
                         .collect(),
                     additional_properties: Some(Box::new(Schema::Bool(true))),
                     ..Default::default()
-                },
+                })),
                 ..Default::default()
             })
         };
@@ -527,10 +527,10 @@ impl JsonSchema for InferenceCallSource {
             "type".to_string(),
             Schema::Object(SchemaObject {
                 instance_type: Some(InstanceType::String.into()),
-                string: StringValidation {
+                string: Some(Box::new(StringValidation {
                     min_length: Some(1),
                     ..Default::default()
-                },
+                })),
                 ..Default::default()
             }),
         );
@@ -544,27 +544,30 @@ impl JsonSchema for InferenceCallSource {
             ),
             ..Default::default()
         };
-        known_type_schema.string.min_length = Some(1);
+        known_type_schema.string = Some(Box::new(StringValidation {
+            min_length: Some(1),
+            ..Default::default()
+        }));
         let unknown_exclusion = Schema::Object(SchemaObject {
             instance_type: Some(InstanceType::Object.into()),
-            object: ObjectValidation {
+            object: Some(Box::new(ObjectValidation {
                 properties: {
                     let mut properties = BTreeMap::new();
                     properties.insert("type".to_string(), Schema::Object(known_type_schema));
                     properties
                 },
                 ..Default::default()
-            },
+            })),
             ..Default::default()
         });
         let unknown_branch = Schema::Object(SchemaObject {
             instance_type: Some(InstanceType::Object.into()),
-            object: ObjectValidation {
+            object: Some(Box::new(ObjectValidation {
                 properties: unknown_properties,
                 required: ["type".to_string()].into_iter().collect(),
                 additional_properties: Some(Box::new(Schema::Bool(true))),
                 ..Default::default()
-            },
+            })),
             subschemas: Some(Box::new(SubschemaValidation {
                 not: Some(Box::new(unknown_exclusion)),
                 ..Default::default()
@@ -591,10 +594,10 @@ impl JsonSchema for InferenceCallSource {
 fn string_schema() -> Schema {
     Schema::Object(SchemaObject {
         instance_type: Some(InstanceType::String.into()),
-        string: StringValidation {
+        string: Some(Box::new(StringValidation {
             min_length: Some(1),
             ..Default::default()
-        },
+        })),
         ..Default::default()
     })
 }
