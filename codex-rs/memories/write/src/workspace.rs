@@ -1,3 +1,4 @@
+use crate::remove_memory_symlinks;
 use anyhow::Context;
 use codex_git_utils::GitBaselineDiff;
 use codex_git_utils::diff_since_latest_init;
@@ -14,21 +15,6 @@ use std::path::Path;
 /// metadata is missing or unusable, and removes any stale generated `phase2_workspace_diff.md` file
 /// so that the next diff does not include a previous prompt artifact.
 pub async fn prepare_memory_workspace(root: &Path) -> anyhow::Result<()> {
-    match tokio::fs::symlink_metadata(root).await {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            anyhow::bail!(
-                "memory root must not be a symbolic link: {}",
-                root.display()
-            );
-        }
-        Ok(_) => {
-            remove_memory_symlinks(root).await?;
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(err).with_context(|| format!("inspect memory root {}", root.display()));
-        }
-    }
     crate::ensure_layout(root)
         .await
         .with_context(|| format!("prepare memory workspace {}", root.display()))?;
@@ -141,39 +127,6 @@ pub fn is_valid_v2_summary(summary: &str) -> bool {
         ]
         .iter()
         .all(|heading| summary.lines().any(|line| line.trim() == *heading))
-}
-
-pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {
-    let mut directories = vec![root.to_path_buf()];
-    let mut removed = 0;
-
-    while let Some(directory) = directories.pop() {
-        let mut entries = tokio::fs::read_dir(directory).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let file_type = entry.file_type().await?;
-            if file_type.is_symlink() {
-                #[cfg(windows)]
-                if file_type.is_symlink_dir() {
-                    tokio::fs::remove_dir(&path).await?;
-                } else {
-                    tokio::fs::remove_file(&path).await?;
-                }
-                #[cfg(not(windows))]
-                tokio::fs::remove_file(&path).await?;
-
-                tracing::warn!(
-                    "removed symbolic link from memory workspace: {}",
-                    path.display()
-                );
-                removed += 1;
-            } else if file_type.is_dir() {
-                directories.push(path);
-            }
-        }
-    }
-
-    Ok(removed)
 }
 
 /// Removes the generated `phase2_workspace_diff.md` prompt artifact.

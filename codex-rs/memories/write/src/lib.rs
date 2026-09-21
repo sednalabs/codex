@@ -135,5 +135,53 @@ pub fn raw_memories_file(root: &Path) -> PathBuf {
 }
 
 pub async fn ensure_layout(root: &Path) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(root).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "memory root must not be a symbolic link: {}",
+                    root.display()
+                ),
+            ));
+        }
+        Ok(_) => {
+            remove_memory_symlinks(root).await?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
     tokio::fs::create_dir_all(rollout_summaries_dir(root)).await
+}
+
+pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut removed = 0;
+
+    while let Some(directory) = directories.pop() {
+        let mut entries = tokio::fs::read_dir(directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_symlink() {
+                #[cfg(windows)]
+                if file_type.is_symlink_dir() {
+                    tokio::fs::remove_dir(&path).await?;
+                } else {
+                    tokio::fs::remove_file(&path).await?;
+                }
+                #[cfg(not(windows))]
+                tokio::fs::remove_file(&path).await?;
+                tracing::warn!(
+                    "removed symbolic link from memory workspace: {}",
+                    path.display()
+                );
+                removed += 1;
+            } else if file_type.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
+
+    Ok(removed)
 }

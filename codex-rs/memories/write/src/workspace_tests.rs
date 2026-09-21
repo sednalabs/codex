@@ -112,7 +112,7 @@ async fn prepare_memory_workspace_recovers_unusable_git_dir() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn prepare_memory_workspace_rejects_root_symlink_and_removes_nested_links()
+async fn ensure_layout_rejects_root_symlink_and_removes_nested_links_before_writes()
 -> anyhow::Result<()> {
     use std::os::unix::fs::symlink;
 
@@ -122,12 +122,12 @@ async fn prepare_memory_workspace_rejects_root_symlink_and_removes_nested_links(
     fs::write(real_root.join("MEMORY.md"), "memory")?;
     symlink(real_root.join("MEMORY.md"), real_root.join("nested/link"))?;
 
-    prepare_memory_workspace(&real_root).await?;
+    crate::ensure_layout(&real_root).await?;
     assert!(!real_root.join("nested/link").exists());
 
     let root_link = home.path().join("memory-root-link");
     symlink(&real_root, &root_link)?;
-    let error = prepare_memory_workspace(&root_link)
+    let error = crate::ensure_layout(&root_link)
         .await
         .expect_err("memory root symlinks must be rejected");
     assert!(
