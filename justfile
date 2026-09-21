@@ -158,7 +158,6 @@ bazel-test:
 
 # Validation-only P4 execution-consumer probe. This recipe is evidence-only
 # and must not enter the product candidate.
-[no-cd]
 p4-execution-consumer-probe:
     RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core unified_exec_uses_remote_exec_server_when_configured --lib -- --test-threads=1
     RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-exec-server --test exec_process shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context -- --test-threads=1
@@ -169,7 +168,6 @@ p4-execution-consumer-probe:
 
 # The hosted lane catalog calls this stable recipe name; keep the alias in the
 # validation-only overlay so no product recipe is changed.
-[no-cd]
 exec-server-targeted: p4-execution-consumer-probe
 
 [no-cd]
