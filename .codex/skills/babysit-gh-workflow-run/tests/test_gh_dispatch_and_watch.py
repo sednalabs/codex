@@ -3,9 +3,10 @@ import io
 import json
 import os
 import sys
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import Mock, patch
 
 
 MODULE_PATH = Path(
@@ -28,6 +29,32 @@ class DispatchAndWatchTests(unittest.TestCase):
     def test_parse_dispatch_inputs_rejects_missing_equals(self):
         with self.assertRaises(ValueError):
             MODULE._parse_dispatch_inputs(["profile"])
+
+    def test_parse_wait_until_terminal_alias(self):
+        argv = [
+            "gh_dispatch_and_watch",
+            "--workflow",
+            "validation-lab.yml",
+            "--ref",
+            "main",
+            "--head-sha",
+            "deadbeef",
+            "--wait-until-terminal",
+        ]
+        with patch.object(sys, "argv", argv):
+            parsed = MODULE.parse_args()
+        self.assertTrue(parsed.watch_until_terminal)
+
+    def test_parse_legacy_no_gemini_flag_as_safe_no_op(self):
+        argv = [
+            "gh_dispatch_and_watch",
+            "--workflow",
+            "validation-lab.yml",
+            "--no-gemini-diagnosis",
+        ]
+        with patch.object(sys, "argv", argv):
+            parsed = MODULE.parse_args()
+        self.assertTrue(parsed.no_gemini_diagnosis)
 
     def test_dispatch_workflow_passes_supersession_and_custom_inputs(self):
         captured = {}
@@ -322,26 +349,6 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertEqual(calls, [["api", "/repos/owner/repo/git/ref/heads/feature%2Fbranch"]])
         self.assertEqual(resolved, "abcdef1234567890")
 
-    def test_resolve_remote_ref_sha_accepts_full_head_ref(self):
-        calls = []
-
-        class FakeWatcher:
-            def is_sha_like(self, value):
-                if not value:
-                    return False
-                value = str(value)
-                return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
-
-            def gh_json(self, args, repo=None):
-                calls.append(list(args))
-                return {"object": {"sha": "abcdef1234567890"}}
-
-        resolved = MODULE._resolve_remote_ref_sha(
-            FakeWatcher(), "owner/repo", "refs/heads/feature/branch"
-        )
-        self.assertEqual(calls, [["api", "/repos/owner/repo/git/ref/heads/feature%2Fbranch"]])
-        self.assertEqual(resolved, "abcdef1234567890")
-
     def test_validate_expected_head_sha_against_remote_branch_detects_mismatch(self):
         class FakeWatcher:
             def is_sha_like(self, value):
@@ -382,22 +389,6 @@ class DispatchAndWatchTests(unittest.TestCase):
         self.assertFalse(MODULE._is_head_sha_prefix("zzzzz"))
         self.assertFalse(MODULE._is_head_sha_prefix(""))
 
-    def test_head_sha_matches_prefix_is_case_insensitive(self):
-        self.assertTrue(
-            MODULE._head_sha_matches_prefix(
-                "A206CA4957946E4BA491D6C9EAEF4380243C9F07",
-                "a206ca49",
-            )
-        )
-
-    def test_head_sha_matches_prefix_accepts_multiple_prefix_candidates(self):
-        self.assertTrue(
-            MODULE._head_sha_matches_prefix(
-                "B3710929C80726C970083486D691D3A5EBD17043",
-                ["deadbeef", "b3710929"],
-            )
-        )
-
     def test_validate_expected_head_sha_against_remote_branch_skips_when_unknown(self):
         class FakeWatcher:
             def is_sha_like(self, value):
@@ -429,243 +420,6 @@ class DispatchAndWatchTests(unittest.TestCase):
             FakeWatcher(), "owner/repo", "feature/branch", ""
         )
         self.assertIsNone(mismatch)
-
-    def test_resolve_dispatch_ref_uses_default_branch_for_downstream_ref_input(self):
-        class FakeWatcher:
-            def __init__(self):
-                self.calls = []
-
-            def detect_ref(self, ref):
-                self.calls.append(("detect_ref", ref))
-                return "feature/branch"
-
-            def gh_json(self, args, repo=None):
-                self.calls.append((tuple(args), repo))
-                return {"defaultBranchRef": {"name": "main"}}
-
-        watcher = FakeWatcher()
-        self.assertEqual(
-            MODULE._resolve_dispatch_ref(watcher, "owner/repo", "auto", []),
-            "feature/branch",
-        )
-        self.assertIn(("detect_ref", "auto"), watcher.calls)
-
-        watcher = FakeWatcher()
-        self.assertEqual(
-            MODULE._resolve_dispatch_ref(watcher, "owner/repo", "auto", [("ref", "target-branch")]),
-            "main",
-        )
-        self.assertIn((("repo", "view", "--json", "defaultBranchRef"), "owner/repo"), watcher.calls)
-        self.assertNotIn(("detect_ref", "auto"), watcher.calls)
-
-    def test_main_dispatches_from_default_branch_for_downstream_ref_input(self):
-        calls = {"list_workflow_runs": []}
-
-        class FakeWatcher:
-            GhCommandError = RuntimeError
-
-            def detect_repo(self):
-                return "owner/repo"
-
-            def detect_ref(self, ref):
-                raise AssertionError("detect_ref should not be used when auto resolves downstream ref input")
-
-            def is_sha_like(self, value):
-                return False
-
-            def list_workflow_runs(self, repo, workflow, ref, expected_head_sha=None, minimum_run_id=None):
-                calls["list_workflow_runs"].append(
-                    (repo, workflow, ref, expected_head_sha, minimum_run_id)
-                )
-                return []
-
-            def command_text(self, *args, **kwargs):
-                raise AssertionError("command_text should not be used when head-sha is provided")
-
-            def gh_json(self, args, repo=None):
-                if args == ["repo", "view", "--json", "defaultBranchRef"]:
-                    return {"defaultBranchRef": {"name": "main"}}
-                raise AssertionError(f"unexpected gh_json call: {args!r}")
-
-        watcher = FakeWatcher()
-        argv = [
-            "gh_dispatch_and_watch",
-            "--workflow",
-            "validation-lab.yml",
-            "--head-sha",
-            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
-            "--input",
-            "ref=w3710-route-coverage-20260411",
-            "--input",
-            "profile=targeted",
-            "--input",
-            "lane_set=mcp",
-            "--input",
-            "lanes=ops-mcp-http",
-        ]
-
-        with patch.object(sys, "argv", argv), patch.object(
-            MODULE, "_load_watcher", return_value=watcher
-        ), patch.object(
-            MODULE, "_validate_expected_head_sha_against_remote_branch", return_value=None
-        ) as validate_mock, patch.object(
-            MODULE,
-            "_resolve_remote_ref_sha",
-            side_effect=[
-                "b3710929c80726c970083486d691d3a5ebd17043",
-                "c5a55086fd9234a5938a8fc72e9b9d7812345678",
-            ],
-        ) as resolve_dispatch_sha_mock, patch.object(
-            MODULE, "_wait_for_ref_to_match_expected", return_value=(True, 0)
-        ) as wait_mock, patch.object(
-            MODULE, "_dispatch_workflow"
-        ) as dispatch_mock, patch.object(
-            MODULE,
-            "_select_newest_matching_run",
-            return_value=({"kind": "matched", "run": {"databaseId": 501}}, 0),
-        ) as select_mock, patch.object(MODULE, "_run_watcher", return_value=0) as run_mock:
-            rc = MODULE.main()
-
-        self.assertEqual(rc, 0)
-        validate_mock.assert_called_once_with(
-            watcher,
-            "owner/repo",
-            "w3710-route-coverage-20260411",
-            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
-        )
-        self.assertEqual(
-            resolve_dispatch_sha_mock.call_args_list,
-            [
-                call(watcher, "owner/repo", "main"),
-                call(watcher, "owner/repo", "main"),
-            ],
-        )
-        wait_mock.assert_called_once()
-        self.assertEqual(wait_mock.call_args.args[1:4], (
-            "owner/repo",
-            "w3710-route-coverage-20260411",
-            "a206ca4957946e4ba491d6c9eaef4380243c9f07",
-        ))
-        self.assertEqual(dispatch_mock.call_args.args[3], "main")
-        self.assertIn(("profile", "targeted"), dispatch_mock.call_args.args[6])
-        self.assertIn(("lane_set", "mcp"), dispatch_mock.call_args.args[6])
-        self.assertIn(("lanes", "ops-mcp-http"), dispatch_mock.call_args.args[6])
-        self.assertEqual(select_mock.call_args.kwargs["appearance_timeout_seconds"], 300)
-        self.assertEqual(calls["list_workflow_runs"][0][2], "main")
-        self.assertEqual(
-            select_mock.call_args.kwargs["expected_head_sha"],
-            [
-                "b3710929c80726c970083486d691d3a5ebd17043",
-                "c5a55086fd9234a5938a8fc72e9b9d7812345678",
-            ],
-        )
-        self.assertEqual(select_mock.call_args.args[3], "main")
-        self.assertEqual(run_mock.call_args.kwargs["appearance_timeout"], 300)
-        self.assertEqual(run_mock.call_args.args[1], 501)
-
-    def test_main_resolves_expected_sha_from_local_ref_when_remote_lookup_fails(self):
-        class FakeWatcher:
-            GhCommandError = RuntimeError
-
-            def detect_repo(self):
-                return "owner/repo"
-
-            def detect_ref(self, ref):
-                return ref
-
-            def is_sha_like(self, value):
-                if not value:
-                    return False
-                value = str(value)
-                return all(ch in "0123456789abcdefABCDEF" for ch in value) and len(value) >= 7
-
-            def list_workflow_runs(self, *args, **kwargs):
-                return []
-
-            def command_text(self, args):
-                if args == ["git", "rev-parse", "--verify", "refs/heads/feature/branch"]:
-                    return "abcdef1234567890\n"
-                if args == ["git", "rev-parse", "--verify", "feature/branch"]:
-                    raise AssertionError("fallback ref lookup should stop after refs/heads succeeds")
-                if args == ["git", "rev-parse", "HEAD"]:
-                    raise AssertionError("HEAD fallback should not be used when local ref resolves")
-                raise AssertionError(f"unexpected command_text args: {args!r}")
-
-            def gh_json(self, args, repo=None):
-                raise RuntimeError("remote ref lookup unavailable")
-
-        watcher = FakeWatcher()
-        argv = [
-            "gh_dispatch_and_watch",
-            "--workflow",
-            "validation-lab.yml",
-            "--ref",
-            "feature/branch",
-        ]
-
-        with patch.object(sys, "argv", argv), patch.object(
-            MODULE, "_load_watcher", return_value=watcher
-        ), patch.object(
-            MODULE, "_wait_for_ref_to_match_expected", return_value=(True, 0)
-        ) as wait_mock, patch.object(
-            MODULE, "_dispatch_workflow"
-        ) as dispatch_mock, patch.object(
-            MODULE,
-            "_select_newest_matching_run",
-            return_value=({"kind": "matched", "run": {"databaseId": 501}}, 0),
-        ), patch.object(MODULE, "_run_watcher", return_value=0):
-            rc = MODULE.main()
-
-        self.assertEqual(rc, 0)
-        wait_mock.assert_called_once()
-        self.assertEqual(wait_mock.call_args.args[1:4], (
-            "owner/repo",
-            "feature/branch",
-            "abcdef1234567890",
-        ))
-        self.assertEqual(dispatch_mock.call_args.args[3], "feature/branch")
-
-    def test_run_watcher_preserves_timeout_signal_when_json_is_not_last_line(self):
-        output_lines = iter(
-            [
-                '{"actions":["stop_run_appearance_timeout"]}\n',
-                "warning: trailing non-json noise\n",
-            ]
-        )
-
-        captured = {}
-
-        class FakePopen:
-            def __init__(self, *args, **kwargs):
-                captured["command"] = args[0]
-                self.stdout = output_lines
-                self.returncode = 0
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def wait(self):
-                return 0
-
-        with patch.object(MODULE.subprocess, "Popen", side_effect=FakePopen), patch(
-            "sys.stdout", io.StringIO()
-        ):
-            rc = MODULE._run_watcher(
-                watcher=None,
-                run_id=501,
-                repo="owner/repo",
-                wait_for="first_action",
-                poll_seconds=10,
-                appearance_timeout=300,
-            )
-
-        self.assertEqual(rc, 1)
-        self.assertIn("--watch-until-terminal", captured["command"])
-        self.assertNotIn("--watch-until-action", captured["command"])
-        self.assertIn("--retry-settle-seconds", captured["command"])
 
     def test_effective_minimum_run_id_applies_override(self):
         self.assertEqual(MODULE._effective_minimum_run_id(100, None), 101)
@@ -723,6 +477,85 @@ class DispatchAndWatchTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(select_record["minimum_run_id"], 500)
+
+    @patch.object(MODULE, "_run_watcher")
+    @patch.object(MODULE, "_dispatch_workflow")
+    @patch.object(MODULE, "_select_newest_matching_run")
+    @patch.object(MODULE, "_load_watcher")
+    def test_wait_until_terminal_alias_forwards_require_terminal_run(
+        self,
+        load_mock,
+        select_mock,
+        dispatch_mock,
+        run_mock,
+    ):
+        select_mock.return_value = {"kind": "matched", "run": {"databaseId": 501}}, 0
+        run_mock.return_value = 0
+        dispatch_mock.return_value = None
+
+        class FakeWatcher:
+            GhCommandError = RuntimeError
+
+            def detect_repo(self):
+                return "owner/repo"
+
+            def detect_ref(self, ref):
+                return ref
+
+            def is_sha_like(self, value):
+                return bool(value)
+
+            def list_workflow_runs(self, *args, **kwargs):
+                return []
+
+            def command_text(self, *args, **kwargs):
+                return ""
+
+        load_mock.return_value = FakeWatcher()
+
+        argv = [
+            "gh_dispatch_and_watch",
+            "--workflow",
+            "validation-lab.yml",
+            "--ref",
+            "deadbeef123456789abcdef",
+            "--head-sha",
+            "deadbeef",
+            "--wait-until-terminal",
+        ]
+        with patch.object(sys, "argv", argv):
+            rc = MODULE.main()
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(run_mock.call_args.kwargs["require_terminal_run"])
+
+    def test_run_watcher_forwards_separate_validation_target_identity(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            rc = MODULE._run_watcher(
+                Mock(),
+                501,
+                repo="owner/repo",
+                wait_for="first_action",
+                poll_seconds=10,
+                appearance_timeout=300,
+                require_terminal_run=True,
+                validation_target_ref="candidate/exact",
+                validation_target_sha="2222222",
+            )
+
+        self.assertEqual(rc, 0)
+        command = run.call_args.args[0]
+        self.assertIn("--validation-target-ref", command)
+        self.assertEqual(
+            command[command.index("--validation-target-ref") + 1],
+            "candidate/exact",
+        )
+        self.assertIn("--validation-target-sha", command)
+        self.assertEqual(
+            command[command.index("--validation-target-sha") + 1],
+            "2222222",
+        )
 
 
 if __name__ == "__main__":

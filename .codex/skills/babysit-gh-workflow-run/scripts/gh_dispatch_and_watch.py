@@ -33,37 +33,10 @@ def _is_head_sha_prefix(value):
     return all(ch in "0123456789abcdefABCDEF" for ch in value)
 
 
-def _head_sha_prefixes(expected_sha):
-    if not expected_sha:
-        return []
-    raw_prefixes = (
-        expected_sha if isinstance(expected_sha, (list, tuple, set)) else [expected_sha]
-    )
-    prefixes = []
-    seen = set()
-    for prefix in raw_prefixes:
-        stripped = str(prefix or "").strip()
-        if not stripped:
-            continue
-        lowered = stripped.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        prefixes.append(stripped)
-    return prefixes
-
-
 def _head_sha_matches_prefix(observed_sha, expected_sha):
-    observed = str(observed_sha or "").strip().lower()
-    expected_prefixes = _head_sha_prefixes(expected_sha)
-    return bool(observed) and any(observed.startswith(prefix.lower()) for prefix in expected_prefixes)
-
-
-def _head_sha_display(expected_sha):
-    prefixes = _head_sha_prefixes(expected_sha)
-    if not prefixes:
-        return ""
-    return prefixes[0] if len(prefixes) == 1 else " or ".join(prefixes)
+    return bool(str(observed_sha or "").strip()) and str(observed_sha).startswith(
+        str(expected_sha).strip()
+    )
 
 
 def parse_args():
@@ -78,18 +51,31 @@ def parse_args():
     parser.add_argument(
         "--ref",
         default="auto",
-        help=(
-            "Branch or ref to dispatch against (default: auto; downstream-style ref inputs "
-            "use the repository default branch when auto is left in place)."
-        ),
+        help="Branch or ref to dispatch against (default: auto).",
     )
     parser.add_argument(
         "--head-sha",
         default=None,
         help=(
-            "Expected head SHA (or 4+ char abbreviation) to wait for before dispatching and to pin "
-            "the watch target. "
+            "Expected workflow-host SHA (or 4+ char abbreviation) to wait for before dispatching "
+            "and to pin the GitHub run. "
             "Defaults to local HEAD SHA."
+        ),
+    )
+    parser.add_argument(
+        "--validation-target-ref",
+        default=None,
+        help=(
+            "Optional expected ref validated by a separately hosted workflow. Passed to the "
+            "watcher as proof identity, not as the dispatch ref."
+        ),
+    )
+    parser.add_argument(
+        "--validation-target-sha",
+        default=None,
+        help=(
+            "Optional expected exact or prefix SHA validated by a separately hosted workflow. "
+            "Passed to the watcher as proof identity, not as the run head."
         ),
     )
     parser.add_argument("--repo", default=None, help="Optional OWNER/REPO override.")
@@ -124,22 +110,20 @@ def parse_args():
         help="Watcher completion policy once a matching workflow run is selected.",
     )
     parser.add_argument(
-        "--appearance-timeout-seconds",
-        type=int,
-        default=300,
+        "--watch-until-terminal",
+        "--wait-until-terminal",
+        dest="watch_until_terminal",
+        action="store_true",
         help=(
-            "Pass-through to watcher --appearance-timeout-seconds. Defaults to 300s so a fresh "
-            "dispatch gets the same appearance warm-up window as the watcher."
+            "Watch until the selected run reaches terminal state. Equivalent to passing "
+            "--require-terminal-run to the watcher."
         ),
     )
     parser.add_argument(
-        "--retry-settle-seconds",
+        "--appearance-timeout-seconds",
         type=int,
-        default=90,
-        help=(
-            "Pass-through terminal retry grace period for the watcher. GitHub can rerun a failed "
-            "attempt under the same run id (default: 90s)."
-        ),
+        default=0,
+        help="Pass-through to watcher --appearance-timeout-seconds.",
     )
     parser.add_argument(
         "--supersession-mode",
@@ -178,6 +162,11 @@ def parse_args():
         type=int,
         default=None,
         help="Optional lower bound on watched run ids so older matches are skipped.",
+    )
+    parser.add_argument(
+        "--no-gemini-diagnosis",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -281,8 +270,7 @@ def _effective_minimum_run_id(baseline_max_run_id, requested_min_run_id):
 
 
 def _query_remote_ref_sha(watcher, repo, ref):
-    branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
-    endpoint = f"/repos/{repo}/git/ref/heads/{quote(branch, safe='')}"
+    endpoint = f"/repos/{repo}/git/ref/heads/{quote(ref, safe='')}"
     payload = watcher.gh_json(["api", endpoint], repo=repo)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Unexpected response when reading remote ref '{ref}'.")
@@ -302,9 +290,11 @@ def _resolve_remote_ref_sha(watcher, repo, ref):
 
 
 def _wait_for_ref_to_match_expected(watcher, repo, ref, expected_sha, *, start_time, attempts, max_wait_seconds, max_retries, poll_seconds):
+    if hasattr(watcher, "_GH_AUTH"):
+        watcher._GH_AUTH.deadline = start_time + max_wait_seconds if max_wait_seconds else None
     while True:
-        remote_head_sha = _resolve_remote_ref_sha(watcher, repo, ref)
-        if remote_head_sha and _head_sha_matches_prefix(remote_head_sha, expected_sha):
+        remote_head_sha = _query_remote_ref_sha(watcher, repo, ref)
+        if _head_sha_matches_prefix(remote_head_sha, expected_sha):
             return True, attempts
 
         if _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
@@ -330,6 +320,11 @@ def _select_newest_matching_run(
     dispatch_start_time,
     appearance_timeout_seconds,
 ):
+    if hasattr(watcher, "_GH_AUTH"):
+        total_deadline = start_time + max_wait_seconds if max_wait_seconds else None
+        appearance_deadline = dispatch_start_time + appearance_timeout_seconds if appearance_timeout_seconds else None
+        deadlines = [value for value in (total_deadline, appearance_deadline) if value is not None]
+        watcher._GH_AUTH.deadline = min(deadlines) if deadlines else None
     while True:
         runs = watcher.list_workflow_runs(
             repo,
@@ -418,53 +413,6 @@ def _parse_dispatch_inputs(raw_inputs):
     return parsed
 
 
-def _dispatch_input_value(dispatch_inputs, key):
-    key = str(key or "").strip()
-    if not key:
-        return None
-    value = None
-    for input_key, input_value in dispatch_inputs or []:
-        if input_key == key:
-            value = input_value
-    return value
-
-
-def _resolve_default_dispatch_ref(watcher, repo):
-    try:
-        payload = watcher.gh_json(["repo", "view", "--json", "defaultBranchRef"], repo=repo)
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    default_branch_ref = payload.get("defaultBranchRef")
-    if not isinstance(default_branch_ref, dict):
-        return None
-    branch = str(default_branch_ref.get("name") or "").strip()
-    return branch or None
-
-
-def _resolve_dispatch_ref(watcher, repo, requested_ref, dispatch_inputs):
-    if requested_ref != "auto":
-        return watcher.detect_ref(requested_ref)
-
-    # Downstream-style dispatches usually validate a logical ref input while the
-    # workflow itself must still be dispatched from the repo's default branch.
-    if _dispatch_input_value(dispatch_inputs, "ref"):
-        default_branch = _resolve_default_dispatch_ref(watcher, repo)
-        if default_branch:
-            return default_branch
-
-    return watcher.detect_ref(requested_ref)
-
-
-def _resolve_validation_ref(requested_ref, dispatch_ref, dispatch_inputs):
-    if requested_ref == "auto":
-        logical_ref = _dispatch_input_value(dispatch_inputs, "ref")
-        if logical_ref:
-            return logical_ref
-    return dispatch_ref
-
-
 def _is_unexpected_supersession_input_error(err):
     message = str(err)
     return (
@@ -510,7 +458,9 @@ def _run_watcher(
     wait_for,
     poll_seconds,
     appearance_timeout,
-    retry_settle_seconds=90,
+    require_terminal_run,
+    validation_target_ref=None,
+    validation_target_sha=None,
 ):
     command = [
         str(WATCHER_LAUNCHER_PATH),
@@ -518,37 +468,46 @@ def _run_watcher(
         str(int(run_id)),
         "--repo",
         str(repo),
-        "--watch-until-terminal",
+        "--watch-until-action",
         "--wait-for",
         wait_for,
         "--poll-seconds",
         str(poll_seconds),
         "--appearance-timeout-seconds",
         str(appearance_timeout),
-        "--retry-settle-seconds",
-        str(retry_settle_seconds),
     ]
+    if require_terminal_run:
+        command.append("--require-terminal-run")
+    if validation_target_ref:
+        command.extend(["--validation-target-ref", str(validation_target_ref)])
+    if validation_target_sha:
+        command.extend(["--validation-target-sha", str(validation_target_sha)])
 
-    last_payload = None
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
-        if proc.stdout:
-            for line in proc.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    payload = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    last_payload = payload
-        proc.wait()
-        if proc.returncode != 0:
-            return 1
-    if last_payload:
-        actions = last_payload.get("actions") or []
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        if not result.stdout.endswith("\n"):
+            sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    if result.returncode != 0:
+        if result.stderr:
+            sys.stderr.write(result.stderr + ("\n" if not result.stderr.endswith("\n") else ""))
+        return 1
+
+    if not result.stdout:
+        return 0
+
+    last_line = ""
+    for line in result.stdout.splitlines():
+        if line.strip():
+            last_line = line.strip()
+    if last_line:
+        try:
+            payload = json.loads(last_line)
+        except json.JSONDecodeError:
+            return 0
+        actions = payload.get("actions") or []
         if "stop_run_appearance_timeout" in actions:
             return 1
     return 0
@@ -564,8 +523,6 @@ def main():
         return _emit_error("--max-retries must be >= 0")
     if args.appearance_timeout_seconds < 0:
         return _emit_error("--appearance-timeout-seconds must be >= 0")
-    if args.retry_settle_seconds < 0:
-        return _emit_error("--retry-settle-seconds must be >= 0")
     if args.stale_head_retries < 0:
         return _emit_error("--stale-head-retries must be >= 0")
     if args.min_run_id is not None and args.min_run_id <= 0:
@@ -579,28 +536,29 @@ def main():
         )
 
     try:
-        dispatch_inputs = _parse_dispatch_inputs(args.input)
-    except ValueError as err:
-        return _emit_error(str(err))
-
-    try:
-        dispatch_ref = _resolve_dispatch_ref(watcher, repo, args.ref, dispatch_inputs)
+        ref = watcher.detect_ref(args.ref)
     except watcher.GhCommandError as err:
         return _emit_error(err)
-    validation_ref = _resolve_validation_ref(args.ref, dispatch_ref, dispatch_inputs)
 
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
     if not expected_sha:
-        expected_sha = (
-            _resolve_remote_ref_sha(watcher, repo, validation_ref)
-            or _resolve_local_ref_sha(watcher, validation_ref)
-            or (watcher.command_text(["git", "rev-parse", "HEAD"]) or "").strip()
-        )
+        expected_sha = _resolve_remote_ref_sha(watcher, repo, ref) or (
+            watcher.command_text(["git", "rev-parse", "HEAD"]) or ""
+        ).strip()
     if not expected_sha:
         return _emit_error("Expected head SHA is missing and `git rev-parse HEAD` returned nothing.")
     if not _is_head_sha_prefix(expected_sha):
         return _emit_error(f"Expected head SHA '{expected_sha}' is not a valid commit sha.")
+    validation_target_sha = str(args.validation_target_sha or "").strip()
+    if validation_target_sha and not _is_head_sha_prefix(validation_target_sha):
+        return _emit_error(
+            f"Expected validation target SHA '{validation_target_sha}' is not a valid commit sha."
+        )
+    try:
+        dispatch_inputs = _parse_dispatch_inputs(args.input)
+    except ValueError as err:
+        return _emit_error(str(err))
 
     start_time = time.monotonic()
     attempts = 0
@@ -609,22 +567,22 @@ def main():
         mismatch_observed_sha = _validate_expected_head_sha_against_remote_branch(
             watcher,
             repo,
-            validation_ref,
+            ref,
             expected_sha,
         )
         if mismatch_observed_sha:
             return _emit_expected_head_sha_mismatch(
                 workflow=args.workflow,
-                ref=validation_ref,
+                ref=ref,
                 expected_sha=expected_sha,
                 observed_sha=mismatch_observed_sha,
             )
 
-    if not watcher.is_sha_like(validation_ref):
+    if not watcher.is_sha_like(ref):
         ok, attempts = _wait_for_ref_to_match_expected(
             watcher,
             repo,
-            validation_ref,
+            ref,
             expected_sha,
             start_time=start_time,
             attempts=attempts,
@@ -634,32 +592,11 @@ def main():
         )
         if not ok:
             return _emit_error(
-                f"Timed out waiting for remote ref '{validation_ref}' to match expected SHA prefix '{expected_sha}'."
+                f"Timed out waiting for remote ref '{ref}' to match expected SHA prefix '{expected_sha}'."
             )
-
-    selection_expected_head_shas = [expected_sha]
-    if validation_ref != dispatch_ref:
-        dispatch_selection_sha = (
-            str(dispatch_ref).strip()
-            if watcher.is_sha_like(dispatch_ref)
-            else (
-                _resolve_remote_ref_sha(watcher, repo, dispatch_ref)
-                or _resolve_local_ref_sha(watcher, dispatch_ref)
-            )
-        )
-        if not dispatch_selection_sha:
-            return _emit_error(
-                f"Unable to resolve dispatch ref '{dispatch_ref}' to a commit SHA for run selection."
-            )
-        if not _is_head_sha_prefix(dispatch_selection_sha):
-            return _emit_error(
-                f"Resolved dispatch ref '{dispatch_ref}' to invalid commit SHA "
-                f"'{dispatch_selection_sha}'."
-            )
-        selection_expected_head_shas = [dispatch_selection_sha]
 
     try:
-        baseline_runs = watcher.list_workflow_runs(repo, args.workflow, dispatch_ref)
+        baseline_runs = watcher.list_workflow_runs(repo, args.workflow, ref)
         baseline_max_run_id = max(
             (int(run.get("databaseId") or 0) for run in baseline_runs),
             default=0,
@@ -672,7 +609,6 @@ def main():
     max_dispatch_attempts = max(1, int(args.stale_head_retries) + 1)
     stale_runs = []
     selected_run = None
-    last_selection_expected_head_sha_display = _head_sha_display(selection_expected_head_shas)
     for dispatch_attempt in range(1, max_dispatch_attempts + 1):
         dispatch_start_time = time.monotonic()
         try:
@@ -680,7 +616,7 @@ def main():
                 watcher,
                 repo,
                 args.workflow,
-                dispatch_ref,
+                ref,
                 args.supersession_mode,
                 args.supersession_key,
                 dispatch_inputs,
@@ -688,39 +624,13 @@ def main():
         except watcher.GhCommandError as err:
             return _emit_error(f"Workflow dispatch failed: {err}")
 
-        current_selection_expected_head_shas = list(selection_expected_head_shas)
-        if validation_ref != dispatch_ref and not watcher.is_sha_like(dispatch_ref):
-            post_dispatch_selection_sha = (
-                _resolve_remote_ref_sha(watcher, repo, dispatch_ref)
-                or _resolve_local_ref_sha(watcher, dispatch_ref)
-            )
-            if post_dispatch_selection_sha:
-                if not _is_head_sha_prefix(post_dispatch_selection_sha):
-                    return _emit_error(
-                        f"Resolved dispatch ref '{dispatch_ref}' to invalid commit SHA "
-                        f"'{post_dispatch_selection_sha}'."
-                    )
-                if post_dispatch_selection_sha.lower() not in {
-                    prefix.lower() for prefix in current_selection_expected_head_shas
-                }:
-                    current_selection_expected_head_shas.append(post_dispatch_selection_sha)
-
         min_run_id = _effective_minimum_run_id(baseline_max_run_id, args.min_run_id)
-        current_selection_expected_head_sha = (
-            current_selection_expected_head_shas[0]
-            if len(current_selection_expected_head_shas) == 1
-            else current_selection_expected_head_shas
-        )
-        current_selection_expected_head_sha_display = _head_sha_display(
-            current_selection_expected_head_shas
-        )
-        last_selection_expected_head_sha_display = current_selection_expected_head_sha_display
         selection, attempts = _select_newest_matching_run(
             watcher,
             repo,
             args.workflow,
-            dispatch_ref,
-            expected_head_sha=current_selection_expected_head_sha,
+            ref,
+            expected_head_sha=expected_sha,
             minimum_run_id=min_run_id,
             start_time=start_time,
             attempts=attempts,
@@ -744,23 +654,23 @@ def main():
                     "run_id": stale_run_id,
                     "run_url": str(selected.get("url") or ""),
                     "run_head_sha": str(selected.get("headSha") or ""),
-                    "expected_head_sha": current_selection_expected_head_sha_display,
+                    "expected_head_sha": expected_sha,
                 }
             )
             if dispatch_attempt >= max_dispatch_attempts:
                 return _emit_stale_head_timeout(
                     workflow=args.workflow,
-                    ref=dispatch_ref,
-                    expected_sha=current_selection_expected_head_sha_display,
+                    ref=ref,
+                    expected_sha=expected_sha,
                     attempts_used=dispatch_attempt,
                     retries_allowed=args.stale_head_retries,
                     stale_runs=stale_runs,
                 )
-            if not watcher.is_sha_like(validation_ref):
+            if not watcher.is_sha_like(ref):
                 ok, attempts = _wait_for_ref_to_match_expected(
                     watcher,
                     repo,
-                    validation_ref,
+                    ref,
                     expected_sha,
                     start_time=start_time,
                     attempts=attempts,
@@ -770,14 +680,14 @@ def main():
                 )
                 if not ok:
                     return _emit_error(
-                        f"Timed out waiting for remote ref '{validation_ref}' to match expected SHA prefix '{expected_sha}'."
+                        f"Timed out waiting for remote ref '{ref}' to match expected SHA prefix '{expected_sha}'."
                     )
             continue
         if kind == "appearance_timed_out":
             return _emit_dispatch_appearance_timeout(
                 workflow=args.workflow,
-                ref=dispatch_ref,
-                expected_sha=current_selection_expected_head_sha_display,
+                ref=ref,
+                expected_sha=expected_sha,
                 appearance_timeout_seconds=args.appearance_timeout_seconds,
                 attempts_used=dispatch_attempt,
             )
@@ -788,15 +698,15 @@ def main():
         if stale_runs:
             return _emit_stale_head_timeout(
                 workflow=args.workflow,
-                ref=dispatch_ref,
-                expected_sha=last_selection_expected_head_sha_display,
+                ref=ref,
+                expected_sha=expected_sha,
                 attempts_used=max_dispatch_attempts,
                 retries_allowed=args.stale_head_retries,
                 stale_runs=stale_runs,
             )
         return _emit_error(
-            f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{dispatch_ref}', "
-            f"head-sha '{last_selection_expected_head_sha_display}' after dispatch."
+            f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{ref}', "
+            f"head-sha '{expected_sha}' after dispatch."
         )
 
     run_id = int(selected_run.get("databaseId") or 0)
@@ -813,7 +723,9 @@ def main():
         wait_for=args.wait_for,
         poll_seconds=args.poll_seconds,
         appearance_timeout=args.appearance_timeout_seconds,
-        retry_settle_seconds=args.retry_settle_seconds,
+        require_terminal_run=args.watch_until_terminal,
+        validation_target_ref=args.validation_target_ref,
+        validation_target_sha=validation_target_sha or None,
     )
 
 

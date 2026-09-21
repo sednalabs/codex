@@ -1,6 +1,6 @@
 ---
 name: babysit-gh-workflow-run
-description: Watch GitHub Actions workflow runs such as `validation-lab`, `sedna-heavy-tests`, or `sedna-branch-build` by run id or by workflow/ref; monitor status, summarize failures, and keep waiting until the run succeeds, fails, or needs operator action. Use the bundled watcher helper script instead of ad-hoc `gh` polling loops.
+description: "Watch GitHub Actions runs to success, failure, or operator action using the bundled blocking watcher, including workflow-host versus validation-target identity proof for cross-ref dispatches."
 ---
 
 # GitHub Workflow Run Babysitter
@@ -18,15 +18,25 @@ This skill is for workflow-run monitoring, not PR review/comment shepherding. Us
 ## Operating Model
 
 - Use the bundled launcher, `scripts/gh_workflow_run_watch`, as the monitoring surface. It will locate a Python interpreter even when `python3` is not already on `PATH`.
-- The helper is intentionally stdlib-only at runtime: it still needs a Python interpreter, `gh`, and network access to GitHub, but it does not require an extra Python package install. Gemini network access is needed only for an explicitly requested diagnosis.
+- When the seam is "the run is intentionally long-lived, but I need to stop once a named job step reaches `pending`, `in_progress`, or `completed`", use the dedicated helper `scripts/gh_wait_for_run_step` instead of writing an inline polling loop.
+- The helper is intentionally stdlib-only at runtime: it needs a Python interpreter, `gh`, and network access to GitHub, but it does not require an extra Python package install.
+- When this skill is used inside `awaiter`, `terminal-babysitter`, or a cheap workflow shepherd lane, that lane should run the helper directly. Do not spawn another watcher sidecar or nested Codex lane just to invoke the same helper.
+- The lane invoking this helper should treat descendant spawning as disallowed unless the parent explicitly granted it. This helper is meant to be run directly by its owning lane, not bounced through nested watcher children.
 - If the default interpreter search is not the one you want, set `GH_WORKFLOW_RUN_WATCH_PYTHON` to an explicit Python path.
 - Gemini diagnosis is off by default and cannot be enabled by ambient environment configuration. Use `--gemini-diagnosis` only when the operator deliberately wants one provider-backed failure summary for this exact invocation. Deterministic failure evidence remains available without it.
+- `gh_dispatch_and_watch` also tolerates the historical `--no-gemini-diagnosis` spelling as a hidden no-op so persisted commands fail safe; new commands should omit it because provider diagnosis is already disabled by default.
 - If there is a single blocking helper-backed wait and no better concurrent parent work, run the helper directly in the parent thread instead of spawning a babysitter lane.
+- Keep the provider-facing tool cell blocked with the helper. When invoking the
+  helper through `functions.exec` plus `exec_command`, set
+  `wait_until_terminal=true`, give the outer `functions.exec` call a 120-second
+  initial yield, and, if it returns a running cell, resume that same cell with
+  `functions.wait` using `yield_time_ms` of at least 300000. Never use the
+  default short cell-wait cadence, and never let model-visible cell waits run
+  more frequently than the helper's own GitHub poll interval.
 - If the seam is still a pure delegated wait after applying that parent-direct rule, prefer routing it to `awaiter` instead of `terminal-babysitter`.
 - If the seam is likely to become “watch -> tiny fix or rerun -> resume,” use this helper inside a cheap workflow shepherd lane rather than pretending the seam is a pure babysitter wait.
 - Prefer `--watch-until-terminal` for delegated workflow waits. Use `--watch-until-action` only when a repair owner should wake on an actionable failure before the whole run completes.
 - When you want to stay in a blocking wait until every watched run is terminal (even if a failure shows up while it is still in progress), use `--watch-until-terminal` (alias `--wait-until-terminal`, equivalent to `--watch-until-action --require-terminal-run`).
-- Terminal waits keep a short retry-settle window after a failed attempt. GitHub can rerun the same workflow run id after it reports `completed`, so the helper waits for the attempt number to remain quiet before surfacing a final failure; use `--retry-settle-seconds 0` only when that grace period is not wanted.
 - `--wait-for all_done` waits until all watched targets are non-idle, but it will keep polling if a surfaced `diagnose_run_failure` action still lacks retrievable logs.
 - `--watch-until-action` now includes a default appearance warm-up window for workflow/ref targets, so the helper waits for GitHub dispatch lag before reporting that no matching run appeared.
 - The watcher now treats an already-failed job inside an in-progress run as actionable by default; you no longer need to wait for the whole workflow run to turn terminal before handing the failure to a worker.
@@ -36,9 +46,14 @@ This skill is for workflow-run monitoring, not PR review/comment shepherding. Us
 - Use `--watch` only when actively consuming the JSONL stream in the foreground.
 - Use `--once` for one-shot diagnosis or local debugging.
 - When watching by workflow plus ref rather than exact run id, the helper follows the newest matching run automatically so superseded scratch/integration runs do not require manual handoff. Once that run id is known, the helper keeps following it directly for a few polls before re-entering `gh run list` discovery, which cuts steady-state polling cost without changing the exact-run path.
+- Workflow/ref discovery falls back to the direct Actions runs API when `gh run list --workflow` cannot find runs attached to a renamed or deleted workflow id. The fallback still requires an exact normalized workflow name/file match plus the caller's ref, SHA, and minimum-run filters.
+- Exact-run reads fall back to the direct Actions run and jobs APIs when `gh run view` fails because the referenced workflow metadata was renamed, removed, or is otherwise unavailable. The fallback remains bound to the caller's exact repository and run id.
 - For `validation-lab`, treat same-question scratch/integration reruns as `supersession_mode=auto` by default, but use explicit retained intent such as `compare`, `milestone`, or `retain` when a run is evidence you want to preserve rather than auto-supersede.
 - `gh_dispatch_and_watch` now retries once without `supersession_*` inputs when a workflow rejects those fields, so plain workflows such as `rust-ci-full` can still use the helper safely.
 - When a watched run publishes a `validation-summary` artifact, prefer that structured summary over raw log scraping.
+- Keep GitHub's workflow host identity (`headBranch`/`headSha`) separate from a workflow's validation target. For a run hosted on `main` that validates an input ref, use `--host-ref main` plus `--validation-target-ref` / `--validation-target-sha`; `--head-sha` remains the workflow-host run selector.
+- The watcher reads authoritative validation-target identity from structured `validation-summary` evidence when present. For Agent Ops surface runs with an expected target SHA, it also consumes the matching `ops-mcp-surface-acceptance-<sha>` receipt artifact instead of discarding that target-bound proof. It reports a separate target as `unknown` only when neither source provides identity evidence, and stops with `stop_validation_target_identity_mismatch` when authoritative evidence contradicts the expected target.
+- For heavy-validation runs with an expected target ref or SHA, it also consumes the exact `heavy-validation-results/heavy-validation.json` artifact contract (`target_ref`, `target_sha`, and `outcome`) as authoritative target evidence.
 - For `profile=frontier` validation runs, treat the summary artifact's blocker queue as the primary handoff surface before any raw log tail.
 
 ## Inputs
@@ -47,36 +62,35 @@ Accept any of the following:
 
 - exact run id (legacy single target mode): `--run-id`
 - workflow name or workflow file plus a ref
-- optional head SHA pin when a workflow/ref target may have several recent runs, or when an exact run id should be classified against the latest target head
+- optional workflow-host SHA pin (`--head-sha`) when a workflow/ref target may have several recent runs
 - optional host-ref when the run host branch differs from the logical ref (common for `workflow_dispatch` with an input ref)
+- optional expected validation target with `--validation-target-ref` and/or `--validation-target-sha`; these prove the checked candidate and never select the GitHub run
 - optional `--min-run-id` when using a workflow target directly to skip older stale matching runs
 - no ref argument: infer the current branch when possible
-- when passing a logical workflow input like `ref=target-branch`, `--ref auto` resolves to the
-  repository default branch for dispatch while `--head-sha` keeps guarding the logical input ref
-- optional `--gemini-diagnosis` for one deliberately requested provider-backed summary
-- optional Gemini model override with `--gemini-model` only when diagnosis is explicitly enabled
+- optional, deliberate `--gemini-diagnosis` to permit one provider-backed failure summary for this invocation
+- optional `--gemini-model` and `--gemini-timeout-seconds` only when `--gemini-diagnosis` is present
 
 Multi-target mode:
 
 - `--target "run-id=<id>"`
-- `--target "run-id=<id>,head-sha=<sha>"`
+- `--target "run-id=<id>,validation-target-ref=<ref>,validation-target-sha=<sha>"`
 - `--target "workflow=<name>,ref=<ref>"`
 - `--target "workflow=<name>,ref=<ref>,host-ref=<branch>"`
-- `--target "workflow=<name>,ref=<ref>,head-sha=<sha>"`
-- `--target "workflow=<name>,ref=<ref>,host-ref=<branch>,head-sha=<sha>,min-run-id=<run-id>"`
+- `--target "workflow=<name>,ref=<ref>,head-sha=<workflow-host-sha>"`
+- `--target "workflow=<name>,ref=<ref>,host-ref=<branch>,validation-target-sha=<sha>"`
+- `--target "workflow=<name>,ref=<ref>,host-ref=<branch>,head-sha=<workflow-host-sha>,validation-target-sha=<sha>,min-run-id=<run-id>"`
 - repeat `--target` to watch multiple runs in one invocation
 
 Optional:
 
 - repo override
 - explicit poll interval
-- appearance timeout override with `--appearance-timeout-seconds` (defaults to 300s in `gh_dispatch_and_watch` so a freshly dispatched run gets a warm-up window)
+- appearance timeout override with `--appearance-timeout-seconds`
 - completion behavior with `--wait-for` when used with `--watch-until-action`
 - hold until a failure target's run reaches status completed by adding `--require-terminal-run` with `--watch-until-action`
 - terminal-wait semantics in one flag: `--watch-until-terminal` (alias `--wait-until-terminal`) implies both `--watch-until-action` and `--require-terminal-run`
 - repeated dispatch input passthrough with `--input key=value` when using `gh_dispatch_and_watch`
 - bounded stale-head redispatch with `--stale-head-retries` when branch propagation races produce runs on an older head SHA
-- retry-aware terminal settling with `--retry-settle-seconds` when GitHub may rerun a failed attempt
 
 ## Core Workflow
 
@@ -84,7 +98,10 @@ Optional:
    - exact `run-id` targets if present
    - newest matching workflow run for each workflow/ref target
    - optional `min-run-id` filters older matching runs with the same commit when present
-2. Emit one normalized aggregate snapshot or enter one helper-owned blocking watch loop. Internal polls do not produce model-visible output.
+2. Enter one helper-owned blocking watch loop. Internal polls do not produce
+   model-visible output. If the surrounding tool cell yields, resume only that
+   exact cell at the long cadence above; do not query the run separately or
+   emit provider turns for unchanged state.
 3. Inspect the top-level `targets` array and aggregate `actions` list.
 4. If one or more targets are still queued or in progress, keep waiting unless wait policy is already satisfied.
 5. If the watched target(s) succeed, report terminal success and stop per policy.
@@ -94,94 +111,27 @@ Optional:
 
 ## Commands
 
-### Exact merge-queue delivery receipt
+### GitHub authentication and rate-limit recovery
 
-Use `scripts/gh_pr_delivery_watch` when one pull request must be proved through
-all three delivery identities: its expected full head SHA, the synthetic
-`merge_group` candidate, and the resulting merge commit on `main`. It performs
-one bounded, receipt-owned PR-delivery observation after the merge-group run;
-both long workflow waits remain delegated to the existing
-`gh_workflow_run_watch --watch-until-terminal` helper.
+For workstation runs, a future local integration may set the provisional
+`CODEX_GITHUB_APP_TOKEN_COMMAND` to an executable
+command that prints one short-lived GitHub App installation token on stdout.
+The watcher invokes it without a shell, passes `CODEX_GITHUB_REPOSITORY` when
+known, never includes its stdout/stderr in diagnostics, and caches the token for
+the process. Existing `GH_TOKEN`, `GITHUB_TOKEN`, and interactive `gh` auth
+remain the fallback only when the helper hook is absent. A configured helper
+that fails is fatal. On an authentication rejection, the helper is refreshed
+once;
+if GitHub reports a rate limit, the watcher reads the authoritative
+`rate_limit` reset where possible and performs one bounded sleep before retrying
+the same exact run/target operation. It never retries recursively or changes the
+watched run or validation-target identity.
 
-```bash
-.codex/skills/babysit-gh-workflow-run/scripts/gh_pr_delivery_watch \
-  --repo sednalabs/codex \
-  --pr 123 \
-  --expected-head-sha 0123456789012345678901234567890123456789 \
-  --merge-group-run-id 123456789
-```
-
-- `--expected-head-sha` must be a full 40-character SHA; prefixes are rejected.
-- Supplying `--merge-group-run-id` is preferred. Without it, a single discovery
-  read is accepted only when exactly one `blocking-ci` queue candidate names the
-  PR; absent or multiple candidate SHAs stop the receipt.
-- A queue ref that names the PR is only a discovery selector. Before waiting,
-  the candidate must be proven by GitHub commit ancestry to contain both the
-  exact expected PR head and the PR's current base SHA; an older or otherwise
-  uncorrelatable candidate stops the receipt.
-- Workflow inputs accept a display name, file basename, or a
-  `.github/workflows/*.yml` / `.yaml` path. They are compared by their
-  normalized workflow basename, so `Blocking CI` matches `blocking-ci.yml`.
-- GitHub's downstream watcher receipt can omit an authoritatively selected
-  exact run's `event`. The delivery receipt accepts that absence only after
-  stage-specific exact identity checks: a `merge_group` receipt needs the
-  selected candidate run id, queue ref, full candidate SHA, and normalized
-  workflow; a `post_merge` receipt needs a direct Actions read of the nested
-  exact-target selection's run id to prove `push`, the full merge SHA, main
-  ref, and normalized workflow. The compact nested receipt alone is not event
-  evidence for a post-merge run. A non-empty event other than `merge_group` or
-  `push`, respectively, remains an identity mismatch and stops the proof.
-- The defaults require a successful `blocking-ci` `merge_group` run and one
-  selected `postmerge-ci` `push` run on the exact merge commit. The singular
-  `--post-merge-workflow` selector is deliberately not an inventory of every
-  workflow that a merge may independently trigger.
-- A successful candidate proves delivery only when GitHub ancestry establishes
-  that the selected candidate SHA reaches the eventual merge commit. A later
-  superseding queue candidate fails closed instead of borrowing the earlier
-  success. `GH_PR_DELIVERY_WATCH_PYTHON` is forwarded to the nested watcher as
-  `GH_WORKFLOW_RUN_WATCH_PYTHON` when an explicit interpreter is required.
-- After the merge-group run succeeds, the helper waits for the normal GitHub
-  queue-to-merged transition for at most
-  `--merge-observation-timeout-seconds` (default: 300). It uses the existing
-  `--poll-seconds` interval (default: 60), caps the final sleep at the deadline,
-  and applies the shrinking remaining deadline to every GitHub read in this
-  observation. A hung read therefore stops with
-  `stop_merge_observation_timeout` rather than exceeding the requested bound.
-  This is receipt-owned bounded observation, not a model or operator polling
-  loop. Every poll, including one whose first PR read is already merged,
-  reasserts the selected run identity, candidate association, and absence of a
-  newer candidate SHA; still-queued polls also reassert the current exact PR
-  head/base. Changed invariants fail closed. A normal process interrupt returns
-  the scoped `stop_merge_observation_interrupted` receipt; it does not change
-  the selected-workflow proof scope.
-- Standard output is one compact JSON receipt. A non-zero status still emits a
-  receipt with a stable `stop_*` action and the first failed job when available.
-
-`stop_pr_delivery_proven` means the selected-workflow delivery proof succeeded:
-the exact merge-group candidate and the receipt's
-`proof_scope.selected_post_merge_workflows` each matched the expected identity.
-It does **not** mean every independently triggered post-merge workflow passed,
-and it does **not** establish whole-repository health. The receipt makes that
-boundary machine-readable with `proof_scope.whole_repository_health_proven:
-false` and records the selector also at `post_merge.selected_workflow`.
-
-For a relevant merge where `Native Windows Bazel health` is required evidence,
-that workflow must first be introduced and landed on `main` by its separate CI
-PR. It is not resolvable from a watcher-only branch or from a base that does not
-yet contain the workflow. Once the CI PR is landed and the relevant merge has
-completed, this separate exact-main-SHA watch is mandatory; it remains outside
-the default `postmerge-ci` proof:
-
-```bash
-.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch \
-  --repo sednalabs/codex \
-  --target "workflow=Native Windows Bazel health,ref=main,head-sha=<merge-commit-sha>" \
-  --watch-until-terminal
-```
-
-The helper fails closed if the PR head changes, a queue entry disappears without
-a merge, the merge commit cannot be correlated to `main`, or either watched run
-reports an identity different from its exact target SHA.
+This hook is not an active broker integration: the accepted broker work exists
+on repository `main`, while this installed skill currently lacks the broker
+module and direct local compatibility/expiry continuity remain open. Do not
+invent credentials or claim App-token use until that integration is installed
+and read back.
 
 ### One-shot snapshot for the current branch
 
@@ -213,10 +163,33 @@ reports an identity different from its exact target SHA.
 ~/.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch --workflow validation-lab --ref integration/upstream-main-sync-20260330-000843 --head-sha c7f3212c1c --watch-until-action
 ```
 
+### Cross-ref validation hosted on `main`
+
+```bash
+~/.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch \
+  --workflow validation-lab.yml \
+  --ref validation/candidate \
+  --host-ref main \
+  --validation-target-ref validation/candidate \
+  --validation-target-sha c7f3212c1c \
+  --watch-until-terminal
+```
+
 ### Terminal wait for watched runs to finish
 
 ```bash
 ~/.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch --workflow validation-lab --ref integration/upstream-main-sync-20260330-000843 --watch-until-terminal
+```
+
+### Wait until a named step goes live inside a long-lived run
+
+```bash
+~/.codex/skills/babysit-gh-workflow-run/scripts/gh_wait_for_run_step \
+  --workflow interactive-android-session.yml \
+  --ref main \
+  --job-name "Hosted interactive Android emulator session" \
+  --step-name "Run hosted interactive Android session" \
+  --step-status in_progress
 ```
 
 ### Resume after handling one actionable blocker
@@ -250,8 +223,11 @@ reports an identity different from its exact target SHA.
 ```bash
 ~/.codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch \
   --workflow validation-lab \
-  --ref integration/upstream-main-sync-20260330-000843 \
-  --head-sha c7f3212c1c \
+  --ref main \
+  --head-sha 4a8d921bc0 \
+  --input ref=integration/upstream-main-sync-20260330-000843 \
+  --validation-target-ref integration/upstream-main-sync-20260330-000843 \
+  --validation-target-sha c7f3212c1c \
   --input profile=frontier \
   --input lane_set=subagents \
   --max-wait-seconds 900 \
@@ -275,12 +251,13 @@ Return concise structured state that includes:
 - aggregate `repo`, `wait_for`, and `targets`
 - per-target resolved repo/workflow/ref/run identifiers
 - per-target run status and conclusion
-- per-target `validation_summary` when the run uploaded a structured summary artifact
+- per-target compact `proof_identity` with distinct `workflow_host_ref` / `workflow_host_sha`, expected validation-target fields when supplied, authoritative `validation_target_ref` / `validation_target_sha` when available, evidence source, and `validation_target_status`
+- per-target `validation_summary` when the run uploaded a structured summary artifact, enriched with an exact target-bound Ops MCP surface acceptance receipt when available
 - per-target frontier blocker queue when the summary artifact exposes one
 - per-target appearance-wait state when no run has appeared yet
 - per-target failed-job summary when terminal and non-green
-- per-target `gemini_diagnosis` when Gemini was able to summarize the failure
-- per-target `diagnostic_evidence` even when Gemini diagnosis is disabled, so the parent still gets the compact failure bundle
+- per-target deterministic `diagnostic_evidence` for failures without any provider call
+- per-target `gemini_diagnosis` only when the caller deliberately passed `--gemini-diagnosis`
 - per-target `gemini_error` and `diagnostic_evidence` when the Gemini pass was attempted but could not complete cleanly
 - per-target `gemini_telemetry` with Gemini latency and token usage when a diagnosis call completes
 - per-target `validation_context` with mode-aware watcher guidance such as `profile`, `failure_structure`, `first_blocker`, and `recommended_follow_up`
@@ -292,6 +269,7 @@ Return concise structured state that includes:
 - for deterministic dispatch races, `stop_stale_head_dispatch_detected` with `stale_head_dispatch` details when newly created runs keep landing on the wrong head SHA
 - for dispatch visibility failures, `stop_dispatch_run_not_visible` with `dispatch_visibility` details when no new run appears within the configured appearance timeout window
 - for dispatch host/ref mismatches, `stop_dispatch_host_branch_mismatch` with `appearance_wait.dispatch_host_mismatch` details and a suggested `--target ... host-ref=...` form
+- for contradictory authoritative target evidence, `stop_validation_target_identity_mismatch`; never substitute the GitHub run's `headSha` as validation-target evidence for a separate target contract
 - top-level `summary` counts across all targets
 - `ts` timestamp
 
@@ -300,17 +278,24 @@ The normal watcher path makes no Gemini or other model-provider call. If and onl
 ## Guardrails
 
 - Do not replace the helper script with ad hoc `gh` polling loops.
+- Do not repeatedly resume a yielded helper cell with the tool's short default
+  wait. One five-minute-or-longer cell resumption is the minimum safe cadence
+  for an unchanged long-running workflow wait.
+- Do not pass `--gemini-diagnosis` merely because a run failed. First use the deterministic evidence bundle; provider diagnosis requires a deliberate, case-specific choice.
+- Do not replace `gh_wait_for_run_step` with ad hoc inline Python when the real seam is a named mid-run job-step boundary.
 - Do not use this skill for PR review/comment monitoring.
 - Do not spawn another babysitter for the same workflow-run seam.
+- Do not spawn descendants just to invoke or wrap this helper unless the parent explicitly authorized that extra ownership layer.
+- Do not invoke `codex exec` or any other nested Codex CLI session as a fallback path for running this watcher.
+- If the helper cannot run because auth, environment, or tool availability is broken, surface that blocker directly instead of creating a second watcher control plane.
 - Do not route a pure delegated workflow wait to `terminal-babysitter` when `awaiter` would be sufficient.
 - Do not use a pure babysitter lane when the real seam is workflow watch plus bounded fix/rerun ownership.
 - Prefer exact run ids when the parent already knows them.
 - For a fresh dispatch, use `gh_dispatch_and_watch` to wait for remote branch tip sync, dispatch only when SHA matches, and watch only a newer matching run.
-- For downstream-style dispatches with a logical `ref=` input, keep `--ref auto` so the workflow dispatches from the repo default branch; the helper validates the logical input ref head before dispatch and then watches the newly created host-branch run.
 - When the parent only knows workflow plus ref, let the helper follow the newest matching run so cancelled superseded runs do not create noise.
-- When the parent knows the exact branch head it just dispatched, pass `--head-sha` so the watcher cannot latch onto an older completed run on the same ref.
-- When inspecting an exact failed run after the branch advanced, include the latest known `head-sha` so the watcher can classify stale evidence and recommend the smallest targeted latest-head proof rerun.
+- When the parent knows the exact workflow-host branch head it just dispatched, pass `--head-sha` so the watcher cannot latch onto an older completed run on the same host ref.
 - If a `workflow_dispatch` run is hosted on a branch different from the logical ref (for example hosted on `main` while testing `validation/...` input), pass `--host-ref` (or `host-ref=` in `--target`) so the watcher can select it deterministically.
+- For that cross-ref shape, pass the candidate as `--validation-target-ref` / `--validation-target-sha`, not as `--head-sha`. Missing artifact evidence means the validation target is unknown; it does not justify copying `run.head_sha` into the target identity.
 - Host-branch mismatch probing is throttled after the first no-match check, so repeated empty polls do not keep re-running the fallback discovery path on every cycle.
 - When dispatching `validation-lab`, leave `--supersession-mode auto` unless the run is an intentional comparison or checkpoint. Retained evidence runs must opt out explicitly with `compare`, `milestone`, or `retain`.
 - For `--watch-until-action`, the default appearance timeout is intentionally non-zero so GitHub dispatch lag does not cause an immediate false blocker; override it only when the seam really needs a shorter or longer grace window.
