@@ -810,14 +810,37 @@ def get_pr_checks(pr_spec, repo):
 def _normalize_status_rollup_check(item):
     if not isinstance(item, dict):
         raise GhCommandError("Malformed status-check rollup entry")
-    status = str(item.get("status") or item.get("state") or "").upper()
-    conclusion = str(item.get("conclusion") or "").upper()
-    state = conclusion or status
-    bucket = "pending" if status not in {"COMPLETED", "SUCCESS", "FAILURE"} and not conclusion else (
-        "pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} or state == "SUCCESS" else "fail"
-    )
+    typename = str(item.get("__typename") or "").strip()
+    if typename == "CheckRun" or "status" in item or "conclusion" in item:
+        name = str(item.get("name") or "").strip()
+        status = str(item.get("status") or "").upper()
+        conclusion_value = item.get("conclusion")
+        conclusion = str(conclusion_value or "").upper()
+        if not name or status not in {"QUEUED", "IN_PROGRESS", "COMPLETED"}:
+            raise GhCommandError("Malformed CheckRun status-check rollup entry")
+        if status == "COMPLETED" and conclusion not in {
+            "SUCCESS", "FAILURE", "CANCELLED", "SKIPPED", "NEUTRAL",
+            "ACTION_REQUIRED", "TIMED_OUT", "STALE",
+        }:
+            raise GhCommandError("Malformed completed CheckRun status-check rollup entry")
+        if status != "COMPLETED" and conclusion_value is not None:
+            raise GhCommandError("Malformed pending CheckRun status-check rollup entry")
+        state = conclusion or status
+        bucket = "pending" if status != "COMPLETED" else (
+            "pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} else "fail"
+        )
+    elif typename == "StatusContext" or "state" in item or "context" in item:
+        name = str(item.get("context") or "").strip()
+        state = str(item.get("state") or "").upper()
+        if not name or state not in {"PENDING", "SUCCESS", "FAILURE", "ERROR"}:
+            raise GhCommandError("Malformed StatusContext status-check rollup entry")
+        if item.get("conclusion") not in (None, ""):
+            raise GhCommandError("Malformed StatusContext status-check rollup entry")
+        bucket = "pending" if state == "PENDING" else "pass" if state == "SUCCESS" else "fail"
+    else:
+        raise GhCommandError("Unknown status-check rollup entry shape")
     return {
-        "name": str(item.get("name") or item.get("context") or ""),
+        "name": name,
         "state": state,
         "bucket": bucket,
         "link": str(item.get("detailsUrl") or item.get("targetUrl") or ""),

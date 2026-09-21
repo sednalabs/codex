@@ -127,6 +127,54 @@ def test_get_pr_checks_rejects_malformed_status_rollup(monkeypatch, rollup_paylo
         gh_pr_watch.get_pr_checks("123", "openai/codex")
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"__typename": "CheckRun", "name": "", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": None},
+        {"__typename": "CheckRun", "name": "ci", "status": "IN_PROGRESS", "conclusion": "SUCCESS"},
+        {"__typename": "StatusContext", "context": "", "state": "SUCCESS"},
+        {"__typename": "StatusContext", "context": "ci", "state": "UNKNOWN"},
+        {"__typename": "Other", "name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    ],
+)
+def test_get_pr_checks_rejects_incomplete_status_rollup_dict(monkeypatch, entry):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda args, repo=None: (
+            (_ for _ in ()).throw(gh_pr_watch.GhCommandError("unknown flag: --json"))
+            if args[:2] == ["pr", "checks"]
+            else {"statusCheckRollup": [entry]}
+        ),
+    )
+    with pytest.raises(gh_pr_watch.GhCommandError):
+        gh_pr_watch.get_pr_checks("123", "openai/codex")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"__typename": "CheckRun", "name": "ci", "status": "IN_PROGRESS", "conclusion": None},
+        {"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        {"__typename": "StatusContext", "context": "ci", "state": "PENDING"},
+        {"__typename": "StatusContext", "context": "ci", "state": "ERROR"},
+    ],
+)
+def test_get_pr_checks_accepts_supported_status_rollup_shapes(monkeypatch, entry):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda args, repo=None: (
+            (_ for _ in ()).throw(gh_pr_watch.GhCommandError("unknown flag: --json"))
+            if args[:2] == ["pr", "checks"]
+            else {"statusCheckRollup": [entry]}
+        ),
+    )
+    checks = gh_pr_watch.get_pr_checks("123", "openai/codex")
+    assert len(checks) == 1
+
+
 @pytest.fixture(autouse=True)
 def default_queue_absent(monkeypatch, request):
     if request.node.name.startswith(("test_collect_snapshot_reads_graphql", "test_collect_malformed_queue")):
