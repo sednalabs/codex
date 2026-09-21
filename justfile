@@ -195,6 +195,12 @@ argument-comment-lint *args:
 argument-comment-lint-from-source *args:
     {{ python }} {{ justfile_directory() }}/tools/argument-comment-lint/run.py {args}
 
+# Hosted-only validation slice for dynamic-tool state persistence and recovery.
+state-migration-repair-targeted:
+    cargo test -p codex-state runtime::threads::tests::dynamic_tools_round_trip_flat_and_namespaced_specs --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::threads::tests::delete_thread_cleans_associated_state --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::migration_repair::tests::repairs_deployed_thread_source_schema_with_embedded_migration_metadata --lib -- --exact --test-threads=1
+
 # Tail logs from the state SQLite database
 [unix]
 log *args:
