@@ -9,7 +9,8 @@ use codex_rollout::RolloutItem;
 use codex_rollout::RolloutPersistenceTelemetry;
 use codex_rollout::measure_and_filter_rollout_items;
 use codex_rollout::persisted_rollout_items;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tracing::warn;
 
 use crate::AppendThreadItemsParams;
