@@ -46,7 +46,7 @@ mod goals;
 mod logs;
 mod memories;
 mod memory_versions;
-pub(super) mod migration_repair;
+pub(crate) mod migration_repair;
 mod projects;
 mod queued_items;
 mod recovery;
