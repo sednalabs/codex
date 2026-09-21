@@ -1019,7 +1019,9 @@ class GhPrWatchTests(unittest.TestCase):
             max_flaky_retries=3,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(
                 json.dumps(
@@ -1319,7 +1321,9 @@ class GhPrWatchTests(unittest.TestCase):
             "actions": [MODULE.ACTION_REQUIRED_MERGE_POLICY_BLOCKED],
             "merge_blockers": {"reason_kinds": ["merge_policy_blocked"]},
         }
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             MODULE.persist_watch_schedule(state_path, snapshot, "watch-until-action", 0, scheduled_at=1234)
             state, _ = MODULE.load_state(state_path)
@@ -1544,7 +1548,9 @@ class GhPrWatchTests(unittest.TestCase):
         }
         absent = {**base_pr, "merge_queue": MODULE.normalize_merge_queue_entry(None)}
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
             active["merge_queue"] = MODULE.reconcile_merge_queue_entry(active, state)
@@ -1628,7 +1634,9 @@ class GhPrWatchTests(unittest.TestCase):
             ),
         }
         failed["merge_queue"] = MODULE.reconcile_merge_queue_entry(failed, state)
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             MODULE.save_state(state_path, state)
             reloaded, _ = MODULE.load_state(state_path)
@@ -1703,7 +1711,9 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
             old_active = {**base_pr, "merge_queue": active_queue("MQE_old", "queue-old")}
@@ -1827,7 +1837,9 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
             active["merge_queue"] = MODULE.reconcile_merge_queue_entry(active, state)
