@@ -2109,6 +2109,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::SubAgentActivity(_) => None,
+        // Protocol-only observation events are not user-facing realtime text.
+        EventMsg::InferenceCall(_) | EventMsg::Unknown => None,
     }
 }
 
