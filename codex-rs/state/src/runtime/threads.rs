@@ -78,6 +78,15 @@ ORDER BY position ASC
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
+        let already_persisted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_dynamic_tools WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_one(&mut *tx)
+                .await?;
+        if already_persisted != 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
         let mut position = 0_i64;
         for tool in tools {
             let (namespace, namespace_description, functions): (
@@ -106,7 +115,6 @@ INSERT INTO thread_dynamic_tools (
     thread_id, position, name, description, input_schema, defer_loading,
     persist_on_resume, capability_json, namespace, namespace_description
 ) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?, ?)
-ON CONFLICT(thread_id, position) DO NOTHING
                     "#,
                 )
                 .bind(thread_id.to_string())
@@ -1766,6 +1774,29 @@ mod tests {
         );
         runtime
             .persist_dynamic_tools(thread_id, Some(&[] as &[DynamicToolSpec]))
+            .await?;
+        assert_eq!(
+            runtime.get_dynamic_tools(thread_id).await?,
+            Some(specs.clone())
+        );
+        runtime
+            .persist_dynamic_tools(
+                thread_id,
+                Some(&[
+                    DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                        name: "replacement-one".to_string(),
+                        description: "must not replace the initial capture".to_string(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                        defer_loading: false,
+                    }),
+                    DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                        name: "replacement-two".to_string(),
+                        description: "must not append to the initial capture".to_string(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                        defer_loading: false,
+                    }),
+                ]),
+            )
             .await?;
         assert_eq!(runtime.get_dynamic_tools(thread_id).await?, Some(specs));
         Ok(())
