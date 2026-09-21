@@ -15,6 +15,8 @@ Babysit a GitHub Actions workflow run until one of these terminal outcomes occur
 
 This skill is for workflow-run monitoring, not PR review/comment shepherding. Use `$babysit-pr` for PR-local CI/review loops. In the orchard split, this helper can be used directly in the parent thread for one blocking wait, inside `awaiter` for pure delegated waits, inside `terminal-babysitter` for monitored waits, or inside a cheap workflow shepherd lane when the seam is likely to need one bounded fix/rerun and resumed watch ownership.
 
+For delivery through the merge queue, read [Delivery through the merge queue](references/delivery-proof.md) before using the bundled companion helper. Its scope and evidence contract are separate from a PR-local or single-run wait.
+
 ## Operating Model
 
 - Use the bundled launcher, `scripts/gh_workflow_run_watch`, as the monitoring surface. It will locate a Python interpreter even when `python3` is not already on `PATH`.

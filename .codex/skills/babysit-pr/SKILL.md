@@ -20,6 +20,8 @@ owned until merge, closure, or an actionable failure. Any separately authorized
 watcher handoff needs an accepting successor and explicit process/state custody;
 do not invent a helper terminal receipt or abandon a running watcher.
 
+For protected queue observation, read [Protected queue observation](references/protected-queue-observation.md) before using the bundled companion helper. Its scope and evidence contract are separate from a PR-local or single-run wait.
+
 ## Operating Model
 
 - Use `--watch-until-terminal` for delegated wait seams when current-head checks must finish before handoff. Use `--watch-until-action` for a repair owner that should wake on review feedback or a failure that can be acted on immediately.

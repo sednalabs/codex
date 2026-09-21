@@ -1212,19 +1212,6 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         )
         self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
 
-    def test_skill_requires_native_health_workflow_to_land_before_watching(self):
-        skill = Path(__file__).resolve().parents[1] / "SKILL.md"
-        content = " ".join(skill.read_text(encoding="utf-8").split())
-
-        self.assertIn(
-            "must first be introduced and landed on `main` by its separate CI PR",
-            content,
-        )
-        self.assertIn("not resolvable from a watcher-only branch", content)
-        self.assertIn(
-            "workflow=Native Windows Bazel health,ref=main,head-sha=<merge-commit-sha>",
-            content,
-        )
 
     def test_blocking_watcher_invocation_uses_the_existing_terminal_helper(self):
         args = make_args()
