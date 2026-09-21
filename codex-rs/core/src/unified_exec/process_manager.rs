@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use tokio::sync::watch;
 use tokio::time::Duration;
@@ -55,6 +56,9 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_PRUNED;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_SESSION_SHUTDOWN;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_TERMINATED;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
@@ -617,6 +621,7 @@ impl UnifiedExecProcessManager {
                 metrics_sidecar,
                 Arc::clone(&transcript),
                 Arc::clone(&initial_exec_command_active),
+                request.notify_on_completion,
             )
             .await;
             InitialExecCommandGuard {
@@ -1206,9 +1211,13 @@ impl UnifiedExecProcessManager {
         metrics_sidecar: Option<PluginMetricsSidecar>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
         initial_exec_command_active: Arc<AtomicBool>,
+        notify_on_completion: bool,
     ) {
         let plugin_metrics_sidecar =
             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
+        let completion_cause = Arc::new(AtomicU8::new(
+            crate::unified_exec::async_watcher::COMPLETION_CAUSE_EXIT,
+        ));
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
@@ -1223,6 +1232,7 @@ impl UnifiedExecProcessManager {
             network_approval,
             session: Arc::downgrade(&context.session),
             last_used: started_at,
+            completion_cause: Arc::clone(&completion_cause),
         };
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
@@ -1234,6 +1244,9 @@ impl UnifiedExecProcessManager {
         // network-approval cleanup only after dropping that lock.
         if let Some(pruned_entry) = pruned_entry {
             unregister_network_approval_for_entry(&pruned_entry).await;
+            pruned_entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_PRUNED, Ordering::Release);
             pruned_entry.process.terminate();
         }
 
@@ -1248,6 +1261,9 @@ impl UnifiedExecProcessManager {
             started_at,
             network_denial_monitor,
             plugin_metrics_sidecar,
+            notify_on_completion,
+            Uuid::new_v4(),
+            completion_cause,
         );
     }
 
@@ -1809,6 +1825,9 @@ impl UnifiedExecProcessManager {
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
+            entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_SESSION_SHUTDOWN, Ordering::Release);
             entry.process.terminate();
         }
     }
@@ -1838,6 +1857,9 @@ impl UnifiedExecProcessManager {
             let Some(entry) = store.processes.get(&process_id) else {
                 return false;
             };
+            entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_TERMINATED, Ordering::Release);
             (Arc::clone(&entry.process), entry.process.has_exited())
         };
 

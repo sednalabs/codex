@@ -303,6 +303,7 @@ impl ExecCommandHandler {
             yield_time_ms,
             timeout_ms,
             max_output_tokens,
+            notify_on_completion,
             sandbox_permissions: _,
             additional_permissions,
             justification,
@@ -429,6 +430,7 @@ impl ExecCommandHandler {
             shell_mode,
             network: context.step_context.turn.network.clone(),
             tty,
+            notify_on_completion,
             sandbox_permissions: effective_additional_permissions.sandbox_permissions,
             additional_permissions: normalized_additional_permissions,
             additional_permissions_preapproved: effective_additional_permissions

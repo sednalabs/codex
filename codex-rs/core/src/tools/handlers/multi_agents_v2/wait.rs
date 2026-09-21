@@ -193,12 +193,14 @@ async fn wait_for_activity(
         return match activity {
             InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
             InputQueueActivity::Steer => WaitOutcome::Steered,
+            InputQueueActivity::TerminalCompletion => WaitOutcome::MailboxActivity,
         };
     }
     match timeout_at(deadline, activity_rx.changed()).await {
         Ok(Ok(())) => match *activity_rx.borrow_and_update() {
             InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
             InputQueueActivity::Steer => WaitOutcome::Steered,
+            InputQueueActivity::TerminalCompletion => WaitOutcome::MailboxActivity,
         },
         Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
     }
