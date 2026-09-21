@@ -13,6 +13,7 @@ use crate::migrations::runtime_memories_migrator;
 use crate::migrations::runtime_queue_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_thread_history_migrator;
+use crate::migrations::runtime_usage_migrator;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -58,6 +59,7 @@ mod thread_attachments;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
+pub mod usage;
 
 pub use configured_identity_provenance::ConfiguredIdentityProvenance;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
@@ -95,6 +97,7 @@ pub struct StateRuntime {
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    usage_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
@@ -139,6 +142,7 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
+        let usage_path = sqlite.usage_db_path();
         let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         let pool = match sqlite
             .open_state_db(&state_migrator, telemetry_override)
@@ -203,6 +207,25 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let usage_migrator = runtime_usage_migrator();
+        let usage_pool = match sqlite
+            .open_usage_db(&usage_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open usage db at {}: {err}", usage_path.display());
+                close_sqlite_pools(&[
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    memories_pool.as_ref(),
+                    queue_pool.as_ref(),
+                ])
+                .await;
+                return Err(err);
+            }
+        };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -219,6 +242,7 @@ impl StateRuntime {
                 goals_pool.as_ref(),
                 memories_pool.as_ref(),
                 queue_pool.as_ref(),
+                usage_pool.as_ref(),
             ])
             .await;
             return Err(err);
@@ -248,6 +272,7 @@ impl StateRuntime {
                         goals_pool.as_ref(),
                         memories_pool.as_ref(),
                         queue_pool.as_ref(),
+                        usage_pool.as_ref(),
                     ])
                     .await;
                     return Err(err);
@@ -262,6 +287,7 @@ impl StateRuntime {
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
+            usage_pool,
             sqlite,
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
@@ -304,6 +330,11 @@ impl StateRuntime {
         &self.thread_queue
     }
 
+    /// Return the usage ledger pool for state-owned provenance and accounting.
+    pub fn usage_pool(&self) -> Arc<sqlx::SqlitePool> {
+        Arc::clone(&self.usage_pool)
+    }
+
     /// Close all SQLite pools and wait for outstanding pool workers to exit.
     pub async fn close(&self) {
         self.thread_queue.close().await;
@@ -313,6 +344,7 @@ impl StateRuntime {
         }
         self.thread_goals.close().await;
         self.logs_pool.close().await;
+        self.usage_pool.close().await;
         self.pool.close().await;
     }
 
