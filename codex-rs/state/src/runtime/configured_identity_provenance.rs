@@ -48,7 +48,9 @@ impl StateRuntime {
         .bind(thread_id.to_string())
         .fetch_optional(self.pool.as_ref())
         .await?;
-        value.map(ConfiguredIdentityProvenance::try_from).transpose()
+        value
+            .map(ConfiguredIdentityProvenance::try_from)
+            .transpose()
     }
 
     /// Atomically advance configured-identity provenance to known absent.
