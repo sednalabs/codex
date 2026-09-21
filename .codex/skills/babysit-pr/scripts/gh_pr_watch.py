@@ -464,11 +464,18 @@ def resolve_pr(pr_spec, repo_override=None):
     try:
         data = gh_json(cmd, repo=repo_override)
     except GhCommandError as err:
-        if parsed["mode"] in {"auto", "number"} and not repo_override:
+        if "baseRefOid" in cmd[-1] and "baseRefOid" in str(err):
+            fallback_fields = ",".join(
+                field for field in cmd[-1].split(",") if field != "baseRefOid"
+            )
+            fallback_cmd = [*cmd[:-1], fallback_fields]
+            data = gh_json(fallback_cmd, repo=repo_override)
+        elif parsed["mode"] in {"auto", "number"} and not repo_override:
             raise GhCommandError(
                 f"{err}\nHint: use a full PR URL or --repo to disambiguate repo/worktree context."
             ) from err
-        raise
+        else:
+            raise
     if not isinstance(data, dict):
         raise GhCommandError("Unexpected PR payload from `gh pr view`")
 
@@ -777,12 +784,43 @@ def get_pr_checks(pr_spec, repo):
     if parsed["value"] is not None:
         cmd.append(parsed["value"])
     cmd.extend(["--json", checks_fields()])
-    data = gh_json(cmd, repo=repo)
+    try:
+        data = gh_json(cmd, repo=repo)
+    except GhCommandError as err:
+        if "pr checks" not in str(err).lower() and "unknown" not in str(err).lower():
+            raise
+        rollup_cmd = ["pr", "view"]
+        if parsed["value"] is not None:
+            rollup_cmd.append(parsed["value"])
+        rollup_cmd.extend(["--json", "statusCheckRollup"])
+        rollup = gh_json(rollup_cmd, repo=repo)
+        data = [_normalize_status_rollup_check(item) for item in (rollup.get("statusCheckRollup") or [])]
     if data is None:
         return []
     if not isinstance(data, list):
         raise GhCommandError("Unexpected payload from `gh pr checks`")
     return data
+
+
+def _normalize_status_rollup_check(item):
+    if not isinstance(item, dict):
+        return {}
+    status = str(item.get("status") or item.get("state") or "").upper()
+    conclusion = str(item.get("conclusion") or "").upper()
+    state = conclusion or status
+    bucket = "pending" if status not in {"COMPLETED", "SUCCESS", "FAILURE"} and not conclusion else (
+        "pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} or state == "SUCCESS" else "fail"
+    )
+    return {
+        "name": str(item.get("name") or item.get("context") or ""),
+        "state": state,
+        "bucket": bucket,
+        "link": str(item.get("detailsUrl") or item.get("targetUrl") or ""),
+        "workflow": str(item.get("workflowName") or ""),
+        "event": "",
+        "startedAt": str(item.get("startedAt") or ""),
+        "completedAt": str(item.get("completedAt") or ""),
+    }
 
 
 def is_pending_check(check):

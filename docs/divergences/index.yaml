@@ -3572,6 +3572,33 @@
         "codex-rs/core/src/session/input_queue.rs"
       ],
       "extraction_target": "upstream exact-target wait mailbox filtering"
+    },
+    {
+      "id": "strict-workflow-run-watcher-identity",
+      "title": "Strict REST identity and pagination for virtual workflow runs",
+      "status": "live",
+      "category": "agent-workflow",
+      "surface_type": "skill-helper",
+      "surface": ["babysit-gh-workflow-run", "babysit-pr"],
+      "files": [
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_view_run_rest.py",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py"
+      ],
+      "behavior": "Virtual or uncatalogued workflow runs use strict REST run and paginated job identity checks; PR observation falls back to statusCheckRollup when older gh clients lack pr checks JSON support.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "codex.agent-workflow-sanity",
+      "tests": ["test_rest_view_rejects_wrong_run_identity_before_jobs_read", "test_rest_view_requires_complete_paginated_jobs", "test_get_pr_checks_falls_back_to_status_rollup"],
+      "owner": "downstream",
+      "notes": "Preserve exact repository/run/job identity and complete pagination; do not import ambient diagnosis or broaden credentials. Reassess against upstream workflow watcher changes before future sync.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-pr/scripts/gh_pr_watch.py"
+      ],
+      "extraction_target": "upstream exact virtual-workflow watcher identity"
     }
   ],
   "superseded_hunks": [

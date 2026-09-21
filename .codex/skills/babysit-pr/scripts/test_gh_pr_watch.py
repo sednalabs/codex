@@ -52,6 +52,62 @@ def sample_checks(**overrides):
     return checks
 
 
+def test_resolve_pr_falls_back_when_cli_lacks_base_ref_oid(monkeypatch):
+    calls = []
+    payload = {
+        "number": 123,
+        "url": "https://github.com/openai/codex/pull/123",
+        "state": "OPEN",
+        "mergedAt": "",
+        "closedAt": "",
+        "headRefName": "feature",
+        "headRefOid": "abc123",
+        "headRepository": {"nameWithOwner": "openai/codex"},
+        "headRepositoryOwner": {"login": "openai"},
+        "baseRefName": "main",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "reviewDecision": "",
+    }
+
+    def fake_gh_json(args, repo=None):
+        calls.append(list(args))
+        if "baseRefOid" in args[-1]:
+            raise gh_pr_watch.GhCommandError('Unknown JSON field: "baseRefOid"')
+        return payload
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", fake_gh_json)
+    pr = gh_pr_watch.resolve_pr("https://github.com/openai/codex/pull/123")
+    assert len(calls) == 2
+    assert pr["base_sha"] == ""
+
+
+def test_get_pr_checks_falls_back_to_status_rollup(monkeypatch):
+    calls = []
+
+    def fake_gh_json(args, repo=None):
+        calls.append(list(args))
+        if args[:2] == ["pr", "checks"]:
+            raise gh_pr_watch.GhCommandError("unknown flag: --json")
+        return {
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "unit tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://example.test/run/1",
+                    "workflowName": "CI",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", fake_gh_json)
+    checks = gh_pr_watch.get_pr_checks("123", "openai/codex")
+    assert calls[1] == ["pr", "view", "123", "--json", "statusCheckRollup"]
+    assert checks[0]["bucket"] == "pass"
+
+
 @pytest.fixture(autouse=True)
 def default_queue_absent(monkeypatch, request):
     if request.node.name.startswith(("test_collect_snapshot_reads_graphql", "test_collect_malformed_queue")):

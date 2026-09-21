@@ -1295,6 +1295,8 @@ def _run_attempt(run_view):
 
 
 def view_run(repo, run_id):
+    if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+        raise GhCommandError(f"Invalid GitHub Actions run id: {run_id!r}")
     fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
     try:
         data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
@@ -1323,6 +1325,107 @@ def _normalize_actions_api_step(step):
     }
 
 
+def _rest_required_text(payload, key, context):
+    if key not in payload or not isinstance(payload[key], str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing string `{key}`")
+    value = payload[key]
+    if not value.strip():
+        raise GhCommandError(f"Malformed GitHub REST {context}: empty `{key}`")
+    return value
+
+
+def _rest_required_id(payload, key, context):
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
+    return value
+
+
+def _rest_optional_timestamp(payload, key, context):
+    if key not in payload:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `{key}`")
+    value = payload[key]
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
+    return value
+
+
+def _normalize_rest_step(step, *, job_index, step_index):
+    context = f"job {job_index} step {step_index}"
+    if not isinstance(step, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+    number = _rest_required_id(step, "number", context)
+    name = _rest_required_text(step, "name", context)
+    status = _rest_required_text(step, "status", context)
+    if "conclusion" not in step:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `conclusion`")
+    conclusion = step["conclusion"]
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `conclusion`")
+    return {"name": name, "number": number, "status": status, "conclusion": conclusion,
+            "startedAt": _rest_optional_timestamp(step, "started_at", context),
+            "completedAt": _rest_optional_timestamp(step, "completed_at", context)}
+
+
+def _normalize_rest_job(job, *, run_id, job_index):
+    context = f"job {job_index}"
+    if not isinstance(job, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+    job_id = _rest_required_id(job, "id", context)
+    observed_run_id = _rest_required_id(job, "run_id", context)
+    if observed_run_id != run_id:
+        raise GhCommandError(f"GitHub REST {context} belongs to run {observed_run_id}, expected {run_id}")
+    name = _rest_required_text(job, "name", context)
+    status = _rest_required_text(job, "status", context)
+    if "conclusion" not in job:
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `conclusion`")
+    conclusion = job["conclusion"]
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise GhCommandError(f"Malformed GitHub REST {context}: invalid `conclusion`")
+    html_url = _rest_required_text(job, "html_url", context)
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing list `steps`")
+    return {"databaseId": job_id, "name": name, "status": status, "conclusion": conclusion,
+            "url": html_url, "startedAt": _rest_optional_timestamp(job, "started_at", context),
+            "completedAt": _rest_optional_timestamp(job, "completed_at", context),
+            "steps": [_normalize_rest_step(step, job_index=job_index, step_index=step_index)
+                       for step_index, step in enumerate(steps)]}
+
+
+def _list_run_jobs_rest(repo, run_id):
+    jobs, expected_total, seen_job_ids = [], None, set()
+    for page in range(1, 1001):
+        endpoint = f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}"
+        payload = gh_json(["api", endpoint], repo=repo)
+        context = f"jobs page {page} for run {run_id}"
+        if not isinstance(payload, dict):
+            raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
+        total_count = payload.get("total_count")
+        if isinstance(total_count, bool) or not isinstance(total_count, int) or total_count < 0:
+            raise GhCommandError(f"Malformed GitHub REST {context}: invalid `total_count`")
+        if expected_total is None:
+            expected_total = total_count
+        elif total_count != expected_total:
+            raise GhCommandError(f"GitHub REST {context} changed `total_count` from {expected_total} to {total_count}")
+        page_jobs = payload.get("jobs")
+        if not isinstance(page_jobs, list):
+            raise GhCommandError(f"Malformed GitHub REST {context}: missing list `jobs`")
+        for job_index, job in enumerate(page_jobs):
+            normalized = _normalize_rest_job(job, run_id=run_id, job_index=job_index)
+            if normalized["databaseId"] in seen_job_ids:
+                raise GhCommandError(f"GitHub REST {context} repeated job id {normalized['databaseId']}")
+            seen_job_ids.add(normalized["databaseId"])
+            jobs.append(normalized)
+        if len(jobs) > expected_total:
+            raise GhCommandError(f"GitHub REST {context} returned {len(jobs)} jobs, exceeding total_count {expected_total}")
+        if len(jobs) == expected_total:
+            return jobs
+        if not page_jobs:
+            raise GhCommandError(f"GitHub REST {context} ended at {len(jobs)} jobs, expected {expected_total}")
+    raise GhCommandError(f"GitHub REST jobs pagination exceeded 1000 pages for run {run_id}")
+
+
 def _normalize_actions_api_job(job):
     return {
         "databaseId": job.get("id"),
@@ -1342,34 +1445,35 @@ def _normalize_actions_api_job(job):
 
 def _view_run_via_actions_api(repo, run_id):
     run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"])
-    jobs_payload = gh_json(
-        ["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]
-    )
     if not isinstance(run, dict):
-        raise GhCommandError("Unexpected run payload from the direct Actions API")
-    if not isinstance(jobs_payload, dict) or not isinstance(jobs_payload.get("jobs"), list):
-        raise GhCommandError("Unexpected jobs payload from the direct Actions API")
-    workflow_name = run.get("name") or ""
+        raise GhCommandError(f"Malformed GitHub REST run {run_id}: expected object")
+    context = f"run {run_id}"
+    observed_run_id = _rest_required_id(run, "id", context)
+    if observed_run_id != run_id:
+        raise GhCommandError(f"GitHub REST run id {observed_run_id} does not match requested run {run_id}")
+    repository = run.get("repository")
+    if not isinstance(repository, dict):
+        raise GhCommandError(f"Malformed GitHub REST {context}: missing `repository`")
+    observed_repo = _rest_required_text(repository, "full_name", context).strip().lower()
+    if observed_repo != str(repo).strip().lower():
+        raise GhCommandError(f"GitHub REST run repository {observed_repo!r} does not match requested {repo!r}")
+    workflow_name = _rest_required_text(run, "name", context)
     return {
-        "databaseId": run.get("id"),
+        "databaseId": observed_run_id,
         "attempt": run.get("run_attempt"),
-        "displayTitle": run.get("display_title"),
-        "event": run.get("event"),
+        "displayTitle": _rest_required_text(run, "display_title", context),
+        "event": _rest_required_text(run, "event", context),
         "headBranch": run.get("head_branch"),
-        "headSha": run.get("head_sha"),
+        "headSha": _rest_required_text(run, "head_sha", context),
         "name": workflow_name,
-        "number": run.get("run_number"),
-        "status": run.get("status"),
+        "number": _rest_required_id(run, "run_number", context),
+        "status": _rest_required_text(run, "status", context),
         "conclusion": run.get("conclusion"),
-        "url": run.get("html_url"),
+        "url": _rest_required_text(run, "html_url", context),
         "workflowName": workflow_name,
-        "createdAt": run.get("created_at"),
-        "updatedAt": run.get("updated_at"),
-        "jobs": [
-            _normalize_actions_api_job(job)
-            for job in jobs_payload["jobs"]
-            if isinstance(job, dict)
-        ],
+        "createdAt": _rest_optional_timestamp(run, "created_at", context),
+        "updatedAt": _rest_optional_timestamp(run, "updated_at", context),
+        "jobs": _list_run_jobs_rest(repo, run_id),
         "retrievedVia": "actions_api_fallback",
     }
 
