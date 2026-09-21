@@ -4,4 +4,4 @@
 import type { AgentDeliveryIntent } from "./AgentDeliveryIntent";
 import type { AgentWakeCause } from "./AgentWakeCause";
 
-export type AgentDeliveryDisposition = { intent: AgentDeliveryIntent, enqueuedAtMs?: number | null, endedActiveWait: boolean, waitId?: string | null, targetSetRelation?: string | null, parentTurnStarted?: boolean | null, deliveredToModelAtMs?: number | null, deliveredTurnId?: string | null, displayedAtMs?: number | null, actualWakeCause?: AgentWakeCause | null, queuedUpdateCount?: number | null, };
+export type AgentDeliveryDisposition = { intent: AgentDeliveryIntent, enqueuedAtMs?: bigint, endedActiveWait: boolean, waitId?: string, targetSetRelation?: string, parentTurnStarted?: boolean, deliveredToModelAtMs?: bigint, deliveredTurnId?: string, displayedAtMs?: bigint, actualWakeCause?: AgentWakeCause, queuedUpdateCount?: number, };

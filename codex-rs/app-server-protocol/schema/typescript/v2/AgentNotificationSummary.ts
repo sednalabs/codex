@@ -5,4 +5,4 @@ import type { AgentDeliveryDisposition } from "./AgentDeliveryDisposition";
 import type { AgentNotificationContent } from "./AgentNotificationContent";
 import type { AgentNotificationOrigin } from "./AgentNotificationOrigin";
 
-export type AgentNotificationSummary = { communicationId: string | null, sequence: bigint, origin: AgentNotificationOrigin, senderAgentPath: string, senderThreadId: string | null, content: AgentNotificationContent, disposition?: AgentDeliveryDisposition | null, };
+export type AgentNotificationSummary = { communicationId: string | null, sequence: bigint, origin: AgentNotificationOrigin, senderAgentPath: string, senderThreadId: string | null, content: AgentNotificationContent, disposition?: AgentDeliveryDisposition, };

@@ -17,37 +17,25 @@
           ]
         },
         "deliveredToModelAtMs": {
-          "anyOf": [
-            {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
           ]
         },
         "deliveredTurnId": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "displayedAtMs": {
-          "anyOf": [
-            {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
           ]
         },
         "endedActiveWait": {
@@ -55,60 +43,40 @@
           "type": "boolean"
         },
         "enqueuedAtMs": {
-          "anyOf": [
-            {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
           ]
         },
         "intent": {
           "$ref": "#/$defs/AgentDeliveryIntent"
         },
         "parentTurnStarted": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "queuedUpdateCount": {
-          "anyOf": [
-            {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
           ]
         },
         "targetSetRelation": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "waitId": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         }
       },
