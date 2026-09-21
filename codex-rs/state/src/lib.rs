@@ -36,7 +36,6 @@ pub use model::RolloutMigrationState;
 pub use runtime::ConfiguredIdentityProvenance;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
-pub use runtime::usage::UsageLogger;
 pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;

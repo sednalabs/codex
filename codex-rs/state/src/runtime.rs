@@ -59,7 +59,6 @@ mod thread_attachments;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
-pub mod usage;
 
 pub use configured_identity_provenance::ConfiguredIdentityProvenance;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
