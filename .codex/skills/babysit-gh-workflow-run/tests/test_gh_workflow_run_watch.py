@@ -572,6 +572,7 @@ class GeminiWatcherTests(unittest.TestCase):
     def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
         api_run = {
             "id": 30440173012,
+            "repository": {"full_name": "owner/repo"},
             "run_attempt": 2,
             "display_title": "Required Agent Ops",
             "event": "pull_request",
@@ -586,19 +587,25 @@ class GeminiWatcherTests(unittest.TestCase):
             "updated_at": "2026-07-29T09:05:00Z",
         }
         api_jobs = {
+            "total_count": 1,
             "jobs": [
                 {
                     "id": 99,
+                    "run_id": 30440173012,
                     "name": "Required Agent Ops",
                     "status": "in_progress",
                     "conclusion": None,
                     "html_url": "https://example.invalid/jobs/99",
+                    "started_at": "2026-07-29T09:00:01Z",
+                    "completed_at": None,
                     "steps": [
                         {
                             "number": 1,
                             "name": "Run",
                             "status": "in_progress",
                             "conclusion": None,
+                            "started_at": "2026-07-29T09:00:02Z",
+                            "completed_at": None,
                         }
                     ],
                 }
