@@ -81,6 +81,9 @@ CURRENT_HEAD_CHECK_GRACE_SECONDS = 5 * 60
 GREEN_STATE_MAX_POLL_SECONDS = 60 * 60
 WATCH_UNTIL_ACTION_MAX_POLL_SECONDS = 20 * 60
 ACTION_REQUIRED_MERGE_POLICY_BLOCKED = "action_required_merge_policy_blocked"
+STOP_MERGE_QUEUE_FAILED = "stop_merge_queue_failed"
+STOP_MERGE_QUEUE_REMOVED = "stop_merge_queue_removed"
+STOP_MERGE_QUEUE_READ_ERROR = "stop_merge_queue_read_error"
 STOP_ACTIONS = {
     "stop_ci_startup_blocked",
     "stop_pr_closed",

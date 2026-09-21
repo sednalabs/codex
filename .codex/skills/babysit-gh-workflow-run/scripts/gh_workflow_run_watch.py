@@ -255,6 +255,7 @@ def parse_args():
         ),
     )
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
+    parser.add_argument("--retry-settle-seconds", type=int, default=90, help="Seconds to allow a same-run automatic retry after terminal failure; 0 disables")
     parser.add_argument("--poll-seconds", type=int, default=60, help="Watch poll interval")
     parser.add_argument(
         "--appearance-timeout-seconds",
@@ -351,6 +352,8 @@ def parse_args():
     parser.set_defaults(no_gemini_diagnosis=True)
     args = parser.parse_args()
 
+    if args.retry_settle_seconds < 0:
+        parser.error("--retry-settle-seconds must be >= 0")
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
     if args.appearance_timeout_seconds is not None and args.appearance_timeout_seconds < 0:
@@ -1222,6 +1225,95 @@ def _workflow_run_matches_selector(run, workflow):
     )
 
 
+def _normalized_head_sha_prefixes(expected_head_sha):
+    if not expected_head_sha:
+        return []
+    raw_prefixes = (
+        expected_head_sha
+        if isinstance(expected_head_sha, (list, tuple, set))
+        else [expected_head_sha]
+    )
+    prefixes = []
+    for prefix in raw_prefixes:
+        normalized = str(prefix or "").strip().lower()
+        if normalized:
+            prefixes.append(normalized)
+    return prefixes
+
+def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
+    observed = str(run_head_sha or "").strip().lower()
+    if not observed:
+        return False
+    expected_prefixes = _normalized_head_sha_prefixes(expected_head_sha)
+    if not expected_prefixes:
+        return True
+    return any(observed.startswith(prefix) for prefix in expected_prefixes)
+
+def _run_attempt(run_view):
+    """Return the API's attempt identity, tolerating older fixture spellings."""
+    value = _dict_or_empty(run_view).get("attempt")
+    if value is None:
+        value = _dict_or_empty(run_view).get("runAttempt")
+    if value is None:
+        value = _dict_or_empty(run_view).get("run_attempt")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
+    """Keep terminal waits open briefly for a rerun of the same Actions run.
+
+    GitHub can start a new attempt after an initial attempt has already reached
+    ``completed``. The run id is unchanged, so a watcher that returns on the
+    first failure can race the rerun and prompt a duplicate dispatch. Track the
+    run id plus attempt number and require one quiet settle window before
+    surfacing a terminal failure. A status change to queued/in-progress clears
+    the window and is then handled by the ordinary terminal-wait logic.
+    """
+    if int(settle_seconds or 0) <= 0:
+        return False
+
+    now = time.monotonic()
+    observed = retry_state.setdefault("terminal_failures", {})
+    active_keys = set()
+    pending = False
+    for target in _list_or_empty(payload.get("targets")):
+        if not isinstance(target, dict):
+            continue
+        run = _dict_or_empty(target.get("run"))
+        status = str(run.get("status") or "").lower()
+        conclusion = str(run.get("conclusion") or "").lower()
+        if status != "completed" or conclusion not in FAILED_CONCLUSIONS:
+            continue
+
+        try:
+            target_key = target_to_display_key(target)
+        except Exception:  # noqa: BLE001 - malformed remote payloads must not stop the watcher.
+            target_key = f"run-id:{run.get('id') or 'unknown'}"
+        active_keys.add(target_key)
+        try:
+            run_id = int(run.get("id") or 0)
+        except (TypeError, ValueError):
+            run_id = 0
+        signature = (
+            run_id,
+            str(run.get("attempt") or "").strip(),
+        )
+        record = observed.get(target_key)
+        if not isinstance(record, dict) or record.get("signature") != signature:
+            observed[target_key] = {"signature": signature, "started_at": now}
+            pending = True
+            continue
+        if now - float(record["started_at"]) < int(settle_seconds):
+            pending = True
+
+    for target_key in list(observed):
+        if target_key not in active_keys:
+            observed.pop(target_key, None)
+    return pending
+
+
 def _workflow_run_matches_target(
     run,
     *,
@@ -1234,11 +1326,11 @@ def _workflow_run_matches_target(
     run_head_sha = str(run.get("headSha") or "")
     if ref:
         if is_sha_like(ref):
-            if not run_head_sha.startswith(ref):
+            if not _matches_head_sha_prefix(run_head_sha, ref):
                 return False
         elif branch_filter and head_branch != branch_filter:
             return False
-    if expected_head_sha and not run_head_sha.startswith(str(expected_head_sha)):
+    if expected_head_sha and not _matches_head_sha_prefix(run_head_sha, expected_head_sha):
         return False
     run_id = int(run.get("databaseId") or 0)
     return minimum_run_id is None or run_id >= int(minimum_run_id)
@@ -1354,7 +1446,7 @@ def _host_mismatch_recheck_interval_seconds(poll_seconds):
 def view_run(repo, run_id):
     if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
         raise GhCommandError(f"Invalid GitHub Actions run id: {run_id!r}")
-    fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
+    fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
     try:
         data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
     except GhCommandError as primary_error:
@@ -1520,6 +1612,7 @@ def _view_run_via_actions_api(repo, run_id):
         "event": _rest_required_text(run, "event", context),
         "headBranch": run.get("head_branch"),
         "headSha": _rest_required_text(run, "head_sha", context),
+        "attempt": _run_attempt(run),
         "name": workflow_name,
         "number": _rest_required_id(run, "run_number", context),
         "status": _rest_required_text(run, "status", context),
@@ -3445,6 +3538,7 @@ def normalize_snapshot(
         "run": {
             "id": run_view.get("databaseId"),
             "number": run_view.get("number"),
+            "attempt": _run_attempt(run_view),
             "name": str(run_view.get("displayTitle") or run_view.get("name") or ""),
             "workflow_name": str(run_view.get("workflowName") or target.get("workflow", "")),
             "url": str(run_view.get("url") or ""),
@@ -3568,6 +3662,7 @@ def _compact_run_payload(run_payload):
     compact = {
         "id": run.get("id"),
         "number": run.get("number"),
+        "attempt": run.get("attempt"),
         "workflow_name": run.get("workflow_name"),
         "url": run.get("url"),
         "head_branch": run.get("head_branch"),
@@ -3701,6 +3796,10 @@ def target_state_from_target(args, target, repo, remembered):
             resolved_ref=str(run_view.get("headBranch") or str(target.get("ref") or "")),
             gemini_disabled=args.no_gemini_diagnosis,
         )
+        expected_head = target.get("head_sha")
+        if expected_head and not _matches_head_sha_prefix(run_view.get("headSha"), expected_head):
+            snapshot["actions"] = ["stop_run_head_mismatch"]
+            return snapshot
         state["last_run_id"] = int(run_view.get("databaseId") or target["run_id"])
         if "diagnose_run_failure" in (snapshot.get("actions") or []):
             run_id = int(run_view.get("databaseId") or target["run_id"])
@@ -4036,8 +4135,14 @@ def emit(payload):
 def watch_until_action(args, repo):
     targets = build_targets(args)
     remembered = {}
+    retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
+        if args.require_terminal_run and _payload_has_pending_retry_settle(
+            payload, retry_state, getattr(args, "retry_settle_seconds", 0)
+        ):
+            time.sleep(args.poll_seconds)
+            continue
         if args.require_terminal_run and _payload_has_in_progress_failure(payload):
             time.sleep(args.poll_seconds)
             continue
