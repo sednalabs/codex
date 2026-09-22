@@ -50,6 +50,8 @@ app-server-test-client *args:
 # on the existing main-host lane and is never part of the product candidate.
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-state --lib runtime::phase2_attestation::tests::phase2_attested_baseline_is_root_and_output_scoped -- --exact --test-threads=1
+    cargo test --locked -p codex-state --lib runtime::phase2_attestation::tests::record_phase2_attested_baseline_is_visible_for_root -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_sends_text_content_items_to_model -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_handles_content_items -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_remote_image_response_becomes_model_visible_error -- --exact --test-threads=1
