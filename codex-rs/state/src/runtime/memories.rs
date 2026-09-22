@@ -4,6 +4,7 @@ mod readiness;
 use super::threads::ThreadFilterOptions;
 use super::threads::push_thread_filters;
 use super::*;
+use crate::Phase2AttestedBaseline;
 use crate::SortDirection;
 use crate::model::Phase2JobClaimOutcome;
 use crate::model::Stage1JobClaim;
