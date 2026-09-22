@@ -1,3 +1,6 @@
+use crate::context::ContextualUserFragment;
+use crate::context::TerminalCompletionNotification;
+use crate::context::TerminalCompletionStatus;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
@@ -69,6 +72,7 @@ mod turn_input_response_item {
 pub(crate) enum InputQueueActivity {
     Mailbox,
     Steer,
+    TerminalCompletion,
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
@@ -81,6 +85,7 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
 }
 
 struct PendingMailboxCommunication {
@@ -90,11 +95,14 @@ struct PendingMailboxCommunication {
 }
 
 impl InputQueue {
+    const MAX_PENDING_TERMINAL_COMPLETIONS: usize = 64;
+
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            terminal_completions: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -115,6 +123,8 @@ impl InputQueue {
             Some(InputQueueActivity::Steer)
         } else if self.has_pending_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
+        } else if self.has_pending_terminal_completions().await {
+            Some(InputQueueActivity::TerminalCompletion)
         } else {
             None
         };
@@ -139,6 +149,49 @@ impl InputQueue {
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+    }
+
+    pub(crate) async fn enqueue_terminal_completion(
+        &self,
+        mut completion: TerminalCompletionNotification,
+    ) {
+        let mut pending = self.terminal_completions.lock().await;
+        if pending
+            .iter()
+            .any(|queued| queued.instance_id == completion.instance_id)
+        {
+            return;
+        }
+        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS {
+            if let Some(older) = pending.pop_front() {
+                if let Some(next_oldest) = pending.front_mut() {
+                    next_oldest.coalesce(older);
+                } else {
+                    completion.coalesce(older);
+                }
+            }
+        }
+        pending.push_back(completion);
+        drop(pending);
+        self.activity_tx
+            .send_replace(InputQueueActivity::TerminalCompletion);
+    }
+
+    pub(crate) async fn has_pending_terminal_completions(&self) -> bool {
+        !self.terminal_completions.lock().await.is_empty()
+    }
+
+    async fn drain_terminal_completion_items(&self) -> Vec<TurnInput> {
+        self.terminal_completions
+            .lock()
+            .await
+            .drain(..)
+            .map(|completion| {
+                TurnInput::ResponseItem(ResponseItemEnvelope::new(ContextualUserFragment::into(
+                    completion,
+                )))
+            })
+            .collect()
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -313,11 +366,15 @@ impl InputQueue {
             return (pending_input, TurnStartOptions::default());
         }
         let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
+        let terminal_items = self.drain_terminal_completion_items().await;
         if pending_input.is_empty() {
-            (mailbox_items, start_options)
+            let mut items = mailbox_items;
+            items.extend(terminal_items);
+            (items, start_options)
         } else {
             let mut pending_input = pending_input;
             pending_input.extend(mailbox_items);
+            pending_input.extend(terminal_items);
             (pending_input, start_options)
         }
     }
@@ -346,7 +403,7 @@ impl InputQueue {
         if has_turn_pending_input {
             return true;
         }
-        self.has_pending_mailbox_items().await
+        self.has_pending_mailbox_items().await || self.has_pending_terminal_completions().await
     }
 }
 
@@ -493,6 +550,94 @@ mod tests {
 
         activity_rx.changed().await.expect("steer update");
         assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+    }
+
+    #[tokio::test]
+    async fn input_queue_notifies_terminal_completion_subscribers() {
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending_activity, None);
+
+        input_queue
+            .enqueue_terminal_completion(TerminalCompletionNotification {
+                process_id: 42,
+                instance_id: uuid::Uuid::nil(),
+                status: TerminalCompletionStatus::Exited,
+                exit_code: Some(0),
+                coalesced_exited: 0,
+                coalesced_failed: 0,
+            })
+            .await;
+
+        activity_rx.changed().await.expect("completion update");
+        assert_eq!(
+            *activity_rx.borrow_and_update(),
+            InputQueueActivity::TerminalCompletion
+        );
+        assert_eq!(
+            input_queue.subscribe_activity(None).await.1,
+            Some(InputQueueActivity::TerminalCompletion)
+        );
+    }
+
+    #[tokio::test]
+    async fn input_queue_drains_terminal_completion_as_annotated_response_item() {
+        let input_queue = InputQueue::new();
+        input_queue
+            .enqueue_terminal_completion(TerminalCompletionNotification {
+                process_id: 42,
+                instance_id: uuid::Uuid::nil(),
+                status: TerminalCompletionStatus::Exited,
+                exit_code: Some(0),
+                coalesced_exited: 0,
+                coalesced_failed: 0,
+            })
+            .await;
+
+        let items = input_queue.drain_terminal_completion_items().await;
+        let [TurnInput::ResponseItem(item)] = items.as_slice() else {
+            panic!("expected one terminal completion response item");
+        };
+        let ResponseItem::Message {
+            role,
+            content,
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &item.item
+        else {
+            panic!("expected a contextual message");
+        };
+        assert_eq!(role, "user");
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            internal_chat_message_metadata_passthrough
+                .as_ref()
+                .and_then(|metadata| metadata.content_item_kinds.as_deref())
+                .and_then(|kinds| kinds.first())
+                .map(|kind| kind.0.as_str()),
+            Some("unified_exec.terminal_completion_notification")
+        );
+        assert!(!input_queue.has_pending_terminal_completions().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_deduplicates_terminal_completion_instance_ids() {
+        let input_queue = InputQueue::new();
+        let completion = TerminalCompletionNotification {
+            process_id: 42,
+            instance_id: uuid::Uuid::nil(),
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        };
+        input_queue
+            .enqueue_terminal_completion(completion.clone())
+            .await;
+        input_queue.enqueue_terminal_completion(completion).await;
+
+        assert_eq!(input_queue.terminal_completions.lock().await.len(), 1);
     }
 
     #[tokio::test]

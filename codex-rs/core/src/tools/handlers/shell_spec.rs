@@ -61,6 +61,12 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
             )),
         ),
+        (
+            "notify_on_completion".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, queue one metadata-only notification for the next model input after a background process exits. This does not start an idle turn.".to_string(),
+            )),
+        ),
     ]);
     if include_shell_parameter {
         properties.insert(

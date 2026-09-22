@@ -232,6 +232,9 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         mode: codex_protocol::openai_models::TruncationMode::Bytes,
         limit: 4,
     };
+    let (mut activity_rx, pending_activity) =
+        context.session.input_queue.subscribe_activity(None).await;
+    assert_eq!(pending_activity, None);
     spawn_exit_watcher(
         Arc::clone(&process),
         &context,
@@ -243,6 +246,11 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         Instant::now(),
         Some(network_denial_monitor),
         /*plugin_metrics_sidecar*/ None,
+        /*notify_on_completion*/ true,
+        uuid::Uuid::nil(),
+        Arc::new(std::sync::atomic::AtomicU8::new(
+            super::COMPLETION_CAUSE_EXIT,
+        )),
     );
 
     let exited_at = Instant::now();
@@ -280,6 +288,11 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
     assert!(
         elapsed >= Duration::from_millis(10) && elapsed < TRAILING_OUTPUT_GRACE,
         "completion should wait for denial without falling back to the output grace: {elapsed:?}"
+    );
+    activity_rx.changed().await.expect("terminal completion");
+    assert_eq!(
+        *activity_rx.borrow_and_update(),
+        crate::session::InputQueueActivity::TerminalCompletion
     );
 
     Ok(())

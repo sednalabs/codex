@@ -470,6 +470,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         shell_mode: codex_tools::UnifiedExecShellMode::Direct,
         network: None,
         tty: true,
+        notify_on_completion: false,
         sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
         additional_permissions: None,
         additional_permissions_preapproved: false,
@@ -647,6 +648,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
+                completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             },
         );
     }
