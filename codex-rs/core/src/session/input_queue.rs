@@ -365,15 +365,16 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
-        let pending_communications = {
+        let turn_state = {
             let active = active_turn.lock().await;
             let Some(active_turn) = active.as_ref() else {
                 return Vec::new();
             };
-            active_turn
-                .turn_state
-                .lock()
-                .await
+            active_turn.turn_state.clone()
+        };
+        let pending_communications = {
+            let turn_state = turn_state.lock().await;
+            turn_state
                 .pending_input
                 .items
                 .iter()
