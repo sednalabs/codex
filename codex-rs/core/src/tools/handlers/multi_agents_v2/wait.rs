@@ -527,7 +527,14 @@ async fn mailbox_snapshot(
     target_set_relation: String,
     wake_source: WakeSource,
 ) -> MailboxSnapshot {
-    let entries = session.input_queue.snapshot_mailbox_communications().await;
+    let mut entries = session.input_queue.snapshot_mailbox_communications().await;
+    entries.extend(
+        session
+            .input_queue
+            .snapshot_pending_mailbox_communications(&session.active_turn)
+            .await,
+    );
+    entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
     let queued_update_sequences = entries.iter().map(|(_, sequence, _)| *sequence).collect();
     let queued_update_count = entries.len();
     let causal_entry = (wake_source == WakeSource::Mailbox)

@@ -1668,7 +1668,7 @@
               "type": "string"
             },
             "wakeCause": {
-              "$ref": "#/definitions/AgentWakeCause"
+              "$ref": "#/$defs/AgentWakeCause"
             },
             "wakeNotifications": {
               "description": "Safe mailbox notifications observed by a native wait.",

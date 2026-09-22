@@ -44,11 +44,12 @@ pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MailboxQueue {
     entries: VecDeque<MailboxEntry>,
 }
 
+#[derive(Clone)]
 struct MailboxEntry {
     communication: InterAgentCommunication,
     sequence: u64,
@@ -59,6 +60,7 @@ struct MailboxEntry {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox: Mutex<MailboxQueue>,
+    pending_mailbox_entries: Mutex<VecDeque<MailboxEntry>>,
     next_mailbox_sequence: AtomicU64,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
     residency_transition: Arc<Mutex<()>>,
@@ -77,6 +79,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox: Mutex::new(MailboxQueue::default()),
+            pending_mailbox_entries: Mutex::new(VecDeque::new()),
             next_mailbox_sequence: AtomicU64::new(0),
             terminal_completions: Mutex::new(VecDeque::new()),
             residency_transition: Arc::new(Mutex::new(())),
@@ -284,6 +287,56 @@ impl InputQueue {
             .collect()
     }
 
+    /// Snapshot mailbox entries that were moved into the active turn before a
+    /// native wait subscribed. Startup drains the durable mailbox into
+    /// `TurnState` before the model runs; retain the original sequence and
+    /// enqueue timestamp separately so wait provenance remains truthful.
+    pub(crate) async fn snapshot_pending_mailbox_communications(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Vec<(InterAgentCommunication, u64, u64)> {
+        let pending_communications = {
+            let active = active_turn.lock().await;
+            let Some(active_turn) = active.as_ref() else {
+                return Vec::new();
+            };
+            active_turn
+                .turn_state
+                .lock()
+                .await
+                .pending_input
+                .items
+                .iter()
+                .filter_map(|input| match input {
+                    TurnInput::InterAgentCommunication(communication) => {
+                        Some(communication.clone())
+                    }
+                    TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let pending_entries = self.pending_mailbox_entries.lock().await;
+        let mut used = vec![false; pending_entries.len()];
+        pending_communications
+            .into_iter()
+            .filter_map(|communication| {
+                let index = pending_entries
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, entry)| {
+                        (!used[index] && entry.communication == communication).then_some(index)
+                    })?;
+                used[index] = true;
+                let entry = &pending_entries[index];
+                Some((
+                    entry.communication.clone(),
+                    entry.sequence,
+                    entry.enqueued_at_ms,
+                ))
+            })
+            .collect()
+    }
+
     pub(crate) async fn enqueue_terminal_completion(
         &self,
         mut completion: TerminalCompletionNotification,
@@ -474,9 +527,12 @@ impl InputQueue {
 
     /// Clear any pending waiters and input buffered for the current turn.
     pub(crate) async fn clear_pending(&self, active_turn: &ActiveTurn) {
-        let mut turn_state = active_turn.turn_state.lock().await;
-        turn_state.clear_pending_waiters();
-        turn_state.pending_input.items.clear();
+        let pending_input = {
+            let mut turn_state = active_turn.turn_state.lock().await;
+            turn_state.clear_pending_waiters();
+            turn_state.pending_input.items.split_off(0)
+        };
+        self.forget_pending_mailbox_entries(&pending_input).await;
     }
 
     pub(crate) async fn defer_mailbox_delivery_to_next_turn(
@@ -550,7 +606,9 @@ impl InputQueue {
         &self,
         turn_state: &Mutex<TurnState>,
     ) -> Vec<TurnInput> {
-        turn_state.lock().await.pending_input.items.split_off(0)
+        let pending_input = turn_state.lock().await.pending_input.items.split_off(0);
+        self.forget_pending_mailbox_entries(&pending_input).await;
+        pending_input
     }
 
     #[expect(
@@ -581,7 +639,16 @@ impl InputQueue {
         if !accepts_mailbox_delivery {
             return pending_input;
         }
-        let mailbox_items = self.drain_mailbox_input_items().await.into_iter();
+        let mailbox_entries = self.drain_mailbox_entries().await;
+        if !mailbox_entries.is_empty() {
+            self.pending_mailbox_entries
+                .lock()
+                .await
+                .extend(mailbox_entries.iter().cloned());
+        }
+        let mailbox_items = mailbox_entries
+            .into_iter()
+            .map(|entry| TurnInput::InterAgentCommunication(entry.communication));
         let terminal_items = self.drain_terminal_completion_items().await;
         if pending_input.is_empty() {
             let mut items: Vec<_> = mailbox_items.collect();
@@ -593,6 +660,26 @@ impl InputQueue {
             pending_input.extend(terminal_items);
             pending_input
         }
+    }
+
+    async fn forget_pending_mailbox_entries(&self, pending_input: &[TurnInput]) {
+        let mut pending_entries = self.pending_mailbox_entries.lock().await;
+        for communication in pending_input.iter().filter_map(|input| match input {
+            TurnInput::InterAgentCommunication(communication) => Some(communication),
+            TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => None,
+        }) {
+            if let Some(index) = pending_entries
+                .iter()
+                .position(|entry| entry.communication == *communication)
+            {
+                pending_entries.remove(index);
+            }
+        }
+    }
+
+    async fn drain_mailbox_entries(&self) -> Vec<MailboxEntry> {
+        let mut mailbox = self.mailbox.lock().await;
+        mailbox.entries.drain(..).collect()
     }
 
     #[expect(
@@ -907,6 +994,38 @@ mod tests {
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_preserves_mailbox_metadata_when_moved_to_turn_state() {
+        let input_queue = InputQueue::new();
+        input_queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "wake",
+                /*trigger_turn*/ true,
+            ))
+            .await;
+
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+        let pending_input = input_queue.get_pending_input(&active_turn).await;
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, pending_input)
+            .await;
+
+        let snapshot = input_queue
+            .snapshot_pending_mailbox_communications(&active_turn)
+            .await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].1, 0);
     }
 
     #[tokio::test]
