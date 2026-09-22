@@ -37,6 +37,7 @@ pub(crate) fn merge_collab_agent_lifecycle(
         effective_model: previous_effective_model,
         effective_reasoning_effort: previous_effective_reasoning_effort,
         agents_states: previous_agents_states,
+        wake_cause: previous_wake_cause,
         ..
     } = previous
     else {
@@ -162,11 +163,19 @@ pub(crate) fn merge_collab_agent_lifecycle(
         effective_model: item_effective_model,
         effective_reasoning_effort: item_effective_reasoning_effort,
         agents_states,
+        wake_cause,
         ..
     } = &mut incoming
     else {
         unreachable!("matching collab lifecycle item must remain a collab call");
     };
+
+    // Legacy terminal compatibility records do not carry the structured wake
+    // cause. Preserve a cause already observed on the canonical terminal item
+    // instead of allowing the compatibility replay to erase it.
+    if wake_cause.is_none() {
+        *wake_cause = *previous_wake_cause;
+    }
 
     if prompt.is_none() {
         prompt.clone_from(previous_prompt);

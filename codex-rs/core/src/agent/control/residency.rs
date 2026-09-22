@@ -603,15 +603,17 @@ impl V2Residency {
         let pending_mail = candidate_thread
             .session
             .input_queue
-            .drain_mailbox_communications()
+            .drain_mailbox_entries()
             .await;
-        if pending_mail.iter().any(|mail| mail.trigger_turn)
+        if pending_mail
+            .iter()
+            .any(|mail| mail.communication.trigger_turn)
             || (metadata.is_none() && !pending_mail.is_empty())
         {
             candidate_thread
                 .session
                 .input_queue
-                .prepend_mailbox_communications(pending_mail)
+                .prepend_mailbox_entries(pending_mail)
                 .await;
             return false;
         }
@@ -621,7 +623,7 @@ impl V2Residency {
             candidate_thread
                 .session
                 .input_queue
-                .prepend_mailbox_communications(pending_mail)
+                .prepend_mailbox_entries(pending_mail)
                 .await;
             return false;
         }
@@ -632,7 +634,7 @@ impl V2Residency {
             candidate_thread
                 .session
                 .input_queue
-                .prepend_mailbox_communications(pending_mail)
+                .prepend_mailbox_entries(pending_mail)
                 .await;
             return false;
         }
@@ -652,9 +654,13 @@ impl V2Residency {
             RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
                 if let Some(lifecycle) = lifecycle.as_mut() {
                     lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                        let sequence = communication.sequence;
+                        let enqueued_at_ms = communication.enqueued_at_ms;
                         ColdMailboxItem {
                             receive_id: None,
-                            communication,
+                            communication: communication.communication,
+                            sequence: Some(sequence),
+                            enqueued_at_ms: Some(enqueued_at_ms),
                         }
                     }));
                 }
@@ -665,13 +671,17 @@ impl V2Residency {
                     replacement
                         .session
                         .input_queue
-                        .prepend_mailbox_communications(pending_mail)
+                        .prepend_mailbox_entries(pending_mail)
                         .await;
                 } else if let Some(lifecycle) = lifecycle.as_mut() {
                     lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                        let sequence = communication.sequence;
+                        let enqueued_at_ms = communication.enqueued_at_ms;
                         ColdMailboxItem {
                             receive_id: None,
-                            communication,
+                            communication: communication.communication,
+                            sequence: Some(sequence),
+                            enqueued_at_ms: Some(enqueued_at_ms),
                         }
                     }));
                 }

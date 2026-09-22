@@ -42,7 +42,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::items::AgentNotificationContent;
 use codex_protocol::items::AgentNotificationOrigin;
-use codex_protocol::items::AgentNotificationSummary;
+use codex_protocol::items::AgentWakeCause;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::models::BaseInstructions;
@@ -4730,7 +4730,11 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
         let (content, success) = expect_text_output(output);
         let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
             serde_json::from_str(&content).expect("wait_agent result should be json");
-        assert_eq!(result.message, "Wait woke due to mailbox activity.");
+        assert!(
+            result
+                .message
+                .starts_with("Wait woke due to mailbox activity.")
+        );
         assert_eq!(
             result.completion_reason,
             CollabWaitingCompletionReason::Mailbox
@@ -4798,7 +4802,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
+    assert!(result.message.starts_with("Wait timed out."));
     assert_eq!(
         result.completion_reason,
         CollabWaitingCompletionReason::Timeout
@@ -4846,7 +4850,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
+    assert!(result.message.starts_with("Wait timed out."));
     assert_eq!(
         result.completion_reason,
         CollabWaitingCompletionReason::Timeout
@@ -5034,7 +5038,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(result.message, "Wait timed out.");
+    assert!(result.message.starts_with("Wait timed out."));
     assert_eq!(
         result.completion_reason,
         CollabWaitingCompletionReason::Timeout
@@ -5213,7 +5217,7 @@ async fn wait_agent_returns_final_status_without_timeout() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
+async fn multi_agent_v2_wait_agent_keeps_queue_only_mailbox_activity_durable() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -5227,6 +5231,9 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.multi_agent_v2.min_wait_timeout_ms = 0;
+    config.multi_agent_v2.max_wait_timeout_ms = 100;
+    config.multi_agent_v2.default_wait_timeout_ms = 100;
     set_turn_config(&mut turn, config);
 
     let session = Arc::new(session);
@@ -5267,7 +5274,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                     session,
                     turn,
                     "wait_agent",
-                    function_payload(json!({"timeout_ms": 10_000})),
+                    function_payload(json!({"timeout_ms": 100})),
                 ))
                 .await
         }
@@ -5293,26 +5300,17 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait woke due to mailbox activity.".to_string(),
-            requested_ids: Vec::new(),
-            pending_ids: Vec::new(),
-            completion_reason: CollabWaitingCompletionReason::Mailbox,
-            timed_out: false,
-            wake_notifications: Some(vec![AgentNotificationSummary {
-                communication_id: None,
-                sequence: 0,
-                origin: AgentNotificationOrigin::ExplicitMessage,
-                sender_agent_path: worker_path,
-                sender_thread_id: Some(agent_id),
-                content: AgentNotificationContent::PlaintextPreview {
-                    text: "mailbox update".to_string(),
-                    truncated: false,
-                },
-            }]),
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
     );
+    assert!(result.timed_out);
+    assert!(result.wake_notifications.is_none());
+    assert_eq!(
+        result.wake_provenance.wake_cause,
+        AgentWakeCause::TimeoutLeaseExpiry
+    );
+    assert_eq!(result.wake_provenance.queued_update_count, 1);
+    assert!(result.wake_provenance.provider_turn_started.is_none());
     assert_eq!(success, None);
 }
 
@@ -5391,26 +5389,33 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
     assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait woke due to mailbox activity.".to_string(),
-            requested_ids: vec![agent_id],
-            pending_ids: vec![agent_id],
-            completion_reason: CollabWaitingCompletionReason::Mailbox,
-            timed_out: false,
-            wake_notifications: Some(vec![AgentNotificationSummary {
-                communication_id: None,
-                sequence: 0,
-                origin: AgentNotificationOrigin::ExplicitMessage,
-                sender_agent_path: worker_path,
-                sender_thread_id: Some(agent_id),
-                content: AgentNotificationContent::PlaintextPreview {
-                    text: "already queued".to_string(),
-                    truncated: false,
-                },
-            }]),
-        }
+        result.completion_reason,
+        CollabWaitingCompletionReason::Mailbox
     );
+    assert!(!result.timed_out);
+    let notifications = result
+        .wake_notifications
+        .as_ref()
+        .expect("actionable notification should be summarized");
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].sender_agent_path, worker_path);
+    assert_eq!(notifications[0].sender_thread_id, Some(agent_id));
+    assert!(matches!(
+        notifications[0].content,
+        AgentNotificationContent::PlaintextPreview { .. }
+    ));
+    let disposition = notifications[0]
+        .disposition
+        .as_ref()
+        .expect("delivery disposition should be model-visible");
+    assert!(disposition.ended_active_wait);
+    assert!(disposition.enqueued_at_ms.is_some());
+    assert_eq!(
+        disposition.actual_wake_cause,
+        Some(AgentWakeCause::ChildActionableMessage)
+    );
+    assert_eq!(result.wake_provenance.queued_update_count, 1);
+    assert!(result.wake_provenance.provider_turn_started.is_none());
     assert_eq!(success, None);
 }
 
@@ -5622,7 +5627,11 @@ fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
         let (content, success) = expect_text_output(output);
         let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
             serde_json::from_str(&content).expect("wait_agent result should be json");
-        assert_eq!(result.message, "Wait woke due to mailbox activity.");
+        assert!(
+            result
+                .message
+                .starts_with("Wait woke due to mailbox activity.")
+        );
         assert_eq!(
             result.completion_reason,
             CollabWaitingCompletionReason::Mailbox
@@ -5698,13 +5707,18 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
 
         session
             .input_queue
-            .enqueue_mailbox_communication(InterAgentCommunication::new(
-                worker_path.clone(),
-                AgentPath::root(),
-                Vec::new(),
-                "sensitive child output".to_string(),
-                /*trigger_turn*/ false,
-            ))
+            .enqueue_mailbox_communication({
+                let mut encrypted_result = InterAgentCommunication::new_encrypted(
+                    worker_path.clone(),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "encrypted child output".to_string(),
+                    /*trigger_turn*/ false,
+                );
+                encrypted_result.origin =
+                    Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+                encrypted_result
+            })
             .await;
 
         assert!(
@@ -5731,7 +5745,11 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         let (content, success) = expect_text_output(output);
         let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
             serde_json::from_str(&content).expect("wait_agent result should be json");
-        assert_eq!(result.message, "Wait woke due to mailbox activity.");
+        assert!(
+            result
+                .message
+                .starts_with("Wait woke due to mailbox activity.")
+        );
         assert_eq!(
             result.completion_reason,
             CollabWaitingCompletionReason::Mailbox
@@ -5740,10 +5758,10 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         let notifications = result
             .wake_notifications
             .expect("mailbox wake should include a safe notification summary");
-        assert_eq!(notifications.len(), 2);
+        assert_eq!(notifications.len(), 1);
         let notification = &notifications[0];
         assert_eq!(notification.communication_id, None);
-        assert_eq!(notification.sequence, 0);
+        assert_eq!(notification.sequence, 1);
         assert_eq!(
             notification.origin,
             AgentNotificationOrigin::ExplicitMessage
@@ -5753,18 +5771,17 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         assert_eq!(
             notification.content,
             AgentNotificationContent::PlaintextPreview {
-                text: "sensitive child output".to_string(),
-                truncated: false,
-            }
-        );
-        assert_eq!(notifications[1].sequence, 1);
-        assert_eq!(
-            notifications[1].content,
-            AgentNotificationContent::PlaintextPreview {
                 text: "triggered wake".to_string(),
                 truncated: false,
             }
         );
+        let disposition = notification
+            .disposition
+            .as_ref()
+            .expect("actionable disposition should be present");
+        assert!(disposition.ended_active_wait);
+        assert_eq!(disposition.queued_update_count, Some(2));
+        assert_eq!(result.wake_provenance.noncausal_update_sequences, vec![0]);
         assert!(!content.contains("encrypted_content"));
         assert!(!content.contains("internal_chat_message_metadata_passthrough"));
         assert_eq!(success, None);

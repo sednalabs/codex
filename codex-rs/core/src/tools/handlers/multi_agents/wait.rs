@@ -114,6 +114,7 @@ impl Handler {
                     agents_states: Default::default(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             )
             .await;
@@ -153,6 +154,7 @@ impl Handler {
                                 agents_states: statuses,
                                 wake_notifications: None,
                                 completion_reason: None,
+                                wake_cause: None,
                             }),
                         )
                         .await;
@@ -226,6 +228,7 @@ impl Handler {
                     agents_states: statuses_by_id,
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             )
             .await;

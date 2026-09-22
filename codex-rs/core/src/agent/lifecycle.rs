@@ -14,6 +14,7 @@ pub(super) struct AgentLifecycle {
 #[derive(Debug, Default)]
 pub(super) struct AgentLifecycleState {
     cold_mailbox: VecDeque<ColdMailboxItem>,
+    next_cold_mailbox_sequence: u64,
     terminal_idle_unload_generation: u64,
     terminal_idle_unload_watcher_generation: u64,
     terminal_idle_unload_watcher: Option<CancellationToken>,
@@ -23,6 +24,8 @@ pub(super) struct AgentLifecycleState {
 pub(super) struct ColdMailboxItem {
     pub(super) receive_id: Option<String>,
     pub(super) communication: InterAgentCommunication,
+    pub(super) sequence: Option<u64>,
+    pub(super) enqueued_at_ms: Option<u64>,
 }
 
 impl AgentLifecycle {
@@ -36,6 +39,18 @@ impl AgentLifecycle {
 }
 
 impl AgentLifecycleState {
+    pub(super) fn next_cold_mailbox_sequence(&mut self) -> u64 {
+        let sequence = self.next_cold_mailbox_sequence;
+        self.next_cold_mailbox_sequence = sequence.wrapping_add(1);
+        sequence
+    }
+
+    fn observe_cold_mailbox_sequence(&mut self, sequence: Option<u64>) {
+        if let Some(next_sequence) = sequence.and_then(|sequence| sequence.checked_add(1)) {
+            self.next_cold_mailbox_sequence = self.next_cold_mailbox_sequence.max(next_sequence);
+        }
+    }
+
     pub(super) fn arm_terminal_idle_unload(&mut self) -> u64 {
         self.terminal_idle_unload_generation = self.terminal_idle_unload_generation.wrapping_add(1);
         self.terminal_idle_unload_generation
@@ -75,11 +90,14 @@ impl AgentLifecycleState {
     }
 
     pub(super) fn push_cold_mail(&mut self, item: ColdMailboxItem) {
+        self.observe_cold_mailbox_sequence(item.sequence);
         self.cold_mailbox.push_back(item);
     }
 
     pub(super) fn extend_cold_mail(&mut self, items: impl IntoIterator<Item = ColdMailboxItem>) {
-        self.cold_mailbox.extend(items);
+        for item in items {
+            self.push_cold_mail(item);
+        }
     }
 
     pub(super) fn take_cold_mail(&mut self) -> Vec<ColdMailboxItem> {

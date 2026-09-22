@@ -158,18 +158,23 @@ impl AgentControl {
         lifecycle: &mut AgentLifecycleState,
     ) -> CodexResult<()> {
         let thread = state.get_thread(agent_id).await?;
-        let (communications, receive_ids): (Vec<_>, Vec<_>) = lifecycle
-            .take_cold_mail()
-            .into_iter()
-            .map(|item| (item.communication, item.receive_id))
-            .unzip();
-        if communications.is_empty() {
+        let mut entries = Vec::new();
+        let mut receive_ids = Vec::new();
+        for item in lifecycle.take_cold_mail() {
+            receive_ids.push(item.receive_id);
+            entries.push(thread.session.input_queue.mailbox_entry_with_metadata(
+                item.communication,
+                item.sequence,
+                item.enqueued_at_ms,
+            ));
+        }
+        if entries.is_empty() {
             return Ok(());
         }
         thread
             .session
             .input_queue
-            .enqueue_mailbox_communications(communications)
+            .enqueue_mailbox_entries(entries)
             .await;
         for receive_id in receive_ids.into_iter().flatten() {
             crate::agent_communication::emit_agent_communication_receive(&receive_id);
@@ -294,9 +299,12 @@ impl PreparedV2AgentDelivery {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
             let submission_id = self.record_submission(&communication, &context);
+            let sequence = self.lifecycle.next_cold_mailbox_sequence();
             self.lifecycle.push_cold_mail(ColdMailboxItem {
                 receive_id: Some(submission_id.clone()),
                 communication,
+                sequence: Some(sequence),
+                enqueued_at_ms: Some(crate::session::input_queue::current_time_ms()),
             });
             Ok(submission_id)
         })

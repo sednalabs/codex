@@ -11,6 +11,7 @@ use crate::text_formatting::truncate_text;
 use chrono::Utc;
 use codex_app_server_protocol::AgentNotificationContent;
 use codex_app_server_protocol::AgentNotificationSummary;
+use codex_app_server_protocol::AgentWakeCause;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
@@ -429,6 +430,7 @@ pub(crate) fn tool_call_history_cell(
         agents_states,
         wake_notifications,
         completion_reason,
+        wake_cause,
         ..
     } = item
     else {
@@ -511,6 +513,7 @@ pub(crate) fn tool_call_history_cell(
                     agents_states,
                     wake_notifications.as_deref().unwrap_or_default(),
                     *completion_reason,
+                    *wake_cause,
                     &mut agent_metadata,
                 ))
             }
@@ -727,21 +730,68 @@ fn waiting_end(
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
     notifications: &[AgentNotificationSummary],
     completion_reason: Option<codex_protocol::protocol::CollabWaitingCompletionReason>,
+    wake_cause: Option<AgentWakeCause>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let pending = pending_wait_thread_ids(receiver_thread_ids, agents_states);
-    let title = if matches!(
-        completion_reason,
-        Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox)
-    ) {
-        "Mailbox update received"
-    } else if pending.is_empty() {
-        "Finished waiting"
-    } else {
-        "Mailbox update received"
+    let wake_cause = wake_cause.or_else(|| {
+        notifications.iter().find_map(|notification| {
+            notification
+                .disposition
+                .as_ref()
+                .and_then(|disposition| disposition.actual_wake_cause)
+        })
+    });
+    let title = match wake_cause {
+        Some(AgentWakeCause::ChildActionableMessage) => "Woken by child actionable message",
+        Some(AgentWakeCause::ChildTerminalTransition) => "Woken by child terminal transition",
+        Some(AgentWakeCause::OperatorMessage) => "Woken by operator message",
+        Some(AgentWakeCause::UnrelatedMailboxEvent) => "Woken by unrelated mailbox event",
+        Some(AgentWakeCause::TimeoutLeaseExpiry) => "Wait lease expired",
+        Some(AgentWakeCause::CancellationInterruption) => "Wait interrupted",
+        Some(AgentWakeCause::PersistentGoalContinuation) => "Woken by goal continuation",
+        Some(AgentWakeCause::RuntimeSystemEvent) => "Woken by runtime event",
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Terminal)
+        ) =>
+        {
+            "Woken by child terminal transition"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Timeout)
+        ) =>
+        {
+            "Wait lease expired"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::SubscriptionLoss)
+        ) =>
+        {
+            "Woken by runtime event"
+        }
+        None if matches!(
+            completion_reason,
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox)
+        ) =>
+        {
+            "Mailbox wake (cause unavailable)"
+        }
+        None if pending.is_empty() => "Finished waiting",
+        None => "Wake cause unavailable",
     };
     let mut details =
         wait_complete_lines(receiver_thread_ids, agents_states, &pending, agent_metadata);
+    if let Some(notification) = notifications.first()
+        && let Some(disposition) = notification.disposition.as_ref()
+    {
+        let queued_count = disposition.queued_update_count.unwrap_or_default();
+        details.push(Line::from(format!(
+            "Wake cause is separate from queued updates; {queued_count} queued update(s) retained for one later delivery"
+        )));
+    }
     details.extend(notification_lines(notifications));
     collab_event(title_text(title), details)
 }
@@ -749,7 +799,7 @@ fn waiting_end(
 fn notification_lines(notifications: &[AgentNotificationSummary]) -> Vec<Line<'static>> {
     notifications
         .iter()
-        .map(|notification| {
+        .filter_map(|notification| {
             let content = match &notification.content {
                 AgentNotificationContent::PlaintextPreview { text, truncated }
                 | AgentNotificationContent::SenderSummary { text, truncated } => {
@@ -759,15 +809,16 @@ fn notification_lines(notifications: &[AgentNotificationSummary]) -> Vec<Line<'s
                         if *truncated { "..." } else { "" }
                     )
                 }
-                AgentNotificationContent::EncryptedUnavailable => {
-                    ": [encrypted content unavailable]".to_string()
-                }
-                AgentNotificationContent::Unavailable => ": [content unavailable]".to_string(),
+                // Ciphertext/unavailable envelopes are runtime metadata, not
+                // user-readable updates. They must not be rendered alongside
+                // the later plaintext delivery.
+                AgentNotificationContent::EncryptedUnavailable
+                | AgentNotificationContent::Unavailable => return None,
             };
-            Line::from(format!(
+            Some(Line::from(format!(
                 "Notification from {}{}",
                 notification.sender_agent_path, content
-            ))
+            )))
         })
         .collect()
 }
@@ -1588,6 +1639,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1615,6 +1667,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1639,6 +1692,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1672,6 +1726,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1699,6 +1754,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1876,6 +1932,7 @@ mod tests {
             &statuses,
             &[],
             /*completion_reason*/ None,
+            /*wake_cause*/ None,
             &mut agent_metadata,
         );
 
@@ -1885,6 +1942,22 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_wait_mailbox", snapshot);
+    }
+
+    #[test]
+    fn collab_wait_history_uses_structured_wake_cause_without_notification() {
+        let receiver_thread_ids = Vec::new();
+        let mut agent_metadata = |_| AgentMetadata::default();
+        let finished = waiting_end(
+            &receiver_thread_ids,
+            &HashMap::new(),
+            &[],
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox),
+            Some(AgentWakeCause::OperatorMessage),
+            &mut agent_metadata,
+        );
+
+        assert!(cell_to_text(&finished).contains("Woken by operator message"));
     }
 
     #[test]
@@ -1997,6 +2070,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2045,6 +2119,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2085,6 +2160,7 @@ mod tests {
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         }
     }
 

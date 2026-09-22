@@ -79,6 +79,7 @@ async fn handle_resume_agent(
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         )
         .await;
@@ -146,6 +147,7 @@ async fn handle_resume_agent(
                 agents_states: [(receiver_thread_id, status.clone())].into_iter().collect(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         )
         .await;

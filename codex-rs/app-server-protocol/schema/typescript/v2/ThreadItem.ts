@@ -10,6 +10,7 @@ import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AgentNotificationSummary } from "./AgentNotificationSummary";
+import type { AgentWakeCause } from "./AgentWakeCause";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -159,7 +160,7 @@ agentsStates: { [key in string]: CollabAgentState },
 /**
  * Safe mailbox notifications observed by a native wait.
  */
-wakeNotifications: Array<AgentNotificationSummary> | null, completionReason: CollabWaitingCompletionReason | null, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
+wakeNotifications: Array<AgentNotificationSummary> | null, completionReason: CollabWaitingCompletionReason | null, wakeCause?: AgentWakeCause, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
 /**
  * Effective model selected for the affected child, when known.
  */

@@ -971,6 +971,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             thread_id: "thread-parent".to_string(),
             turn_id: "turn-1".to_string(),
@@ -1001,6 +1002,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             thread_id: "thread-parent".to_string(),
             turn_id: "turn-1".to_string(),

@@ -393,6 +393,7 @@ impl ChatWidget {
                 agents_states,
                 wake_notifications,
                 completion_reason,
+                wake_cause,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -409,6 +410,7 @@ impl ChatWidget {
                 agents_states,
                 wake_notifications,
                 completion_reason,
+                wake_cause,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::EnteredReviewMode { review, .. } if !from_replay => {

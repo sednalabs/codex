@@ -6060,6 +6060,96 @@
         },
         "type": "object"
       },
+      "AgentDeliveryDisposition": {
+        "properties": {
+          "actualWakeCause": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentWakeCause"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveredToModelAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deliveredTurnId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "endedActiveWait": {
+            "default": false,
+            "type": "boolean"
+          },
+          "enqueuedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "intent": {
+            "$ref": "#/definitions/v2/AgentDeliveryIntent"
+          },
+          "parentTurnStarted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "queuedUpdateCount": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "targetSetRelation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "waitId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "type": "object"
+      },
+      "AgentDeliveryIntent": {
+        "enum": [
+          "queue_only",
+          "actionable_wake_requested",
+          "terminal_handoff",
+          "interrupt_emergency"
+        ],
+        "type": "string"
+      },
       "AgentMessageDeltaNotification": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -6219,6 +6309,16 @@
           "content": {
             "$ref": "#/definitions/v2/AgentNotificationContent"
           },
+          "disposition": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AgentDeliveryDisposition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "origin": {
             "$ref": "#/definitions/v2/AgentNotificationOrigin"
           },
@@ -6244,6 +6344,19 @@
           "content"
         ],
         "type": "object"
+      },
+      "AgentWakeCause": {
+        "enum": [
+          "operator_message",
+          "child_actionable_message",
+          "child_terminal_transition",
+          "unrelated_mailbox_event",
+          "timeout_lease_expiry",
+          "cancellation_interruption",
+          "persistent_goal_continuation",
+          "runtime_system_event"
+        ],
+        "type": "string"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,
@@ -19065,6 +19178,16 @@
                 "const": "collabAgentToolCall",
                 "title": "CollabAgentToolCallThreadItemType",
                 "type": "string"
+              },
+              "wakeCause": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/AgentWakeCause"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "wakeNotifications": {
                 "description": "Safe mailbox notifications observed by a native wait.",

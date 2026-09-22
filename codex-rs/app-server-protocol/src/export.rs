@@ -2455,6 +2455,7 @@ mod tests {
             agents_states: HashMap::new(),
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         };
         let wire = serde_json::to_value(item)?;
         assert_eq!(wire["wakeNotifications"], Value::Null);
