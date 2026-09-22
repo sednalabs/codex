@@ -178,13 +178,11 @@ write-app-server-schema *args:
     {{ python }} app-server-protocol/scripts/write_schema_fixtures.py {args}
 
 # Evidence-only hosted validation lane for w14111. The product candidate is
-# frozen; this recipe exercises generated protocol fixtures and the typed
-# request -> mock provider -> typed response contract.
+# frozen; this pass captures the exact hosted-generated schema artifact delta
+# needed by the frozen source candidate before rerunning fixture and route
+# checks. The patch is evidence for the single repair owner, not product CI.
 app-server-v2-contract-targeted:
-    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::typescript_schema_fixtures_match_generated -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::json_schema_fixtures_match_generated -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::stable_precomputed_exports_match_schema_fixtures -- --exact --test-threads=1
-    cargo test --locked -p codex-app-server --lib computer_use::tests::typed_request_routes_to_mock_provider -- --exact --test-threads=1
+    set -euo pipefail; tmp_dir="$$(mktemp -d)"; schema_root="$${tmp_dir}/schema"; python3 codex-rs/app-server-protocol/scripts/write_schema_fixtures.py --schema-root "$${schema_root}"; rm -rf codex-rs/app-server-protocol/schema; cp -a "$${schema_root}" codex-rs/app-server-protocol/schema; git diff --binary -- codex-rs/app-server-protocol/schema > "$${tmp_dir}/schema.patch"; echo W14111_SCHEMA_PATCH_BEGIN; base64 -w 76 "$${tmp_dir}/schema.patch"; echo; echo W14111_SCHEMA_PATCH_END; cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::typescript_schema_fixtures_match_generated -- --exact --test-threads=1; cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::json_schema_fixtures_match_generated -- --exact --test-threads=1; cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::stable_precomputed_exports_match_schema_fixtures -- --exact --test-threads=1; cargo test --locked -p codex-app-server --lib computer_use::tests::typed_request_routes_to_mock_provider -- --exact --test-threads=1
 
 [no-cd]
 write-hooks-schema:
