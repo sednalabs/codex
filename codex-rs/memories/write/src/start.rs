@@ -47,7 +47,6 @@ pub fn start_memories_startup_task(
         pipeline_config.memories.version = version;
         let config = Arc::new(pipeline_config);
         let auth_manager = Arc::clone(&auth_manager);
-        let parent_permission_profile = parent_permission_profile.clone();
         let context = Arc::new(MemoryStartupContext::new(
             Arc::clone(&thread_manager),
             Arc::clone(&auth_manager),
@@ -88,7 +87,7 @@ pub fn start_memories_startup_task(
             // Run phase 1.
             phase1::run(Arc::clone(&context), Arc::clone(&config)).await;
             // Run phase 2.
-            phase2::run(context, config, parent_permission_profile).await;
+            phase2::run(context, config).await;
         });
     }
 }

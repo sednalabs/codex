@@ -8,7 +8,7 @@ use codex_core::config::Config;
 use codex_protocol::user_input::UserInput;
 use codex_state::Phase2AttestedBaseline;
 use codex_state::Stage1Output;
-use codex_state::StateRuntime;
+use codex_state::MemoryStore;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -68,7 +68,7 @@ pub(super) async fn current_output_tree_sha256(root: &Path) -> anyhow::Result<St
 }
 
 pub(super) async fn matching_attested_baseline_exists(
-    db: &StateRuntime,
+    db: &MemoryStore,
     memory_root_key: &str,
     output_tree_sha256: &str,
 ) -> anyhow::Result<bool> {
@@ -79,7 +79,7 @@ pub(super) async fn matching_attested_baseline_exists(
 }
 
 pub(super) async fn record_completed_baseline(
-    db: &StateRuntime,
+    db: &MemoryStore,
     context: &Phase2AttestationContext,
     output_tree_sha256: String,
     completion_watermark: i64,

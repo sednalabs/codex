@@ -42,6 +42,128 @@ impl MemoryStore {
         self.pool.close().await;
     }
 
+    /// Records an attested phase-2 output baseline and marks the root as
+    /// attestation-required in the same transaction.
+    pub async fn record_phase2_attested_baseline(
+        &self,
+        baseline: &Phase2AttestedBaseline,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        let mut tx = self.state_pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        sqlx::query(
+            r#"
+INSERT INTO phase2_attested_baselines (
+    memory_root_key,
+    output_tree_sha256,
+    schema_version,
+    selection_sha256,
+    prepared_inputs_sha256,
+    consolidator_sha256,
+    completion_watermark,
+    selected_count,
+    attested_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(memory_root_key, output_tree_sha256) DO UPDATE SET
+    schema_version = excluded.schema_version,
+    selection_sha256 = excluded.selection_sha256,
+    prepared_inputs_sha256 = excluded.prepared_inputs_sha256,
+    consolidator_sha256 = excluded.consolidator_sha256,
+    completion_watermark = excluded.completion_watermark,
+    selected_count = excluded.selected_count,
+    attested_at = excluded.attested_at
+            "#,
+        )
+        .bind(baseline.memory_root_key.as_str())
+        .bind(baseline.output_tree_sha256.as_str())
+        .bind(baseline.schema_version)
+        .bind(baseline.selection_sha256.as_str())
+        .bind(baseline.prepared_inputs_sha256.as_str())
+        .bind(baseline.consolidator_sha256.as_str())
+        .bind(baseline.completion_watermark)
+        .bind(baseline.selected_count)
+        .bind(baseline.attested_at)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+INSERT INTO phase2_attestation_roots (
+    memory_root_key,
+    required_since,
+    updated_at
+) VALUES (?, ?, ?)
+ON CONFLICT(memory_root_key) DO UPDATE SET
+    updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(baseline.memory_root_key.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn get_phase2_attested_baseline(
+        &self,
+        memory_root_key: &str,
+        output_tree_sha256: &str,
+    ) -> anyhow::Result<Option<Phase2AttestedBaseline>> {
+        let baseline = sqlx::query(
+            r#"
+SELECT
+    memory_root_key,
+    output_tree_sha256,
+    schema_version,
+    selection_sha256,
+    prepared_inputs_sha256,
+    consolidator_sha256,
+    completion_watermark,
+    selected_count,
+    attested_at
+FROM phase2_attested_baselines
+WHERE memory_root_key = ? AND output_tree_sha256 = ?
+            "#,
+        )
+        .bind(memory_root_key)
+        .bind(output_tree_sha256)
+        .fetch_optional(self.state_pool.as_ref())
+        .await?
+        .map(|row| {
+            Ok::<_, sqlx::Error>(Phase2AttestedBaseline {
+                memory_root_key: row.try_get("memory_root_key")?,
+                output_tree_sha256: row.try_get("output_tree_sha256")?,
+                schema_version: row.try_get("schema_version")?,
+                selection_sha256: row.try_get("selection_sha256")?,
+                prepared_inputs_sha256: row.try_get("prepared_inputs_sha256")?,
+                consolidator_sha256: row.try_get("consolidator_sha256")?,
+                completion_watermark: row.try_get("completion_watermark")?,
+                selected_count: row.try_get("selected_count")?,
+                attested_at: row.try_get("attested_at")?,
+            })
+        })
+        .transpose()?;
+
+        Ok(baseline)
+    }
+
+    pub async fn has_phase2_attested_baseline_for_root(
+        &self,
+        memory_root_key: &str,
+    ) -> anyhow::Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM phase2_attested_baselines WHERE memory_root_key = ?)"#,
+        )
+        .bind(memory_root_key)
+        .fetch_one(self.state_pool.as_ref())
+        .await?;
+
+        Ok(exists)
+    }
+
     /// Deletes all persisted memory state in one transaction.
     ///
     /// This removes every `stage1_outputs` row and all `jobs` rows for the

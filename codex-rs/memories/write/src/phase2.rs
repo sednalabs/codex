@@ -27,7 +27,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_state::Stage1Output;
-use codex_state::StateRuntime;
+use codex_state::MemoryStore;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,7 +49,7 @@ struct Counters {
 pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     let phase_two_e2e_timer = context.start_timer(MEMORY_PHASE_TWO_E2E_MS);
 
-    let Some(db) = context.state_db() else {
+    let Some(db) = context.memory_store().await else {
         // This should not happen.
         return;
     };
@@ -58,7 +58,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     let max_unused_days = config.memories.max_unused_days;
 
     // 1. Claim the global Phase 2 lock before touching the memory workspace.
-    let claim = match job::claim(context.as_ref(), db.as_ref()).await {
+    let claim = match job::claim(context.as_ref(), &db).await {
         Ok(claim) => claim,
         Err(e) => {
             context.counter(MEMORY_PHASE_TWO_JOBS, /*inc*/ 1, &[("status", e)]);
@@ -71,7 +71,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         tracing::error!("failed preparing memory workspace: {err}");
         job::failed(
             context.as_ref(),
-            db.as_ref(),
+            &db,
             &claim,
             "failed_prepare_workspace",
         )
@@ -85,7 +85,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         tracing::error!("failed to get agent config");
         job::failed(
             context.as_ref(),
-            db.as_ref(),
+            &db,
             &claim,
             "failed_sandbox_policy",
         )
@@ -103,7 +103,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             tracing::error!("failed to list stage1 outputs from global: {err}");
             job::failed(
                 context.as_ref(),
-                db.as_ref(),
+                &db,
                 &claim,
                 "failed_load_stage1_outputs",
             )
@@ -119,7 +119,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         tracing::error!("failed syncing phase2 workspace inputs: {err}");
         job::failed(
             context.as_ref(),
-            db.as_ref(),
+            &db,
             &claim,
             "failed_sync_workspace_inputs",
         )
@@ -134,7 +134,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             tracing::error!("failed checking memory workspace changes: {err}");
             job::failed(
                 context.as_ref(),
-                db.as_ref(),
+                &db,
                 &claim,
                 "failed_workspace_status",
             )
@@ -148,7 +148,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             .is_ok()
     {
         tracing::error!("Phase 2 no changes");
-        let success_status = match no_workspace_change_attestation_status(db.as_ref(), &root).await
+        let success_status = match no_workspace_change_attestation_status(&db, &root).await
         {
             Ok(status) => status,
             Err(err) => {
@@ -157,7 +157,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
                 );
                 job::failed(
                     context.as_ref(),
-                    db.as_ref(),
+                    &db,
                     &claim,
                     "failed_attestation_no_workspace_change",
                 )
@@ -168,7 +168,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         // We check only after sync of the file system.
         job::succeed(
             context.as_ref(),
-            db.as_ref(),
+            &db,
             &claim,
             new_watermark,
             &raw_memories,
@@ -183,7 +183,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         tracing::error!("failed writing memory workspace diff file: {err}");
         job::failed(
             context.as_ref(),
-            db.as_ref(),
+            &db,
             &claim,
             "failed_workspace_diff_file",
         )
@@ -207,7 +207,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             tracing::error!("failed capturing phase-2 attestation context: {err}");
             job::failed(
                 context.as_ref(),
-                db.as_ref(),
+                &db,
                 &claim,
                 "failed_attestation_capture",
             )
@@ -222,7 +222,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         Ok(agent) => agent,
         Err(err) => {
             tracing::error!("failed to spawn global memory consolidation agent: {err}");
-            job::failed(context.as_ref(), db.as_ref(), &claim, "failed_spawn_agent").await;
+            job::failed(context.as_ref(), &db, &claim, "failed_spawn_agent").await;
             return;
         }
     };
@@ -230,6 +230,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     // 9. Hand off completion handling, heartbeats, and baseline reset.
     agent::handle(
         Arc::clone(&context),
+        db.clone(),
         claim,
         new_watermark,
         raw_memories.clone(),
@@ -259,7 +260,7 @@ async fn sync_phase2_workspace_inputs(
 }
 
 async fn no_workspace_change_attestation_status(
-    db: &StateRuntime,
+    db: &MemoryStore,
     root: &Path,
 ) -> anyhow::Result<&'static str> {
     let memory_root_key = match phase2_attestation::memory_root_key(root).await {
@@ -308,7 +309,7 @@ mod job {
 
     pub(super) async fn claim(
         context: &MemoryStartupContext,
-        db: &StateRuntime,
+        db: &MemoryStore,
     ) -> Result<Claim, &'static str> {
         let claim = db
             .try_claim_global_phase2_job(context.thread_id(), crate::stage_two::JOB_LEASE_SECONDS)
@@ -343,7 +344,7 @@ mod job {
 
     pub(super) async fn failed(
         context: &MemoryStartupContext,
-        db: &StateRuntime,
+        db: &MemoryStore,
         claim: &Claim,
         reason: &'static str,
     ) {
@@ -369,7 +370,7 @@ mod job {
 
     pub(super) async fn succeed(
         context: &MemoryStartupContext,
-        db: &StateRuntime,
+        db: &MemoryStore,
         claim: &Claim,
         completion_watermark: i64,
         selected_outputs: &[codex_state::Stage1Output],
@@ -446,6 +447,7 @@ mod agent {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn handle(
         context: Arc<MemoryStartupContext>,
+        db: MemoryStore,
         claim: Claim,
         new_watermark: i64,
         selected_outputs: Vec<codex_state::Stage1Output>,
@@ -455,10 +457,6 @@ mod agent {
         agent: SpawnedConsolidationAgent,
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
-        let Some(db) = context.state_db() else {
-            return;
-        };
-
         tokio::spawn(async move {
             let _phase_two_e2e_timer = phase_two_e2e_timer;
             let SpawnedConsolidationAgent { thread_id, thread } = agent;
@@ -592,7 +590,7 @@ mod agent {
     }
 
     async fn loop_agent(
-        db: Arc<StateRuntime>,
+        db: MemoryStore,
         token: String,
         thread_id: ThreadId,
         thread: &codex_core::CodexThread,
