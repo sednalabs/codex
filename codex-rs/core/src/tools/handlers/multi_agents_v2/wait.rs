@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
+use crate::session::input_queue::InputQueue;
 use crate::session::input_queue::InputQueueActivity;
 use crate::session::input_queue::is_actionable_wait_communication;
 use crate::session::session::Session;
@@ -535,7 +536,6 @@ async fn mailbox_snapshot(
             .await,
     );
     entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
-    let queued_update_sequences = entries.iter().map(|(_, sequence, _)| *sequence).collect();
     let queued_update_count = entries.len();
     let causal_entry = (wake_source == WakeSource::Mailbox)
         .then(|| {
@@ -572,12 +572,29 @@ async fn mailbox_snapshot(
         .as_ref()
         .map(|(_, _, enqueued_at_ms)| *enqueued_at_ms);
     let causal_sequence = causal_entry.as_ref().map(|(_, sequence, _)| *sequence);
-    let noncausal_update_sequences = entries
+    let mut reported_entries: Vec<_> = entries
+        .into_iter()
+        .take(InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
+        .collect();
+    if let Some(causal_entry) = causal_entry.as_ref()
+        && !reported_entries
+            .iter()
+            .any(|(_, sequence, _)| Some(*sequence) == causal_sequence)
+    {
+        let _ = reported_entries.pop();
+        reported_entries.push(causal_entry.clone());
+        reported_entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
+    }
+    let queued_update_sequences = reported_entries
+        .iter()
+        .map(|(_, sequence, _)| *sequence)
+        .collect();
+    let noncausal_update_sequences = reported_entries
         .iter()
         .map(|(_, sequence, _)| *sequence)
         .filter(|sequence| Some(*sequence) != causal_sequence)
         .collect();
-    let queued_updates = entries
+    let queued_updates = reported_entries
         .iter()
         .map(|(communication, sequence, enqueued_at_ms)| {
             let is_causal = causal_sequence == Some(*sequence);
@@ -617,7 +634,7 @@ async fn mailbox_snapshot(
     // update, so unrelated progress is delivered to the resumed model once
     // rather than being duplicated by a notification (or an
     // encrypted-unavailable summary).
-    let notifications = entries
+    let notifications = reported_entries
         .into_iter()
         .filter_map(|(communication, sequence, enqueued_at_ms)| {
             let is_causal = causal_entry
@@ -756,7 +773,9 @@ async fn ready_wake_source(
         } else {
             Some(match pending_input_activity {
                 Some(InputQueueActivity::Steer) => WakeSource::OperatorMessage,
-                Some(InputQueueActivity::TerminalCompletion) => WakeSource::RuntimeSystemEvent,
+                Some(
+                    InputQueueActivity::TerminalCompletion | InputQueueActivity::RuntimeSystemEvent,
+                ) => WakeSource::RuntimeSystemEvent,
                 _ => WakeSource::Mailbox,
             })
         }
@@ -1096,7 +1115,8 @@ async fn wait_for_wake_source(
                         }
                         return match *input_activity_rx.borrow() {
                             InputQueueActivity::Steer => WakeSource::OperatorMessage,
-                            InputQueueActivity::TerminalCompletion => {
+                            InputQueueActivity::TerminalCompletion
+                            | InputQueueActivity::RuntimeSystemEvent => {
                                 WakeSource::RuntimeSystemEvent
                             }
                             InputQueueActivity::Mailbox => WakeSource::Mailbox,

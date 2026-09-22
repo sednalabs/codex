@@ -1794,6 +1794,8 @@ async fn close_agent_discards_registry_owned_cold_mail() {
                 "discard me".to_string(),
                 /*trigger_turn*/ false,
             ),
+            sequence: None,
+            enqueued_at_ms: None,
         });
 
     harness

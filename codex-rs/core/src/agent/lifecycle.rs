@@ -23,6 +23,8 @@ pub(super) struct AgentLifecycleState {
 pub(super) struct ColdMailboxItem {
     pub(super) receive_id: Option<String>,
     pub(super) communication: InterAgentCommunication,
+    pub(super) sequence: Option<u64>,
+    pub(super) enqueued_at_ms: Option<u64>,
 }
 
 impl AgentLifecycle {

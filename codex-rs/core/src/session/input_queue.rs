@@ -36,6 +36,7 @@ pub(crate) enum InputQueueActivity {
     Mailbox,
     Steer,
     TerminalCompletion,
+    RuntimeSystemEvent,
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
@@ -50,10 +51,10 @@ struct MailboxQueue {
 }
 
 #[derive(Clone)]
-struct MailboxEntry {
-    communication: InterAgentCommunication,
-    sequence: u64,
-    enqueued_at_ms: u64,
+pub(crate) struct MailboxEntry {
+    pub(crate) communication: InterAgentCommunication,
+    pub(crate) sequence: u64,
+    pub(crate) enqueued_at_ms: u64,
 }
 
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
@@ -73,6 +74,7 @@ pub(crate) struct InputQueue {
 
 impl InputQueue {
     const MAX_PENDING_TERMINAL_COMPLETIONS: usize = 64;
+    pub(crate) const MAX_MAILBOX_NOTIFICATION_SNAPSHOT: usize = 64;
 
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
@@ -236,6 +238,40 @@ impl InputQueue {
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
+    pub(crate) async fn enqueue_mailbox_entries(&self, entries: Vec<MailboxEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let communication_count = entries.len();
+        let mut mailbox = self.mailbox.lock().await;
+        mailbox.entries.extend(entries);
+        tracing::trace!(
+            target: "codex.native_wait",
+            queued_update_count = communication_count,
+            "mailbox_updates_enqueued"
+        );
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    pub(crate) fn mailbox_entry_with_metadata(
+        &self,
+        communication: InterAgentCommunication,
+        sequence: Option<u64>,
+        enqueued_at_ms: Option<u64>,
+    ) -> MailboxEntry {
+        let sequence =
+            sequence.unwrap_or_else(|| self.next_mailbox_sequence.fetch_add(1, Ordering::Relaxed));
+        if let Some(next_sequence) = sequence.checked_add(1) {
+            self.next_mailbox_sequence
+                .fetch_max(next_sequence, Ordering::Relaxed);
+        }
+        MailboxEntry {
+            communication,
+            sequence,
+            enqueued_at_ms: enqueued_at_ms.unwrap_or_else(current_time_ms),
+        }
+    }
+
     pub(crate) async fn prepend_mailbox_communications(
         &self,
         communications: Vec<InterAgentCommunication>,
@@ -243,7 +279,6 @@ impl InputQueue {
         if communications.is_empty() {
             return;
         }
-        let mut mailbox = self.mailbox.lock().await;
         let queued: Vec<_> = communications
             .into_iter()
             .map(|communication| MailboxEntry {
@@ -252,7 +287,15 @@ impl InputQueue {
                 enqueued_at_ms: current_time_ms(),
             })
             .collect();
-        for entry in queued.into_iter().rev() {
+        self.prepend_mailbox_entries(queued).await;
+    }
+
+    pub(crate) async fn prepend_mailbox_entries(&self, entries: Vec<MailboxEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        let mut mailbox = self.mailbox.lock().await;
+        for entry in entries.into_iter().rev() {
             mailbox.entries.push_front(entry);
         }
         tracing::trace!(
@@ -274,17 +317,37 @@ impl InputQueue {
         &self,
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
         let mailbox = self.mailbox.lock().await;
-        mailbox
-            .entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.communication.clone(),
-                    entry.sequence,
-                    entry.enqueued_at_ms,
-                )
-            })
-            .collect()
+        let mut snapshot = Vec::with_capacity(
+            mailbox
+                .entries
+                .len()
+                .min(Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT),
+        );
+        let mut first_actionable = None;
+        for entry in &mailbox.entries {
+            let snapshot_entry = (
+                entry.communication.clone(),
+                entry.sequence,
+                entry.enqueued_at_ms,
+            );
+            if snapshot.len() < Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
+                snapshot.push(snapshot_entry.clone());
+            }
+            if first_actionable.is_none() && is_actionable_wait_communication(&entry.communication)
+            {
+                first_actionable = Some(snapshot_entry);
+            }
+        }
+        if let Some(actionable) = first_actionable
+            && !snapshot
+                .iter()
+                .any(|(_, sequence, _)| *sequence == actionable.1)
+        {
+            let _ = snapshot.pop();
+            snapshot.push(actionable);
+            snapshot.sort_unstable_by_key(|(_, sequence, _)| *sequence);
+        }
+        snapshot
     }
 
     /// Snapshot mailbox entries that were moved into the active turn before a
@@ -317,24 +380,47 @@ impl InputQueue {
         };
         let pending_entries = self.pending_mailbox_entries.lock().await;
         let mut used = vec![false; pending_entries.len()];
-        pending_communications
-            .into_iter()
-            .filter_map(|communication| {
-                let index = pending_entries
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, entry)| {
-                        (!used[index] && entry.communication == communication).then_some(index)
-                    })?;
-                used[index] = true;
-                let entry = &pending_entries[index];
-                Some((
-                    entry.communication.clone(),
-                    entry.sequence,
-                    entry.enqueued_at_ms,
-                ))
-            })
-            .collect()
+        let mut snapshot = Vec::with_capacity(
+            pending_communications
+                .len()
+                .min(Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT),
+        );
+        let mut first_actionable = None;
+        for communication in pending_communications {
+            let Some(index) = pending_entries
+                .iter()
+                .enumerate()
+                .find_map(|(index, entry)| {
+                    (!used[index] && entry.communication == communication).then_some(index)
+                })
+            else {
+                continue;
+            };
+            used[index] = true;
+            let entry = &pending_entries[index];
+            let snapshot_entry = (
+                entry.communication.clone(),
+                entry.sequence,
+                entry.enqueued_at_ms,
+            );
+            if snapshot.len() < Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
+                snapshot.push(snapshot_entry.clone());
+            }
+            if first_actionable.is_none() && is_actionable_wait_communication(&entry.communication)
+            {
+                first_actionable = Some(snapshot_entry);
+            }
+        }
+        if let Some(actionable) = first_actionable
+            && !snapshot
+                .iter()
+                .any(|(_, sequence, _)| *sequence == actionable.1)
+        {
+            let _ = snapshot.pop();
+            snapshot.push(actionable);
+            snapshot.sort_unstable_by_key(|(_, sequence, _)| *sequence);
+        }
+        snapshot
     }
 
     pub(crate) async fn enqueue_terminal_completion(
@@ -457,13 +543,16 @@ impl InputQueue {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
                     let pending_items = &turn_state.pending_input.items;
-                    let pending_activity = if pending_items.iter().any(|input| {
-                        matches!(
-                            input,
-                            TurnInput::UserInput { .. } | TurnInput::ResponseItem(_)
-                        )
-                    }) {
+                    let pending_activity = if pending_items
+                        .iter()
+                        .any(|input| matches!(input, TurnInput::UserInput { .. }))
+                    {
                         Some(InputQueueActivity::Steer)
+                    } else if pending_items
+                        .iter()
+                        .any(|input| matches!(input, TurnInput::ResponseItem(_)))
+                    {
+                        Some(InputQueueActivity::RuntimeSystemEvent)
                     } else {
                         pending_items.iter().find_map(|input| match input {
                             TurnInput::InterAgentCommunication(communication)
@@ -506,12 +595,16 @@ impl InputQueue {
     }
 
     pub(crate) async fn drain_mailbox_communications(&self) -> Vec<InterAgentCommunication> {
-        let mut mailbox = self.mailbox.lock().await;
-        mailbox
-            .entries
-            .drain(..)
+        self.drain_mailbox_entries()
+            .await
+            .into_iter()
             .map(|entry| entry.communication)
             .collect()
+    }
+
+    pub(crate) async fn drain_mailbox_entries(&self) -> Vec<MailboxEntry> {
+        let mut mailbox = self.mailbox.lock().await;
+        mailbox.entries.drain(..).collect()
     }
 
     pub(crate) async fn turn_state_for_sub_id(
@@ -590,12 +683,25 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let activity = if input
+            .iter()
+            .any(|input| matches!(input, TurnInput::UserInput { .. }))
+        {
+            InputQueueActivity::Steer
+        } else if input
+            .iter()
+            .any(|input| matches!(input, TurnInput::ResponseItem(_)))
+        {
+            InputQueueActivity::RuntimeSystemEvent
+        } else {
+            InputQueueActivity::Mailbox
+        };
         {
             let mut turn_state = turn_state.lock().await;
             turn_state.pending_input.items.extend(input);
             turn_state.accept_mailbox_delivery_for_current_turn();
         }
-        self.activity_tx.send_replace(InputQueueActivity::Steer);
+        self.activity_tx.send_replace(activity);
     }
 
     pub(crate) async fn extend_pending_input_for_turn_state(
@@ -979,6 +1085,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_queue_classifies_pending_response_items_as_runtime_activity() {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::ResponseItem(ResponseItem::Other)],
+            )
+            .await;
+
+        let pending_activity = input_queue.pending_wait_input_activity(&active_turn).await;
+
+        assert_eq!(
+            pending_activity,
+            Some(InputQueueActivity::RuntimeSystemEvent)
+        );
+    }
+
+    #[tokio::test]
     async fn input_queue_drains_mailbox_in_delivery_order() {
         let input_queue = InputQueue::new();
         let mail_one = make_mail(
@@ -1076,6 +1208,60 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn input_queue_requeue_preserves_mailbox_sequence_and_enqueue_time() {
+        let input_queue = InputQueue::new();
+        let first = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "first",
+            /*trigger_turn*/ false,
+        );
+        let second = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "second",
+            /*trigger_turn*/ false,
+        );
+        input_queue.enqueue_mailbox_communication(first).await;
+        let drained = input_queue.drain_mailbox_entries().await;
+        input_queue.enqueue_mailbox_communication(second).await;
+        input_queue.prepend_mailbox_entries(drained).await;
+
+        let snapshot = input_queue.snapshot_mailbox_communications().await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].1, 0);
+        assert_eq!(snapshot[1].1, 1);
+        assert!(snapshot[0].2 <= snapshot[1].2);
+    }
+
+    #[tokio::test]
+    async fn input_queue_bounds_mailbox_snapshot_and_retains_actionable_entry() {
+        let input_queue = InputQueue::new();
+        let communications = (0..=InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
+            .map(|index| {
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    &format!("mail-{index}"),
+                    index == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT,
+                )
+            })
+            .collect();
+        input_queue
+            .enqueue_mailbox_communications(communications)
+            .await;
+
+        let snapshot = input_queue.snapshot_mailbox_communications().await;
+        assert_eq!(
+            snapshot.len(),
+            InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT
+        );
+        assert!(snapshot.iter().any(|(_, sequence, _)| {
+            *sequence == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT as u64
+        }));
     }
 
     #[tokio::test]
