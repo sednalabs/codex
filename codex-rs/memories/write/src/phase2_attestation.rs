@@ -322,6 +322,7 @@ fn consolidator_manifest<'a>(
     let model = agent_config.model.as_deref().unwrap_or(stage_two::MODEL);
     let reasoning_effort = agent_config
         .model_reasoning_effort
+        .clone()
         .unwrap_or(stage_two::REASONING_EFFORT)
         .to_string();
     let sandbox_policy = agent_config.legacy_sandbox_policy();
