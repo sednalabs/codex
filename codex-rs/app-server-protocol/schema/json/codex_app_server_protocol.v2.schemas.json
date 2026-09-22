@@ -16869,7 +16869,14 @@
               "type": "string"
             },
             "wakeCause": {
-              "$ref": "#/definitions/AgentWakeCause"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentWakeCause"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "wakeNotifications": {
               "description": "Safe mailbox notifications observed by a native wait.",
