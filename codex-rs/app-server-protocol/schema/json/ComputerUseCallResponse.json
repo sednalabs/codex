@@ -1,18 +1,74 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "properties": {
-    "contentItems": { "items": { "$ref": "#/definitions/ComputerUseCallOutputContentItem" }, "type": "array" },
-    "success": { "type": "boolean" }
-  },
-  "required": ["contentItems", "success"],
-  "title": "ComputerUseCallResponse",
-  "type": "object",
   "definitions": {
     "ComputerUseCallOutputContentItem": {
+      "description": "Content emitted by a native computer-use caller.",
       "oneOf": [
-        { "type": "object", "properties": { "text": { "type": "string" }, "type": { "const": "inputText" } }, "required": ["text", "type"] },
-        { "type": "object", "properties": { "detail": { "type": ["string", "null"] }, "imageUrl": { "type": "string" }, "type": { "const": "inputImage" } }, "required": ["imageUrl", "type"] }
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputText"
+              ],
+              "title": "InputTextComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "InputTextComputerUseCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "image_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputImage"
+              ],
+              "title": "InputImageComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "image_url",
+            "type"
+          ],
+          "title": "InputImageComputerUseCallOutputContentItem",
+          "type": "object"
+        }
       ]
     }
-  }
+  },
+  "description": "Result returned by a native computer-use caller.",
+  "properties": {
+    "contentItems": {
+      "items": {
+        "$ref": "#/definitions/ComputerUseCallOutputContentItem"
+      },
+      "type": "array"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "contentItems",
+    "success"
+  ],
+  "title": "ComputerUseCallResponse",
+  "type": "object"
 }

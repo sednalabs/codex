@@ -90,6 +90,9 @@ export type { CommandExecutionRequestApprovalResponse } from "./CommandExecution
 export type { CommandExecutionSource } from "./CommandExecutionSource";
 export type { CommandExecutionStatus } from "./CommandExecutionStatus";
 export type { CommandMigration } from "./CommandMigration";
+export type { ComputerUseCallOutputContentItem } from "./ComputerUseCallOutputContentItem";
+export type { ComputerUseCallParams } from "./ComputerUseCallParams";
+export type { ComputerUseCallResponse } from "./ComputerUseCallResponse";
 export type { ComputerUseConfig } from "./ComputerUseConfig";
 export type { ComputerUseMacosConfig } from "./ComputerUseMacosConfig";
 export type { ComputerUseMacosRequirements } from "./ComputerUseMacosRequirements";
@@ -126,9 +129,6 @@ export type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputCo
 export type { DynamicToolCallParams } from "./DynamicToolCallParams";
 export type { DynamicToolCallResponse } from "./DynamicToolCallResponse";
 export type { DynamicToolCallStatus } from "./DynamicToolCallStatus";
-export type { ComputerUseCallOutputContentItem } from "./ComputerUseCallOutputContentItem";
-export type { ComputerUseCallParams } from "./ComputerUseCallParams";
-export type { ComputerUseCallResponse } from "./ComputerUseCallResponse";
 export type { DynamicToolFunctionSpec } from "./DynamicToolFunctionSpec";
 export type { DynamicToolNamespaceSpec } from "./DynamicToolNamespaceSpec";
 export type { DynamicToolNamespaceTool } from "./DynamicToolNamespaceTool";

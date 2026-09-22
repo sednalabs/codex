@@ -2859,6 +2859,116 @@
       "title": "CommandExecutionRequestApprovalResponse",
       "type": "object"
     },
+    "ComputerUseCallOutputContentItem": {
+      "description": "Content emitted by a native computer-use caller.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputText"
+              ],
+              "title": "InputTextComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "InputTextComputerUseCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "image_url": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "inputImage"
+              ],
+              "title": "InputImageComputerUseCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "image_url",
+            "type"
+          ],
+          "title": "InputImageComputerUseCallOutputContentItem",
+          "type": "object"
+        }
+      ]
+    },
+    "ComputerUseCallParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Parameters for a native computer-use call delegated to the client.",
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "arguments": true,
+        "callId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter",
+        "arguments",
+        "callId",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "title": "ComputerUseCallParams",
+      "type": "object"
+    },
+    "ComputerUseCallResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Result returned by a native computer-use caller.",
+      "properties": {
+        "contentItems": {
+          "items": {
+            "$ref": "#/definitions/ComputerUseCallOutputContentItem"
+          },
+          "type": "array"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "contentItems",
+        "success"
+      ],
+      "title": "ComputerUseCallResponse",
+      "type": "object"
+    },
     "DynamicToolCallParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -6335,6 +6445,31 @@
             "params"
           ],
           "title": "Item/tool/callRequest",
+          "type": "object"
+        },
+        {
+          "description": "Execute a native computer-use call on the client.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "item/computerUse/call"
+              ],
+              "title": "Item/computerUse/callRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ComputerUseCallParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Item/computerUse/callRequest",
           "type": "object"
         },
         {
