@@ -177,9 +177,7 @@ write-config-schema:
 write-app-server-schema *args:
     {{ python }} app-server-protocol/scripts/write_schema_fixtures.py {args}
 
-# Evidence-only hosted validation lane for w14111. The product candidate is
-# frozen; this recipe exercises generated protocol fixtures and the typed
-# request -> mock provider -> typed response contract.
+# Evidence-only hosted validation lane for the frozen w14111 repair candidate.
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::typescript_schema_fixtures_match_generated -- --exact --test-threads=1
     cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::json_schema_fixtures_match_generated -- --exact --test-threads=1
