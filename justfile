@@ -46,6 +46,30 @@ app-server-test-client *args:
     cargo build -p codex-cli
     cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex {args}
 
+# Validation-only combined P4/P5 consumer probe. This recipe is overlaid on
+# the existing standard-host lane and is never part of the product candidate.
+p4-p5-integrated-consumer-probe:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core unified_exec_uses_remote_exec_server_when_configured --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-exec-server --test exec_process shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-exec-server --test exec_process remote_exec_process_recovers_after_transport_disconnect -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-http-client route_aware_pool_uses_respect_system_proxy_route_for_exact_url --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-websocket-client loopback_direct --lib -- --test-threads=1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo test --locked -p codex-core provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures --lib -- --test-threads=1
+    cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-state --lib runtime::memories::tests::phase2_attested_baseline_uses_migrated_schema_and_scopes_reads -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_sends_text_content_items_to_model -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_handles_content_items -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_remote_image_response_becomes_model_visible_error -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
+    cargo build --locked -p codex-rmcp-client --bin test_stdio_server
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_reports_disconnected_stdio_transport -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_retains_capabilities_when_tool_discovery_fails -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::daemon_update_recovery::managed_restart_resumes_loaded_threads_and_goal_without_client -- --exact --test-threads=1
+
+# The hosted lane catalog calls this stable recipe name; keep the alias in
+# the validation-only overlay so no product recipe is changed.
+exec-server-targeted: p4-p5-integrated-consumer-probe
+
 # Format the justfile, Rust, Bazel/Starlark, Python SDK code, and Python scripts.
 fmt:
     @{{ python }} ../scripts/format.py
