@@ -1,0 +1,22 @@
+{
+  "lanes": [
+    {
+      "lane_id": "codex.app-server-schema-capture-targeted",
+      "groups": ["ui_protocol"],
+      "lane_sets": ["product-surfaces"],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/generate-app-server-schema-capture.sh",
+      "script_args": [],
+      "artifact_name": "w14111-app-server-exports-stable-db95119",
+      "artifact_path": "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    }
+  ]
+}
