@@ -177,6 +177,13 @@ write-config-schema:
 write-app-server-schema *args:
     {{ python }} app-server-protocol/scripts/write_schema_fixtures.py {args}
 
+# Evidence-only hosted validation lane for the frozen w14111 repair candidate.
+app-server-v2-contract-targeted:
+    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::typescript_schema_fixtures_match_generated -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::json_schema_fixtures_match_generated -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server-protocol --lib schema_fixtures_tests::stable_precomputed_exports_match_schema_fixtures -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --lib computer_use::tests::typed_request_routes_to_mock_provider -- --exact --test-threads=1
+
 [no-cd]
 write-hooks-schema:
     cargo run --manifest-path {{ justfile_directory() }}/codex-rs/Cargo.toml -p codex-hooks --bin write_hooks_schema_fixtures
