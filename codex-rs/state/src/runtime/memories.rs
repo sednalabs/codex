@@ -1821,6 +1821,7 @@ mod tests {
     use super::StateRuntime;
     use super::test_support::test_thread_metadata;
     use super::test_support::unique_temp_dir;
+    use crate::Phase2AttestedBaseline;
     use crate::model::Phase2JobClaimOutcome;
     use crate::model::Stage1JobClaimOutcome;
     use crate::model::Stage1StartupClaimParams;
@@ -1850,6 +1851,75 @@ mod tests {
             .execute(memory_pool(runtime))
             .await
             .expect("age phase2 success beyond cooldown");
+    }
+
+    #[tokio::test]
+    async fn phase2_attested_baseline_uses_migrated_schema_and_scopes_reads() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("initialize runtime");
+        let baseline = Phase2AttestedBaseline {
+            memory_root_key: "root-a".to_string(),
+            output_tree_sha256: "tree-a".to_string(),
+            schema_version: 1,
+            selection_sha256: "selection".to_string(),
+            prepared_inputs_sha256: "prepared".to_string(),
+            consolidator_sha256: "consolidator".to_string(),
+            completion_watermark: 42,
+            selected_count: 3,
+            attested_at: 123,
+        };
+
+        runtime
+            .memories()
+            .record_phase2_attested_baseline(&baseline)
+            .await
+            .expect("record phase2 attested baseline");
+
+        assert_eq!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-a", "tree-a")
+                .await
+                .expect("read phase2 attested baseline"),
+            Some(baseline)
+        );
+        assert!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-a", "tree-b")
+                .await
+                .expect("read mismatched output tree")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-b", "tree-a")
+                .await
+                .expect("read mismatched memory root")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .memories()
+                .has_phase2_attested_baseline_for_root("root-a")
+                .await
+                .expect("check recorded root")
+        );
+        assert!(
+            !runtime
+                .memories()
+                .has_phase2_attested_baseline_for_root("root-b")
+                .await
+                .expect("check unrelated root")
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
