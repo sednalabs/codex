@@ -46,6 +46,20 @@ app-server-test-client *args:
     cargo build -p codex-cli
     cargo run -p codex-app-server-test-client -- --codex-bin ./target/debug/codex {args}
 
+# Validation-only P5 app-server/MCP consumer probe. This recipe is overlaid
+# on the existing main-host lane and is never part of the product candidate.
+app-server-v2-contract-targeted:
+    cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-state --lib runtime::memories::tests::phase2_attested_baseline_uses_migrated_schema_and_scopes_reads -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_sends_text_content_items_to_model -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_call_round_trip_handles_content_items -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::dynamic_tools::dynamic_tool_remote_image_response_becomes_model_visible_error -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
+    cargo build --locked -p codex-rmcp-client --bin test_stdio_server
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_reports_disconnected_stdio_transport -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_retains_capabilities_when_tool_discovery_fails -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::daemon_update_recovery::managed_restart_resumes_loaded_threads_and_goal_without_client -- --exact --test-threads=1
+
 # Format the justfile, Rust, Bazel/Starlark, Python SDK code, and Python scripts.
 fmt:
     @{{ python }} ../scripts/format.py
