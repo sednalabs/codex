@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::v2::AgentWakeCause;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentStatus;
 use std::collections::HashMap;
@@ -472,6 +473,41 @@ fn never_copies_a_prior_receiver_into_a_terminal_spawn() {
             HashMap::new(),
         )
     );
+}
+
+#[test]
+fn terminal_legacy_compatibility_preserves_known_wake_cause() {
+    let mut canonical_terminal = collab_item(
+        "wait-wake-cause",
+        CollabAgentTool::Wait,
+        CollabAgentToolCallStatus::Completed,
+        vec!["child".to_string()],
+        None,
+        None,
+        HashMap::new(),
+    );
+    if let ThreadItem::CollabAgentToolCall { wake_cause, .. } = &mut canonical_terminal {
+        *wake_cause = Some(AgentWakeCause::OperatorMessage);
+    } else {
+        unreachable!("collab test helper must create a collab item");
+    }
+
+    let legacy_terminal = collab_item(
+        "wait-wake-cause",
+        CollabAgentTool::Wait,
+        CollabAgentToolCallStatus::Completed,
+        vec!["child".to_string()],
+        None,
+        None,
+        HashMap::new(),
+    );
+    let ThreadItem::CollabAgentToolCall { wake_cause, .. } =
+        merge_collab_agent_lifecycle(&canonical_terminal, legacy_terminal)
+    else {
+        unreachable!("collab test helper must create a collab item");
+    };
+
+    assert_eq!(wake_cause, Some(AgentWakeCause::OperatorMessage));
 }
 
 fn collab_item(

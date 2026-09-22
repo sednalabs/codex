@@ -456,22 +456,26 @@ impl InputQueue {
             match active.as_ref() {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
-                    let pending_activity =
-                        turn_state
-                            .pending_input
-                            .items
-                            .iter()
-                            .find_map(|input| match input {
-                                TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => {
-                                    Some(InputQueueActivity::Steer)
-                                }
-                                TurnInput::InterAgentCommunication(communication)
-                                    if is_actionable_wait_communication(communication) =>
-                                {
-                                    Some(InputQueueActivity::Mailbox)
-                                }
-                                TurnInput::InterAgentCommunication(_) => None,
-                            });
+                    let pending_items = &turn_state.pending_input.items;
+                    let pending_activity = if pending_items.iter().any(|input| {
+                        matches!(
+                            input,
+                            TurnInput::UserInput { .. } | TurnInput::ResponseItem(_)
+                        )
+                    }) {
+                        Some(InputQueueActivity::Steer)
+                    } else {
+                        pending_items.iter().find_map(|input| match input {
+                            TurnInput::InterAgentCommunication(communication)
+                                if is_actionable_wait_communication(communication) =>
+                            {
+                                Some(InputQueueActivity::Mailbox)
+                            }
+                            TurnInput::UserInput { .. }
+                            | TurnInput::ResponseItem(_)
+                            | TurnInput::InterAgentCommunication(_) => None,
+                        })
+                    };
                     (
                         turn_state.accepts_mailbox_delivery_for_current_turn(),
                         pending_activity,
@@ -636,6 +640,7 @@ impl InputQueue {
                 None => (Vec::new(), true),
             }
         };
+        self.forget_pending_mailbox_entries(&pending_input).await;
         if !accepts_mailbox_delivery {
             return pending_input;
         }
@@ -937,6 +942,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_queue_prioritizes_pending_steer_over_mailbox_order() {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(Some(ActiveTurn::default()));
+        let turn_state = active_turn
+            .lock()
+            .await
+            .as_ref()
+            .expect("active turn")
+            .turn_state
+            .clone();
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![
+                    TurnInput::InterAgentCommunication(make_mail(
+                        AgentPath::try_from("/root/worker").expect("agent path"),
+                        AgentPath::root(),
+                        "child actionable",
+                        /*trigger_turn*/ true,
+                    )),
+                    TurnInput::UserInput {
+                        content: vec![UserInput::Text {
+                            text: "operator steer".to_string(),
+                            text_elements: Vec::new(),
+                        }],
+                        client_id: None,
+                    },
+                ],
+            )
+            .await;
+
+        let pending_activity = input_queue.pending_wait_input_activity(&active_turn).await;
+
+        assert_eq!(pending_activity, Some(InputQueueActivity::Steer));
+    }
+
+    #[tokio::test]
     async fn input_queue_drains_mailbox_in_delivery_order() {
         let input_queue = InputQueue::new();
         let mail_one = make_mail(
@@ -1026,6 +1068,14 @@ mod tests {
             .await;
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].1, 0);
+
+        let _ = input_queue.get_pending_input(&active_turn).await;
+        assert!(
+            input_queue
+                .snapshot_pending_mailbox_communications(&active_turn)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
