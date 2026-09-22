@@ -98,6 +98,7 @@ mod attestation;
 mod auth_mode;
 mod bespoke_event_handling;
 mod code_mode_host;
+mod computer_use;
 mod codex_home_metrics;
 mod command_exec;
 mod config_layer;
