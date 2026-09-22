@@ -185,13 +185,20 @@ impl InputQueue {
         Option<InputQueueActivity>,
     ) {
         let activity_rx = self.activity_tx.subscribe();
-        let has_pending_steer = if let Some(turn_state) = turn_state {
-            turn_state.lock().await.pending_input.has_user_input()
+        let pending_activity = if let Some(turn_state) = turn_state {
+            let turn_state = turn_state.lock().await;
+            if turn_state.pending_input.has_user_input() {
+                Some(InputQueueActivity::Steer)
+            } else if turn_state.pending_input.has_response_item() {
+                Some(InputQueueActivity::RuntimeSystemEvent)
+            } else {
+                None
+            }
         } else {
-            false
+            None
         };
-        let pending_activity = if has_pending_steer {
-            Some(InputQueueActivity::Steer)
+        let pending_activity = if pending_activity.is_some() {
+            pending_activity
         } else if self.has_pending_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
         } else if self.has_pending_terminal_completions().await {
@@ -829,7 +836,7 @@ pub(crate) fn is_actionable_wait_communication(communication: &InterAgentCommuni
                 == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
 }
 
-fn current_time_ms() -> u64 {
+pub(crate) fn current_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
@@ -841,6 +848,12 @@ impl TurnInputQueue {
         self.items
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
+    }
+
+    fn has_response_item(&self) -> bool {
+        self.items
+            .iter()
+            .any(|input| matches!(input, TurnInput::ResponseItem(_)))
     }
 }
 
@@ -1102,6 +1115,12 @@ mod tests {
             )
             .await;
 
+        let (_activity_rx, subscribed_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        assert_eq!(
+            subscribed_activity,
+            Some(InputQueueActivity::RuntimeSystemEvent)
+        );
         let pending_activity = input_queue.pending_wait_input_activity(&active_turn).await;
 
         assert_eq!(

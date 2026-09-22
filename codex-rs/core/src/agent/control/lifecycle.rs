@@ -299,11 +299,12 @@ impl PreparedV2AgentDelivery {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
             let submission_id = self.record_submission(&communication, &context);
+            let sequence = self.lifecycle.next_cold_mailbox_sequence();
             self.lifecycle.push_cold_mail(ColdMailboxItem {
                 receive_id: Some(submission_id.clone()),
                 communication,
-                sequence: None,
-                enqueued_at_ms: None,
+                sequence: Some(sequence),
+                enqueued_at_ms: Some(crate::session::input_queue::current_time_ms()),
             });
             Ok(submission_id)
         })

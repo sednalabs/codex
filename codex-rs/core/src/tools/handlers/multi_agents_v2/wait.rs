@@ -536,7 +536,6 @@ async fn mailbox_snapshot(
             .await,
     );
     entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
-    let queued_update_count = entries.len();
     let causal_entry = (wake_source == WakeSource::Mailbox)
         .then(|| {
             entries
@@ -585,6 +584,7 @@ async fn mailbox_snapshot(
         reported_entries.push(causal_entry.clone());
         reported_entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
     }
+    let queued_update_count = reported_entries.len();
     let queued_update_sequences = reported_entries
         .iter()
         .map(|(_, sequence, _)| *sequence)
