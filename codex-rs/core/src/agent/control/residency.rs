@@ -605,7 +605,9 @@ impl V2Residency {
             .input_queue
             .drain_mailbox_entries()
             .await;
-        if pending_mail.iter().any(|mail| mail.trigger_turn)
+        if pending_mail
+            .iter()
+            .any(|mail| mail.communication.trigger_turn)
             || (metadata.is_none() && !pending_mail.is_empty())
         {
             candidate_thread

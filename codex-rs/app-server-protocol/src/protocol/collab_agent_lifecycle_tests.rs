@@ -482,8 +482,8 @@ fn terminal_legacy_compatibility_preserves_known_wake_cause() {
         CollabAgentTool::Wait,
         CollabAgentToolCallStatus::Completed,
         vec!["child".to_string()],
-        None,
-        None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
         HashMap::new(),
     );
     if let ThreadItem::CollabAgentToolCall { wake_cause, .. } = &mut canonical_terminal {
@@ -497,8 +497,8 @@ fn terminal_legacy_compatibility_preserves_known_wake_cause() {
         CollabAgentTool::Wait,
         CollabAgentToolCallStatus::Completed,
         vec!["child".to_string()],
-        None,
-        None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
         HashMap::new(),
     );
     let ThreadItem::CollabAgentToolCall { wake_cause, .. } =

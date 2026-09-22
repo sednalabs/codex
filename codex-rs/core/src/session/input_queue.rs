@@ -609,11 +609,6 @@ impl InputQueue {
             .collect()
     }
 
-    pub(crate) async fn drain_mailbox_entries(&self) -> Vec<MailboxEntry> {
-        let mut mailbox = self.mailbox.lock().await;
-        mailbox.entries.drain(..).collect()
-    }
-
     pub(crate) async fn turn_state_for_sub_id(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
@@ -795,7 +790,7 @@ impl InputQueue {
         }
     }
 
-    async fn drain_mailbox_entries(&self) -> Vec<MailboxEntry> {
+    pub(crate) async fn drain_mailbox_entries(&self) -> Vec<MailboxEntry> {
         let mut mailbox = self.mailbox.lock().await;
         mailbox.entries.drain(..).collect()
     }
