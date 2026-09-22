@@ -1666,6 +1666,44 @@ pub struct DynamicToolCallResponse {
     pub success: bool,
 }
 
+/// Parameters for a native computer-use call routed to the client/provider.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseCallParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub environment_id: Option<String>,
+    pub adapter: String,
+    pub tool: String,
+    pub arguments: JsonValue,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseCallResponse {
+    pub content_items: Vec<ComputerUseCallOutputContentItem>,
+    pub success: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type")]
+#[ts(export_to = "v2/")]
+pub enum ComputerUseCallOutputContentItem {
+    #[serde(rename_all = "camelCase")]
+    InputText { text: String },
+    #[serde(rename_all = "camelCase")]
+    InputImage {
+        image_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        detail: Option<String>,
+    },
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]

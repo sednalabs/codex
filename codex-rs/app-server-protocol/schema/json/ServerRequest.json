@@ -492,6 +492,19 @@
       ],
       "type": "object"
     },
+    "ComputerUseCallParams": {
+      "properties": {
+        "adapter": { "type": "string" },
+        "arguments": true,
+        "callId": { "type": "string" },
+        "environmentId": { "type": ["string", "null"] },
+        "threadId": { "type": "string" },
+        "tool": { "type": "string" },
+        "turnId": { "type": "string" }
+      },
+      "required": ["threadId", "turnId", "callId", "adapter", "tool", "arguments"],
+      "type": "object"
+    },
     "ExecCommandApprovalParams": {
       "properties": {
         "approvalId": {
@@ -1990,6 +2003,21 @@
         "params"
       ],
       "title": "Item/tool/callRequest",
+      "type": "object"
+    },
+    {
+      "description": "Execute a native computer-use call on the client/provider.",
+      "properties": {
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": {
+          "enum": ["item/computerUse/call"],
+          "title": "Item/computerUse/callRequestMethod",
+          "type": "string"
+        },
+        "params": { "$ref": "#/definitions/ComputerUseCallParams" }
+      },
+      "required": ["id", "method", "params"],
+      "title": "Item/computerUse/callRequest",
       "type": "object"
     },
     {

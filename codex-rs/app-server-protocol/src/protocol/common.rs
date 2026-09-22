@@ -1791,6 +1791,12 @@ server_request_definitions! {
         response: v2::DynamicToolCallResponse,
     },
 
+    /// Execute a native computer-use call on the client/provider.
+    ComputerUseCall => "item/computerUse/call" {
+        params: v2::ComputerUseCallParams,
+        response: v2::ComputerUseCallResponse,
+    },
+
     ChatgptAuthTokensRefresh => "account/chatgptAuthTokens/refresh" {
         params: v2::ChatgptAuthTokensRefreshParams,
         response: v2::ChatgptAuthTokensRefreshResponse,
