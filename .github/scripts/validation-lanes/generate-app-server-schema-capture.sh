@@ -11,6 +11,6 @@ CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL=0 \
     schema_fixtures_tests::write_schema_fixtures_from_env -- --exact --ignored
 test -f "${workspace_root}/codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst"
 echo W14111_PRECOMPUTED_STABLE_BEGIN
-base64 -w 0 "${workspace_root}/codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst"
+base64 -w 0 "${workspace_root}/codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst" | fold -w 76
 echo
 echo W14111_PRECOMPUTED_STABLE_END
