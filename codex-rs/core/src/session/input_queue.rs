@@ -595,11 +595,8 @@ mod tests {
             })
             .await;
 
-        let [TurnInput::ResponseItem(item)] = input_queue
-            .drain_terminal_completion_items()
-            .await
-            .as_slice()
-        else {
+        let items = input_queue.drain_terminal_completion_items().await;
+        let [TurnInput::ResponseItem(item)] = items.as_slice() else {
             panic!("expected one terminal completion response item");
         };
         let ResponseItem::Message {
