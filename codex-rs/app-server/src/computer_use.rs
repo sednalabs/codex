@@ -7,6 +7,7 @@ use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 pub(crate) type ComputerUseFuture =
     Pin<Box<dyn Future<Output = ComputerUseCallResponse> + Send + 'static>>;
@@ -14,6 +15,22 @@ pub(crate) type ComputerUseFuture =
 /// Provider-owned implementation of a native computer-use call.
 pub(crate) trait ComputerUseProvider: Send + Sync + 'static {
     fn call(&self, request: ComputerUseCallParams) -> ComputerUseFuture;
+}
+
+/// Production dispatch seam. The concrete provider is injected by the owning
+/// app-server integration, while this type owns the typed request/response hop.
+pub(crate) struct ComputerUseRouter {
+    provider: Arc<dyn ComputerUseProvider>,
+}
+
+impl ComputerUseRouter {
+    pub(crate) fn new(provider: Arc<dyn ComputerUseProvider>) -> Self {
+        Self { provider }
+    }
+
+    pub(crate) async fn dispatch(&self, request: ComputerUseCallParams) -> ComputerUseCallResponse {
+        route_call(self.provider.as_ref(), request).await
+    }
 }
 
 /// Route one typed app-server request to the provider and return its typed response.
@@ -58,7 +75,8 @@ mod tests {
             arguments: json!({"ok": true}),
         };
 
-        let response = route_call(&MockProvider, request).await;
+        let router = ComputerUseRouter::new(Arc::new(MockProvider));
+        let response = router.dispatch(request).await;
         assert!(response.success);
         assert!(matches!(
             response.content_items.as_slice(),
