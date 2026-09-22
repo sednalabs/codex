@@ -43,13 +43,11 @@ impl MemoryStore {
         self.pool.close().await;
     }
 
-    /// Records an attested phase-2 output baseline and marks the root as
-    /// attestation-required in the same transaction.
+    /// Records an attested phase-2 output baseline transactionally.
     pub async fn record_phase2_attested_baseline(
         &self,
         baseline: &Phase2AttestedBaseline,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().timestamp();
         let mut tx = self.state_pool.begin_with("BEGIN IMMEDIATE").await?;
 
         sqlx::query(
@@ -84,23 +82,6 @@ ON CONFLICT(memory_root_key, output_tree_sha256) DO UPDATE SET
         .bind(baseline.completion_watermark)
         .bind(baseline.selected_count)
         .bind(baseline.attested_at)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-INSERT INTO phase2_attestation_roots (
-    memory_root_key,
-    required_since,
-    updated_at
-) VALUES (?, ?, ?)
-ON CONFLICT(memory_root_key) DO UPDATE SET
-    updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(baseline.memory_root_key.as_str())
-        .bind(now)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 
