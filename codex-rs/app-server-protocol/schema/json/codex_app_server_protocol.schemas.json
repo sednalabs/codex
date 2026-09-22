@@ -19182,7 +19182,7 @@
               "wakeCause": {
                 "anyOf": [
                   {
-                    "$ref": "#/definitions/AgentWakeCause"
+                    "$ref": "#/definitions/v2/AgentWakeCause"
                   },
                   {
                     "type": "null"
