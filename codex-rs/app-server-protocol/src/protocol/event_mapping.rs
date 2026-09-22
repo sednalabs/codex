@@ -97,6 +97,7 @@ pub fn item_event_to_server_notification(
                 agents_states: HashMap::new(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -147,6 +148,7 @@ pub fn item_event_to_server_notification(
                 agents_states,
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -173,6 +175,7 @@ pub fn item_event_to_server_notification(
                 agents_states: HashMap::new(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -207,6 +210,7 @@ pub fn item_event_to_server_notification(
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -253,6 +257,7 @@ pub fn item_event_to_server_notification(
                 agents_states: HashMap::new(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -300,6 +305,7 @@ pub fn item_event_to_server_notification(
                 agents_states,
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -325,6 +331,7 @@ pub fn item_event_to_server_notification(
                 agents_states: HashMap::new(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -364,6 +371,7 @@ pub fn item_event_to_server_notification(
                 agents_states,
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -389,6 +397,7 @@ pub fn item_event_to_server_notification(
                 agents_states: HashMap::new(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -428,6 +437,7 @@ pub fn item_event_to_server_notification(
                 agents_states,
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -657,6 +667,7 @@ mod tests {
                     agents_states: HashMap::new(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 },
             },
         );
@@ -692,6 +703,7 @@ mod tests {
                     agents_states: HashMap::new(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             }),
             "thread-phase-compatible",
@@ -745,6 +757,7 @@ mod tests {
                         .collect(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             }),
             "thread-phase-compatible",
@@ -850,6 +863,7 @@ mod tests {
                     agents_states: HashMap::new(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             }),
             "thread-unknown-terminal",
@@ -928,6 +942,7 @@ mod tests {
                     .collect(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 },
             },
         );
@@ -960,6 +975,7 @@ mod tests {
                     .collect(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
 
@@ -1011,6 +1027,7 @@ mod tests {
                     .collect(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 },
             },
         );
@@ -1046,6 +1063,7 @@ mod tests {
                 .collect(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
 
@@ -1097,6 +1115,7 @@ mod tests {
                     .collect(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 },
             },
         );

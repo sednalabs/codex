@@ -84,6 +84,7 @@ impl Handler {
                     agents_states: Default::default(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             )
             .await;
@@ -119,6 +120,7 @@ impl Handler {
                     agents_states: [(receiver_thread_id, status)].into_iter().collect(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             )
             .await;

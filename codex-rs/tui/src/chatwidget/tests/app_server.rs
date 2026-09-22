@@ -513,6 +513,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -545,6 +546,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1025,6 +1027,7 @@ async fn live_app_server_collab_wait_items_render_history() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1070,6 +1073,7 @@ async fn live_app_server_collab_wait_items_render_history() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1113,6 +1117,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1146,6 +1151,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1199,6 +1205,7 @@ async fn live_app_server_spawn_completion_does_not_fill_missing_effective_identi
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1231,6 +1238,7 @@ async fn live_app_server_spawn_completion_does_not_fill_missing_effective_identi
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
         /*replay_kind*/ None,

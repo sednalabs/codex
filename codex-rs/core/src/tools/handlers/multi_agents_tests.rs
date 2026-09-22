@@ -5707,13 +5707,18 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
 
         session
             .input_queue
-            .enqueue_mailbox_communication(InterAgentCommunication::new_encrypted(
-                worker_path.clone(),
-                AgentPath::root(),
-                Vec::new(),
-                "encrypted child output".to_string(),
-                /*trigger_turn*/ false,
-            ))
+            .enqueue_mailbox_communication({
+                let mut encrypted_result = InterAgentCommunication::new_encrypted(
+                    worker_path.clone(),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "encrypted child output".to_string(),
+                    /*trigger_turn*/ false,
+                );
+                encrypted_result.origin =
+                    Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+                encrypted_result
+            })
             .await;
 
         assert!(

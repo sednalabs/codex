@@ -1374,6 +1374,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
     ));
@@ -1425,6 +1426,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
         }),
     ));
@@ -1471,6 +1473,7 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         },
     });
 
@@ -7443,6 +7446,7 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
 
                             wake_notifications: None,
                             completion_reason: None,
+                            wake_cause: None,
                         },
                     },
                 ),

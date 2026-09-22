@@ -430,6 +430,7 @@ pub(crate) fn tool_call_history_cell(
         agents_states,
         wake_notifications,
         completion_reason,
+        wake_cause,
         ..
     } = item
     else {
@@ -512,6 +513,7 @@ pub(crate) fn tool_call_history_cell(
                     agents_states,
                     wake_notifications.as_deref().unwrap_or_default(),
                     *completion_reason,
+                    *wake_cause,
                     &mut agent_metadata,
                 ))
             }
@@ -728,14 +730,17 @@ fn waiting_end(
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
     notifications: &[AgentNotificationSummary],
     completion_reason: Option<codex_protocol::protocol::CollabWaitingCompletionReason>,
+    wake_cause: Option<AgentWakeCause>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let pending = pending_wait_thread_ids(receiver_thread_ids, agents_states);
-    let wake_cause = notifications.iter().find_map(|notification| {
-        notification
-            .disposition
-            .as_ref()
-            .and_then(|disposition| disposition.actual_wake_cause)
+    let wake_cause = wake_cause.or_else(|| {
+        notifications.iter().find_map(|notification| {
+            notification
+                .disposition
+                .as_ref()
+                .and_then(|disposition| disposition.actual_wake_cause)
+        })
     });
     let title = match wake_cause {
         Some(AgentWakeCause::ChildActionableMessage) => "Woken by child actionable message",
@@ -1634,6 +1639,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1661,6 +1667,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1685,6 +1692,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1718,6 +1726,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1745,6 +1754,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1922,6 +1932,7 @@ mod tests {
             &statuses,
             &[],
             /*completion_reason*/ None,
+            /*wake_cause*/ None,
             &mut agent_metadata,
         );
 
@@ -1931,6 +1942,22 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_wait_mailbox", snapshot);
+    }
+
+    #[test]
+    fn collab_wait_history_uses_structured_wake_cause_without_notification() {
+        let receiver_thread_ids = Vec::new();
+        let mut agent_metadata = |_| AgentMetadata::default();
+        let finished = waiting_end(
+            &receiver_thread_ids,
+            &HashMap::new(),
+            &[],
+            Some(codex_protocol::protocol::CollabWaitingCompletionReason::Mailbox),
+            Some(AgentWakeCause::OperatorMessage),
+            &mut agent_metadata,
+        );
+
+        assert!(cell_to_text(&finished).contains("Woken by operator message"));
     }
 
     #[test]
@@ -2043,6 +2070,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2091,6 +2119,7 @@ mod tests {
 
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2131,6 +2160,7 @@ mod tests {
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         }
     }
 

@@ -71,7 +71,6 @@ pub(crate) struct InputQueue {
 
 impl InputQueue {
     const MAX_PENDING_TERMINAL_COMPLETIONS: usize = 64;
-    pub(crate) const MAX_MAILBOX_NOTIFICATION_SNAPSHOT: usize = 64;
 
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
@@ -275,7 +274,6 @@ impl InputQueue {
         mailbox
             .entries
             .iter()
-            .take(Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
             .map(|entry| {
                 (
                     entry.communication.clone(),
@@ -386,6 +384,60 @@ impl InputQueue {
         };
         (accepts_mailbox_delivery && self.has_actionable_wait_mailbox_items().await)
             || self.has_pending_terminal_completions().await
+    }
+
+    /// Returns the activity class for input that is already pending when a
+    /// wait subscribes. This preserves the distinction between a pre-existing
+    /// operator steer and mailbox/system activity; the watch channel only
+    /// reports changes after subscription and cannot identify this ordering.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state reads must remain atomic"
+    )]
+    pub(crate) async fn pending_wait_input_activity(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Option<InputQueueActivity> {
+        let (accepts_mailbox_delivery, pending_activity) = {
+            let active = active_turn.lock().await;
+            match active.as_ref() {
+                Some(active_turn) => {
+                    let turn_state = active_turn.turn_state.lock().await;
+                    let pending_activity =
+                        turn_state
+                            .pending_input
+                            .items
+                            .iter()
+                            .find_map(|input| match input {
+                                TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => {
+                                    Some(InputQueueActivity::Steer)
+                                }
+                                TurnInput::InterAgentCommunication(communication)
+                                    if is_actionable_wait_communication(communication) =>
+                                {
+                                    Some(InputQueueActivity::Mailbox)
+                                }
+                                TurnInput::InterAgentCommunication(_) => None,
+                            });
+                    (
+                        turn_state.accepts_mailbox_delivery_for_current_turn(),
+                        pending_activity,
+                    )
+                }
+                None => (true, None),
+            }
+        };
+
+        if pending_activity.is_some() {
+            return pending_activity;
+        }
+        if accepts_mailbox_delivery && self.has_actionable_wait_mailbox_items().await {
+            return Some(InputQueueActivity::Mailbox);
+        }
+        if self.has_pending_terminal_completions().await {
+            return Some(InputQueueActivity::TerminalCompletion);
+        }
+        None
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
@@ -571,7 +623,7 @@ impl InputQueue {
     }
 }
 
-fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
+pub(crate) fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
     communication.trigger_turn
         || (communication.encrypted_content.is_none()
             && !communication.content.is_empty()

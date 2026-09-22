@@ -117,6 +117,7 @@ async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() 
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,
@@ -139,6 +140,7 @@ async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() 
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,
@@ -250,6 +252,7 @@ async fn replayed_failed_collab_spawn_without_receiver_keeps_requested_identity(
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,

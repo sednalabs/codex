@@ -339,6 +339,12 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub completion_reason: Option<CollabWaitingCompletionReason>,
+    /// Structured wake cause for native wait completion. This is carried
+    /// separately from child notifications so operator/system wakes remain
+    /// visible at the history/TUI boundary even when no child message exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_cause: Option<AgentWakeCause>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

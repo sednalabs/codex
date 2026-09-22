@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
 use crate::session::input_queue::InputQueueActivity;
+use crate::session::input_queue::is_actionable_wait_communication;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -214,6 +215,11 @@ impl Handler {
             .input_queue
             .subscribe_activity(/*turn_state*/ None)
             .await;
+        let pending_input_activity = session
+            .input_queue
+            .pending_wait_input_activity(&session.active_turn)
+            .await
+            .or(pending_input_activity);
 
         session
             .emit_turn_item_started(
@@ -233,6 +239,7 @@ impl Handler {
                     agents_states: Default::default(),
                     wake_notifications: None,
                     completion_reason: None,
+                    wake_cause: None,
                 }),
             )
             .await;
@@ -271,6 +278,7 @@ impl Handler {
                         )
                         .await
                         .notifications,
+                        Some(AgentWakeCause::RuntimeSystemEvent),
                     )
                     .await;
                     return Err(collab_agent_error(*id, err));
@@ -372,6 +380,7 @@ impl Handler {
             statuses_by_id,
             completion_reason,
             result.wake_notifications.clone().unwrap_or_default(),
+            Some(result.wake_provenance.wake_cause),
         )
         .await;
 
@@ -523,10 +532,9 @@ async fn mailbox_snapshot(
     let queued_update_count = entries.len();
     let causal_entry = (wake_source == WakeSource::Mailbox)
         .then(|| {
-            entries.iter().find(|(communication, _, _)| {
-                communication.trigger_turn
-                    || communication.origin == Some(AgentCommunicationOrigin::Result)
-            })
+            entries
+                .iter()
+                .find(|(communication, _, _)| is_actionable_wait_communication(communication))
         })
         .flatten()
         .cloned();
@@ -875,6 +883,7 @@ async fn emit_wait_completion(
     agents_states: HashMap<ThreadId, AgentStatus>,
     completion_reason: CollabWaitingCompletionReason,
     notifications: Vec<AgentNotificationSummary>,
+    wake_cause: Option<AgentWakeCause>,
 ) {
     let status = if completion_reason == CollabWaitingCompletionReason::SubscriptionLoss
         // Subscription loss is an unsuccessful lifecycle outcome even when
@@ -908,6 +917,7 @@ async fn emit_wait_completion(
                 agents_states,
                 wake_notifications: (!notifications.is_empty()).then_some(notifications),
                 completion_reason: Some(completion_reason),
+                wake_cause,
             }),
         )
         .await;

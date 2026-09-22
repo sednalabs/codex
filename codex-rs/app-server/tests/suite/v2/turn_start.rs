@@ -3242,6 +3242,7 @@ async fn turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         }
     );
 
@@ -3610,6 +3611,7 @@ config_file = "./custom-role.toml"
 
             wake_notifications: None,
             completion_reason: None,
+            wake_cause: None,
         }
     );
 

@@ -494,6 +494,9 @@ pub enum ThreadItem {
         )]
         #[ts(optional = false)]
         completion_reason: Option<codex_protocol::protocol::CollabWaitingCompletionReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        wake_cause: Option<AgentWakeCause>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -1161,6 +1164,7 @@ impl From<CoreTurnItem> for ThreadItem {
                         .wake_notifications
                         .map(|notifications| notifications.into_iter().map(Into::into).collect()),
                     completion_reason: call.completion_reason,
+                    wake_cause: call.wake_cause.map(Into::into),
                 }
             }
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {

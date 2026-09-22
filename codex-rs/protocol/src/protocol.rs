@@ -5873,6 +5873,7 @@ mod tests {
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
         let completed = ItemCompletedEvent {
@@ -5894,6 +5895,7 @@ mod tests {
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
 
@@ -5960,6 +5962,7 @@ mod tests {
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
         let historic_legacy_started = historic_started
@@ -6019,6 +6022,7 @@ mod tests {
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
         let current_omitted = ItemStartedEvent {
@@ -6040,6 +6044,7 @@ mod tests {
                 agents_states: Default::default(),
                 wake_notifications: None,
                 completion_reason: None,
+                wake_cause: None,
             }),
         };
 
