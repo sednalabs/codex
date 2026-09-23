@@ -798,12 +798,6 @@ fn require_native_image_for_visual_response(
         ),
     );
     response.success = false;
-    response.error = Some(match response.error.take() {
-        Some(existing_error) if !existing_error.trim().is_empty() => {
-            format!("{missing_image_message} Previous provider error: {existing_error}")
-        }
-        _ => missing_image_message.to_string(),
-    });
 }
 
 fn append_text(items: &mut Vec<ComputerUseCallOutputContentItem>, extra: &str) {
@@ -821,11 +815,8 @@ fn append_text(items: &mut Vec<ComputerUseCallOutputContentItem>, extra: &str) {
 
 fn failed_response(error: String) -> ComputerUseCallResponse {
     ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText {
-            text: error.clone(),
-        }],
+        content_items: vec![ComputerUseCallOutputContentItem::InputText { text: error }],
         success: false,
-        error: Some(error),
     }
 }
 
@@ -1146,7 +1137,6 @@ mod tests {
                 },
             ],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1155,7 +1145,6 @@ mod tests {
         );
 
         assert!(response.success);
-        assert_eq!(response.error, None);
     }
 
     #[test]
@@ -1165,7 +1154,6 @@ mod tests {
                 text: "Browser observation\nurl: https://example.test".to_string(),
             }],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1174,15 +1162,12 @@ mod tests {
         );
 
         assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Browser observation missing native image output.")
-        );
         let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text summary");
         };
         assert!(text.contains("url: https://example.test"));
+        assert!(text.contains("Browser observation missing native image output."));
         assert!(text.contains("must return screenshots as native image content items"));
     }
 
@@ -1191,7 +1176,6 @@ mod tests {
         let mut response = ComputerUseCallResponse {
             content_items: vec![],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1200,15 +1184,12 @@ mod tests {
         );
 
         assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Browser observation missing native image output.")
-        );
         assert_eq!(response.content_items.len(), 1);
         let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text diagnostic");
         };
+        assert!(text.contains("Browser observation missing native image output."));
         assert!(text.contains("must return screenshots as native image content items"));
     }
 
