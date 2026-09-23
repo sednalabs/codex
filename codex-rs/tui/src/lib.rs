@@ -112,6 +112,7 @@ mod app_server_connection;
 mod app_server_session;
 mod approval_events;
 mod ascii_animation;
+mod browser_computer_use_provider;
 mod async_question_reply;
 mod backend_banners;
 mod bottom_pane;

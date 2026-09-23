@@ -13,6 +13,8 @@ use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_info::app_info_from_api;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
+use crate::browser_computer_use_provider::BrowserComputerUseOutcome;
+use crate::browser_computer_use_provider::handle_browser_computer_use_for_codex_home;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -27,6 +29,8 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SubAgentSource;
+use std::path::Path;
+use std::path::PathBuf;
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
@@ -452,6 +456,47 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if let ServerRequest::ComputerUseCall { request_id, params } = &request {
+            let request_id = request_id.clone();
+            let browser_codex_home = self.codex_home_for_thread(&params.thread_id).await;
+            let outcome = match browser_codex_home {
+                Some(codex_home) => {
+                    handle_browser_computer_use_for_codex_home(params, codex_home.as_path()).await
+                }
+                None => BrowserComputerUseOutcome::Unavailable,
+            };
+            match outcome {
+                BrowserComputerUseOutcome::Handled(response) => {
+                    let result = match serde_json::to_value(response) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::warn!("failed to serialize computer-use response: {err}");
+                            return;
+                        }
+                    };
+                    if let Err(err) = app_server_client
+                        .resolve_server_request(request_id, result)
+                        .await
+                    {
+                        tracing::warn!("failed to resolve computer-use request: {err}");
+                    }
+                }
+                BrowserComputerUseOutcome::Unavailable => {
+                    let message = format!(
+                        "No TUI browser computer-use provider is available for `{}`/`{}` in thread `{}`.",
+                        params.adapter, params.tool, params.thread_id
+                    );
+                    if let Err(err) = self
+                        .reject_app_server_request(app_server_client, request_id, message)
+                        .await
+                    {
+                        tracing::warn!("{err}");
+                    }
+                }
+            }
+            return;
+        }
+
         if let ServerRequest::DynamicToolCall { request_id, params } = &request {
             if self.dynamic_tool_tasks.contains_key(request_id)
                 || (params.namespace.as_deref() != Some(crate::dynamic_tools::NAMESPACE)
@@ -675,5 +720,80 @@ impl App {
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }
+    }
+
+    /// Resolve the browser provider home from the session owning a server request.
+    /// Child sessions can deliberately use different homes, so never fall back to
+    /// the TUI root when a persisted session path identifies another home.
+    async fn codex_home_for_thread(&self, thread_id: &str) -> Option<PathBuf> {
+        let thread_id = ThreadId::from_string(thread_id).ok()?;
+        let session = if self.primary_thread_id == Some(thread_id) {
+            self.primary_session_configured.as_ref()
+        } else {
+            None
+        };
+        if let Some(session) = session {
+            return session_effective_codex_home(session, &self.config.codex_home);
+        }
+
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let store = channel.store.lock().await;
+        session_effective_codex_home(store.session.as_ref()?, &self.config.codex_home)
+    }
+}
+
+fn session_effective_codex_home(
+    session: &crate::session_state::ThreadSessionState,
+    default_codex_home: &Path,
+) -> Option<PathBuf> {
+    session.rollout_path.as_deref().map_or_else(
+        || Some(default_codex_home.to_path_buf()),
+        |path| rollout_codex_home(Some(path)),
+    )
+}
+
+fn rollout_codex_home(rollout_path: Option<&Path>) -> Option<PathBuf> {
+    let rollout_path = rollout_path?;
+    if !rollout_path.is_absolute() {
+        return None;
+    }
+
+    let mut home = PathBuf::new();
+    let mut session_root_home = None;
+    for component in rollout_path.components() {
+        if matches!(
+            component.as_os_str().to_str(),
+            Some("sessions" | "archived_sessions")
+        ) {
+            session_root_home = (!home.as_os_str().is_empty()).then_some(home.clone());
+        }
+        home.push(component.as_os_str());
+    }
+    session_root_home
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rollout_codex_home;
+    use std::path::Path;
+
+    #[test]
+    fn rollout_codex_home_requires_a_sessions_boundary() {
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/child/sessions/2026/09/rollout.jsonl",
+            ))),
+            Some(Path::new("/tmp/child").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new(
+                "/tmp/archived/archived_sessions/rollout.jsonl",
+            ))),
+            Some(Path::new("/tmp/archived").to_path_buf())
+        );
+        assert_eq!(
+            rollout_codex_home(Some(Path::new("relative/sessions/rollout.jsonl"))),
+            None
+        );
     }
 }

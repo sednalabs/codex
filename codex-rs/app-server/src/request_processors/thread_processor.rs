@@ -1445,7 +1445,27 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd, &config.workspace_roots)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
+        let mut dynamic_tools = dynamic_tools.unwrap_or_default();
+        // Browser tools are advertised only when the configured provider path
+        // exists. Keep caller-provided specs authoritative and avoid duplicate
+        // names when a client already supplied one of the canonical tools.
+        for browser_tool in codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+            config.codex_home.as_path(),
+        ) {
+            let browser_name = match &browser_tool {
+                DynamicToolSpec::Function(tool) => &tool.name,
+                DynamicToolSpec::Namespace(_) => continue,
+            };
+            let already_present = dynamic_tools.iter().any(|tool| match tool {
+                DynamicToolSpec::Function(tool) => &tool.name == browser_name,
+                DynamicToolSpec::Namespace(namespace) => namespace.tools.iter().any(|tool| {
+                    matches!(tool, DynamicToolNamespaceTool::Function(tool) if &tool.name == browser_name)
+                }),
+            });
+            if !already_present {
+                dynamic_tools.push(browser_tool);
+            }
+        }
         if !dynamic_tools.is_empty() {
             validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
         }

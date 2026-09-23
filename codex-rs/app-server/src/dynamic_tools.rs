@@ -1,3 +1,5 @@
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_core::CodexThread;
@@ -53,6 +55,59 @@ pub(crate) async fn on_call_response(
         .await
     {
         error!("failed to submit DynamicToolResponse: {err}");
+    }
+}
+
+/// Resolve a browser dynamic-tool call returned through the typed
+/// computer-use request path.
+pub(crate) async fn on_computer_use_response(
+    call_id: String,
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    conversation: Arc<CodexThread>,
+) {
+    let response = match receiver.await {
+        Ok(Ok(value)) => serde_json::from_value::<ComputerUseCallResponse>(value)
+            .map(|response| DynamicToolCallResponse {
+                content_items: response
+                    .content_items
+                    .into_iter()
+                    .map(|item| match item {
+                        ComputerUseCallOutputContentItem::InputText { text } => {
+                            DynamicToolCallOutputContentItem::InputText { text }
+                        }
+                        ComputerUseCallOutputContentItem::InputImage { image_url, .. } => {
+                            DynamicToolCallOutputContentItem::InputImage { image_url }
+                        }
+                    })
+                    .collect(),
+                success: response.success,
+            })
+            .unwrap_or_else(|_| fallback_response("computer-use response was invalid").0),
+        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
+        Ok(Err(err)) => {
+            error!("computer-use request failed with client error: {err:?}");
+            fallback_response("computer-use request failed").0
+        }
+        Err(err) => {
+            error!("computer-use request failed: {err:?}");
+            fallback_response("computer-use request failed").0
+        }
+    };
+    if let Err(err) = conversation
+        .submit(Op::DynamicToolResponse {
+            id: call_id,
+            response: CoreDynamicToolResponse {
+                content_items: response
+                    .content_items
+                    .into_iter()
+                    .map(CoreDynamicToolCallOutputContentItem::from)
+                    .collect(),
+                success: response.success,
+            },
+        })
+        .await
+    {
+        error!("failed to submit computer-use DynamicToolResponse: {err}");
     }
 }
 

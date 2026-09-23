@@ -45,6 +45,11 @@ const BACKEND_WILDCARD: &str = "*";
 
 const PLAYWRIGHT_BRIDGE_SCRIPT: &str = include_str!("browser_playwright_provider.mjs");
 
+/// Whether a dynamic tool name is one of the canonical browser tools.
+pub fn is_browser_dynamic_tool(tool: &str) -> bool {
+    matches!(tool, TOOL_BROWSER_OBSERVE | TOOL_BROWSER_STEP)
+}
+
 /// Return browser computer-use dynamic tools for the process default Codex home.
 pub fn configured_browser_dynamic_tools() -> Vec<DynamicToolSpec> {
     let Some(codex_home) = default_codex_home() else {

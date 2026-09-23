@@ -49,6 +49,7 @@ impl ChatWidget {
                 self.on_request_user_input(params);
             }
             ServerRequest::DynamicToolCall { .. }
+            | ServerRequest::ComputerUseCall { .. }
             | ServerRequest::AttestationGenerate { .. }
             | ServerRequest::CurrentTimeRead { .. }
             | ServerRequest::ChatgptAuthTokensRefresh { .. }
