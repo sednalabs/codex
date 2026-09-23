@@ -3217,6 +3217,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-arg0",
+ "codex-browser-computer-use",
  "codex-cloud-config",
  "codex-config",
  "codex-core",
