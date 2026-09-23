@@ -1367,7 +1367,6 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
         thread_source: Some(thread_source.clone()),
-        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadStartParams::default()
     }
 }
@@ -1396,18 +1395,8 @@ fn thread_resume_params_from_config(
         permissions,
         config: thread_config_overrides_from_config(config),
         exclude_turns: true,
-        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadResumeParams::default()
     }
-}
-
-fn configured_browser_dynamic_tools(
-    config: &Config,
-) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
-        config.codex_home.as_path(),
-    );
-    (!tools.is_empty()).then_some(tools)
 }
 
 fn thread_config_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
