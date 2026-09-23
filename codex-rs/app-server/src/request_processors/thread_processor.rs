@@ -439,6 +439,12 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+fn contains_top_level_dynamic_tool_named(tools: &[DynamicToolSpec], name: &str) -> bool {
+    tools.iter().any(|tool| {
+        matches!(tool, DynamicToolSpec::Function(tool) if tool.name == name)
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -1456,12 +1462,8 @@ impl ThreadRequestProcessor {
                 DynamicToolSpec::Function(tool) => &tool.name,
                 DynamicToolSpec::Namespace(_) => continue,
             };
-            let already_present = dynamic_tools.iter().any(|tool| match tool {
-                DynamicToolSpec::Function(tool) => &tool.name == browser_name,
-                DynamicToolSpec::Namespace(namespace) => namespace.tools.iter().any(|tool| {
-                    matches!(tool, DynamicToolNamespaceTool::Function(tool) if &tool.name == browser_name)
-                }),
-            });
+            let already_present =
+                contains_top_level_dynamic_tool_named(&dynamic_tools, browser_name);
             if !already_present {
                 dynamic_tools.push(browser_tool);
             }

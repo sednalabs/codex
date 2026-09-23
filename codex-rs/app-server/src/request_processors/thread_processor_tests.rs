@@ -236,6 +236,40 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn browser_advertisement_does_not_treat_namespaced_name_as_top_level_duplicate() {
+        let namespaced = dynamic_tool(
+            Some("codex_app"),
+            "browser_observe",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ true,
+        );
+
+        assert!(!contains_top_level_dynamic_tool_named(
+            &[namespaced],
+            "browser_observe"
+        ));
+
+        let top_level = dynamic_tool(
+            /*namespace*/ None,
+            "browser_observe",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ false,
+        );
+        assert!(contains_top_level_dynamic_tool_named(
+            &[top_level],
+            "browser_observe"
+        ));
+    }
+
+    #[test]
     fn validate_dynamic_tools_accepts_responses_compatible_identifiers() {
         let tools = vec![dynamic_tool(
             Some("Codex-App_2"),

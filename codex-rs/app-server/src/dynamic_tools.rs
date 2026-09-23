@@ -66,23 +66,7 @@ pub(crate) async fn on_computer_use_response(
     conversation: Arc<CodexThread>,
 ) {
     let response = match receiver.await {
-        Ok(Ok(value)) => serde_json::from_value::<ComputerUseCallResponse>(value)
-            .map(|response| DynamicToolCallResponse {
-                content_items: response
-                    .content_items
-                    .into_iter()
-                    .map(|item| match item {
-                        ComputerUseCallOutputContentItem::InputText { text } => {
-                            DynamicToolCallOutputContentItem::InputText { text }
-                        }
-                        ComputerUseCallOutputContentItem::InputImage { image_url, .. } => {
-                            DynamicToolCallOutputContentItem::InputImage { image_url }
-                        }
-                    })
-                    .collect(),
-                success: response.success,
-            })
-            .unwrap_or_else(|_| fallback_response("computer-use response was invalid").0),
+        Ok(Ok(value)) => decode_computer_use_response(value),
         Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return,
         Ok(Err(err)) => {
             error!("computer-use request failed with client error: {err:?}");
@@ -108,6 +92,47 @@ pub(crate) async fn on_computer_use_response(
         .await
     {
         error!("failed to submit computer-use DynamicToolResponse: {err}");
+    }
+}
+
+fn decode_computer_use_response(value: serde_json::Value) -> DynamicToolCallResponse {
+    match serde_json::from_value::<ComputerUseCallResponse>(value) {
+        Ok(response) => {
+            let response = DynamicToolCallResponse {
+                content_items: response
+                    .content_items
+                    .into_iter()
+                    .map(|item| match item {
+                        ComputerUseCallOutputContentItem::InputText { text } => {
+                            DynamicToolCallOutputContentItem::InputText { text }
+                        }
+                        ComputerUseCallOutputContentItem::InputImage { image_url, .. } => {
+                            DynamicToolCallOutputContentItem::InputImage { image_url }
+                        }
+                    })
+                    .collect(),
+                success: response.success,
+            };
+            if response.content_items.iter().any(|item| {
+                matches!(
+                    item,
+                    DynamicToolCallOutputContentItem::InputImage { image_url }
+                        if is_remote_image_url(image_url)
+                )
+            }) {
+                error!(
+                    message = REMOTE_IMAGE_URL_ERROR,
+                    "computer-use response was invalid"
+                );
+                fallback_response(REMOTE_IMAGE_URL_ERROR).0
+            } else {
+                response
+            }
+        }
+        Err(err) => {
+            error!("failed to deserialize ComputerUseCallResponse: {err}");
+            fallback_response("computer-use response was invalid").0
+        }
     }
 }
 
@@ -163,4 +188,44 @@ fn fallback_response(message: &str) -> (DynamicToolCallResponse, Option<String>)
         },
         Some(message.to_string()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn computer_use_response_rejects_remote_image_urls() {
+        let response = decode_computer_use_response(json!({
+            "contentItems": [
+                {"type": "inputImage", "imageUrl": "https://example.com/image.png"}
+            ],
+            "success": true
+        }));
+
+        assert!(!response.success);
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputText { text }]
+                if text == REMOTE_IMAGE_URL_ERROR
+        ));
+    }
+
+    #[test]
+    fn computer_use_response_preserves_inline_image_urls() {
+        let response = decode_computer_use_response(json!({
+            "contentItems": [
+                {"type": "inputImage", "imageUrl": "data:image/png;base64,AAAA"}
+            ],
+            "success": true
+        }));
+
+        assert!(response.success);
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputImage { image_url }]
+                if image_url == "data:image/png;base64,AAAA"
+        ));
+    }
 }
