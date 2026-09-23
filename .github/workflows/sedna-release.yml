@@ -782,7 +782,7 @@ jobs:
         )
       }}
     runs-on: macos-15-intel
-    timeout-minutes: 210
+    timeout-minutes: 360
     concurrency:
       group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}-macos-build
       cancel-in-progress: false
