@@ -281,15 +281,21 @@ jobs:
                 echo "Prior main target ${target_sha} is not an ancestor of ${host_main_sha}." >&2
                 exit 1
               fi
-              while IFS= read -r changed_path; do
-                case "${changed_path}" in
-                  .github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py) ;;
-                  *)
-                    echo "Prior main target path is outside the release allowlist: ${changed_path}." >&2
-                    exit 1
-                    ;;
-                esac
-              done < <(git diff --name-only "${target_sha}" "${host_main_sha}")
+              changed_paths="$(git diff --no-renames --name-only "${target_sha}" "${host_main_sha}")" || {
+                echo "Unable to inspect changed paths between ${target_sha} and ${host_main_sha}." >&2
+                exit 1
+              }
+              if [[ -n "${changed_paths}" ]]; then
+                while IFS= read -r changed_path; do
+                  case "${changed_path}" in
+                    .github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py) ;;
+                    *)
+                      echo "Prior main target path is outside the release allowlist: ${changed_path}." >&2
+                      exit 1
+                      ;;
+                  esac
+                done <<< "${changed_paths}"
+              fi
             fi
             args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
             if [[ -n "${INPUT_RELEASE_TAG}" ]]; then

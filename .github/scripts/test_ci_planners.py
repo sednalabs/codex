@@ -9854,7 +9854,10 @@ fi
         )
         self.assertIn('git merge-base --is-ancestor', resolve_script)
         self.assertIn('.github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py', resolve_script)
-        self.assertIn('git diff --name-only', resolve_script)
+        self.assertIn('git diff --no-renames --name-only', resolve_script)
+        self.assertIn('changed_paths="$(git diff --no-renames --name-only', resolve_script)
+        self.assertIn('changed_paths}" || {', resolve_script)
+        self.assertIn('done <<< "${changed_paths}"', resolve_script)
         self.assertIn('target_sha="$(git rev-parse --verify "${target_sha}^{commit}")"', resolve_script)
         self.assertIn(
             'INPUT_ALLOW_MARKERLESS_PRERELEASE',
