@@ -9856,7 +9856,10 @@ fi
         self.assertIn('.github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py', resolve_script)
         self.assertIn('git diff --no-renames --name-only', resolve_script)
         self.assertIn('changed_paths="$(git diff --no-renames --name-only', resolve_script)
-        self.assertIn('changed_paths}" || {', resolve_script)
+        self.assertIn(
+            'changed_paths="$(git diff --no-renames --name-only "${target_sha}" "${host_main_sha}")" || {',
+            resolve_script,
+        )
         self.assertIn('done <<< "${changed_paths}"', resolve_script)
         self.assertIn('target_sha="$(git rev-parse --verify "${target_sha}^{commit}")"', resolve_script)
         self.assertIn(
