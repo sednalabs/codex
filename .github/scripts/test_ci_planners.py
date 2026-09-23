@@ -9732,6 +9732,14 @@ fi
             },
             {"default": "false", "type": "boolean"},
         )
+        prior_target_input = inputs.get("allow_prior_main_target") or {}
+        self.assertEqual(
+            {
+                "default": prior_target_input.get("default"),
+                "type": prior_target_input.get("type"),
+            },
+            {"default": "false", "type": "boolean"},
+        )
         self.assertEqual(
             {
                 "default": macos_input.get("default"),
@@ -9836,6 +9844,22 @@ fi
             resolve_metadata_step.get("run") or "",
         )
         resolve_script = resolve_named_steps["Resolve release metadata"].get("run") or ""
+        self.assertIn('INPUT_ALLOW_PRIOR_MAIN_TARGET', resolve_metadata_step.get("env") or {})
+        self.assertIn('"${INPUT_ALLOW_PRIOR_MAIN_TARGET}" != "true"', resolve_script)
+        self.assertIn('"${REF_TYPE}" != "branch"', resolve_script)
+        self.assertIn('"${REF_NAME}" != "main"', resolve_script)
+        self.assertIn(
+            'refs/remotes/origin/main^{commit}',
+            resolve_script,
+        )
+        self.assertIn('git merge-base --is-ancestor', resolve_script)
+        self.assertIn('.github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py', resolve_script)
+        self.assertIn(
+            'changed_paths="$(git diff --no-renames --name-only "${target_sha}" "${host_main_sha}")" || {',
+            resolve_script,
+        )
+        self.assertIn('done <<< "${changed_paths}"', resolve_script)
+        self.assertIn('target_sha="$(git rev-parse --verify "${target_sha}^{commit}")"', resolve_script)
         self.assertIn(
             'INPUT_ALLOW_MARKERLESS_PRERELEASE',
             resolve_metadata_step.get("env") or {},
