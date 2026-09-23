@@ -5,7 +5,7 @@ use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::DynamicToolSpec;
-use codex_protocol::dynamic_tools::DynamicToolCapability;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
@@ -64,19 +64,16 @@ pub fn configured_browser_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec
         browser_dynamic_tool(
             TOOL_BROWSER_OBSERVE,
             "Capture the current browser viewport as a model-visible screenshot.",
-            "non_mutating",
         ),
         browser_dynamic_tool(
             TOOL_BROWSER_STEP,
             "Perform bounded browser actions, then return a fresh browser screenshot.",
-            "mutating",
         ),
     ]
 }
 
-fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
-    DynamicToolSpec {
-        namespace: None,
+fn browser_dynamic_tool(name: &str, description: &str) -> DynamicToolSpec {
+    DynamicToolSpec::Function(DynamicToolFunctionSpec {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: json!({
@@ -84,14 +81,7 @@ fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> 
             "additionalProperties": true
         }),
         defer_loading: false,
-        persist_on_resume: false,
-        capability: Some(DynamicToolCapability {
-            family: Some("browser".to_string()),
-            capability_scope: Some("session".to_string()),
-            mutation_class: Some(mutation_class.to_string()),
-            lease_mode: None,
-        }),
-    }
+    })
 }
 
 /// Result of trying to route a browser computer-use request to a configured
@@ -1087,21 +1077,18 @@ mod tests {
     #[test]
     fn configured_browser_tools_are_session_scoped_native_tools() {
         let tools = [
-            browser_dynamic_tool(TOOL_BROWSER_OBSERVE, "observe", "non_mutating"),
-            browser_dynamic_tool(TOOL_BROWSER_STEP, "step", "mutating"),
+            browser_dynamic_tool(TOOL_BROWSER_OBSERVE, "observe"),
+            browser_dynamic_tool(TOOL_BROWSER_STEP, "step"),
         ];
 
-        assert_eq!(tools[0].name, TOOL_BROWSER_OBSERVE);
-        assert_eq!(tools[1].name, TOOL_BROWSER_STEP);
-        assert!(tools.iter().all(|tool| tool.namespace.is_none()));
-        assert!(tools.iter().all(|tool| !tool.defer_loading));
-        assert!(tools.iter().all(|tool| !tool.persist_on_resume));
-        assert!(tools.iter().all(|tool| {
-            tool.capability
-                .as_ref()
-                .and_then(|capability| capability.family.as_deref())
-                == Some("browser")
-        }));
+        assert!(matches!(
+            &tools[0],
+            DynamicToolSpec::Function(spec) if spec.name == TOOL_BROWSER_OBSERVE && !spec.defer_loading
+        ));
+        assert!(matches!(
+            &tools[1],
+            DynamicToolSpec::Function(spec) if spec.name == TOOL_BROWSER_STEP && !spec.defer_loading
+        ));
     }
 
     #[test]
@@ -1118,7 +1105,10 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| match tool {
+                    DynamicToolSpec::Function(spec) => spec.name.as_str(),
+                    DynamicToolSpec::Namespace(_) => panic!("unexpected browser namespace"),
+                })
                 .collect::<Vec<_>>(),
             vec![TOOL_BROWSER_OBSERVE, TOOL_BROWSER_STEP]
         );
