@@ -2538,6 +2538,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-browser-computer-use"
+version = "0.0.0"
+dependencies = [
+ "codex-app-server-protocol",
+ "codex-protocol",
+ "codex-utils-home-dir",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-build-info"
 version = "0.0.0"
 dependencies = [

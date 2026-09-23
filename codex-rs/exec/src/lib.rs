@@ -57,6 +57,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
+use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
@@ -1241,7 +1242,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, *request, &mut error_seen).await;
+                handle_server_request(&client, *request, &config.codex_home, &mut error_seen).await;
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
@@ -1366,6 +1367,7 @@ fn thread_start_params_from_config(
         ephemeral: Some(config.ephemeral),
         history_mode: (!config.ephemeral).then_some(ThreadHistoryMode::Paginated),
         thread_source: Some(thread_source.clone()),
+        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadStartParams::default()
     }
 }
@@ -1394,8 +1396,18 @@ fn thread_resume_params_from_config(
         permissions,
         config: thread_config_overrides_from_config(config),
         exclude_turns: true,
+        dynamic_tools: configured_browser_dynamic_tools(config),
         ..ThreadResumeParams::default()
     }
+}
+
+fn configured_browser_dynamic_tools(
+    config: &Config,
+) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+        config.codex_home.as_path(),
+    );
+    (!tools.is_empty()).then_some(tools)
 }
 
 fn thread_config_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
@@ -1977,6 +1989,7 @@ fn server_request_method_name(request: &ServerRequest) -> String {
 async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
+    codex_home: &Path,
     error_seen: &mut bool,
 ) {
     let method = server_request_method_name(&request);
@@ -2045,6 +2058,31 @@ async fn handle_server_request(
                 ),
             )
             .await
+        }
+        ServerRequest::ComputerUseCall { request_id, params } => {
+            match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
+                &params,
+                codex_home,
+            )
+            .await
+            {
+                BrowserComputerUseOutcome::Handled(response) => {
+                    match serde_json::to_value(response) {
+                        Ok(value) => resolve_server_request(client, request_id, value, &method).await,
+                        Err(err) => Err(format!("failed to serialize computer-use response: {err}")),
+                    }
+                }
+                BrowserComputerUseOutcome::Unavailable => reject_server_request(
+                    client,
+                    request_id,
+                    &method,
+                    format!(
+                        "No exec browser computer-use provider is available for `{}`/`{}` in thread `{}`.",
+                        params.adapter, params.tool, params.thread_id
+                    ),
+                )
+                .await,
+            }
         }
         ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => {
             reject_server_request(
