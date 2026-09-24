@@ -97,6 +97,11 @@ test *args:
 test-github-scripts:
     {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
 
+# Verify the exact-head and hosted-runner validation contract.
+[no-cd]
+check-validation-lanes:
+    {{ python }} -m unittest {{ justfile_directory() }}/test_ci_planners.py
+
 # Run explicit workspace benchmark targets.
 bench *args:
     cargo bench --workspace --bench '*' {args}

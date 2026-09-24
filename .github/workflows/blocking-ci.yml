@@ -6,6 +6,7 @@ on:
   pull_request: {}
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the

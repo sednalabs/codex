@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "status": "current",
+  "authority": "evidence",
+  "maintained_branch": "repair/w14079-p7-composition",
+  "entries": [
+    {
+      "id": "background-terminal-completion-input",
+      "title": "Opt-in background terminal completion input",
+      "status": "accepted-p1-p6",
+      "category": "agent-runtime",
+      "surface": [
+        "unified-exec completion watcher",
+        "session pending-input queue"
+      ],
+      "files": [
+        "codex-rs/core/src/context/terminal_completion_notification.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/unified_exec/async_watcher.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "upstream-pr",
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "retirement_condition": "Upstream owns equivalent opt-in metadata-only completion, identity deduplication, and bounded overflow semantics."
+    },
+    {
+      "id": "realtime-adapter",
+      "title": "Downstream realtime adapter and world-state continuity",
+      "status": "accepted-p1-p6",
+      "category": "realtime",
+      "surface": ["realtime context", "session resume and compaction"],
+      "files": [
+        "codex-rs/core/src/realtime_context.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/tui/src/app_server_events.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "neutral-seam",
+      "guardrail_lane": "codex.realtime-targeted",
+      "retirement_condition": "Upstream provides equivalent V3 seed-history and downstream world-state continuity across resume and compaction."
+    },
+    {
+      "id": "usage-ledger-provenance",
+      "title": "Provider usage provenance and guarded pricing",
+      "status": "accepted-p1-p6",
+      "category": "state",
+      "surface": ["usage migrations", "provider usage persistence", "pricing gate"],
+      "files": [
+        "codex-rs/state/usage_migrations/",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/runtime/"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-adapter",
+      "guardrail_lane": "codex.state-usage-targeted",
+      "retirement_condition": "Upstream persists provider-observed usage with equivalent success gating and migration compatibility."
+    },
+    {
+      "id": "memory-phase2-attestation",
+      "title": "Phase-two memory attestation and recovery state",
+      "status": "accepted-p1-p6",
+      "category": "persistence",
+      "surface": ["memory write", "phase-two attestation", "migration repair"],
+      "files": [
+        "codex-rs/memories/write/",
+        "codex-rs/state/migrations/",
+        "codex-rs/state/src/runtime/phase2_attestation.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-adapter",
+      "guardrail_lane": "codex.memory-phase2-targeted",
+      "retirement_condition": "Upstream provides equivalent attestation storage, recovery, and collision-free migration ownership."
+    },
+    {
+      "id": "configured-identity-provenance",
+      "title": "Configured identity provenance across runtime and history",
+      "status": "accepted-p1-p6",
+      "category": "identity",
+      "surface": ["configured model identity", "rollout provenance", "resume"],
+      "files": [
+        "codex-rs/state/src/runtime/configured_identity_provenance.rs",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/protocol/src/inference_observation.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "neutral-seam",
+      "guardrail_lane": "codex.identity-provenance-targeted",
+      "retirement_condition": "Upstream records requested and effective identity provenance with equivalent historic replay semantics."
+    },
+    {
+      "id": "dynamic-tool-persistence",
+      "title": "Whole-call idempotent dynamic-tool persistence",
+      "status": "accepted-p1-p6",
+      "category": "state",
+      "surface": ["dynamic tool state", "runtime persistence"],
+      "files": [
+        "codex-rs/state/migrations/0058_thread_dynamic_tools_state.sql",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/thread-store/src/live_thread.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "upstream-pr",
+      "guardrail_lane": "codex.dynamic-tool-persistence-targeted",
+      "retirement_condition": "Upstream owns equivalent whole-call idempotency and restart-safe persistence."
+    },
+    {
+      "id": "browser-computer-use",
+      "title": "Configured browser computer-use provider routing",
+      "status": "accepted-p1-p6",
+      "category": "app-server",
+      "surface": ["computer-use protocol", "TUI provider", "browser dependency"],
+      "files": [
+        "codex-rs/app-server-protocol/",
+        "codex-rs/app-server/src/computer_use.rs",
+        "codex-rs/browser-computer-use/",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/Cargo.lock"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-adapter",
+      "guardrail_lane": "codex.browser-computer-use-targeted",
+      "retirement_condition": "Upstream provides equivalent provider routing, failure semantics, and generated protocol fixtures."
+    },
+    {
+      "id": "shared-ci-composition",
+      "title": "Shared CI setup and standard hosted runner composition",
+      "status": "p7-adopted",
+      "category": "workflow-tooling",
+      "surface": [".github/actions/setup-ci", ".github/workflows"],
+      "files": [
+        ".github/actions/setup-ci/action.yml",
+        ".github/workflows/bazel.yml",
+        ".github/workflows/rust-ci.yml",
+        ".github/workflows/sdk.yml"
+      ],
+      "upstream_equivalent": true,
+      "disposition": "adopt",
+      "owner": "p7",
+      "upstreamability_tier": "shared-workflow",
+      "guardrail_lane": "github-hosted-standard-runners",
+      "retirement_condition": "Upstream or a later downstream train supersedes the same retry and runner policy with exact hosted proof."
+    },
+    {
+      "id": "pr854-workflow-diagnostic-reuse",
+      "title": "Workflow failure diagnostic log reuse",
+      "status": "preserved-pending-judgment",
+      "category": "workflow-tooling",
+      "surface": ["PR #854", "workflow watcher diagnostics"],
+      "files": [
+        ".codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py",
+        ".codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "track",
+      "owner": "root",
+      "upstreamability_tier": "downstream-tooling",
+      "retirement_condition": "A current-base successor is separately validated and accepted; the original head remains preserved until then.",
+      "preserved_head": "5babf441c179fa8f4f36ebabc5233d0630ce9658",
+      "pull_request": "https://github.com/sednalabs/codex/pull/854",
+      "scope_note": "Explicitly outside the P7 product write scope; no provisional absorption."
+    },
+    {
+      "id": "ancestry-cutover",
+      "title": "Upstream-rooted protected-main cutover",
+      "status": "p7-root-owned",
+      "category": "governance",
+      "surface": ["origin/main", "protected ref", "rollback archive"],
+      "files": ["docs/upstream-sync/2026-09-20.md"],
+      "upstream_equivalent": false,
+      "disposition": "operator-only",
+      "owner": "root",
+      "upstreamability_tier": "operator-only",
+      "retirement_condition": "Root completes authorized exact-SHA protected cutover and post-cutover ancestry readback.",
+      "prohibition": "Never import unrelated origin/main history as a parent or weaken protection."
+    }
+  ]
+}

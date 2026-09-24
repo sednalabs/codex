@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "repository": "sednalabs/codex",
+  "candidate": {
+    "ref_kind": "exact-branch-head",
+    "sha_required": true,
+    "tree_required": true,
+    "overlay_proof_is_product_proof": false
+  },
+  "runner_policy": {
+    "provider": "github-hosted",
+    "required": true,
+    "allowed_labels": [
+      "ubuntu-latest",
+      "ubuntu-24.04",
+      "macos-15",
+      "windows-latest"
+    ],
+    "forbidden_constructs": [
+      "self-hosted",
+      "runs-on.group",
+      "runs-on.labels",
+      "-runners"
+    ]
+  },
+  "required_lanes": [
+    {
+      "id": "blocking-ci",
+      "workflow": ".github/workflows/blocking-ci.yml",
+      "dispatch": "workflow_dispatch",
+      "hosted_only": true
+    },
+    {
+      "id": "repo-checks",
+      "workflow": ".github/workflows/repo-checks.yml",
+      "hosted_only": true
+    },
+    {
+      "id": "rust-ci",
+      "workflow": ".github/workflows/rust-ci.yml",
+      "hosted_only": true
+    },
+    {
+      "id": "bazel",
+      "workflow": ".github/workflows/bazel.yml",
+      "hosted_only": true
+    },
+    {
+      "id": "sdk",
+      "workflow": ".github/workflows/sdk.yml",
+      "hosted_only": true
+    }
+  ],
+  "optional_lanes": [
+    {
+      "id": "rust-ci-full",
+      "workflow": ".github/workflows/rust-ci-full.yml",
+      "status": "excluded-from-required-cutline",
+      "reason": "Full and release lanes require a separately governed runner and release review; they are not P7 acceptance proof."
+    }
+  ],
+  "windows_acceptance": {
+    "required_hosted": true,
+    "status": "not_yet_observed",
+    "provisional": false
+  }
+}
