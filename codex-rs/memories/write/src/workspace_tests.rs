@@ -141,7 +141,8 @@ async fn ensure_layout_rejects_root_symlink_and_removes_nested_links_before_writ
 #[cfg(windows)]
 #[tokio::test]
 async fn ensure_layout_removes_file_and_directory_symlinks_on_windows() -> anyhow::Result<()> {
-    use std::os::windows::fs::{symlink_dir, symlink_file};
+    use std::os::windows::fs::symlink_dir;
+    use std::os::windows::fs::symlink_file;
 
     let home = TempDir::new()?;
     let real_root = home.path().join("real-memory");
@@ -150,7 +151,10 @@ async fn ensure_layout_removes_file_and_directory_symlinks_on_windows() -> anyho
     fs::create_dir_all(&outside_dir)?;
     fs::write(real_root.join("MEMORY.md"), "memory")?;
     fs::write(outside_dir.join("outside.md"), "outside")?;
-    symlink_file(real_root.join("MEMORY.md"), real_root.join("nested/file-link"))?;
+    symlink_file(
+        real_root.join("MEMORY.md"),
+        real_root.join("nested/file-link"),
+    )?;
     symlink_dir(&outside_dir, real_root.join("nested/directory-link"))?;
 
     crate::ensure_layout(&real_root).await?;

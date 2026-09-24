@@ -26,8 +26,8 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
-use codex_state::Stage1Output;
 use codex_state::MemoryStore;
+use codex_state::Stage1Output;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -69,13 +69,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     // 2. Ensure the memories root has a git baseline repository.
     if let Err(err) = prepare_memory_workspace(&root).await {
         tracing::error!("failed preparing memory workspace: {err}");
-        job::failed(
-            context.as_ref(),
-            &db,
-            &claim,
-            "failed_prepare_workspace",
-        )
-        .await;
+        job::failed(context.as_ref(), &db, &claim, "failed_prepare_workspace").await;
         return;
     }
 
@@ -83,13 +77,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     let Some(agent_config) = agent::get_config(config.as_ref()) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
-        job::failed(
-            context.as_ref(),
-            &db,
-            &claim,
-            "failed_sandbox_policy",
-        )
-        .await;
+        job::failed(context.as_ref(), &db, &claim, "failed_sandbox_policy").await;
         return;
     };
 
@@ -101,13 +89,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         Ok(raw_memories) => raw_memories,
         Err(err) => {
             tracing::error!("failed to list stage1 outputs from global: {err}");
-            job::failed(
-                context.as_ref(),
-                &db,
-                &claim,
-                "failed_load_stage1_outputs",
-            )
-            .await;
+            job::failed(context.as_ref(), &db, &claim, "failed_load_stage1_outputs").await;
             return;
         }
     };
@@ -132,13 +114,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         Ok(diff) => diff,
         Err(err) => {
             tracing::error!("failed checking memory workspace changes: {err}");
-            job::failed(
-                context.as_ref(),
-                &db,
-                &claim,
-                "failed_workspace_status",
-            )
-            .await;
+            job::failed(context.as_ref(), &db, &claim, "failed_workspace_status").await;
             return;
         }
     };
@@ -148,8 +124,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             .is_ok()
     {
         tracing::error!("Phase 2 no changes");
-        let success_status = match no_workspace_change_attestation_status(&db, &root).await
-        {
+        let success_status = match no_workspace_change_attestation_status(&db, &root).await {
             Ok(status) => status,
             Err(err) => {
                 tracing::error!(
@@ -181,13 +156,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     // 7. Persist the diff for the consolidation agent to inspect.
     if let Err(err) = write_workspace_diff(&root, &workspace_diff).await {
         tracing::error!("failed writing memory workspace diff file: {err}");
-        job::failed(
-            context.as_ref(),
-            &db,
-            &claim,
-            "failed_workspace_diff_file",
-        )
-        .await;
+        job::failed(context.as_ref(), &db, &claim, "failed_workspace_diff_file").await;
         return;
     }
 
@@ -205,13 +174,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         Ok(attestation_context) => attestation_context,
         Err(err) => {
             tracing::error!("failed capturing phase-2 attestation context: {err}");
-            job::failed(
-                context.as_ref(),
-                &db,
-                &claim,
-                "failed_attestation_capture",
-            )
-            .await;
+            job::failed(context.as_ref(), &db, &claim, "failed_attestation_capture").await;
             return;
         }
     };

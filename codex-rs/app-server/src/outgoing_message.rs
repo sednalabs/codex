@@ -32,8 +32,8 @@ use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
 
-use crate::error_code::internal_error;
 use crate::computer_use::ComputerUseRouter;
+use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;

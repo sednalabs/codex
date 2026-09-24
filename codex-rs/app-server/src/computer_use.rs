@@ -34,7 +34,10 @@ impl ComputerUseRouter {
 }
 
 /// Route one typed app-server request to the provider and return its typed response.
-pub(crate) async fn route_call<P>(provider: &P, request: ComputerUseCallParams) -> ComputerUseCallResponse
+pub(crate) async fn route_call<P>(
+    provider: &P,
+    request: ComputerUseCallParams,
+) -> ComputerUseCallResponse
 where
     P: ComputerUseProvider + ?Sized,
 {

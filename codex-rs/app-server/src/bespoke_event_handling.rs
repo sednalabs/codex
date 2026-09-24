@@ -19,8 +19,8 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
-use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::ComputerUseCallParams;
+use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::EnvironmentConnectionNotification;
 use codex_app_server_protocol::ErrorNotification;
@@ -1123,7 +1123,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                         .send_request(ServerRequestPayload::ComputerUseCall(computer_use_params))
                         .await;
                     tokio::spawn(async move {
-                        crate::dynamic_tools::on_computer_use_response(call_id, rx, conversation).await;
+                        crate::dynamic_tools::on_computer_use_response(call_id, rx, conversation)
+                            .await;
                     });
                 } else {
                     let (_pending_request_id, rx) = outgoing

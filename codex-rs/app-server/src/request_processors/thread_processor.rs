@@ -440,9 +440,9 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 }
 
 fn contains_top_level_dynamic_tool_named(tools: &[DynamicToolSpec], name: &str) -> bool {
-    tools.iter().any(|tool| {
-        matches!(tool, DynamicToolSpec::Function(tool) if tool.name == name)
-    })
+    tools
+        .iter()
+        .any(|tool| matches!(tool, DynamicToolSpec::Function(tool) if tool.name == name))
 }
 
 #[derive(Clone)]
@@ -1455,9 +1455,11 @@ impl ThreadRequestProcessor {
         // Browser tools are advertised only when the configured provider path
         // exists. Keep caller-provided specs authoritative and avoid duplicate
         // names when a client already supplied one of the canonical tools.
-        for browser_tool in codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
-            config.codex_home.as_path(),
-        ) {
+        for browser_tool in
+            codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+                config.codex_home.as_path(),
+            )
+        {
             let browser_name = match &browser_tool {
                 DynamicToolSpec::Function(tool) => &tool.name,
                 DynamicToolSpec::Namespace(_) => continue,
