@@ -3149,7 +3149,7 @@ def _unassigned_jobs(run_view, *, timeout_seconds, required_names=None, now=None
         if required_names and name not in required_names:
             continue
         # Missing runner fields are provider-unknown, not proof of unassignment.
-        if "runnerName" not in job and "runnerId" not in job:
+        if "runnerName" not in job or "runnerId" not in job:
             continue
         if job.get("runnerName") or job.get("runnerId"):
             continue
@@ -3775,7 +3775,7 @@ def _record_unassigned_observation(run_view, state):
             continue
         identity = f"{run_key}:job:{job_id}"
         queued = str(job.get("status") or "").lower() == "queued"
-        provider_assignment_known = "runnerName" in job or "runnerId" in job
+        provider_assignment_known = "runnerName" in job and "runnerId" in job
         assigned = bool(job.get("runnerName") or job.get("runnerId"))
         if queued and provider_assignment_known and not assigned:
             first_seen = observations.setdefault(identity, time.time())

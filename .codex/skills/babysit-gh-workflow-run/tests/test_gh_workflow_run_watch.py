@@ -540,6 +540,46 @@ class ProofIdentityTests(unittest.TestCase):
         self.assertNotIn("runnerName", normalized)
         self.assertNotIn("runnerId", normalized)
 
+    def test_rest_job_partial_runner_fields_reset_assignment_timer(self):
+        base = {
+            "id": 501,
+            "run_id": 42,
+            "name": "required",
+            "status": "queued",
+            "conclusion": None,
+            "html_url": "https://example.invalid/jobs/501",
+            "started_at": None,
+            "completed_at": None,
+            "steps": [],
+        }
+        run = {"databaseId": 42, "attempt": 1, "headSha": "a" * 40, "jobs": [{"databaseId": 501, "status": "queued"}]}
+        for field in ("runner_name", "runner_id"):
+            state = {}
+            complete = {**base, "runner_name": None, "runner_id": None}
+            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[MODULE._normalize_rest_job(complete, run_id=42, job_index=0)]):
+                enriched = MODULE._enrich_job_assignment_fields("owner/repo", run)
+            with patch.object(MODULE.time, "time", return_value=0):
+                MODULE._record_unassigned_observation(enriched, state)
+            self.assertTrue(state["unassigned_observations"])
+            partial = {**base, field: None}
+            partial_job = MODULE._normalize_rest_job(partial, run_id=42, job_index=0)
+            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[partial_job]):
+                interrupted = MODULE._enrich_job_assignment_fields("owner/repo", {**run, "jobs": [{"databaseId": 501, "status": "queued"}]})
+            with patch.object(MODULE.time, "time", return_value=10):
+                MODULE._record_unassigned_observation(interrupted, state)
+            self.assertEqual(state["unassigned_observations"], {})
+            interrupted["jobs"][0]["unassignedSince"] = 0
+            snapshot = MODULE.normalize_snapshot(
+                {**interrupted, "status": "in_progress"},
+                target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="main",
+                unassigned_timeout_seconds=1,
+                unassigned_now=10,
+            )
+            self.assertEqual(snapshot["actions"], ["idle"])
+
     def test_unassigned_action_reaches_payload_terminal_mode_gate(self):
         payload = {
             "actions": ["stop_run_unassigned_job"],
