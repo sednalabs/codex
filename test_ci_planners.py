@@ -75,7 +75,9 @@ class ValidationLaneContractTest(unittest.TestCase):
                 dispatch = re.search(r"(?ms)^\s*workflow_dispatch:\s*\n(.*?)(?=^\S|\Z)", text)
                 self.assertIsNotNone(dispatch, lane["workflow"])
                 for input_name in dispatch_inputs:
-                    self.assertRegex(dispatch.group(1), rf"^\s+{input_name}:\s*$", input_name)
+                    self.assertRegex(
+                        dispatch.group(1), rf"(?m)^\s+{input_name}:\s*$", input_name
+                    )
 
     def test_windows_is_not_provisionally_accepted(self):
         windows = self.config["windows_acceptance"]
