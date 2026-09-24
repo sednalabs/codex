@@ -206,16 +206,18 @@ impl Handler {
                 ));
             }
         }
-        for receiver_thread_id in &receiver_thread_ids {
-            let target_agent_path = session
-                .services
-                .agent_control
-                .get_agent_metadata(*receiver_thread_id)
-                .and_then(|metadata| metadata.agent_path);
-            if let Some(message) =
-                reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
-            {
-                return Err(FunctionCallError::RespondToModel(message));
+        if args.native_event_wait {
+            for receiver_thread_id in &receiver_thread_ids {
+                let target_agent_path = session
+                    .services
+                    .agent_control
+                    .get_agent_metadata(*receiver_thread_id)
+                    .and_then(|metadata| metadata.agent_path);
+                if let Some(message) =
+                    reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
+                {
+                    return Err(FunctionCallError::RespondToModel(message));
+                }
             }
         }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
@@ -428,10 +430,11 @@ fn targetless_native_wait_allowed(session_source: &SessionSource) -> bool {
             .is_some_and(|role| role.eq_ignore_ascii_case("orchestrator"))
 }
 
-/// Waiting on the current agent or one of its ancestors creates a reverse
+/// A native wait on the current agent or one of its ancestors creates a reverse
 /// dependency: the ancestor normally waits for this child to return, so both
-/// sides can remain in native waits forever. Descendants and unrelated peers
-/// remain valid wait targets.
+/// sides can remain in native waits forever. Bounded non-native status waits
+/// retain their existing compatibility, while descendants and unrelated peers
+/// remain valid native wait targets.
 fn reverse_wait_error(
     current_agent_path: Option<&AgentPath>,
     target_agent_path: Option<&AgentPath>,

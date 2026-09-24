@@ -4823,6 +4823,27 @@ async fn multi_agent_v2_wait_agent_rejects_reverse_ancestor_target_but_allows_de
     assert!(message.contains("current agent or an ancestor"));
     assert!(message.contains("decision-complete result"));
 
+    let output = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "wait_agent",
+            function_payload(json!({
+                "targets": ["/root"],
+                "timeout_ms": 1
+            })),
+        ))
+        .await
+        .expect("a finite parent status wait should remain valid");
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait result should be json");
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
+    );
+    assert!(result.timed_out);
+
     let worker_path = AgentPath::try_from("/root/reviewer/worker").expect("worker path");
     session
         .services
