@@ -1420,7 +1420,7 @@
         ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py",
         ".codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py"
       ],
-      "behavior": "Downstream publishes bounded babysitter helpers and the runtime-coupled subagent session-tail inspector. The PR watcher records compact decisions and scheduled wakes against the exact observed head; an unexplained GitHub BLOCKED merge state is action-required and does not enter green-state backoff. Active QUEUED or AWAITING_CHECKS merge-queue entries keep the base cadence even with green checks, including unreadable pending-head evidence, and queue-entry identity changes reset cadence; ordinary green PRs without an active queue entry retain bounded backoff. Semantic orchestration and review policy are intentionally external user-policy concerns, not public fork carry.",
+      "behavior": "Downstream publishes bounded babysitter helpers and the runtime-coupled subagent session-tail inspector. The PR watcher records compact decisions and scheduled wakes against the exact observed head; an unexplained GitHub BLOCKED merge state is action-required and does not enter green-state backoff. The workflow watcher also offers an opt-in, provider-confirmed timeout for queued jobs that remain unassigned, scoped to exact required job names when requested, without inferring a queue root cause. Active QUEUED or AWAITING_CHECKS merge-queue entries keep the base cadence even with green checks, including unreadable pending-head evidence, and queue-entry identity changes reset cadence; ordinary green PRs without an active queue entry retain bounded backoff. Semantic orchestration and review policy are intentionally external user-policy concerns, not public fork carry.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1431,7 +1431,7 @@
         "py_compile of gh_pr_watch.py, gh_workflow_run_watch.py, gh_dispatch_and_watch.py, and inspect_subagent_tail.py",
         "test_gh_merge_queue_shepherd.py",
         "test_gh_pr_watch.py (exact-head decisions, queue cadence for QUEUED/AWAITING_CHECKS and unreadable heads, queue identity changes, and ordinary green backoff)",
-        "test_gh_workflow_run_watch.py",
+        "test_gh_workflow_run_watch.py (unassigned queued-job assignment evidence, timeout, and identity-bound acknowledgement)",
         "test_gh_dispatch_and_watch.py",
         "test_inspect_subagent_tail.py",
         "inspect_subagent_tail.py --help"

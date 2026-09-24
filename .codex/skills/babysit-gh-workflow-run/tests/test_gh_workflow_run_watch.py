@@ -493,6 +493,100 @@ class ProofIdentityTests(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["steps"][0]["name"], "Run")
         self.assertEqual(result["retrievedVia"], "actions_api_fallback")
 
+    def test_assignment_enrichment_joins_authoritative_rest_job_fields(self):
+        run_view = {
+            "databaseId": 42,
+            "jobs": [{"databaseId": 501, "name": "required", "status": "queued"}],
+        }
+        rest_job = {
+            "databaseId": 501,
+            "runnerName": None,
+            "runnerId": None,
+            "createdAt": None,
+            "startedAt": None,
+            "completedAt": None,
+        }
+        with patch.object(MODULE, "_list_run_jobs_rest", return_value=[rest_job]):
+            enriched = MODULE._enrich_job_assignment_fields("owner/repo", run_view)
+        self.assertIn("runnerName", enriched["jobs"][0])
+        self.assertIsNone(enriched["jobs"][0]["runnerName"])
+        self.assertIsNone(enriched["jobs"][0]["runnerId"])
+        enriched["status"] = "in_progress"
+        enriched["jobs"][0]["unassignedSince"] = 0
+        snapshot = MODULE.normalize_snapshot(
+            enriched,
+            target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+            repo="owner/repo",
+            followed_newer_run=False,
+            resolved_ref="main",
+            unassigned_timeout_seconds=1,
+            unassigned_now=10,
+        )
+        self.assertEqual(snapshot["actions"], ["stop_run_unassigned_job"])
+
+    def test_rest_job_missing_runner_fields_remains_assignment_unknown(self):
+        raw = {
+            "id": 501,
+            "run_id": 42,
+            "name": "required",
+            "status": "queued",
+            "conclusion": None,
+            "html_url": "https://example.invalid/jobs/501",
+            "started_at": None,
+            "completed_at": None,
+            "steps": [],
+        }
+        normalized = MODULE._normalize_rest_job(raw, run_id=42, job_index=0)
+        self.assertNotIn("runnerName", normalized)
+        self.assertNotIn("runnerId", normalized)
+
+    def test_rest_job_partial_runner_fields_reset_assignment_timer(self):
+        base = {
+            "id": 501,
+            "run_id": 42,
+            "name": "required",
+            "status": "queued",
+            "conclusion": None,
+            "html_url": "https://example.invalid/jobs/501",
+            "started_at": None,
+            "completed_at": None,
+            "steps": [],
+        }
+        run = {"databaseId": 42, "attempt": 1, "headSha": "a" * 40, "jobs": [{"databaseId": 501, "status": "queued"}]}
+        for field in ("runner_name", "runner_id"):
+            state = {}
+            complete = {**base, "runner_name": None, "runner_id": None}
+            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[MODULE._normalize_rest_job(complete, run_id=42, job_index=0)]):
+                enriched = MODULE._enrich_job_assignment_fields("owner/repo", run)
+            with patch.object(MODULE.time, "time", return_value=0):
+                MODULE._record_unassigned_observation(enriched, state)
+            self.assertTrue(state["unassigned_observations"])
+            partial = {**base, field: None}
+            partial_job = MODULE._normalize_rest_job(partial, run_id=42, job_index=0)
+            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[partial_job]):
+                interrupted = MODULE._enrich_job_assignment_fields("owner/repo", {**run, "jobs": [{"databaseId": 501, "status": "queued"}]})
+            with patch.object(MODULE.time, "time", return_value=10):
+                MODULE._record_unassigned_observation(interrupted, state)
+            self.assertEqual(state["unassigned_observations"], {})
+            interrupted["jobs"][0]["unassignedSince"] = 0
+            snapshot = MODULE.normalize_snapshot(
+                {**interrupted, "status": "in_progress"},
+                target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="main",
+                unassigned_timeout_seconds=1,
+                unassigned_now=10,
+            )
+            self.assertEqual(snapshot["actions"], ["idle"])
+
+    def test_unassigned_action_reaches_payload_terminal_mode_gate(self):
+        payload = {
+            "actions": ["stop_run_unassigned_job"],
+            "targets": [{"actions": ["stop_run_unassigned_job"]}],
+        }
+        self.assertTrue(MODULE._payload_has_unassigned_job(payload))
+
     def test_cross_ref_target_is_unknown_when_summary_has_no_identity_evidence(self):
         with patch.object(MODULE, "load_validation_summary", return_value={"summary": {}}):
             snapshot = MODULE.normalize_snapshot(
@@ -1453,6 +1547,101 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(snapshot["action_triggers"][0]["failure_phase"], "in_progress_failed_job")
         self.assertEqual(snapshot["action_triggers"][0]["job_id"], 501)
         self.assertTrue(snapshot["action_triggers"][0]["logs_available"])
+
+    def test_unassigned_timeout_surfaces_outer_job_after_nested_success(self):
+        now = 1_000.0
+        run_view = {
+            "databaseId": 42,
+            "attempt": 3,
+            "headSha": "a" * 40,
+            "status": "in_progress",
+            "jobs": [
+                {"databaseId": 501, "name": "nested", "status": "completed", "conclusion": "success"},
+                {
+                    "databaseId": 502,
+                    "name": "required",
+                    "status": "queued",
+                    "conclusion": None,
+                    "runnerName": None,
+                    "runnerId": None,
+                    "unassignedSince": now - 10,
+                },
+            ],
+        }
+        snapshot = MODULE.normalize_snapshot(
+            run_view,
+            target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+            repo="owner/repo",
+            followed_newer_run=False,
+            resolved_ref="main",
+            unassigned_timeout_seconds=5,
+            unassigned_job_names=["required"],
+            unassigned_now=now,
+        )
+        snapshot = MODULE._apply_acknowledged_actions(snapshot, [])
+        self.assertEqual(snapshot["actions"], ["stop_run_unassigned_job"])
+        trigger = snapshot["action_triggers"][0]
+        self.assertIn(":attempt:3:head:" + "a" * 40 + ":job:502", trigger["fingerprint"])
+        self.assertEqual(trigger["assignment"]["runner_name"], None)
+
+    def test_unassigned_unknown_or_assigned_jobs_stay_idle(self):
+        base = {"databaseId": 42, "status": "in_progress", "jobs": []}
+        for job in (
+            {"databaseId": 1, "name": "required", "status": "queued"},
+            {"databaseId": 2, "name": "required", "status": "queued", "runnerName": "host-1", "runnerId": 7},
+        ):
+            snapshot = MODULE.normalize_snapshot(
+                {**base, "jobs": [{**job, "unassignedSince": 0}]},
+                target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+                repo="owner/repo",
+                followed_newer_run=False,
+                resolved_ref="main",
+                unassigned_timeout_seconds=1,
+                unassigned_now=10,
+            )
+            self.assertEqual(snapshot["actions"], ["idle"])
+
+    def test_failed_and_unassigned_jobs_emit_both_actions(self):
+        now = 1_000.0
+        snapshot = MODULE.normalize_snapshot(
+            {
+                "databaseId": 42,
+                "attempt": 2,
+                "headSha": "a" * 40,
+                "status": "in_progress",
+                "jobs": [
+                    {"databaseId": 501, "name": "failed", "status": "completed", "conclusion": "failure"},
+                    {"databaseId": 502, "name": "required", "status": "queued", "runnerName": None, "runnerId": None, "unassignedSince": now - 10},
+                ],
+            },
+            target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+            repo="owner/repo",
+            followed_newer_run=False,
+            resolved_ref="main",
+            unassigned_timeout_seconds=1,
+            unassigned_now=now,
+        )
+        self.assertEqual(snapshot["actions"], ["diagnose_run_failure", "stop_run_unassigned_job"])
+
+    def test_unassigned_ack_is_bound_to_attempt_head_and_job(self):
+        base = {
+            "actions": ["stop_run_unassigned_job"],
+            "run": {"id": 42, "attempt": 3, "head_sha": "a" * 40},
+            "unassigned_jobs": [{"id": 502, "name": "required", "status": "queued"}],
+            "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
+        }
+        snapshot = dict(base)
+        fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0]["fingerprint"]
+        acknowledged = MODULE._apply_acknowledged_actions(snapshot, [fingerprint])
+        self.assertEqual(acknowledged["actions"], ["idle"])
+        for changed_run, changed_job in (
+            ({**base["run"], "attempt": 4}, 502),
+            ({**base["run"], "head_sha": "b" * 40}, 502),
+            ({**base["run"]}, 503),
+        ):
+            changed = {**base, "run": changed_run, "unassigned_jobs": [{"id": changed_job, "name": "required", "status": "queued"}]}
+            changed = MODULE._apply_acknowledged_actions(changed, [fingerprint])
+            self.assertEqual(changed["actions"], ["stop_run_unassigned_job"])
 
     def test_ack_action_suppresses_repeat_failure(self):
         snapshot = {

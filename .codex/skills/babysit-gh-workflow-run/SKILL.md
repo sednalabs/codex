@@ -88,6 +88,7 @@ Optional:
 - repo override
 - explicit poll interval
 - appearance timeout override with `--appearance-timeout-seconds`
+- provider-assignment timeout with `--unassigned-timeout-seconds` (off by default), optionally limited to exact required job names with repeated `--unassigned-job-name`
 - completion behavior with `--wait-for` when used with `--watch-until-action`
 - hold until a failure target's run reaches status completed by adding `--require-terminal-run` with `--watch-until-action`
 - terminal-wait semantics in one flag: `--watch-until-terminal` (alias `--wait-until-terminal`) implies both `--watch-until-action` and `--require-terminal-run`
@@ -301,6 +302,7 @@ The normal watcher path makes no Gemini or other model-provider call. If and onl
 - Host-branch mismatch probing is throttled after the first no-match check, so repeated empty polls do not keep re-running the fallback discovery path on every cycle.
 - When dispatching `validation-lab`, leave `--supersession-mode auto` unless the run is an intentional comparison or checkpoint. Retained evidence runs must opt out explicitly with `compare`, `milestone`, or `retain`.
 - For `--watch-until-action`, the default appearance timeout is intentionally non-zero so GitHub dispatch lag does not cause an immediate false blocker; override it only when the seam really needs a shorter or longer grace window.
+- `--unassigned-timeout-seconds` is an opt-in assignment observation. It reports only queued jobs whose provider explicitly returns no runner; unknown fields remain idle and queue state does not identify capacity, labels, authentication, or another root cause. Its acknowledgement fingerprint binds the run attempt, head SHA, and job id.
 
 ## Stop Conditions
 

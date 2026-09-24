@@ -3658,6 +3658,13 @@ remain operator errors. The PR watcher also retains its current merge-queue
 and broker boundaries while falling back to `statusCheckRollup` when an older
 GitHub CLI cannot emit `gh pr checks --json`.
 
+The workflow watcher additionally exposes an opt-in assignment timeout for
+queued jobs. It surfaces only provider-confirmed missing runner assignment,
+optionally scoped to exact required job names, and binds acknowledgement to
+the run attempt, head SHA, and job identity. Missing assignment fields remain
+unknown; queue state is not treated as evidence of capacity, labels, or auth
+failure, and terminal wait semantics remain unchanged.
+
 Focused regressions cover wrong run/job identity, incomplete pagination, and
 the compatibility check-rollup path. The carry must not import ambient Gemini
 diagnosis, overloaded target SHA semantics, credentials, or a second watcher
