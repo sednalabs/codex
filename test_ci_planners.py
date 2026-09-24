@@ -52,7 +52,9 @@ class ValidationLaneContractTest(unittest.TestCase):
             self.assertNotIn("self-hosted", text, lane["workflow"])
             self.assertNotIn("-runners", text, lane["workflow"])
             for line in text.splitlines():
-                match = re.match(r"\s*(?:runs-on|runner|os):\s*([A-Za-z0-9_.-]+)\s*$", line)
+                match = re.match(
+                    r"\s*(?:runs-on|runner|os):\s*([A-Za-z0-9_.-]+)\s*$", line
+                )
                 if match:
                     self.assertIn(match.group(1), policy["allowed_labels"], line)
 
@@ -66,13 +68,17 @@ class ValidationLaneContractTest(unittest.TestCase):
                     if nested.strip() and len(nested) - len(nested.lstrip()) <= indent:
                         break
                     self.assertIsNone(
-                        re.match(r"\s*(?:group|labels|runner_group|runner_labels):", nested),
+                        re.match(
+                            r"\s*(?:group|labels|runner_group|runner_labels):", nested
+                        ),
                         f"nested runner group/label: {lane['workflow']}",
                     )
 
             dispatch_inputs = lane.get("dispatch_inputs", [])
             if dispatch_inputs:
-                dispatch = re.search(r"(?ms)^\s*workflow_dispatch:\s*\n(.*?)(?=^\S|\Z)", text)
+                dispatch = re.search(
+                    r"(?ms)^\s*workflow_dispatch:\s*\n(.*?)(?=^\S|\Z)", text
+                )
                 self.assertIsNotNone(dispatch, lane["workflow"])
                 for input_name in dispatch_inputs:
                     self.assertRegex(
