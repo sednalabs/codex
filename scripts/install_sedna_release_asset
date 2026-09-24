@@ -704,7 +704,7 @@ if require_linux_provenance == "true":
         raise SystemExit(f"error: {sbom_name} is not an SPDX 2.3 document")
 PY
 
-expected_source_commit="$(python3 - "$work_dir/$metadata_name" "$release_json" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
+expected_provenance_commits="$(python3 - "$work_dir/$metadata_name" "$release_json" "$require_linux_signatures" "$require_linux_provenance" <<'PY'
 import json
 import re
 import sys
@@ -717,14 +717,19 @@ release = json.loads(open(release_path, encoding="utf-8").read())
 target_commit = metadata.get("target_commit")
 if not isinstance(target_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", target_commit):
     raise SystemExit("error: release metadata target_commit must be a full lowercase Git SHA")
+workflow_sha = metadata.get("workflow_sha")
+if not isinstance(workflow_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", workflow_sha):
+    raise SystemExit("error: release metadata workflow_sha must be a full lowercase Git SHA")
 release_target = release.get("target_commitish")
 if release_target != target_commit:
     raise SystemExit(
         f"error: release target_commitish={release_target!r} does not match metadata target_commit={target_commit!r}"
     )
-print(target_commit)
+print(f"{target_commit}\t{workflow_sha}")
 PY
 )"
+expected_source_commit="${expected_provenance_commits%%$'\t'*}"
+expected_workflow_sha="${expected_provenance_commits#*$'\t'}"
 
 staged="${work_dir}/stage"
 mkdir "$staged"
@@ -850,13 +855,13 @@ if [[ "$verify_signatures" == "true" ]]; then
   cosign verify-blob \
     --bundle "$work_dir/$codex_sigstore_name" \
     --certificate-identity-regexp "$certificate_identity_regexp" \
-    --certificate-github-workflow-sha "$expected_source_commit" \
+    --certificate-github-workflow-sha "$expected_workflow_sha" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$staged/codex"
   cosign verify-blob \
     --bundle "$work_dir/$proxy_sigstore_name" \
     --certificate-identity-regexp "$certificate_identity_regexp" \
-    --certificate-github-workflow-sha "$expected_source_commit" \
+    --certificate-github-workflow-sha "$expected_workflow_sha" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$staged/codex-responses-api-proxy"
 
@@ -877,21 +882,21 @@ if [[ "$verify_attestation" == "true" ]]; then
     --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
-    --signer-digest "$expected_source_commit" \
+    --signer-digest "$expected_workflow_sha" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$sbom_name" \
     --repo sednalabs/codex \
     --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
-    --signer-digest "$expected_source_commit" \
+    --signer-digest "$expected_workflow_sha" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
   gh attestation verify "$work_dir/$metadata_name" \
     --repo sednalabs/codex \
     --bundle "$work_dir/$attestation_bundle_name" \
     --deny-self-hosted-runners \
     --source-digest "$expected_source_commit" \
-    --signer-digest "$expected_source_commit" \
+    --signer-digest "$expected_workflow_sha" \
     --signer-workflow sednalabs/codex/.github/workflows/sedna-release.yml
 fi
 

@@ -29,11 +29,6 @@ on:
         required: false
         default: false
         type: boolean
-      allow_prior_main_target:
-        description: Explicitly allow a prior protected-main commit when only release workflow/planner paths changed.
-        required: false
-        default: false
-        type: boolean
       release_tag:
         description: Optional expected Sedna release tag. The resolver must compute the same tag.
         required: false
@@ -243,11 +238,11 @@ jobs:
           INPUT_TARGET_SHA: ${{ inputs.target_sha }}
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_ALLOW_MARKERLESS_PRERELEASE: ${{ inputs.allow_markerless_prerelease }}
-          INPUT_ALLOW_PRIOR_MAIN_TARGET: ${{ inputs.allow_prior_main_target }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRAFT: ${{ inputs.draft }}
           INPUT_MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
           HOST_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha || github.sha }}
         run: |
           set -euo pipefail
 
@@ -263,39 +258,9 @@ jobs:
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             target_sha="${INPUT_TARGET_SHA:-${HOST_SHA}}"
             if [[ "${target_sha}" != "${HOST_SHA}" ]]; then
-              if [[ "${INPUT_CHANNEL}" != "prerelease" \
-                || "${INPUT_ALLOW_MARKERLESS_PRERELEASE}" != "true" \
-                || "${INPUT_ALLOW_PRIOR_MAIN_TARGET}" != "true" \
-                || "${REF_TYPE}" != "branch" \
-                || "${REF_NAME}" != "main" ]]; then
-                echo "Manual release target_sha must equal the exact workflow host SHA ${HOST_SHA}; got ${target_sha}." >&2
-                exit 1
-              fi
-              host_main_sha="$(git rev-parse --verify refs/remotes/origin/main^{commit})"
-              if [[ "${HOST_SHA}" != "${host_main_sha}" ]]; then
-                echo "Workflow host SHA ${HOST_SHA} does not resolve to refs/remotes/origin/main ${host_main_sha}." >&2
-                exit 1
-              fi
-              target_sha="$(git rev-parse --verify "${target_sha}^{commit}")"
-              if ! git merge-base --is-ancestor "${target_sha}" "${host_main_sha}"; then
-                echo "Prior main target ${target_sha} is not an ancestor of ${host_main_sha}." >&2
-                exit 1
-              fi
-              changed_paths="$(git diff --no-renames --name-only "${target_sha}" "${host_main_sha}")" || {
-                echo "Unable to inspect changed paths between ${target_sha} and ${host_main_sha}." >&2
-                exit 1
-              }
-              if [[ -n "${changed_paths}" ]]; then
-                while IFS= read -r changed_path; do
-                  case "${changed_path}" in
-                    .github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py) ;;
-                    *)
-                      echo "Prior main target path is outside the release allowlist: ${changed_path}." >&2
-                      exit 1
-                      ;;
-                  esac
-                done <<< "${changed_paths}"
-              fi
+              echo "Manual release target_sha must equal the exact workflow host SHA ${HOST_SHA}; got ${target_sha}." >&2
+              echo "Release attestations bind SourceRepositoryDigest to the workflow host commit; differing targets are unsupported." >&2
+              exit 1
             fi
             args+=(--target-sha "${target_sha}" --channel "${INPUT_CHANNEL}")
             if [[ -n "${INPUT_RELEASE_TAG}" ]]; then
@@ -352,6 +317,10 @@ jobs:
           release_work_skip_reason=""
           release_tag="$(jq -r '.release_tag // empty' "${meta_json}")"
           target_commit="$(jq -r '.target_commit // empty' "${meta_json}")"
+          if [[ "${target_commit}" != "${HOST_SHA}" || "${target_commit}" != "${WORKFLOW_SHA}" ]]; then
+            echo "Release target ${target_commit} does not equal workflow source ${HOST_SHA} and workflow ${WORKFLOW_SHA}; refusing an unattestable differing-source release." >&2
+            exit 1
+          fi
 
           normalize_commit() {
             git rev-parse --verify "$1^{commit}" 2>/dev/null || printf '%s\n' "$1"
@@ -617,6 +586,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
           REPOSITORY: ${{ github.repository }}
           TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha || github.sha }}
           UPSTREAM_BASE_COMMIT_FULL: ${{ needs.resolve.outputs.upstream_base_commit }}
           UPSTREAM_BASE_TAG: ${{ needs.resolve.outputs.upstream_base_tag }}
           UPSTREAM_BASE_TAG_EXACT: ${{ needs.resolve.outputs.upstream_base_tag_exact }}
@@ -663,6 +633,7 @@ jobs:
           upstream_position=${UPSTREAM_POSITION}
           downstream_commit=${DOWNSTREAM_COMMIT_FULL}
           target_commit=${TARGET_COMMIT}
+          workflow_sha=${WORKFLOW_SHA}
           repository=${REPOSITORY}
           target=${TARGET}
           git_describe=$(git describe --tags --always)
@@ -689,6 +660,7 @@ jobs:
                   "upstream_position": os.environ["UPSTREAM_POSITION"],
                   "downstream_commit": os.environ["DOWNSTREAM_COMMIT_FULL"],
                   "target_commit": os.environ["TARGET_COMMIT"],
+                  "workflow_sha": os.environ["WORKFLOW_SHA"],
                   "repository": os.environ["REPOSITORY"],
                   "target": os.environ["TARGET"],
               },
@@ -1019,6 +991,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
           REPOSITORY: ${{ github.repository }}
           TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha || github.sha }}
         run: |
           set -euo pipefail
           input_dir="${RUNNER_TEMP}/unsigned-macos"
@@ -1079,6 +1052,7 @@ jobs:
                   "release_version": os.environ["RELEASE_VERSION"],
                   "repository": os.environ["REPOSITORY"],
                   "target_commit": os.environ["TARGET_COMMIT"],
+                  "workflow_sha": os.environ["WORKFLOW_SHA"],
                   "target": os.environ["TARGET"],
                   "distribution": distribution,
                   "signing": "ad-hoc",
@@ -1225,6 +1199,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
           REPOSITORY: ${{ github.repository }}
           TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+          WORKFLOW_SHA: ${{ github.workflow_sha || github.sha }}
         run: |
           set -euo pipefail
           signed_dir="${RUNNER_TEMP}/signed-macos"
@@ -1256,6 +1231,7 @@ jobs:
                   "release_version": os.environ["RELEASE_VERSION"],
                   "repository": os.environ["REPOSITORY"],
                   "target_commit": os.environ["TARGET_COMMIT"],
+                  "workflow_sha": os.environ["WORKFLOW_SHA"],
                   "target": os.environ["TARGET"],
                   "signing": "developer-id",
                   "notarized": True,
