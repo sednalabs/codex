@@ -4745,6 +4745,129 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_rejects_reverse_ancestor_target_but_allows_descendant() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.min_wait_timeout_ms = 1;
+    config.multi_agent_v2.max_wait_timeout_ms = 100;
+    config.multi_agent_v2.default_wait_timeout_ms = 1;
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config.clone());
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, None);
+
+    let reviewer_path = AgentPath::try_from("/root/reviewer").expect("reviewer path");
+    let reviewer_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "review".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(reviewer_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("reviewer".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("reviewer spawn should succeed")
+        .thread_id;
+    session.thread_id = reviewer_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(reviewer_path.clone()),
+        agent_nickname: None,
+        agent_role: Some("reviewer".to_string()),
+    });
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let error = match WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "wait_agent",
+            function_payload(json!({
+                "targets": ["/root"],
+                "native_event_wait": true,
+                "timeout_ms": 10
+            })),
+        ))
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("reviewer must not wait on its parent"),
+    };
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("reverse waits should return a model-facing diagnostic");
+    };
+    assert!(message.contains("current agent or an ancestor"));
+    assert!(message.contains("decision-complete result"));
+
+    let worker_path = AgentPath::try_from("/root/reviewer/worker").expect("worker path");
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "work".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: reviewer_id,
+                depth: 2,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("descendant worker spawn should succeed");
+
+    let output = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": ["worker"],
+                "timeout_ms": 1
+            })),
+        ))
+        .await
+        .expect("a finite descendant wait should remain valid");
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait result should be json");
+    assert_eq!(
+        result.completion_reason,
+        CollabWaitingCompletionReason::Timeout
+    );
+    assert!(result.timed_out);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
