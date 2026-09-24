@@ -203,3 +203,19 @@ log *args:
 [windows]
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
+
+# Proof-only P6 validation recipes. These commands are intentionally kept in
+# the disposable overlay so the immutable product candidate does not gain CI
+# or test-harness machinery.
+app-server-computer-use-targeted:
+    cargo test --locked -p codex-app-server --lib computer_use::tests::typed_request_routes_to_mock_provider -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --lib dynamic_tools::tests::computer_use_response_rejects_remote_image_urls -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --lib dynamic_tools::tests::computer_use_response_preserves_inline_image_urls -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --lib request_processors::thread_processor_tests::browser_advertisement_does_not_treat_namespaced_name_as_top_level_duplicate -- --exact --test-threads=1
+
+tui-native-computer-use-targeted:
+    cargo test --locked -p codex-tui --lib app::app_server_events::tests::rollout_codex_home_requires_a_sessions_boundary -- --exact --test-threads=1
+    cargo test --locked -p codex-tui --lib app::app_server_requests::tests::does_not_mark_chatgpt_auth_refresh_as_unsupported -- --exact --test-threads=1
+
+exec-native-computer-use-targeted:
+    cargo test --locked -p codex-browser-computer-use --lib -- --test-threads=1
