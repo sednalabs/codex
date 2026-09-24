@@ -256,6 +256,18 @@ def parse_args():
     )
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
     parser.add_argument("--retry-settle-seconds", type=int, default=90, help="Seconds to allow a same-run automatic retry after terminal failure; 0 disables")
+    parser.add_argument(
+        "--unassigned-timeout-seconds",
+        type=int,
+        default=0,
+        help="Opt-in seconds before a provider-confirmed unassigned queued job becomes actionable (0 disables).",
+    )
+    parser.add_argument(
+        "--unassigned-job-name",
+        action="append",
+        default=[],
+        help="Limit unassigned-job observation to this exact required job name; repeatable.",
+    )
     parser.add_argument("--poll-seconds", type=int, default=60, help="Watch poll interval")
     parser.add_argument(
         "--appearance-timeout-seconds",
@@ -354,6 +366,8 @@ def parse_args():
 
     if args.retry_settle_seconds < 0:
         parser.error("--retry-settle-seconds must be >= 0")
+    if args.unassigned_timeout_seconds < 0:
+        parser.error("--unassigned-timeout-seconds must be >= 0")
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
     if args.appearance_timeout_seconds is not None and args.appearance_timeout_seconds < 0:
@@ -1475,13 +1489,14 @@ def _normalize_actions_api_step(step):
 
 
 def _normalize_actions_api_job(job):
-    return {
+    normalized = {
         "databaseId": job.get("id"),
         "name": job.get("name"),
         "status": job.get("status"),
         "conclusion": job.get("conclusion"),
         "startedAt": job.get("started_at"),
         "completedAt": job.get("completed_at"),
+        "createdAt": job.get("created_at"),
         "url": job.get("html_url"),
         "steps": [
             _normalize_actions_api_step(step)
@@ -1489,6 +1504,11 @@ def _normalize_actions_api_job(job):
             if isinstance(step, dict)
         ],
     }
+    if "runner_name" in job:
+        normalized["runnerName"] = job["runner_name"]
+    if "runner_id" in job:
+        normalized["runnerId"] = job["runner_id"]
+    return normalized
 
 
 
@@ -1549,11 +1569,17 @@ def _normalize_rest_job(job, *, run_id, job_index):
     steps = job.get("steps")
     if not isinstance(steps, list):
         raise GhCommandError(f"Malformed GitHub REST {context}: missing list `steps`")
-    return {"databaseId": job_id, "name": name, "status": status, "conclusion": conclusion,
-            "url": html_url, "startedAt": _rest_optional_timestamp(job, "started_at", context),
-            "completedAt": _rest_optional_timestamp(job, "completed_at", context),
-            "steps": [_normalize_rest_step(step, job_index=job_index, step_index=step_index)
-                       for step_index, step in enumerate(steps)]}
+    normalized = {"databaseId": job_id, "name": name, "status": status, "conclusion": conclusion,
+                  "url": html_url, "createdAt": job.get("created_at"),
+                  "startedAt": _rest_optional_timestamp(job, "started_at", context),
+                  "completedAt": _rest_optional_timestamp(job, "completed_at", context),
+                  "steps": [_normalize_rest_step(step, job_index=job_index, step_index=step_index)
+                            for step_index, step in enumerate(steps)]}
+    if "runner_name" in job:
+        normalized["runnerName"] = job["runner_name"]
+    if "runner_id" in job:
+        normalized["runnerId"] = job["runner_id"]
+    return normalized
 
 def _list_run_jobs_rest(repo, run_id):
     jobs, expected_total, seen_job_ids = [], None, set()
@@ -3106,6 +3132,48 @@ def summarize_jobs(run_view):
     return failed_jobs
 
 
+def _unassigned_jobs(run_view, *, timeout_seconds, required_names=None, now=None):
+    """Return queued jobs whose provider explicitly reports no runner yet."""
+    if timeout_seconds <= 0:
+        return []
+    required_names = {str(name) for name in (required_names or [])}
+    now = time.time() if now is None else now
+    jobs = run_view.get("jobs") or []
+    if not isinstance(jobs, list):
+        return []
+    observed = []
+    for job in jobs:
+        if not isinstance(job, dict) or str(job.get("status") or "").lower() != "queued":
+            continue
+        name = str(job.get("name") or "")
+        if required_names and name not in required_names:
+            continue
+        # Missing runner fields are provider-unknown, not proof of unassignment.
+        if "runnerName" not in job and "runnerId" not in job:
+            continue
+        if job.get("runnerName") or job.get("runnerId"):
+            continue
+        first_observed = job.get("unassignedSince")
+        if not isinstance(first_observed, (int, float)):
+            continue
+        age = max(0, now - first_observed)
+        if age < timeout_seconds:
+            continue
+        observed.append(
+            {
+                "id": int(job.get("databaseId") or 0),
+                "name": name,
+                "status": "queued",
+                "runner_name": job.get("runnerName"),
+                "runner_id": job.get("runnerId"),
+                "observed_since": first_observed,
+                "age_seconds": int(age),
+                "url": str(job.get("url") or ""),
+            }
+        )
+    return observed
+
+
 def target_to_display_key(target):
     if target["kind"] == TARGET_KIND_RUN_ID:
         parts = [f"run-id:{target['run_id']}"]
@@ -3479,10 +3547,19 @@ def normalize_snapshot(
     gemini_telemetry=None,
     alerts=None,
     gemini_disabled=False,
+    unassigned_timeout_seconds=0,
+    unassigned_job_names=None,
+    unassigned_now=None,
 ):
     status = str(run_view.get("status") or "")
     conclusion = str(run_view.get("conclusion") or "")
     failed_jobs = summarize_jobs(run_view)
+    unassigned_jobs = _unassigned_jobs(
+        run_view,
+        timeout_seconds=unassigned_timeout_seconds,
+        required_names=unassigned_job_names,
+        now=unassigned_now,
+    )
     validation_summary = None
     if status == "completed":
         run_id = int(run_view.get("databaseId") or 0)
@@ -3499,7 +3576,13 @@ def normalize_snapshot(
     elif status.lower() == "waiting":
         actions = ["stop_run_waiting_for_approval"]
     elif status != "completed" or status.lower() in PENDING_STATUSES:
-        actions = ["diagnose_run_failure"] if failed_jobs else ["idle"]
+        actions = []
+        if failed_jobs:
+            actions.append("diagnose_run_failure")
+        if unassigned_jobs:
+            actions.append("stop_run_unassigned_job")
+        if not actions:
+            actions = ["idle"]
     elif conclusion in SUCCESS_CONCLUSIONS:
         actions = ["stop_run_succeeded"]
     elif conclusion in FAILED_CONCLUSIONS:
@@ -3551,6 +3634,7 @@ def normalize_snapshot(
         },
         "proof_identity": proof_identity,
         "failed_jobs": failed_jobs,
+        "unassigned_jobs": unassigned_jobs,
         "validation_summary": validation_summary,
         "appearance_wait": appearance_wait,
         "followed_newer_run": followed_newer_run,
@@ -3572,6 +3656,7 @@ def _action_descriptors_for_snapshot(snapshot):
     run = _dict_or_empty(snapshot.get("run"))
     target = _dict_or_empty(snapshot.get("target"))
     failed_jobs = _list_or_empty(snapshot.get("failed_jobs"))
+    unassigned_jobs = _list_or_empty(snapshot.get("unassigned_jobs"))
     diagnostic_evidence = _dict_or_empty(snapshot.get("diagnostic_evidence"))
     log_sources = _list_or_empty(diagnostic_evidence.get("log_sources"))
     run_id = run.get("id") or target.get("run_id")
@@ -3611,6 +3696,29 @@ def _action_descriptors_for_snapshot(snapshot):
                 }
             )
             continue
+        if action == "stop_run_unassigned_job":
+            for job in unassigned_jobs:
+                job_id = job.get("id") or "unknown"
+                descriptors.append(
+                    {
+                        "action": action,
+                        "fingerprint": f"{action}:run:{run_id or 'unknown'}:attempt:{run.get('attempt') or 'unknown'}:head:{run.get('head_sha') or 'unknown'}:job:{job_id}",
+                        "run_id": run_id,
+                        "run_attempt": run.get("attempt"),
+                        "run_head_sha": run.get("head_sha"),
+                        "job_id": job.get("id"),
+                        "job_name": job.get("name"),
+                        "assignment": {
+                            "status": job.get("status"),
+                            "runner_name": job.get("runner_name"),
+                            "runner_id": job.get("runner_id"),
+                            "observed_since": job.get("observed_since"),
+                            "age_seconds": job.get("age_seconds"),
+                        },
+                        "next_action": "Inspect runner capacity or required labels for this queued job; do not infer the cause from queue state alone.",
+                    }
+                )
+            continue
         descriptors.append(
             {
                 "action": action,
@@ -3642,6 +3750,66 @@ def _apply_acknowledged_actions(snapshot, acknowledged):
     snapshot["action_fingerprints"] = [item.get("fingerprint") for item in remaining_descriptors if item.get("fingerprint")]
     snapshot["suppressed_action_fingerprints"] = suppressed
     return snapshot
+
+
+def _record_unassigned_observation(run_view, state):
+    """Attach first-seen times to the exact run-attempt/head/job observation."""
+    if not isinstance(run_view, dict):
+        return
+    run_key = ":".join(
+        str(value or "unknown")
+        for value in (run_view.get("databaseId"), _run_attempt(run_view), run_view.get("headSha"))
+    )
+    observations = state.setdefault("unassigned_observations", {})
+    for identity in list(observations):
+        if not identity.startswith(run_key + ":"):
+            observations.pop(identity, None)
+    jobs = run_view.get("jobs") or []
+    if not isinstance(jobs, list):
+        return
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = job.get("databaseId")
+        if not job_id:
+            continue
+        identity = f"{run_key}:job:{job_id}"
+        queued = str(job.get("status") or "").lower() == "queued"
+        provider_assignment_known = "runnerName" in job or "runnerId" in job
+        assigned = bool(job.get("runnerName") or job.get("runnerId"))
+        if queued and provider_assignment_known and not assigned:
+            first_seen = observations.setdefault(identity, time.time())
+            job["unassignedSince"] = first_seen
+        else:
+            observations.pop(identity, None)
+
+
+def _enrich_job_assignment_fields(repo, run_view):
+    """Join runner assignment fields from the authoritative REST jobs payload."""
+    if not isinstance(run_view, dict):
+        return run_view
+    run_id = int(run_view.get("databaseId") or 0)
+    if run_id <= 0:
+        return run_view
+    rest_jobs = _list_run_jobs_rest(repo, run_id)
+    by_id = {
+        int(job.get("databaseId")): job
+        for job in rest_jobs
+        if isinstance(job, dict) and job.get("databaseId")
+    }
+    jobs = run_view.get("jobs") or []
+    if not isinstance(jobs, list):
+        return run_view
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        enriched = by_id.get(int(job.get("databaseId") or 0))
+        if not enriched:
+            continue
+        for key in ("runnerName", "runnerId", "createdAt", "startedAt", "completedAt"):
+            if key in enriched:
+                job[key] = enriched[key]
+    return run_view
 
 
 def merge_ordered_unique(items):
@@ -3787,6 +3955,9 @@ def target_state_from_target(args, target, repo, remembered):
     gemini_cache = remembered.setdefault("__gemini_cache__", {})
     if target["kind"] == TARGET_KIND_RUN_ID:
         run_view = view_run(repo, target["run_id"])
+        if getattr(args, "unassigned_timeout_seconds", 0) > 0:
+            run_view = _enrich_job_assignment_fields(repo, run_view)
+        _record_unassigned_observation(run_view, state)
         snapshot = normalize_snapshot(
             run_view,
             target=target,
@@ -3794,6 +3965,8 @@ def target_state_from_target(args, target, repo, remembered):
             followed_newer_run=False,
             resolved_ref=str(run_view.get("headBranch") or str(target.get("ref") or "")),
             gemini_disabled=args.no_gemini_diagnosis,
+            unassigned_timeout_seconds=getattr(args, "unassigned_timeout_seconds", 0),
+            unassigned_job_names=getattr(args, "unassigned_job_name", []),
         )
         expected_head = target.get("head_sha")
         if expected_head and not _matches_head_sha_prefix(run_view.get("headSha"), expected_head):
@@ -3876,6 +4049,8 @@ def target_state_from_target(args, target, repo, remembered):
         state.pop("appearance_wait_started_at", None)
         _GH_AUTH.deadline = None
         run_view = view_run(repo, int(cached_run_id))
+        if getattr(args, "unassigned_timeout_seconds", 0) > 0:
+            run_view = _enrich_job_assignment_fields(repo, run_view)
         latest_run_id = int(cached_run_id)
     else:
         matching_runs = list_workflow_runs(
@@ -3947,9 +4122,12 @@ def target_state_from_target(args, target, repo, remembered):
         if last_run_id is not None and latest_run_id != last_run_id:
             followed_newer_run = True
         run_view = view_run(repo, latest_run_id)
+        if getattr(args, "unassigned_timeout_seconds", 0) > 0:
+            run_view = _enrich_job_assignment_fields(repo, run_view)
         state["last_run_id"] = latest_run_id
         state["next_run_list_at"] = now + follow_relist_after
 
+    _record_unassigned_observation(run_view, state)
     resolved = normalize_snapshot(
         run_view,
         target=target,
@@ -3957,6 +4135,8 @@ def target_state_from_target(args, target, repo, remembered):
         followed_newer_run=followed_newer_run,
         resolved_ref=ref,
         gemini_disabled=args.no_gemini_diagnosis,
+        unassigned_timeout_seconds=getattr(args, "unassigned_timeout_seconds", 0),
+        unassigned_job_names=getattr(args, "unassigned_job_name", []),
     )
     state["last_run_id"] = latest_run_id
     if "diagnose_run_failure" in (resolved.get("actions") or []):
@@ -4081,6 +4261,13 @@ def _payload_has_in_progress_failure(payload):
     return False
 
 
+def _payload_has_unassigned_job(payload):
+    return any(
+        "stop_run_unassigned_job" in (_dict_or_empty(target).get("actions") or [])
+        for target in payload.get("targets") or []
+    )
+
+
 def _payload_has_unready_failure_logs(payload):
     for target in payload.get("targets") or []:
         for trigger in target.get("action_triggers") or []:
@@ -4101,6 +4288,7 @@ def _payload_has_terminal_wait_blocker(payload):
         "stop_run_appearance_timeout",
         "stop_run_head_mismatch",
         "stop_run_waiting_for_approval",
+        "stop_run_unassigned_job",
         "stop_validation_target_identity_mismatch",
     }
     return bool(early_stop_actions.intersection(payload.get("actions") or []))
@@ -4143,7 +4331,11 @@ def watch_until_action(args, repo):
         ):
             time.sleep(args.poll_seconds)
             continue
-        if args.require_terminal_run and _payload_has_in_progress_failure(payload):
+        if (
+            args.require_terminal_run
+            and _payload_has_in_progress_failure(payload)
+            and not _payload_has_unassigned_job(payload)
+        ):
             time.sleep(args.poll_seconds)
             continue
         if getattr(args, "watch_until_terminal", False):
