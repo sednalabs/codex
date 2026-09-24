@@ -4868,6 +4868,50 @@ async fn multi_agent_v2_wait_agent_rejects_reverse_ancestor_target_but_allows_de
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_rejects_unregistered_root_self_target() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.min_wait_timeout_ms = 1;
+    config.multi_agent_v2.max_wait_timeout_ms = 100;
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let error = match WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": [root.thread_id.to_string()],
+                "native_event_wait": true,
+                "timeout_ms": 10
+            })),
+        ))
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("root must not wait on its own thread id"),
+    };
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("reverse waits should return a model-facing diagnostic");
+    };
+    assert!(message.contains("current agent or an ancestor"));
+    assert!(message.contains("decision-complete result"));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();

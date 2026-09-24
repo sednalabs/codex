@@ -179,6 +179,13 @@ impl Handler {
                     .to_string(),
             ));
         }
+        // Ensure a root session has registry metadata before resolving or
+        // validating targets. Direct ThreadId targets bypass the resolver, so
+        // this registration must happen before the current path is captured.
+        session
+            .services
+            .agent_control
+            .register_session_root(session.thread_id, turn.parent_thread_id);
         let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
             session
                 .services
