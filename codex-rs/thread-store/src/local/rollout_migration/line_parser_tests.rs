@@ -210,7 +210,10 @@ fn skips_only_known_retired_events_and_consumes_unknown_events() {
     let parsed = parse_legacy_rollout_line(&unknown)
         .expect("unknown event should be consumed for forward compatibility")
         .expect("unknown event remains a rollout record");
-    assert!(matches!(parsed.item, RolloutItem::EventMsg(EventMsg::Unknown)));
+    assert!(matches!(
+        parsed.item,
+        RolloutItem::EventMsg(EventMsg::Unknown)
+    ));
 }
 
 #[test]

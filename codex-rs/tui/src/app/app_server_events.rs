@@ -780,9 +780,9 @@ mod tests {
     #[test]
     fn rollout_codex_home_requires_a_sessions_boundary() {
         assert_eq!(
-            rollout_codex_home(Some(Path::new(
-                "/tmp/child/sessions/2026/09/rollout.jsonl",
-            ))),
+            rollout_codex_home(Some(
+                Path::new("/tmp/child/sessions/2026/09/rollout.jsonl",)
+            )),
             Some(Path::new("/tmp/child").to_path_buf())
         );
         assert_eq!(

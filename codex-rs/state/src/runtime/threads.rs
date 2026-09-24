@@ -1,9 +1,10 @@
 use super::*;
 use crate::SortDirection;
 use codex_protocol::SanitizedGitUrl;
-use codex_protocol::dynamic_tools::{
-    DynamicToolFunctionSpec, DynamicToolNamespaceSpec, DynamicToolNamespaceTool, DynamicToolSpec,
-};
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
