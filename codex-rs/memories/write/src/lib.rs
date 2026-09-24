@@ -167,11 +167,7 @@ pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize
             let file_type = entry.file_type().await?;
             if file_type.is_symlink() {
                 #[cfg(windows)]
-                if file_type.is_symlink_dir() {
-                    tokio::fs::remove_dir(&path).await?;
-                } else {
-                    tokio::fs::remove_file(&path).await?;
-                }
+                remove_windows_symlink(&path).await?;
                 #[cfg(not(windows))]
                 tokio::fs::remove_file(&path).await?;
                 tracing::warn!(
@@ -186,4 +182,20 @@ pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize
     }
 
     Ok(removed)
+}
+
+#[cfg(windows)]
+async fn remove_windows_symlink(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir(path).await {
+        Ok(()) => Ok(()),
+        Err(remove_dir_error) => match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(remove_file_error)
+                if remove_file_error.kind() == std::io::ErrorKind::NotADirectory =>
+            {
+                Err(remove_dir_error)
+            }
+            Err(remove_file_error) => Err(remove_file_error),
+        },
+    }
 }

@@ -192,7 +192,7 @@ fn normalizes_legacy_plain_command_cwd() {
 }
 
 #[test]
-fn skips_only_known_retired_events() {
+fn skips_only_known_retired_events_and_consumes_unknown_events() {
     for event_type in [
         "guardian_assessment",
         "thread_name_updated",
@@ -207,7 +207,10 @@ fn skips_only_known_retired_events() {
     }
 
     let unknown = line("event_msg", json!({"type": "unknown_legacy_event"}));
-    assert!(parse_legacy_rollout_line(&unknown).is_err());
+    let parsed = parse_legacy_rollout_line(&unknown)
+        .expect("unknown event should be consumed for forward compatibility")
+        .expect("unknown event remains a rollout record");
+    assert!(matches!(parsed.item, RolloutItem::EventMsg(EventMsg::Unknown)));
 }
 
 #[test]

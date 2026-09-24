@@ -15,6 +15,7 @@ commit is safe to apply to the frozen P7 candidate.
 | `1d87af5faa75c2c09785cd088353d3236333673f` network policy source/lock change | `ignore-for-p7` | root | Source and lock are inseparable; no partial lock-only adoption. |
 | `f5960fcc22b918e658bc486e53a80031d64fd41e` shared crate coupling | `ignore-for-p7` | root | Source contract is outside P7 scope. |
 | `5babf441c179fa8f4f36ebabc5233d0630ce9658` sednalabs PR #854 | `preserve-track` | root | Exact old-base head remains preserved; current-base successor is a separate outcome. |
+| gnullvm symlink removal, legacy unknown-event handling, code-mode exception | `deferred-no-equivalent` | root | Focused harvest found no newer upstream equivalent; programme-owned repair is bounded to exact hosted failures and coupled tests. |
 
 No gap is a blocker for the frozen P7 cutline unless a current acceptance
 contract is contradicted. A later train must refresh exact refs and rerun the

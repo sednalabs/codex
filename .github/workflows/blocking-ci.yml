@@ -7,6 +7,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact product candidate commit SHA validated by this dispatch
+        required: true
+        type: string
+      candidate_tree:
+        description: Exact product candidate tree SHA validated by this dispatch
+        required: true
+        type: string
 
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the
@@ -34,6 +43,9 @@ jobs:
   repo-checks:
     name: repo-checks
     uses: ./.github/workflows/repo-checks.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+      candidate_tree: ${{ inputs.candidate_tree }}
     secrets: inherit
 
   rust-ci:

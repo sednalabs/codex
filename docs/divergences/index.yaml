@@ -138,6 +138,45 @@
       "retirement_condition": "Upstream provides equivalent provider routing, failure semantics, and generated protocol fixtures."
     },
     {
+      "id": "inference-observation-schema",
+      "title": "Bounded inference observation protocol and persistence types",
+      "status": "accepted-p1-p6",
+      "category": "protocol",
+      "surface": ["inference observation event", "rollout persistence", "generated protocol schema"],
+      "files": [
+        "codex-rs/protocol/src/inference_observation.rs",
+        "codex-rs/protocol/src/inference_observation_tests.rs",
+        "codex-rs/rollout-trace/src/protocol_event.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "neutral-seam",
+      "guardrail_lane": "codex.inference-observation-targeted",
+      "retirement_condition": "Upstream records bounded inference status, source, transport, and requested/effective identity with equivalent durable replay semantics."
+    },
+    {
+      "id": "migration-repair-contract",
+      "title": "Collision-free migration repair and applied-state reconciliation",
+      "status": "accepted-p1-p6",
+      "category": "persistence",
+      "surface": ["migration repair", "applied migration metadata", "restart recovery"],
+      "files": [
+        "codex-rs/state/src/runtime/migration_repair.rs",
+        "codex-rs/state/src/runtime/phase2_attestation.rs",
+        "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/migrations/0056_phase2_attested_baselines.sql",
+        "codex-rs/state/migrations/0057_threads_configured_identity_provenance.sql",
+        "codex-rs/state/migrations/0058_thread_dynamic_tools_state.sql"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-adapter",
+      "guardrail_lane": "codex.state-migration-repair-targeted",
+      "retirement_condition": "Upstream owns equivalent migration-slot allocation, repair readback, idempotent replay, and restart-safe compatibility."
+    },
+    {
       "id": "shared-ci-composition",
       "title": "Shared CI setup and standard hosted runner composition",
       "status": "p7-adopted",

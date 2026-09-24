@@ -1,6 +1,11 @@
 # Carry divergence ledger
 
-> `status: current` · `authority: evidence` · `candidate: 77968332f63d31490d71ce462a868a7e224b75f1` · `tree: 867e02cec96c67e5afaf363f965204ab28c9cfb2`
+> `status: current` · `authority: evidence` · `candidate: external exact-delivery receipt`
+
+The historical source-composition receipt is `77968332f63d31490d71ce462a868a7e224b75f1`
+with tree `867e02cec96c67e5afaf363f965204ab28c9cfb2`; the final candidate is
+bound only by the current Ops handoff and hosted proof so this document never
+self-references a stale commit hash.
 
 This ledger records the accepted P1-P6 carry and the P7 composition boundary.
 It is deliberately independent of the unrelated rewritten `origin/main`
@@ -56,6 +61,19 @@ contract. The bounded upstream harvest classified the following items:
 
 No upstream work is silently deleted. `track` means preserved for the next
 authorized train or a separately scoped successor.
+
+## Replan repair dispositions
+
+The exact hosted failures in run `36002658222` caused a bounded programme
+replan. The focused harvest found no newer upstream equivalent for these seams;
+the local repairs remain limited to the named acceptance contracts:
+
+| Seam | Upstream disposition | P7 disposition |
+| --- | --- | --- |
+| `x86_64-pc-windows-gnullvm` memory symlink removal | `deferred-no-equivalent` | Repair by portable directory/file symlink removal with coupled Windows fixture coverage. |
+| Unknown legacy rollout event | `deferred-no-equivalent` | Preserve forward-compatible `EventMsg::Unknown` consumption and correct the stale assertion. |
+| `codex-rs/code-mode/Cargo.toml` feature exception | `deferred-no-equivalent` | Remove the stale verifier exception; retain the legitimate V8 POC exception. |
+| Validation planner identity/runner/dispatch receipt | `downstream-governance` | Enforce nested runner-group/label rejection, allowed labels, dispatch inputs, and exact hosted SHA/tree when supplied. |
 
 ## Acceptance boundary
 

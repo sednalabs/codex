@@ -138,6 +138,28 @@ async fn ensure_layout_rejects_root_symlink_and_removes_nested_links_before_writ
     Ok(())
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn ensure_layout_removes_file_and_directory_symlinks_on_windows() -> anyhow::Result<()> {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+
+    let home = TempDir::new()?;
+    let real_root = home.path().join("real-memory");
+    let outside_dir = home.path().join("outside");
+    fs::create_dir_all(real_root.join("nested"))?;
+    fs::create_dir_all(&outside_dir)?;
+    fs::write(real_root.join("MEMORY.md"), "memory")?;
+    fs::write(outside_dir.join("outside.md"), "outside")?;
+    symlink_file(real_root.join("MEMORY.md"), real_root.join("nested/file-link"))?;
+    symlink_dir(&outside_dir, real_root.join("nested/directory-link"))?;
+
+    crate::ensure_layout(&real_root).await?;
+    assert!(fs::symlink_metadata(real_root.join("nested/file-link")).is_err());
+    assert!(fs::symlink_metadata(real_root.join("nested/directory-link")).is_err());
+    assert!(outside_dir.join("outside.md").exists());
+    Ok(())
+}
+
 #[test]
 fn previous_char_boundary_handles_multibyte_text() {
     let text = "aé";

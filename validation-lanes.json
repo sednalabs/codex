@@ -5,7 +5,12 @@
     "ref_kind": "exact-branch-head",
     "sha_required": true,
     "tree_required": true,
-    "overlay_proof_is_product_proof": false
+    "overlay_proof_is_product_proof": false,
+    "runtime_identity": {
+      "sha_env": "VALIDATION_TARGET_SHA",
+      "tree_env": "VALIDATION_TARGET_TREE",
+      "source": "workflow_dispatch_inputs"
+    }
   },
   "runner_policy": {
     "provider": "github-hosted",
@@ -28,6 +33,7 @@
       "id": "blocking-ci",
       "workflow": ".github/workflows/blocking-ci.yml",
       "dispatch": "workflow_dispatch",
+      "dispatch_inputs": ["candidate_sha", "candidate_tree"],
       "hosted_only": true
     },
     {

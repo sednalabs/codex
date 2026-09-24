@@ -2,6 +2,13 @@ name: repo-checks
 
 on:
   workflow_call:
+    inputs:
+      candidate_sha:
+        required: false
+        type: string
+      candidate_tree:
+        required: false
+        type: string
 
 jobs:
   build-test:
@@ -27,6 +34,9 @@ jobs:
         run: python3 .github/scripts/verify_bazel_clippy_lints.py
 
       - name: Verify hosted validation-lane contract
+        env:
+          VALIDATION_TARGET_SHA: ${{ inputs.candidate_sha }}
+          VALIDATION_TARGET_TREE: ${{ inputs.candidate_tree }}
         run: python3 -m unittest test_ci_planners.py
 
       - name: Install uv
