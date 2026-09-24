@@ -1,6 +1,6 @@
 # Downstream regression matrix
 
-> `status: current` · `authority: informative` · `candidate: unmaterialized`
+> `status: current` · `authority: informative` · `candidate: 77968332f63d31490d71ce462a868a7e224b75f1` · `tree: 867e02cec96c67e5afaf363f965204ab28c9cfb2`
 
 This matrix binds each accepted carry family to its proving surface. It does
 not turn optional evidence into a prerequisite and it does not reopen accepted

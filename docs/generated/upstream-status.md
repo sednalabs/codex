@@ -2,8 +2,8 @@
 
 > `status: generated` · `authority: evidence` · `captured: 2026-09-24`
 
-This page is the exact P7 composition receipt. The candidate is intentionally
-unmaterialized until the final scoped changes are committed and frozen.
+This page is the exact P7 composition receipt for the frozen candidate. Hosted
+proof and semantic review remain pending on this exact product head.
 
 | Field | Value |
 | --- | --- |
@@ -12,11 +12,11 @@ unmaterialized until the final scoped changes are committed and frozen.
 | P6 tree | `6be24ec81e116584c248c937302e0dacb0949c94` |
 | Frozen upstream | `openai/codex` at `392f56a611c412b9b2eb1d9d4e59a3b42bee483a` |
 | Frozen upstream tree | `ac81df5b0332908409b60a0addc7e967eed868ea` |
-| Candidate SHA/tree | `unmaterialized` |
+| Candidate SHA/tree | `77968332f63d31490d71ce462a868a7e224b75f1` / `867e02cec96c67e5afaf363f965204ab28c9cfb2` |
 | Candidate ancestry | `must remain rooted at frozen upstream; old origin/main is unrelated` |
 | Live origin/main | `c338b65e0a037eaa31e370d287805d757469a876` |
 | Live upstream/main | `b19cebecc0169097bda7539af03c886e03bdeafe` (next train only) |
-| Hosted proof | `required on exact product head; no proof run yet` |
+| Hosted proof | `required on exact product head 77968332f63d31490d71ce462a868a7e224b75f1; no proof run yet` |
 | Semantic review | `Luna-high required; no review result yet` |
 | Root cutover | `not performed; root-owned` |
 

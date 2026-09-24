@@ -1,6 +1,6 @@
 # Carry divergence ledger
 
-> `status: current` · `authority: evidence` · `candidate: unmaterialized`
+> `status: current` · `authority: evidence` · `candidate: 77968332f63d31490d71ce462a868a7e224b75f1` · `tree: 867e02cec96c67e5afaf363f965204ab28c9cfb2`
 
 This ledger records the accepted P1-P6 carry and the P7 composition boundary.
 It is deliberately independent of the unrelated rewritten `origin/main`
