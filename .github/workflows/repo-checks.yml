@@ -9,6 +9,16 @@ on:
       candidate_tree:
         required: false
         type: string
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact product candidate commit SHA validated by this dispatch
+        required: true
+        type: string
+      candidate_tree:
+        description: Exact product candidate tree SHA validated by this dispatch
+        required: true
+        type: string
 
 jobs:
   build-test:
