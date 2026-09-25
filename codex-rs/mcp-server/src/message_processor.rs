@@ -517,7 +517,10 @@ impl MessageProcessor {
         });
     }
 
-    #[expect(deprecated, reason = "retain logging for the negotiated legacy MCP protocol")]
+    #[expect(
+        deprecated,
+        reason = "retain logging for the negotiated legacy MCP protocol"
+    )]
     fn handle_set_level(&self, params: rmcp::model::SetLevelRequestParams) {
         tracing::info!("logging/setLevel -> params: {:?}", params);
     }
