@@ -1,10 +1,10 @@
-use crate::build_consolidation_prompt;
 use crate::metrics::MEMORY_PHASE_TWO_E2E_MS;
 use crate::metrics::MEMORY_PHASE_TWO_INPUT;
 use crate::metrics::MEMORY_PHASE_TWO_JOBS;
 use crate::metrics::MEMORY_PHASE_TWO_TOKEN_USAGE;
 use crate::phase2_attestation;
 use crate::prune_old_extension_resources;
+use crate::prompts::build_consolidation_prompt_for_version;
 use crate::raw_memories_file;
 use crate::rebuild_raw_memories_file_from_memories;
 use crate::remove_memory_symlinks;
@@ -170,7 +170,7 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     }
 
     // 8. Spawn the consolidation agent.
-    let prompt = agent::get_prompt(&root);
+    let prompt = agent::get_prompt(&root, config.memories.version);
     let attestation_context = match phase2_attestation::capture_prepared_context(
         &root,
         config.as_ref(),
@@ -421,8 +421,8 @@ mod agent {
         Some(agent_config)
     }
 
-    pub(super) fn get_prompt(root: &Path) -> Vec<UserInput> {
-        let prompt = build_consolidation_prompt(root);
+    pub(super) fn get_prompt(root: &Path, version: MemoryVersion) -> Vec<UserInput> {
+        let prompt = build_consolidation_prompt_for_version(root, version);
         vec![UserInput::Text {
             text: prompt,
             text_elements: vec![],
