@@ -6499,8 +6499,8 @@ async fn to_mcp_config_preserves_auth_elicitation_feature_from_config() -> std::
     assert_eq!(
         mcp_config.client_elicitation_capability,
         ElicitationCapability::new()
-                    .with_form(FormElicitationCapability::default())
-                    .with_url(UrlElicitationCapability::default())
+            .with_form(FormElicitationCapability::default())
+            .with_url(UrlElicitationCapability::default())
     );
 
     let _ = config.features.disable(Feature::AuthElicitation);

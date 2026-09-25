@@ -862,39 +862,39 @@ impl ServerHandler for ResourceAppsMcpServer {
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
             assert_eq!(result, ElicitResult::new(ElicitationAction::Decline));
 
-            return Ok(ReadResourceResult::new(vec![
-                ResourceContents::TextResourceContents {
+            return Ok(
+                ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: TEST_ELICITATION_RESOURCE_URI.to_string(),
                     mime_type: Some("text/plain".to_string()),
                     text: TEST_ELICITATION_RESOURCE_TEXT.to_string(),
                     meta: None,
-                },
-            ])
-            .into());
+                }])
+                .into(),
+            );
         }
         if uri == SKILL_MAIN_PROMPT_URI {
             self.calls.main_prompt_reads.fetch_add(1, Ordering::Relaxed);
-            return Ok(ReadResourceResult::new(vec![
-                ResourceContents::TextResourceContents {
+            return Ok(
+                ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: SKILL_MAIN_PROMPT_URI.to_string(),
                     mime_type: Some("text/markdown".to_string()),
                     text: SKILL_CONTENTS.to_string(),
                     meta: None,
-                },
-            ])
-            .into());
+                }])
+                .into(),
+            );
         }
         if uri == SKILL_REFERENCE_URI {
             self.calls.reference_reads.fetch_add(1, Ordering::Relaxed);
-            return Ok(ReadResourceResult::new(vec![
-                ResourceContents::TextResourceContents {
+            return Ok(
+                ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri: SKILL_REFERENCE_URI.to_string(),
                     mime_type: Some("text/markdown".to_string()),
                     text: SKILL_REFERENCE_CONTENTS.to_string(),
                     meta: None,
-                },
-            ])
-            .into());
+                }])
+                .into(),
+            );
         }
         if uri != TEST_RESOURCE_URI {
             return Err(rmcp::ErrorData::resource_not_found(
