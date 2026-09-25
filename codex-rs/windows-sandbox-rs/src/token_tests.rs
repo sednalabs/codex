@@ -1,6 +1,7 @@
 use super::*;
 use windows_sys::Win32::Security::EqualSid;
 use windows_sys::Win32::Security::TokenRestrictedSids;
+use windows_sys::Win32::Security::WinRestrictedCodeSid;
 
 unsafe fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) -> Result<bool> {
     let mut needed = 0;
