@@ -10334,10 +10334,11 @@ fi
             "Verify release assets",
         )
         verify_script = verify_step.get("run") or ""
-        self.assertIn("attestation_arg+=(--verify-signatures)", verify_script)
-        self.assertIn("attestation_arg+=(--verify-attestation)", verify_script)
-        self.assertIn("historical_x86_arg+=(--allow-historical-x86)", verify_script)
-        self.assertIn('macos_unnotarized_arg+=(--macos-unnotarized)', verify_script)
+        self.assertIn("installer_args=(", verify_script)
+        self.assertIn("installer_args+=(--verify-signatures --verify-attestation)", verify_script)
+        self.assertIn("installer_args+=(--allow-historical-x86)", verify_script)
+        self.assertIn('installer_args+=(--macos-unnotarized)', verify_script)
+        self.assertNotIn('"${attestation_arg[@]}"', verify_script)
         self.assertIn('"${REQUIRE_LINUX_ARM64}" == "true"', verify_script)
         self.assertEqual(
             verify_script.count(
