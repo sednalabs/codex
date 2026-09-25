@@ -610,7 +610,9 @@ impl ServerHandler for TestToolServer {
                     rmcp::model::ContentBlock::text(format!(
                         "manual history hint for thread {thread_id}"
                     )),
-                    rmcp::model::ContentBlock::text("unstructured notes/thread_hint fixture result"),
+                    rmcp::model::ContentBlock::text(
+                        "unstructured notes/thread_hint fixture result",
+                    ),
                 ]))
             }
             "echo" | "echo-tool" => {
@@ -667,9 +669,9 @@ impl ServerHandler for TestToolServer {
                     )
                 })?;
 
-                Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::image(
-                    data_b64, mime_type,
-                )]))
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::image(data_b64, mime_type),
+                ]))
             }
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;

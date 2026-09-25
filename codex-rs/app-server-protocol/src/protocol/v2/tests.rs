@@ -2009,10 +2009,7 @@ fn mcp_server_elicitation_response_round_trips_rmcp_result() {
             meta: None,
         }
     );
-    assert_eq!(
-        rmcp::model::ElicitResult::from(v2_response),
-        rmcp_result
-    );
+    assert_eq!(rmcp::model::ElicitResult::from(v2_response), rmcp_result);
 }
 
 #[test]

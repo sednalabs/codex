@@ -114,11 +114,7 @@ impl McpToolCallCell {
             }
             rmcp::model::ContentBlock::ResourceLink(link) => format!("link: {}", link.uri),
             // Preserve a useful bounded rendering for future protocol content variants.
-            _ => format_and_truncate_tool_result(
-                &block.to_string(),
-                TOOL_CALL_MAX_LINES,
-                width,
-            ),
+            _ => format_and_truncate_tool_result(&block.to_string(), TOOL_CALL_MAX_LINES, width),
         }
     }
 }

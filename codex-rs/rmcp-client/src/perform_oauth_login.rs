@@ -794,7 +794,8 @@ mod tests {
                     || ["/authorize", "/token", "/register"].contains(&request.uri().path())
                 {
                     observed.lock().unwrap().push((
-                        request.method().to_string(), request.uri().path().to_string(),
+                        request.method().to_string(),
+                        request.uri().path().to_string(),
                     ));
                 }
                 axum::http::StatusCode::NOT_FOUND
@@ -813,16 +814,22 @@ mod tests {
                 &[],
                 "http://127.0.0.1/callback",
                 client_id,
-            ).await;
+            )
+            .await;
             let error = match result {
                 Ok(_) => panic!("unpublished OAuth metadata must be refused"),
                 Err(error) => error,
             };
-            assert!(matches!(error.downcast_ref::<rmcp::transport::auth::AuthError>(),
-                Some(rmcp::transport::auth::AuthError::NoAuthorizationSupport)));
+            assert!(matches!(
+                error.downcast_ref::<rmcp::transport::auth::AuthError>(),
+                Some(rmcp::transport::auth::AuthError::NoAuthorizationSupport)
+            ));
         }
         server.abort();
-        assert_eq!(*unexpected_requests.lock().unwrap(), Vec::<(String, String)>::new());
+        assert_eq!(
+            *unexpected_requests.lock().unwrap(),
+            Vec::<(String, String)>::new()
+        );
     }
 
     #[tokio::test]

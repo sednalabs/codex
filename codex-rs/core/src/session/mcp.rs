@@ -670,8 +670,7 @@ fn guardian_elicitation_review_request(
             ..
         }) => (meta, Some(requested_schema)),
         Elicitation::Mcp(rmcp::model::ElicitRequestParams::UrlElicitationParams {
-            meta,
-            ..
+            meta, ..
         }) => {
             return if meta_requests_approval_request(meta) {
                 GuardianElicitationReview::Decline(

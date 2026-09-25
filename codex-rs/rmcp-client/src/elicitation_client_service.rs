@@ -154,7 +154,10 @@ fn openai_form_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::
     })
 }
 
-fn restore_context_meta(mut request: Elicitation, mut context_meta: RequestMetaObject) -> Elicitation {
+fn restore_context_meta(
+    mut request: Elicitation,
+    mut context_meta: RequestMetaObject,
+) -> Elicitation {
     // RMCP lifts JSON-RPC `_meta` into RequestContext before invoking services.
     context_meta.remove(MCP_PROGRESS_TOKEN_META_KEY);
     if context_meta.is_empty() {
@@ -308,7 +311,10 @@ mod tests {
             meta,
             message: "Confirm?".to_string(),
             requested_schema: ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
+                .required_property(
+                    "confirmed",
+                    PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                )
                 .build()
                 .expect("schema should build"),
         }

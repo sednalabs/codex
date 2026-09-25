@@ -1424,7 +1424,8 @@ async fn create_oauth_transport_and_runtime(
         default_headers.clone(),
     ));
     let mut manager =
-        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client).await?;
+        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
+            .await?;
     let metadata = discover_metadata(&manager).await?;
     manager.set_metadata(metadata);
     // OAuthPersistor below installs the request-only token view using the existing

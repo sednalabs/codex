@@ -39,10 +39,10 @@ mod tests {
         fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
             Box::pin(async move {
                 let path = request.request.uri().path().to_string();
-                self.requests.lock().unwrap().push((
-                    request.request.method().to_string(),
-                    path.clone(),
-                ));
+                self.requests
+                    .lock()
+                    .unwrap()
+                    .push((request.request.method().to_string(), path.clone()));
                 if path == "/.well-known/oauth-authorization-server"
                     && let Some(metadata) = &self.metadata
                 {
@@ -52,7 +52,10 @@ mod tests {
                         .body(serde_json::to_vec(metadata).unwrap())
                         .unwrap());
                 }
-                Ok(HttpResponse::builder().status(404).body(Vec::new()).unwrap())
+                Ok(HttpResponse::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap())
             })
         }
     }
@@ -64,10 +67,16 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let manager = AuthorizationManager::new_with_oauth_http_client(
-            "https://oauth.example/mcp", client.clone(),
-        ).await.unwrap();
+            "https://oauth.example/mcp",
+            client.clone(),
+        )
+        .await
+        .unwrap();
 
-        assert!(matches!(discover_metadata(&manager).await, Err(AuthError::NoAuthorizationSupport)));
+        assert!(matches!(
+            discover_metadata(&manager).await,
+            Err(AuthError::NoAuthorizationSupport)
+        ));
         let requests = client.requests.lock().unwrap();
         assert!(!requests.is_empty());
         assert!(requests.iter().all(|(method, path)| method == "GET"
@@ -88,11 +97,15 @@ mod tests {
             metadata: Some(metadata.clone()),
             requests: Mutex::new(Vec::new()),
         });
-        let manager = AuthorizationManager::new_with_oauth_http_client(
-            "https://oauth.example/mcp", client,
-        ).await.unwrap();
+        let manager =
+            AuthorizationManager::new_with_oauth_http_client("https://oauth.example/mcp", client)
+                .await
+                .unwrap();
         let actual = discover_metadata(&manager).await.unwrap();
         let expected: AuthorizationMetadata = serde_json::from_value(metadata).unwrap();
-        assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
     }
 }

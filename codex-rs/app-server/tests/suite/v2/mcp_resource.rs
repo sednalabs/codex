@@ -45,9 +45,9 @@ use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ProtocolVersion;
-use rmcp::model::Resource;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
+use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
@@ -844,7 +844,10 @@ impl ServerHandler for ResourceAppsMcpServer {
         let uri = request.uri;
         if uri == TEST_ELICITATION_RESOURCE_URI {
             let requested_schema = ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
+                .required_property(
+                    "confirmed",
+                    PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                )
                 .build()
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
             let result = context
@@ -856,10 +859,7 @@ impl ServerHandler for ResourceAppsMcpServer {
                 })
                 .await
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
-            assert_eq!(
-                result,
-                ElicitResult::new(ElicitationAction::Decline)
-            );
+            assert_eq!(result, ElicitResult::new(ElicitationAction::Decline));
 
             return Ok(ReadResourceResult::new(vec![
                 ResourceContents::TextResourceContents {

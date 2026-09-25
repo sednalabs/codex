@@ -198,7 +198,7 @@ fn resource_link_block(
         resource = resource.with_description(description);
     }
     serde_json::to_value(ContentBlock::resource_link(resource))
-    .expect("resource link content should serialize")
+        .expect("resource link content should serialize")
 }
 
 #[test]
@@ -963,11 +963,9 @@ fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
             },
         )]),
         resources: vec![Resource::new("file:///docs", "docs").with_title("Docs")],
-        resource_templates: vec![ResourceTemplate::new(
-            "file:///docs/{id}",
-            "doc-template",
-        )
-        .with_title("Doc Template")],
+        resource_templates: vec![
+            ResourceTemplate::new("file:///docs/{id}", "doc-template").with_title("Doc Template"),
+        ],
         auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
     }];
 

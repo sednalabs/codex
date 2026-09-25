@@ -45,8 +45,8 @@ use rmcp::model::BooleanSchema;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
-use rmcp::model::ElicitRequestParams;
 use rmcp::model::CustomRequest;
+use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitationAction;
 use rmcp::model::ElicitationSchema;
 use rmcp::model::InitializeRequestParams;
@@ -105,7 +105,10 @@ async fn mcp_server_form_elicitation_round_trip() -> Result<()> {
     let (request_id, params) = fixture.read_elicitation().await?;
     let requested_schema: McpElicitationSchema = serde_json::from_value(serde_json::to_value(
         ElicitationSchema::builder()
-            .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
+            .required_property(
+                "confirmed",
+                PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+            )
             .build()
             .map_err(anyhow::Error::msg)?,
     )?)?;
@@ -692,7 +695,10 @@ impl ServerHandler for ElicitationAppsMcpServer {
         match self.scenario {
             ElicitationScenario::StandardForm => {
                 let requested_schema = ElicitationSchema::builder()
-                    .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
+                    .required_property(
+                        "confirmed",
+                        PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                    )
                     .build()
                     .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
                 let result = context
@@ -746,10 +752,8 @@ impl ServerHandler for ElicitationAppsMcpServer {
                     .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
                 let result = match result {
                     rmcp::model::ClientResult::CustomResult(result) => result.0,
-                    rmcp::model::ClientResult::ElicitResult(result) => {
-                        serde_json::to_value(result)
-                            .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?
-                    }
+                    rmcp::model::ClientResult::ElicitResult(result) => serde_json::to_value(result)
+                        .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?,
                     result => {
                         return Err(rmcp::ErrorData::internal_error(
                             format!("unexpected OpenAI form response: {result:?}"),
