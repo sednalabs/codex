@@ -7,6 +7,7 @@ use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
+use rmcp::model::CallToolResponse;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParams;
@@ -107,7 +108,7 @@ impl ServerHandler for TestToolServer {
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         match request.name.as_ref() {
             "echo" => {
                 let args: EchoArgs = match request.arguments {
@@ -132,7 +133,7 @@ impl ServerHandler for TestToolServer {
 
                 let mut result = CallToolResult::success(Vec::new());
                 result.structured_content = Some(structured_content);
-                Ok(result)
+                Ok(result.into())
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),

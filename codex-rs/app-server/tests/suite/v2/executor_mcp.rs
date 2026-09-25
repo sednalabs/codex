@@ -26,6 +26,7 @@ use core_test_support::stdio_server_bin;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
@@ -433,7 +434,7 @@ impl ServerHandler for ExecutorHttpMcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let message = request
             .arguments
             .as_ref()
@@ -442,7 +443,8 @@ impl ServerHandler for ExecutorHttpMcpServer {
             .unwrap_or_default();
         Ok(CallToolResult::structured(json!({
             "echo": format!("ECHOING: {message}")
-        })))
+        })
+        .into())
     }
 }
 

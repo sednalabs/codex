@@ -43,6 +43,7 @@ use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::BooleanSchema;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
 use rmcp::model::CustomRequest;
@@ -691,7 +692,7 @@ impl ServerHandler for ElicitationAppsMcpServer {
         &self,
         _request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         match self.scenario {
             ElicitationScenario::StandardForm => {
                 let requested_schema = ElicitationSchema::builder()
@@ -722,7 +723,7 @@ impl ServerHandler for ElicitationAppsMcpServer {
                     ElicitationAction::Cancel => "cancelled",
                     _ => "cancelled",
                 };
-                Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into())
             }
             ElicitationScenario::OpenAiForm => {
                 let result = context
@@ -772,7 +773,8 @@ impl ServerHandler for ElicitationAppsMcpServer {
                 );
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     "accepted monthly-review",
-                )]))
+                )])
+                .into())
             }
         }
     }

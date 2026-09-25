@@ -40,6 +40,7 @@ use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::BooleanSchema;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
 use rmcp::model::ElicitRequestParams;
@@ -623,7 +624,7 @@ impl ServerHandler for ToolAppsMcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         assert_eq!(request.name.as_ref(), TEST_TOOL_NAME);
         let message = request
             .arguments
@@ -648,7 +649,7 @@ impl ServerHandler for ToolAppsMcpServer {
             }));
             result.content = vec![ContentBlock::text(large_text)];
             result.meta = Some(meta);
-            return Ok(result);
+            return Ok(result.into());
         }
 
         if message == ELICITATION_TRIGGER_MESSAGE {
@@ -682,7 +683,7 @@ impl ServerHandler for ToolAppsMcpServer {
                 ElicitationAction::Cancel => "cancelled",
                 _ => "cancelled",
             };
-            return Ok(CallToolResult::success(vec![ContentBlock::text(output)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into());
         }
 
         if message == URL_ELICITATION_TRIGGER_MESSAGE {
@@ -705,7 +706,7 @@ impl ServerHandler for ToolAppsMcpServer {
                 ElicitationAction::Cancel => "cancelled",
                 _ => "cancelled",
             };
-            return Ok(CallToolResult::success(vec![ContentBlock::text(output)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into());
         }
 
         let mut result = CallToolResult::structured(json!({
@@ -714,7 +715,7 @@ impl ServerHandler for ToolAppsMcpServer {
         }));
         result.content = vec![ContentBlock::text(format!("echo: {message}"))];
         result.meta = Some(meta);
-        Ok(result)
+        Ok(result.into())
     }
 }
 

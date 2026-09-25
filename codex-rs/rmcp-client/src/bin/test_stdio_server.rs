@@ -13,6 +13,7 @@ use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
+use rmcp::model::CallToolResponse;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::InitializeResult;
@@ -581,21 +582,21 @@ impl ServerHandler for TestToolServer {
         &self,
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         match request.name.as_ref() {
             "client_capabilities" => Ok(Self::structured_result(json!({
                 "supportsOpenaiFormElicitation": self
                     .supports_openai_form_elicitation
                     .load(Ordering::Relaxed),
-            }))),
+            })).into()),
             "sandbox_meta" => Ok(Self::structured_result(serde_json::Value::Object(
                 context.meta.0.0,
-            ))),
+            )).into()),
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                Ok(Self::structured_result(json!({ "cwd": cwd })))
+                Ok(Self::structured_result(json!({ "cwd": cwd })).into())
             }
             "thread_hint" => {
                 let thread_id = context
@@ -613,7 +614,7 @@ impl ServerHandler for TestToolServer {
                     rmcp::model::ContentBlock::text(
                         "unstructured notes/thread_hint fixture result",
                     ),
-                ]))
+                ]).into())
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -638,7 +639,7 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                Ok(Self::structured_result(structured_content))
+                Ok(Self::structured_result(structured_content).into())
             }
             "encrypted_output" => {
                 let mut meta = MetaObject::new();
@@ -650,7 +651,7 @@ impl ServerHandler for TestToolServer {
                     ),
                 ]);
                 result.structured_content = Some(json!({"encrypted_output": "ignored"}));
-                Ok(result)
+                Ok(result.into())
             }
             "image" => {
                 // Read a data URL (e.g. data:image/png;base64,AAA...) from env and convert to
@@ -671,19 +672,19 @@ impl ServerHandler for TestToolServer {
 
                 Ok(CallToolResult::success(vec![
                     rmcp::model::ContentBlock::image(data_b64, mime_type),
-                ]))
+                ]).into())
             }
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;
-                Self::image_scenario_result(args)
+                Self::image_scenario_result(args).map(Into::into)
             }
             "sync" => {
                 let args = Self::parse_call_args::<SyncArgs>(&request, "sync")?;
-                Self::sync_result(args).await
+                Self::sync_result(args).await.map(Into::into)
             }
             "sync_readonly" => {
                 let args = Self::parse_call_args::<SyncArgs>(&request, "sync_readonly")?;
-                Self::sync_result(args).await
+                Self::sync_result(args).await.map(Into::into)
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),

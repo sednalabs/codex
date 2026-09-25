@@ -21,7 +21,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
-    use oauth2::HttpResponse;
+    use axum::http::Response;
     use pretty_assertions::assert_eq;
     use rmcp::transport::auth::OAuthHttpClient;
     use rmcp::transport::auth::OAuthHttpClientFuture;
@@ -46,13 +46,13 @@ mod tests {
                 if path == "/.well-known/oauth-authorization-server"
                     && let Some(metadata) = &self.metadata
                 {
-                    return Ok(HttpResponse::builder()
+                    return Ok(Response::builder()
                         .status(200)
                         .header("content-type", "application/json")
                         .body(serde_json::to_vec(metadata).unwrap())
                         .unwrap());
                 }
-                Ok(HttpResponse::builder()
+                Ok(Response::builder()
                     .status(404)
                     .body(Vec::new())
                     .unwrap())
