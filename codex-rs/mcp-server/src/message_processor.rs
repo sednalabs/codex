@@ -164,6 +164,14 @@ impl MessageProcessor {
                 self.handle_unsupported_request(request_id, "tasks/cancel")
                     .await;
             }
+            ClientRequest::DiscoverRequest(_) => {
+                self.handle_unsupported_request(request_id, "server/discover")
+                    .await;
+            }
+            ClientRequest::SubscriptionsListenRequest(_) => {
+                self.handle_unsupported_request(request_id, "subscriptions/listen")
+                    .await;
+            }
             ClientRequest::CustomRequest(custom) => {
                 let method = custom.method.clone();
                 self.outgoing
@@ -175,6 +183,10 @@ impl MessageProcessor {
                             Some(json!({ "method": method })),
                         ),
                     )
+                    .await;
+            }
+            _ => {
+                self.handle_unsupported_request(request_id, "unknown")
                     .await;
             }
         }
