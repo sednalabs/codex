@@ -1,0 +1,66 @@
+name: _p7 memory package test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - repair/w14079-p7-memory-test
+
+jobs:
+  memory-package:
+    name: codex-memories-write hosted tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact source candidate and base
+        shell: bash
+        env:
+          SOURCE_CANDIDATE: 91ff234613b2c53c148b8b42c51c8682b3a319c7
+          BASE_SHA: 0d0f73e7fd44ec0d5bc2dc0ba5625a8559ed8a9c
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$SOURCE_CANDIDATE"
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Test memories write package
+        run: cargo test -p codex-memories-write --lib
+        env:
+          RUST_MIN_STACK: "8388608"
+
+      - name: Write target-bound manifest
+        if: always() && !cancelled()
+        shell: bash
+        env:
+          SOURCE_CANDIDATE: 91ff234613b2c53c148b8b42c51c8682b3a319c7
+          BASE_SHA: 0d0f73e7fd44ec0d5bc2dc0ba5625a8559ed8a9c
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/p7-memory-test"
+          {
+            printf 'repository=https://github.com/sednalabs/codex\n'
+            printf 'workflow_head=%s\n' "$GITHUB_SHA"
+            printf 'source_candidate=%s\n' "$SOURCE_CANDIDATE"
+            printf 'base=%s\n' "$BASE_SHA"
+            printf 'command=cargo test -p codex-memories-write --lib\n'
+          } > "$RUNNER_TEMP/p7-memory-test/manifest.txt"
+
+      - name: Upload target-bound manifest
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: p7-memory-package-test-91ff234613
+          path: ${{ runner.temp }}/p7-memory-test/manifest.txt
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
