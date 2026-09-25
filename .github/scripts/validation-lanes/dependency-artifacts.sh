@@ -10,6 +10,14 @@ source_tree="$(git rev-parse HEAD^{tree})"
   cargo fmt --all
 )
 just bazel-lock-update
+python3 - <<'VERIFY'
+import tomllib
+from pathlib import Path
+lock = tomllib.loads(Path("codex-rs/Cargo.lock").read_text())
+versions = [p["version"] for p in lock["package"] if p["name"] == "rmcp"]
+if versions != ["3.2.0"]:
+    raise SystemExit(f"Unexpected generated MCP SDK versions: {versions}")
+VERIFY
 mkdir -p dist/dependency-artifacts
 git diff --binary -- codex-rs MODULE.bazel.lock > dist/dependency-artifacts/generated.patch
 cp codex-rs/Cargo.lock MODULE.bazel.lock dist/dependency-artifacts/
