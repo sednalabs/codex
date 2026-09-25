@@ -5,8 +5,6 @@ use codex_git_utils::diff_since_latest_init;
 use codex_git_utils::ensure_git_baseline_repository;
 use codex_git_utils::reset_git_repository;
 use codex_protocol::MemoryVersion;
-#[cfg(windows)]
-use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
 
 /// Prepares the memory directory for git-baseline diffing.
