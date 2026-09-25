@@ -1578,21 +1578,12 @@ jobs:
             prerelease_flag+=(--prerelease)
           fi
 
-          notes_flag=()
           guidance_url="https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow"
-          verifier_command="scripts/install_sedna_release_asset --repository ${GH_REPO} --release-tag ${RELEASE_TAG} --dry-run"
+          release_note_suffix=""
           if [[ "${MACOS_RELEASE_MODE}" == "preview" ]]; then
-            preview_notes="### Intel macOS preview (x86_64)"$'\n\n'
-            preview_notes+="- **Target:** Intel x86_64 macOS with a 12.0 minimum deployment target. Apple Silicon is not included; Monterey runtime smoke is not claimed."
-            preview_notes+=$'\n'"- **Trust:** Ad-hoc signed only — **not Developer ID signed or notarized by Apple**. This preview may be blocked by Gatekeeper and is not an official supported macOS distribution."
-            preview_notes+=$'\n'"- **Safety:** Before running it, follow [release verification guidance](${guidance_url}). Run \`${verifier_command} --allow-prerelease --macos-preview\` in dry-run mode. Proceed only after success; never disable Gatekeeper or bypass checksum, signature, or provenance failures."
-            notes_flag+=(--notes "${preview_notes}")
+            release_note_suffix="Intel macOS preview: macOS 12+ on Intel x86_64 only; ad-hoc signed, not Apple-notarized, and not an official supported macOS distribution (Monterey runtime smoke is not claimed). See [installation and verification guidance](${guidance_url})."
           elif [[ "${MACOS_RELEASE_MODE}" == "unnotarized" ]]; then
-            unnotarized_notes="### Intel macOS unnotarized asset (x86_64)"$'\n\n'
-            unnotarized_notes+="- **Target:** Intel x86_64 macOS with a 12.0 minimum deployment target. Apple Silicon is not included; Monterey runtime smoke is not claimed."
-            unnotarized_notes+=$'\n'"- **Trust:** Ad-hoc signed only — **not Developer ID signed or notarized by Apple**. This asset may be blocked by Gatekeeper and is not an official supported macOS distribution."
-            unnotarized_notes+=$'\n'"- **Safety:** Before running it, follow [release verification guidance](${guidance_url}). Run \`${verifier_command} --macos-unnotarized\` in dry-run mode. Proceed only after success; never disable Gatekeeper or bypass checksum, signature, or provenance failures."
-            notes_flag+=(--notes "${unnotarized_notes}")
+            release_note_suffix="Intel macOS unnotarized asset: macOS 12+ on Intel x86_64 only; ad-hoc signed, not Apple-notarized, and not an official supported macOS distribution (Monterey runtime smoke is not claimed). See [installation and verification guidance](${guidance_url})."
           fi
 
           gh release create "${RELEASE_TAG}" "${assets[@]}" \
@@ -1601,8 +1592,15 @@ jobs:
             --generate-notes \
             --target "${TARGET_COMMIT}" \
             "${prerelease_flag[@]}" \
-            "${notes_flag[@]}" \
             "${draft_flag[@]}"
+
+          if [[ -n "${release_note_suffix}" ]]; then
+            release_id="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json databaseId --jq .databaseId)"
+            generated_body="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json body --jq .body)"
+            release_body="${generated_body}"$'\n\n'"${release_note_suffix}"
+            jq -n --arg body "${release_body}" '{body: $body}' \
+              | gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" --input - >/dev/null
+          fi
 
       - name: Dispatch release asset verifier
         if: ${{ needs.resolve.outputs.draft != 'true' }}
