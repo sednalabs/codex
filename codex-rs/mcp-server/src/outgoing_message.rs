@@ -265,7 +265,9 @@ mod tests {
         ] {
             let (sender, mut receiver) = mpsc::unbounded_channel();
             let outgoing = OutgoingMessageSender::new(sender);
-            outgoing.send_tool_response(RequestId::Number(42), response).await;
+            outgoing
+                .send_tool_response(RequestId::Number(42), response)
+                .await;
             let message: OutgoingJsonRpcMessage = receiver
                 .recv()
                 .await
