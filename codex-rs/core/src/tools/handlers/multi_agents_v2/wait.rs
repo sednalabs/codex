@@ -1454,8 +1454,8 @@ mod tests {
             .expect("reviewer path");
         let parent = AgentPath::try_from("/root/staff_r2_signing").expect("parent path");
 
-        assert!(reverse_wait_error(None, Some(&parent)).is_none());
-        assert!(reverse_wait_error(Some(&reviewer), None).is_none());
+        assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&parent)).is_none());
+        assert!(reverse_wait_error(Some(&reviewer), /*target_agent_path*/ None).is_none());
     }
 
     #[test]

@@ -4766,7 +4766,7 @@ async fn multi_agent_v2_wait_agent_rejects_reverse_ancestor_target_but_allows_de
     session
         .services
         .agent_control
-        .register_session_root(root.thread_id, None);
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
 
     let reviewer_path = AgentPath::try_from("/root/reviewer").expect("reviewer path");
     let reviewer_id = session
