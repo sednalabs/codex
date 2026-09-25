@@ -5,6 +5,7 @@ use crate::stage_two;
 use crate::workspace_diff;
 use anyhow::Context;
 use codex_core::config::Config;
+use codex_protocol::MemoryVersion;
 use codex_protocol::user_input::UserInput;
 use codex_state::MemoryStore;
 use codex_state::Phase2AttestedBaseline;
@@ -53,13 +54,14 @@ pub(super) async fn capture_prepared_context(
 pub(super) async fn validate_completed_run(
     root: &Path,
     context: &Phase2AttestationContext,
+    version: MemoryVersion,
 ) -> anyhow::Result<String> {
     let observed_root_key = memory_root_key(root).await?;
     anyhow::ensure!(
         observed_root_key == context.memory_root_key,
         "memory root changed during phase-2 consolidation"
     );
-    validate_required_outputs(root).await?;
+    validate_required_outputs(root, version).await?;
     current_output_tree_sha256(root).await
 }
 
@@ -109,31 +111,30 @@ pub(super) async fn memory_root_key(root: &Path) -> anyhow::Result<String> {
     .await?
 }
 
-async fn validate_required_outputs(root: &Path) -> anyhow::Result<()> {
-    let index_path = root.join(MEMORY_INDEX_FILENAME);
-    let summary_path = root.join(MEMORY_SUMMARY_FILENAME);
+async fn validate_required_outputs(root: &Path, version: MemoryVersion) -> anyhow::Result<()> {
+    if version == MemoryVersion::V1 {
+        let index_path = root.join(MEMORY_INDEX_FILENAME);
+        let index = tokio::fs::read_to_string(&index_path)
+            .await
+            .with_context(|| format!("read required memory index {}", index_path.display()))?;
+        anyhow::ensure!(
+            !index.trim().is_empty(),
+            "{MEMORY_INDEX_FILENAME} must not be empty after phase-2 consolidation"
+        );
+    }
 
-    let index = tokio::fs::read_to_string(&index_path)
-        .await
-        .with_context(|| format!("read required memory index {}", index_path.display()))?;
-    anyhow::ensure!(
-        !index.trim().is_empty(),
-        "{} must not be empty after phase-2 consolidation",
-        MEMORY_INDEX_FILENAME
-    );
+    let summary_path = root.join(MEMORY_SUMMARY_FILENAME);
 
     let summary = tokio::fs::read_to_string(&summary_path)
         .await
         .with_context(|| format!("read required memory summary {}", summary_path.display()))?;
     anyhow::ensure!(
         !summary.trim().is_empty(),
-        "{} must not be empty after phase-2 consolidation",
-        MEMORY_SUMMARY_FILENAME
+        "{MEMORY_SUMMARY_FILENAME} must not be empty after phase-2 consolidation"
     );
     anyhow::ensure!(
         summary.lines().next() == Some("v1"),
-        "{} must start with schema line `v1`",
-        MEMORY_SUMMARY_FILENAME
+        "{MEMORY_SUMMARY_FILENAME} must start with schema line `v1`"
     );
 
     Ok(())

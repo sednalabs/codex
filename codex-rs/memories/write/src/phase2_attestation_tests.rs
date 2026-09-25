@@ -1,5 +1,6 @@
 use super::phase2_attestation;
 use crate::workspace_diff;
+use codex_protocol::MemoryVersion;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -41,7 +42,7 @@ async fn completed_run_requires_memory_summary_schema_line() -> anyhow::Result<(
         consolidator_sha256: "consolidator".to_string(),
         selected_count: 0,
     };
-    let err = phase2_attestation::validate_completed_run(root, &context)
+    let err = phase2_attestation::validate_completed_run(root, &context, MemoryVersion::V1)
         .await
         .expect_err("schema-less memory summary should be rejected");
 
@@ -71,7 +72,7 @@ async fn completed_run_rejects_symlinks_in_attested_tree() -> anyhow::Result<()>
             consolidator_sha256: "consolidator".to_string(),
             selected_count: 0,
         };
-        let err = phase2_attestation::validate_completed_run(root, &context)
+        let err = phase2_attestation::validate_completed_run(root, &context, MemoryVersion::V1)
             .await
             .expect_err("symlinked output should be rejected");
         assert!(

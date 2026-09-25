@@ -1,5 +1,4 @@
 use crate::build_consolidation_prompt;
-use crate::memory_root;
 use crate::metrics::MEMORY_PHASE_TWO_E2E_MS;
 use crate::metrics::MEMORY_PHASE_TWO_INPUT;
 use crate::metrics::MEMORY_PHASE_TWO_JOBS;
@@ -53,7 +52,9 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
         // This should not happen.
         return;
     };
-    let root = memory_root(&config.codex_home);
+    let root = config
+        .codex_home
+        .join(config.memories.version.directory_name());
     let max_raw_memories = config.memories.max_raw_memories_for_consolidation;
     let max_unused_days = config.memories.max_unused_days;
 
@@ -153,6 +154,8 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
             success_status,
         )
         .await;
+        drop(phase_two_e2e_timer);
+        context.record_storage_size(&root).await;
         return;
     }
 
@@ -353,7 +356,9 @@ mod agent {
     use super::*;
 
     pub(super) fn get_config(config: &Config, preferred_model: &str) -> Option<Config> {
-        let root = memory_root(&config.codex_home);
+        let root = config
+            .codex_home
+            .join(config.memories.version.directory_name());
         let mut agent_config = config.clone();
 
         agent_config.cwd = root.clone();
@@ -490,6 +495,7 @@ mod agent {
                     let output_tree_sha256 = match phase2_attestation::validate_completed_run(
                         &memory_root,
                         &attestation_context,
+                        version,
                     )
                     .await
                     {
@@ -525,7 +531,7 @@ mod agent {
                     if let Err(err) = reset_memory_workspace_baseline(&memory_root).await {
                         tracing::error!("failed resetting memory workspace baseline: {err}");
                         job::failed(context.as_ref(), &db, &claim, "failed_workspace_commit").await;
-                    } else if !job::succeed(
+                    } else if job::succeed(
                         context.as_ref(),
                         &db,
                         &claim,
@@ -535,6 +541,9 @@ mod agent {
                     )
                     .await
                     {
+                        drop(phase_two_e2e_timer);
+                        context.record_storage_size(&memory_root).await;
+                    } else {
                         tracing::error!(
                             "failed marking global memory consolidation job succeeded after resetting workspace baseline"
                         );
