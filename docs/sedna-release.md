@@ -28,7 +28,12 @@ from upstream OpenAI releases.
   `version_policy`, `release_channel`, `release_marker`, `upstream_track`,
   `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
   `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
-  the compact `build_provenance` / `version_display` strings
+  `workflow_sha`, and the compact `build_provenance` / `version_display` strings. `target_commit`
+  identifies the source tree being released; `workflow_sha` identifies the protected workflow
+  revision that signed the release. The producer currently requires these commits to be equal
+  before building because GitHub's hosted attestation source digest is the workflow host commit;
+  consumers still verify each against its corresponding provenance claim rather than treating
+  the fields as interchangeable.
 - Linux `x86_64` (`x86_64-unknown-linux-gnu`), Linux Arm64
   (`aarch64-unknown-linux-gnu`), and Intel macOS `x86_64` (`x86_64-apple-darwin`) are the officially
   supported Sedna release targets. Apple Silicon, Windows, and other upstream targets remain

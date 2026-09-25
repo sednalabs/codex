@@ -8716,6 +8716,7 @@ class HelperScriptTests(unittest.TestCase):
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
         target_commit = "a" * 40
+        workflow_sha = "b" * 40
         target = (
             "aarch64-unknown-linux-gnu"
             if arch == "aarch64"
@@ -8777,9 +8778,14 @@ class HelperScriptTests(unittest.TestCase):
                 ),
                 "repository": "sednalabs/codex",
                 "target_commit": target_commit,
+                "workflow_sha": (
+                    "c" * 40 if failure == "wrong_workflow_sha" else workflow_sha
+                ),
             }
             if failure == "legacy_x86":
                 metadata.pop("target_commit")
+            elif failure == "missing_workflow_sha":
+                metadata.pop("workflow_sha")
             (root / metadata_name).write_text(json.dumps(metadata), encoding="utf-8")
             (root / sbom_name).write_text(
                 json.dumps(
@@ -9021,7 +9027,7 @@ if [[ ${1:-} == attestation && ${2:-} == verify && ${3:-} != --help ]]; then
       shift
     fi
   done
-  if [[ "$deny_self_hosted" != true || ! -s "$bundle" || "$source_digest" != "$EXPECTED_SOURCE_COMMIT" || "$signer_digest" != "$EXPECTED_SOURCE_COMMIT" ]]; then
+  if [[ "$deny_self_hosted" != true || ! -s "$bundle" || "$source_digest" != "$EXPECTED_SOURCE_COMMIT" || "$signer_digest" != "$EXPECTED_WORKFLOW_SHA" ]]; then
     exit 98
   fi
 fi
@@ -9046,7 +9052,7 @@ while [[ $# -gt 0 ]]; do
     shift
   fi
 done
-if [[ "$workflow_sha" != "$EXPECTED_SOURCE_COMMIT" ]]; then
+if [[ "$workflow_sha" != "$EXPECTED_WORKFLOW_SHA" ]]; then
   exit 99
 fi
 """,
@@ -9105,6 +9111,7 @@ fi
                 ),
                 "FAKE_UNAME_ARCH": arch,
                 "EXPECTED_SOURCE_COMMIT": target_commit,
+                "EXPECTED_WORKFLOW_SHA": workflow_sha,
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
@@ -9203,6 +9210,10 @@ fi
                 self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
                 self.assertIn(f"for {target}", proc.stdout)
 
+    def test_sedna_release_installer_rejects_workflow_sha_mismatch(self) -> None:
+        proc = self.run_sedna_installer_fixture("wrong_workflow_sha")
+        self.assertNotEqual(proc.returncode, 0)
+
     def test_sedna_release_installer_serializes_activation_before_mutation(self) -> None:
         script = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
             encoding="utf-8"
@@ -9265,6 +9276,7 @@ fi
         cases = {
             "missing_sbom": "missing required assets",
             "malformed_metadata": "metadata target",
+            "missing_workflow_sha": "metadata workflow_sha",
             "malformed_sbom": "not an SPDX 2.3 document",
             "checksum_mismatch": "checksum mismatch",
             "unsafe_archive": "refusing unexpected archive member",
@@ -9732,14 +9744,7 @@ fi
             },
             {"default": "false", "type": "boolean"},
         )
-        prior_target_input = inputs.get("allow_prior_main_target") or {}
-        self.assertEqual(
-            {
-                "default": prior_target_input.get("default"),
-                "type": prior_target_input.get("type"),
-            },
-            {"default": "false", "type": "boolean"},
-        )
+        self.assertNotIn("allow_prior_main_target", inputs)
         self.assertEqual(
             {
                 "default": macos_input.get("default"),
@@ -9839,27 +9844,20 @@ fi
             (resolve_metadata_step.get("env") or {}).get("HOST_SHA"),
             "${{ github.sha }}",
         )
+        self.assertEqual(
+            (resolve_metadata_step.get("env") or {}).get("WORKFLOW_SHA"),
+            "${{ github.workflow_sha || github.sha }}",
+        )
         self.assertIn(
             'if [[ "${target_sha}" != "${HOST_SHA}" ]]',
             resolve_metadata_step.get("run") or "",
         )
         resolve_script = resolve_named_steps["Resolve release metadata"].get("run") or ""
-        self.assertIn('INPUT_ALLOW_PRIOR_MAIN_TARGET', resolve_metadata_step.get("env") or {})
-        self.assertIn('"${INPUT_ALLOW_PRIOR_MAIN_TARGET}" != "true"', resolve_script)
-        self.assertIn('"${REF_TYPE}" != "branch"', resolve_script)
-        self.assertIn('"${REF_NAME}" != "main"', resolve_script)
-        self.assertIn(
-            'refs/remotes/origin/main^{commit}',
-            resolve_script,
-        )
-        self.assertIn('git merge-base --is-ancestor', resolve_script)
-        self.assertIn('.github/workflows/sedna-release.yml|.github/scripts/test_ci_planners.py', resolve_script)
-        self.assertIn(
-            'changed_paths="$(git diff --no-renames --name-only "${target_sha}" "${host_main_sha}")" || {',
-            resolve_script,
-        )
-        self.assertIn('done <<< "${changed_paths}"', resolve_script)
-        self.assertIn('target_sha="$(git rev-parse --verify "${target_sha}^{commit}")"', resolve_script)
+        self.assertNotIn("INPUT_ALLOW_PRIOR_MAIN_TARGET", resolve_metadata_step.get("env") or {})
+        self.assertNotIn("INPUT_ALLOW_PRIOR_MAIN_TARGET", resolve_script)
+        self.assertIn("refusing an unattestable differing-source release", resolve_script)
+        self.assertIn('"${target_commit}" != "${HOST_SHA}"', resolve_script)
+        self.assertIn('"${target_commit}" != "${WORKFLOW_SHA}"', resolve_script)
         self.assertIn(
             'INPUT_ALLOW_MARKERLESS_PRERELEASE',
             resolve_metadata_step.get("env") or {},
@@ -10309,10 +10307,10 @@ fi
         )[1]
         self.assertIn(".stderr(Stdio::inherit())", sedna_updater)
         self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
-        self.assertEqual(installer.count('--signer-digest "$expected_source_commit"'), 3)
+        self.assertEqual(installer.count('--signer-digest "$expected_workflow_sha"'), 3)
         self.assertEqual(
             installer.count(
-                '--certificate-github-workflow-sha "$expected_source_commit"'
+                '--certificate-github-workflow-sha "$expected_workflow_sha"'
             ),
             2,
         )
@@ -10369,6 +10367,7 @@ fi
         }
         stage_script = release_named_steps["Stage release assets"].get("run") or ""
         self.assertIn('install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"', stage_script)
+        self.assertIn('"workflow_sha": os.environ["WORKFLOW_SHA"]', stage_script)
         attest_subjects = (
             release_named_steps["Attest Linux archive and SBOM provenance"].get("with")
             or {}
