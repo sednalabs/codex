@@ -79,10 +79,10 @@ def rust_formatter_group(*, check: bool) -> FormatterGroup:
         str(codex_root / "rustfmt.toml"),
         "--config",
         "imports_granularity=Item,skip_children=true",
-        *(relative_path for _, relative_path in rust_files),
     ]
     if check:
         args.append("--check")
+    args.extend(relative_path for _, relative_path in rust_files)
     command = Command(tuple(args), codex_root)
     return FormatterGroup("Rust", (command,))
 
