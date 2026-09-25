@@ -432,7 +432,6 @@ mod agent {
         phase_two_e2e_timer: Option<codex_otel::Timer>,
     ) {
         tokio::spawn(async move {
-            let _phase_two_e2e_timer = phase_two_e2e_timer;
             let SpawnedConsolidationAgent { thread_id, thread } = agent;
 
             // Loop the agent until we have the final status.
