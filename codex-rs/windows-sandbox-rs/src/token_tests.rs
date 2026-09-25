@@ -69,15 +69,17 @@ fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
 }
 
 #[test]
-fn write_restricted_token_uses_restricted_code_not_everyone() -> Result<()> {
+fn write_restricted_token_uses_capabilities_not_ambient_sids() -> Result<()> {
     let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
     let base_token = unsafe { get_current_token_for_restriction()? };
     let restricted_token = unsafe {
         create_workspace_write_token_with_caps_from(base_token, &[capability_sid.as_ptr()])?
     };
-    let restricted_code = unsafe { well_known_sid(WinRestrictedCodeSid)? };
     let everyone = unsafe { world_sid()? };
+    let capability_is_restricting =
+        unsafe { token_has_restricting_sid(restricted_token, capability_sid.as_ptr()) };
     let has_restricted_code = unsafe {
+        let restricted_code = well_known_sid(WinRestrictedCodeSid)?;
         token_has_restricting_sid(restricted_token, restricted_code.as_ptr() as *mut c_void)
     };
     let has_everyone =
@@ -87,7 +89,8 @@ fn write_restricted_token_uses_restricted_code_not_everyone() -> Result<()> {
         CloseHandle(base_token);
     }
 
-    assert!(has_restricted_code?);
+    assert!(capability_is_restricting?);
+    assert!(!has_restricted_code?);
     assert!(!has_everyone?);
     Ok(())
 }

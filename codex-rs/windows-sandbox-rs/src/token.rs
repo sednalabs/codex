@@ -477,15 +477,13 @@ unsafe fn create_token_with_caps_from(
     let psid_logon = logon_sid_bytes.as_mut_ptr() as *mut c_void;
     let mut everyone = world_sid()?;
     let psid_everyone = everyone.as_mut_ptr() as *mut c_void;
-    let mut restricted_code = well_known_sid(WinRestrictedCodeSid)?;
-    let psid_restricted_code = restricted_code.as_mut_ptr() as *mut c_void;
-
-    // Exact order: Capabilities..., ExtraRestricting..., Restricted Code, Logon.
-    // Everyone remains in the default DACL below for IPC compatibility, but must
-    // not be a restricting SID: doing so would grant a write-restricted token
-    // the broad Everyone access present on unrelated files and directories.
+    // Restricting SIDs are the capability boundary for WRITE_RESTRICTED.  Do not
+    // append ambient identities such as Restricted Code or the logon SID here:
+    // those identities commonly occur on unrelated user-created objects and
+    // would make the write check succeed outside the configured roots.  The
+    // logon SID remains in the default DACL below for IPC compatibility.
     let mut entries: Vec<SID_AND_ATTRIBUTES> =
-        vec![std::mem::zeroed(); psid_capabilities.len() + extra_restricting_sids.len() + 2];
+        vec![std::mem::zeroed(); psid_capabilities.len() + extra_restricting_sids.len()];
     for (i, psid) in psid_capabilities.iter().enumerate() {
         entries[i].Sid = *psid;
         entries[i].Attributes = 0;
@@ -495,13 +493,6 @@ unsafe fn create_token_with_caps_from(
         entries[extras_idx + i].Sid = *psid;
         entries[extras_idx + i].Attributes = 0;
     }
-    let restricted_code_idx = extras_idx + extra_restricting_sids.len();
-    entries[restricted_code_idx].Sid = psid_restricted_code;
-    entries[restricted_code_idx].Attributes = 0;
-    let logon_idx = restricted_code_idx + 1;
-    entries[logon_idx].Sid = psid_logon;
-    entries[logon_idx].Attributes = 0;
-
     let mut new_token: HANDLE = 0;
     let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
     let ok = CreateRestrictedToken(
