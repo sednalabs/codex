@@ -443,7 +443,7 @@ impl ServerHandler for ExecutorHttpMcpServer {
             .unwrap_or_default();
         Ok(CallToolResult::structured(json!({
             "echo": format!("ECHOING: {message}")
-        })
+        }))
         .into())
     }
 }
