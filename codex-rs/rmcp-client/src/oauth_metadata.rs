@@ -81,6 +81,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn advertised_metadata_with_missing_or_wrong_issuer_is_refused() {
+        for issuer in [None, Some("https://different.example")] {
+            let mut metadata = json!({
+                "authorization_endpoint": "https://oauth.example/published/authorize",
+                "token_endpoint": "https://oauth.example/published/token",
+            });
+            if let Some(issuer) = issuer {
+                metadata["issuer"] = json!(issuer);
+            }
+            let client = Arc::new(MetadataClient {
+                metadata: Some(metadata),
+                requests: Mutex::new(Vec::new()),
+            });
+            let manager = AuthorizationManager::new_with_oauth_http_client(
+                "https://oauth.example/mcp",
+                client.clone(),
+            )
+            .await
+            .unwrap();
+            let error = discover_metadata(&manager).await.unwrap_err();
+            match issuer {
+                None => assert!(matches!(
+                    error,
+                    AuthError::AuthorizationServerMissingIssuer { expected_issuer }
+                        if expected_issuer == "https://oauth.example/"
+                )),
+                Some(issuer) => assert!(matches!(
+                    error,
+                    AuthError::AuthorizationServerMismatch {
+                        expected_issuer,
+                        received_issuer,
+                    } if expected_issuer == "https://oauth.example/" && received_issuer == issuer
+                )),
+            }
+            assert!(client.requests.lock().unwrap().iter().all(|(method, path)| {
+                method == "GET"
+                    && !["/published/authorize", "/published/token"].contains(&path.as_str())
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn advertised_metadata_is_preserved() {
         let metadata = json!({
             "authorization_endpoint": "https://oauth.example/published/authorize",

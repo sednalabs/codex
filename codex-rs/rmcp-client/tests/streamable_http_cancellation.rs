@@ -8,9 +8,9 @@ use axum::body::Body;
 use axum::extract::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HeaderName;
 use axum::http::header::HeaderValue;
+use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::post;
 use pretty_assertions::assert_eq;
@@ -83,23 +83,19 @@ impl ServerState {
     }
 }
 
-async fn spawn_server() -> (ServerState, String, tokio::task::JoinHandle<()>) {
+async fn spawn_server() -> anyhow::Result<(ServerState, String, tokio::task::JoinHandle<()>)> {
     let state = ServerState::default();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind cancellation test server");
-    let address = listener
-        .local_addr()
-        .expect("read cancellation test address");
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
     let router = Router::new()
         .route("/mcp", post(handle_mcp))
         .with_state(state.clone());
     let task = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("serve cancellation test server");
+        if let Err(error) = axum::serve(listener, router).await {
+            tracing::error!(%error, "cancellation test server stopped");
+        }
     });
-    (state, format!("http://{address}"), task)
+    Ok((state, format!("http://{address}"), task))
 }
 
 async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
@@ -119,10 +115,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 state.cancelled.lock().await.push(request.clone());
                 state.cancelled_notify.notify_one();
             }
-            Response::builder()
-                .status(StatusCode::ACCEPTED)
-                .body(Body::empty())
-                .expect("valid notification response")
+            (StatusCode::ACCEPTED, Body::empty()).into_response()
         }
         Some("tools/call") => {
             state.observed_requests.lock().await.push(request.clone());
@@ -167,13 +160,8 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
 }
 
 fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Response {
-    let body = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-        .expect("serialize cancellation test response");
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .expect("valid JSON response");
+    let mut response = Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response();
+    *response.status_mut() = StatusCode::OK;
     if include_session {
         response
             .headers_mut()
@@ -188,7 +176,7 @@ async fn initialized_client(base_url: &str) -> anyhow::Result<Arc<codex_rmcp_cli
 
 #[tokio::test]
 async fn blocked_posts_do_not_starve_an_independent_read() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await;
+    let (state, base_url, server) = spawn_server().await?;
     let client = initialized_client(&base_url).await?;
 
     let mut blocked = Vec::new();
@@ -226,7 +214,7 @@ async fn blocked_posts_do_not_starve_an_independent_read() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn timed_out_post_sends_matching_cancellation_and_reclaims_capacity() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await;
+    let (state, base_url, server) = spawn_server().await?;
     let client = initialized_client(&base_url).await?;
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
@@ -277,7 +265,7 @@ async fn timed_out_post_sends_matching_cancellation_and_reclaims_capacity() -> a
 
 #[tokio::test]
 async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await;
+    let (state, base_url, server) = spawn_server().await?;
     let client = initialized_client(&base_url).await?;
     let mut blocked = Vec::new();
     for _ in 0..BLOCKED_REQUESTS {
@@ -344,7 +332,7 @@ async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn timed_out_mutating_call_is_not_replayed() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await;
+    let (state, base_url, server) = spawn_server().await?;
     let client = initialized_client(&base_url).await?;
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
@@ -374,7 +362,7 @@ async fn timed_out_mutating_call_is_not_replayed() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await;
+    let (state, base_url, server) = spawn_server().await?;
     let client = initialized_client(&base_url).await?;
     let task_client = client.clone();
     let request = tokio::spawn(async move {

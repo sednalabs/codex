@@ -608,46 +608,12 @@ mod tests {
         }
     }
 
-    struct DeviceOnlyHttpClient;
-
-    impl HttpClient for DeviceOnlyHttpClient {
-        fn http_request(
-            &self,
-            _params: HttpRequestParams,
-        ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
-            Box::pin(async {
-                Ok(HttpRequestResponse {
-                    status: 200,
-                    headers: Vec::new(),
-                    body: serde_json::to_vec(&serde_json::json!({
-                        "token_endpoint": "https://example.com/token",
-                        "device_authorization_endpoint": "https://example.com/device",
-                        "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
-                    }))
-                    .expect("device-only metadata should serialize")
-                    .into(),
-                })
-            })
-        }
-
-        fn http_request_stream(
-            &self,
-            _params: HttpRequestParams,
-        ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>>
-        {
-            Box::pin(async {
-                Err(ExecServerError::HttpRequest(
-                    "device-only metadata requires the narrow fallback".to_string(),
-                ))
-            })
-        }
-    }
-
-    async fn spawn_oauth_discovery_server(metadata: serde_json::Value) -> TestServer {
+    async fn spawn_oauth_discovery_server(mut metadata: serde_json::Value) -> TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
         let address = listener.local_addr().expect("listener should have address");
+        metadata["issuer"] = serde_json::json!(format!("http://{address}/mcp"));
         let app = Router::new().route(
             "/.well-known/oauth-authorization-server/mcp",
             get({
@@ -668,12 +634,13 @@ mod tests {
         }
     }
 
-    async fn spawn_protected_resource_oauth_server(metadata: serde_json::Value) -> TestServer {
+    async fn spawn_protected_resource_oauth_server(mut metadata: serde_json::Value) -> TestServer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
         let address = listener.local_addr().expect("listener should have address");
         let base_url = format!("http://{address}");
+        metadata["issuer"] = serde_json::json!(base_url);
         let resource_url = format!("{base_url}/mcp");
         let resource_metadata_url = format!("{base_url}/.well-known/oauth-protected-resource/mcp");
         let www_authenticate_value = HeaderValue::from_str(&format!(
@@ -855,7 +822,12 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(discovery, Ok(None)));
+        let error = discovery.expect_err("transport failures must remain discovery errors");
+        assert!(matches!(
+            error.downcast_ref::<AuthError>(),
+            Some(AuthError::MetadataError(message))
+                if message.contains("expected discovery request failure")
+        ));
         assert_eq!(
             *http_client
                 .timeout_ms
@@ -881,7 +853,12 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(discovery, Ok(None)));
+        let error = discovery.expect_err("transport failures must remain discovery errors");
+        assert!(matches!(
+            error.downcast_ref::<AuthError>(),
+            Some(AuthError::MetadataError(message))
+                if message.contains("expected discovery request failure")
+        ));
         assert_eq!(
             *http_client
                 .timeout_ms
@@ -999,11 +976,21 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_oauth_discovery_preserves_device_only_metadata() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+        }))
+        .await;
         let discovery = discover_streamable_http_oauth_with_http_client(
-            "http://example.com/mcp",
+            &server.url,
             /*http_headers*/ None,
             /*env_http_headers*/ None,
-            Arc::new(DeviceOnlyHttpClient),
+            Arc::new(codex_exec_server::RouteAwareHttpClient::new(
+                codex_http_client::HttpClientFactory::new(
+                    codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+                ),
+            )),
             OAuthDiscoveryTimeout::LOCAL,
         )
         .await

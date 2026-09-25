@@ -1950,6 +1950,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-authorization-server/mcp"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": format!("{}/mcp", server.uri()),
                 "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
                 "token_endpoint": format!("{}/oauth/token", server.uri()),
             })))
