@@ -517,9 +517,10 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
+async fn multi_agent_v2_spawn_fork_turns_all_applies_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
+    turn.developer_instructions = Some("parent developer instructions".to_string());
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -532,13 +533,14 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
     let turn = TurnContext {
         config: Arc::new(config),
         multi_agent_version: codex_protocol::protocol::MultiAgentVersion::V2,
         ..turn
     };
 
-    let err = SpawnAgentHandlerV2::default()
+    let output = SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -551,14 +553,33 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
             })),
         ))
         .await
-        .err()
-        .expect("fork_turns=all should reject agent_type overrides");
+        .expect("fork_turns=all should apply agent_type overrides");
+    let (content, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result["effective_model"], "gpt-5-role-override");
+    assert_eq!(result["effective_reasoning_effort"], "low");
+    assert_eq!(result["requested_model_honored"], serde_json::Value::Null);
 
+    let child_thread_id = manager
+        .captured_ops()
+        .into_iter()
+        .map(|(thread_id, _)| thread_id)
+        .find(|thread_id| *thread_id != root.thread_id)
+        .expect("spawned agent should receive an op");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist");
+    let snapshot = child_thread.config_snapshot().await;
+    assert_eq!(snapshot.model, "gpt-5-role-override");
+    assert_eq!(snapshot.model_provider_id, "ollama");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
+    let child_turn = child_thread.session.new_default_turn().await;
     assert_eq!(
-        err,
-        FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type; omit agent_type, or spawn without a full-history fork.".to_string(),
-        )
+        child_turn.developer_instructions.as_deref(),
+        Some("parent developer instructions")
     );
 }
 
