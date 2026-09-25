@@ -27,7 +27,7 @@ pub fn start_memories_startup_task(
     thread_id: ThreadId,
     thread: Arc<CodexThread>,
     config: Arc<Config>,
-    parent_permission_profile: PermissionProfile,
+    _parent_permission_profile: PermissionProfile,
     source: &SessionSource,
 ) {
     if config.ephemeral
