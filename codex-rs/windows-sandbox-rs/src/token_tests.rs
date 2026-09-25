@@ -44,6 +44,26 @@ unsafe fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) ->
         .any(|entry| EqualSid(entry.Sid, expected_sid) != 0))
 }
 
+fn fake_ptr(value: usize) -> *mut c_void {
+    value as *mut c_void
+}
+
+#[test]
+fn restricted_sids_keep_everyone_for_loader_compatibility() {
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let extras = [fake_ptr(0x30)];
+    let logon = fake_ptr(0x40);
+    let everyone = fake_ptr(0x50);
+
+    let entries = build_restricted_sid_entries(&caps, &extras, logon, everyone);
+    let restricted = entries.iter().map(|entry| entry.Sid).collect::<Vec<_>>();
+
+    assert_eq!(
+        restricted,
+        vec![caps[0], caps[1], extras[0], logon, everyone]
+    );
+}
+
 #[test]
 fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
     let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
@@ -69,7 +89,7 @@ fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
 }
 
 #[test]
-fn write_restricted_token_uses_capabilities_not_ambient_sids() -> Result<()> {
+fn write_restricted_token_uses_capabilities_and_everyone_restrictions() -> Result<()> {
     let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
     let base_token = unsafe { get_current_token_for_restriction()? };
     let restricted_token = unsafe {
@@ -91,6 +111,6 @@ fn write_restricted_token_uses_capabilities_not_ambient_sids() -> Result<()> {
 
     assert!(capability_is_restricting?);
     assert!(!has_restricted_code?);
-    assert!(!has_everyone?);
+    assert!(has_everyone?);
     Ok(())
 }
