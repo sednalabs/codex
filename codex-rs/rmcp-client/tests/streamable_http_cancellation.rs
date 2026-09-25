@@ -160,7 +160,8 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
 }
 
 fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Response {
-    let mut response = Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response();
+    let mut response =
+        Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response();
     *response.status_mut() = StatusCode::OK;
     if include_session {
         response

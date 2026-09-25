@@ -186,8 +186,7 @@ impl MessageProcessor {
                     .await;
             }
             _ => {
-                self.handle_unsupported_request(request_id, "unknown")
-                    .await;
+                self.handle_unsupported_request(request_id, "unknown").await;
             }
         }
     }

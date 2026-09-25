@@ -115,10 +115,18 @@ mod tests {
                     } if expected_issuer == "https://oauth.example/" && received_issuer == issuer
                 )),
             }
-            assert!(client.requests.lock().unwrap().iter().all(|(method, path)| {
-                method == "GET"
-                    && !["/published/authorize", "/published/token"].contains(&path.as_str())
-            }));
+            assert!(
+                client
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(method, path)| {
+                        method == "GET"
+                            && !["/published/authorize", "/published/token"]
+                                .contains(&path.as_str())
+                    })
+            );
         }
     }
 
