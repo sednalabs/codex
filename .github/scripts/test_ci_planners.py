@@ -7153,16 +7153,18 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 48)
+        self.assertIn("codex.rmcp-client-transport", selected_lane_ids)
+        self.assertIn("codex.rmcp-consumers-check", selected_lane_ids)
+        self.assertEqual(payload["planned_job_count"], 49)
         self.assertEqual(payload["selected_workflow_lane_count"], 8)
         self.assertEqual(payload["selected_node_lane_count"], 3)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 15)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 7)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 14)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "29")
-        self.assertEqual(payload["rust_integration_max_parallel"], "27")
+        self.assertEqual(payload["rust_integration_max_parallel"], "29")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {

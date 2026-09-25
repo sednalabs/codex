@@ -66,7 +66,6 @@ use tracing::warn;
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
-use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
@@ -74,6 +73,7 @@ use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
+use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -793,10 +793,8 @@ impl RmcpClient {
                             options,
                         )
                         .await?;
-                    let guard = RequestCancellationGuard::new(
-                        request.peer.clone(),
-                        request.id.clone(),
-                    );
+                    let guard =
+                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
                     // The guard covers caller/task drops and active timeout
                     // drops; rmcp retains its normal response cleanup path.
                     let result = request.await_response().await;

@@ -88,7 +88,9 @@ async fn spawn_server() -> (ServerState, String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind cancellation test server");
-    let address = listener.local_addr().expect("read cancellation test address");
+    let address = listener
+        .local_addr()
+        .expect("read cancellation test address");
     let router = Router::new()
         .route("/mcp", post(handle_mcp))
         .with_state(state.clone());
@@ -100,10 +102,7 @@ async fn spawn_server() -> (ServerState, String, tokio::task::JoinHandle<()>) {
     (state, format!("http://{address}"), task)
 }
 
-async fn handle_mcp(
-    State(state): State<ServerState>,
-    Json(request): Json<Value>,
-) -> Response {
+async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
     let method = request.get("method").and_then(Value::as_str);
     match method {
         Some("initialize") => json_response(
@@ -176,10 +175,9 @@ fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Res
         .body(Body::from(body))
         .expect("valid JSON response");
     if include_session {
-        response.headers_mut().insert(
-            MCP_SESSION_ID,
-            HeaderValue::from_static(SESSION_ID),
-        );
+        response
+            .headers_mut()
+            .insert(MCP_SESSION_ID, HeaderValue::from_static(SESSION_ID));
     }
     response
 }
@@ -210,9 +208,12 @@ async fn blocked_posts_do_not_starve_an_independent_read() -> anyhow::Result<()>
         ),
     )
     .await??;
-    assert_eq!(serde_json::to_value(read)?, json!({"contents": [{
-        "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-    }]}));
+    assert_eq!(
+        serde_json::to_value(read)?,
+        json!({"contents": [{
+            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
+        }]})
+    );
 
     state.release_blocked.notify_waiters();
     for request in blocked {
@@ -261,9 +262,12 @@ async fn timed_out_post_sends_matching_cancellation_and_reclaims_capacity() -> a
         ),
     )
     .await??;
-    assert_eq!(serde_json::to_value(read)?, json!({"contents": [{
-        "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-    }]}));
+    assert_eq!(
+        serde_json::to_value(read)?,
+        json!({"contents": [{
+            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
+        }]})
+    );
 
     state.release_blocked.notify_waiters();
     client.shutdown().await;
@@ -288,17 +292,23 @@ async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()>
 
     // Poll the actual call future, not a JoinHandle: it reaches rmcp's response
     // wait while every ordinary HTTP slot is held by an observed request.
-    let mut queued = Box::pin(client.call_tool(
-        "queued".to_string(), Some(json!({})), None, None,
-    ));
+    let mut queued = Box::pin(client.call_tool("queued".to_string(), Some(json!({})), None, None));
     assert!(futures::poll!(queued.as_mut()).is_pending());
     drop(queued);
     state.wait_for_cancellation().await?;
     let cancelled_id = state.cancelled.lock().await[0]
-        .pointer("/params/requestId").cloned().expect("queued cancellation id");
-    assert!(state.blocked_started.lock().await.iter().all(|request| {
-        request.get("id") != Some(&cancelled_id)
-    }), "queued cancellation must not target any active request");
+        .pointer("/params/requestId")
+        .cloned()
+        .expect("queued cancellation id");
+    assert!(
+        state
+            .blocked_started
+            .lock()
+            .await
+            .iter()
+            .all(|request| { request.get("id") != Some(&cancelled_id) }),
+        "queued cancellation must not target any active request"
+    );
     assert!(!state.observed_requests.lock().await.iter().any(|request| {
         request.pointer("/params/name").and_then(Value::as_str) == Some("queued")
     }));
@@ -315,12 +325,18 @@ async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()>
             Some(Duration::from_secs(2)),
         )
         .await?;
-    assert_eq!(serde_json::to_value(read)?, json!({"contents": [{
-        "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-    }]}));
-    assert!(!state.observed_requests.lock().await.iter().any(|request| {
-        request.pointer("/params/name").and_then(Value::as_str) == Some("queued")
-    }), "cancelled queued call must stay absent after capacity is released");
+    assert_eq!(
+        serde_json::to_value(read)?,
+        json!({"contents": [{
+            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
+        }]})
+    );
+    assert!(
+        !state.observed_requests.lock().await.iter().any(|request| {
+            request.pointer("/params/name").and_then(Value::as_str) == Some("queued")
+        }),
+        "cancelled queued call must stay absent after capacity is released"
+    );
     client.shutdown().await;
     server.abort();
     Ok(())
@@ -344,7 +360,10 @@ async fn timed_out_mutating_call_is_not_replayed() -> anyhow::Result<()> {
 
     state.wait_for_mutating_call().await?;
     let result = timed_out.await?;
-    assert!(result.is_err(), "timed-out mutating call unexpectedly succeeded");
+    assert!(
+        result.is_err(),
+        "timed-out mutating call unexpectedly succeeded"
+    );
     state.wait_for_cancellation().await?;
     state.release_blocked.notify_waiters();
     assert_eq!(state.mutating_calls.lock().await.len(), 1);
@@ -365,12 +384,16 @@ async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result
     });
     state.wait_for_blocked(1).await?;
     let blocked_id = state.blocked_started.lock().await[0]
-        .get("id").cloned().expect("blocked request id");
+        .get("id")
+        .cloned()
+        .expect("blocked request id");
     let mut remaining = Vec::new();
     for _ in 1..BLOCKED_REQUESTS {
         let task_client = client.clone();
         remaining.push(tokio::spawn(async move {
-            task_client.call_tool("blocked".to_string(), Some(json!({})), None, None).await
+            task_client
+                .call_tool("blocked".to_string(), Some(json!({})), None, None)
+                .await
         }));
     }
     state.wait_for_blocked(BLOCKED_REQUESTS).await?;
@@ -378,18 +401,25 @@ async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result
     assert!(request.await.unwrap_err().is_cancelled());
     state.wait_for_cancellation().await?;
     let cancelled_id = state.cancelled.lock().await[0]
-        .pointer("/params/requestId").cloned().expect("cancelled request id");
+        .pointer("/params/requestId")
+        .cloned()
+        .expect("cancelled request id");
     assert_eq!(cancelled_id, blocked_id);
 
     // All sixteen ordinary slots were occupied. This read can complete only
     // after cancellation reclaims the aborted POST's slot; none is released here.
-    let read = client.read_resource(
-        rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
-        Some(Duration::from_secs(2)),
-    ).await?;
-    assert_eq!(serde_json::to_value(read)?, json!({"contents": [{
-        "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
-    }]}));
+    let read = client
+        .read_resource(
+            rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
+            Some(Duration::from_secs(2)),
+        )
+        .await?;
+    assert_eq!(
+        serde_json::to_value(read)?,
+        json!({"contents": [{
+            "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read"
+        }]})
+    );
     state.release_blocked.notify_waiters();
     for request in remaining {
         tokio::time::timeout(Duration::from_secs(10), request).await???;

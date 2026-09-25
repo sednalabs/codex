@@ -93,6 +93,8 @@ on:
           - sedna.release-linux-smoke
           - sedna.update-installer-contract
           - downstream-ledger-seam
+          - codex.rmcp-client-transport
+          - codex.rmcp-consumers-check
         default: all
       rust_batching:
         description: Batch downstream Rust lanes to reuse runner-local build artifacts
