@@ -10176,8 +10176,21 @@ fi
             if step.get("name")
         }
         create_script = publish_steps["Create GitHub release"].get("run") or ""
-        self.assertIn("not Developer ID signed or notarized", create_script)
-        self.assertIn("not an official supported macOS distribution", create_script)
+        for evidence in (
+            "Intel macOS preview (x86_64)",
+            "Intel macOS unnotarized asset (x86_64)",
+            "12.0 minimum deployment target",
+            "Monterey runtime smoke is not claimed",
+            "not Developer ID signed or notarized",
+            "not an official supported macOS distribution",
+            "guidance_url=\"https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow\"",
+            "scripts/install_sedna_release_asset --repository ${GH_REPO} --release-tag ${RELEASE_TAG} --dry-run",
+            "--allow-prerelease --macos-preview",
+            "--macos-unnotarized",
+            "never disable Gatekeeper",
+            "bypass checksum, signature, or provenance failures",
+        ):
+            self.assertIn(evidence, create_script)
 
         publish_if = publish.get("if") or ""
         self.assertIn("needs.release-linux.result == 'success'", publish_if)
