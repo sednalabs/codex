@@ -52,10 +52,7 @@ mod tests {
                         .body(serde_json::to_vec(metadata).unwrap())
                         .unwrap());
                 }
-                Ok(Response::builder()
-                    .status(404)
-                    .body(Vec::new())
-                    .unwrap())
+                Ok(Response::builder().status(404).body(Vec::new()).unwrap())
             })
         }
     }

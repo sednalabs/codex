@@ -771,10 +771,10 @@ impl ServerHandler for ElicitationAppsMcpServer {
                         },
                     })
                 );
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "accepted monthly-review",
-                )])
-                .into())
+                Ok(
+                    CallToolResult::success(vec![ContentBlock::text("accepted monthly-review")])
+                        .into(),
+                )
             }
         }
     }

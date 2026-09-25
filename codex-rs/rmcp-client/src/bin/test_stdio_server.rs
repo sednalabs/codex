@@ -12,8 +12,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
-use rmcp::model::CallToolResult;
 use rmcp::model::CallToolResponse;
+use rmcp::model::CallToolResult;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::InitializeResult;
@@ -588,10 +588,11 @@ impl ServerHandler for TestToolServer {
                 "supportsOpenaiFormElicitation": self
                     .supports_openai_form_elicitation
                     .load(Ordering::Relaxed),
-            })).into()),
-            "sandbox_meta" => Ok(Self::structured_result(serde_json::Value::Object(
-                context.meta.0.0,
-            )).into()),
+            }))
+            .into()),
+            "sandbox_meta" => {
+                Ok(Self::structured_result(serde_json::Value::Object(context.meta.0.0)).into())
+            }
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
@@ -614,7 +615,8 @@ impl ServerHandler for TestToolServer {
                     rmcp::model::ContentBlock::text(
                         "unstructured notes/thread_hint fixture result",
                     ),
-                ]).into())
+                ])
+                .into())
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -670,9 +672,12 @@ impl ServerHandler for TestToolServer {
                     )
                 })?;
 
-                Ok(CallToolResult::success(vec![
-                    rmcp::model::ContentBlock::image(data_b64, mime_type),
-                ]).into())
+                Ok(
+                    CallToolResult::success(vec![rmcp::model::ContentBlock::image(
+                        data_b64, mime_type,
+                    )])
+                    .into(),
+                )
             }
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;
