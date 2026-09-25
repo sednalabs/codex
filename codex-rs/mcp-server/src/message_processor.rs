@@ -27,6 +27,7 @@ use rmcp::model::JsonRpcError;
 use rmcp::model::JsonRpcNotification;
 use rmcp::model::JsonRpcRequest;
 use rmcp::model::JsonRpcResponse;
+use rmcp::model::ProtocolVersion;
 use rmcp::model::RequestId;
 use rmcp::model::ServerCapabilities;
 use serde_json::json;
@@ -279,8 +280,19 @@ impl MessageProcessor {
             .enable_tools()
             .enable_tool_list_changed()
             .build();
+        // This manual server implements the legacy wire contract, not the SDK's newer protocols.
+        let supported_versions = [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+        ];
+        let protocol_version = if supported_versions.contains(&params.protocol_version) {
+            params.protocol_version
+        } else {
+            ProtocolVersion::V_2025_06_18
+        };
         let initialize_result = InitializeResult::new(capabilities)
-            .with_protocol_version(params.protocol_version.clone())
+            .with_protocol_version(protocol_version)
             .with_server_info(server_info);
 
         let mut result_value = match serde_json::to_value(initialize_result) {

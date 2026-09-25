@@ -3696,12 +3696,17 @@ normal response cleanup. Existing elicitation pauses continue to suspend the
 active-time budget, and uncertain tool mutations are not retried.
 
 The SDK upgrade also adapts its direct consumers to typed request metadata,
-flat content and resource models, and non-exhaustive constructors. The existing
+flat content and resource models, and non-exhaustive constructors. The client
 initialize lifecycle and negotiated protocol version remain unchanged; SDK
 support for discovery does not opt this client into that lifecycle. OAuth setup
 continues to require published metadata; SDK-synthesized endpoint fallback is
 refused for login, registration, and restored-token connections. Token restoration
 uses the existing serialized request-only credential adoption path.
+
+The manual stdio MCP server explicitly supports protocol revisions 2024-11-05,
+2025-03-26, and 2025-06-18. Other requested revisions receive 2025-06-18 during
+initialization, rather than an unsupported version claim. Its tool results use
+the SDK legacy projection so initialization and response shape agree.
 
 `codex.rmcp-client-transport` exercises observed request/cancellation IDs,
 blocked-POST independence, queued cancellation, capacity recovery after abort,

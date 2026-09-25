@@ -3588,6 +3588,9 @@
         "codex-rs/rmcp-client/src/lib.rs",
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/mcp-server/src/message_processor.rs",
+        "codex-rs/mcp-server/src/outgoing_message.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
         "codex-rs/rmcp-client/src/oauth_metadata.rs",
         "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
         "codex-rs/rmcp-client/src/elicitation_client_service.rs",
@@ -3596,7 +3599,7 @@
         "codex-rs/core/src/session/mcp.rs",
         "codex-rs/tui/src/history_cell/mcp.rs"
       ],
-      "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining.",
+      "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining. The manual stdio MCP server negotiates only implemented legacy protocol revisions and projects tool results onto that declared wire contract.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -3609,6 +3612,8 @@
         "cancelled_queued_post_is_never_sent_or_executed",
         "timed_out_mutating_call_is_not_replayed",
         "externally_aborted_post_sends_matching_cancellation",
+        "initialize_negotiates_only_implemented_protocol_versions",
+        "tool_responses_preserve_the_existing_wire_contract",
         "active_time_timeout_pauses_while_elicitation_is_pending"
       ],
       "owner": "downstream",

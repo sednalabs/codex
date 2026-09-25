@@ -23,6 +23,10 @@ registration login paths when the server publishes no metadata.
 `codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.
 This includes typed metadata, content/resource models, and elicitation conversions
 in the app server, core, and terminal consumers.
+`initialize_negotiates_only_implemented_protocol_versions` exercises real stdio
+handshakes for supported, newer, and unknown revisions;
+`tool_responses_preserve_the_existing_wire_contract` and the existing tool-call
+integration tests preserve complete legacy JSON responses.
 Installed-host first use is a separate acceptance step after protected delivery.
 
 ## Core default path
