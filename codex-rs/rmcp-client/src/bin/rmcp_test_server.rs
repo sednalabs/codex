@@ -98,6 +98,7 @@ impl ServerHandler for TestToolServer {
                 tools: (*tools).clone(),
                 next_cursor: None,
                 meta: None,
+                ..Default::default()
             })
         }
     }

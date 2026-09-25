@@ -29,12 +29,7 @@ fn stdio_server_bin() -> Result<PathBuf, CargoBinError> {
 
 fn init_params() -> InitializeRequestParams {
     let mut capabilities = ClientCapabilities::default();
-    capabilities.elicitation = Some(ElicitationCapability {
-        form: Some(FormElicitationCapability {
-            schema_validation: None,
-        }),
-        url: None,
-    });
+    capabilities.elicitation = Some(ElicitationCapability::new().with_form(FormElicitationCapability::new()));
     InitializeRequestParams::new(
         capabilities,
         Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp resource test"),
@@ -81,17 +76,10 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
         .expect("memo resource present");
     assert_eq!(
         memo,
-        &rmcp::model::RawResource {
-            uri: RESOURCE_URI.to_string(),
-            name: "example-note".to_string(),
-            title: Some("Example Note".to_string()),
-            description: Some("A sample MCP resource exposed for integration tests.".to_string()),
-            mime_type: Some("text/plain".to_string()),
-            size: None,
-            icons: None,
-            meta: None,
-        }
-        .no_annotation()
+        &rmcp::model::Resource::new(RESOURCE_URI, "example-note")
+            .with_title("Example Note")
+            .with_description("A sample MCP resource exposed for integration tests.")
+            .with_mime_type("text/plain")
     );
     let templates = client
         .list_resource_templates(/*params*/ None, Some(Duration::from_secs(5)))
@@ -99,21 +87,15 @@ async fn rmcp_client_can_list_and_read_resources() -> anyhow::Result<()> {
     assert_eq!(
         templates,
         ListResourceTemplatesResult {
-            meta: None,
-            next_cursor: None,
+            // The fixture negotiates 2025-06-18, which has no result discriminator.
+            result_type: None,
             resource_templates: vec![
-                rmcp::model::RawResourceTemplate {
-                    uri_template: "memo://codex/{slug}".to_string(),
-                    name: "codex-memo".to_string(),
-                    title: Some("Codex Memo".to_string()),
-                    description: Some(
-                        "Template for memo://codex/{slug} resources used in tests.".to_string(),
-                    ),
-                    mime_type: Some("text/plain".to_string()),
-                    icons: None,
-                }
-                .no_annotation()
+                rmcp::model::ResourceTemplate::new("memo://codex/{slug}", "codex-memo")
+                    .with_title("Codex Memo")
+                    .with_description("Template for memo://codex/{slug} resources used in tests.")
+                    .with_mime_type("text/plain"),
             ],
+            ..Default::default()
         }
     );
 
