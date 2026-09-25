@@ -10177,20 +10177,32 @@ fi
         }
         create_script = publish_steps["Create GitHub release"].get("run") or ""
         for evidence in (
-            "Intel macOS preview (x86_64)",
-            "Intel macOS unnotarized asset (x86_64)",
-            "12.0 minimum deployment target",
-            "Monterey runtime smoke is not claimed",
-            "not Developer ID signed or notarized",
+            "release_note_suffix=\"\"",
+            "Intel macOS preview: macOS 12+ on Intel x86_64 only;",
+            "Intel macOS unnotarized asset: macOS 12+ on Intel x86_64 only;",
+            "ad-hoc signed, not Apple-notarized",
             "not an official supported macOS distribution",
+            "Monterey runtime smoke is not claimed",
             "guidance_url=\"https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow\"",
-            "scripts/install_sedna_release_asset --repository ${GH_REPO} --release-tag ${RELEASE_TAG} --dry-run",
-            "--allow-prerelease --macos-preview",
-            "--macos-unnotarized",
-            "never disable Gatekeeper",
-            "bypass checksum, signature, or provenance failures",
+            'gh release create "${RELEASE_TAG}" "${assets[@]}"',
+            'release_id="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json databaseId --jq .databaseId)"',
+            'generated_body="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json body --jq .body)"',
+            'release_body="${generated_body}"$\'\\n\\n\'"${release_note_suffix}"',
+            'jq -n --arg body "${release_body}" \'{body: $body}\'',
+            'gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" --input -',
         ):
             self.assertIn(evidence, create_script)
+        self.assertNotIn("verifier_command=", create_script)
+        self.assertNotIn("Run \\`", create_script)
+        self.assertNotIn("scripts/install_sedna_release_asset", create_script)
+        self.assertLess(
+            create_script.index("--generate-notes"),
+            create_script.index("generated_body="),
+        )
+        self.assertLess(
+            create_script.index("generated_body="),
+            create_script.index("release_body="),
+        )
 
         publish_if = publish.get("if") or ""
         self.assertIn("needs.release-linux.result == 'success'", publish_if)
