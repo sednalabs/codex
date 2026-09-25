@@ -1429,6 +1429,7 @@ async fn plugin_install_starts_mcp_oauth_through_protected_resource_metadata() -
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": authorization_server.uri(),
             "authorization_endpoint": format!("{}/oauth/authorize", authorization_server.uri()),
             "token_endpoint": format!("{}/oauth/token", authorization_server.uri()),
             "registration_endpoint": format!("{}/oauth/register", authorization_server.uri()),

@@ -612,6 +612,8 @@ remain ordinary refresh failures: `rejected_refresh_token_requires_reauthorizati
 `transient_refresh_failure_does_not_require_reauthorization`, and
 `malformed_refresh_failure_does_not_require_reauthorization`, with the
 startup-error classifier tests covering the same terminal/non-terminal split.
+`untyped_refresh_failure_text_does_not_require_authentication` prevents
+error-message text from overriding RMCP 3.2 typed refresh classification.
 
 Native app-server coverage additionally proves that
 `validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool` keeps

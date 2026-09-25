@@ -56,6 +56,7 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
             concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION")),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", server.uri()),
             "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
             "token_endpoint": format!("{}/oauth/token", server.uri()),
             "scopes_supported": ["profile", "offline_access"],
@@ -171,6 +172,7 @@ async fn identifies_expired_unrefreshable_token_startup_error() -> anyhow::Resul
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", server.uri()),
             "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
             "token_endpoint": format!("{}/oauth/token", server.uri()),
         })))
@@ -206,6 +208,7 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", first_login_server.uri()),
             "authorization_endpoint": format!("{}/oauth/authorize", first_login_server.uri()),
             "token_endpoint": format!("{}/oauth/token", first_login_server.uri()),
         })))

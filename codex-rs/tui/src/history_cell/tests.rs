@@ -962,10 +962,25 @@ fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
                 meta: None,
             },
         )]),
-        resources: vec![Resource::new("file:///docs", "docs").with_title("Docs")],
-        resource_templates: vec![
-            ResourceTemplate::new("file:///docs/{id}", "doc-template").with_title("Doc Template"),
-        ],
+        resources: vec![Resource {
+            annotations: None,
+            description: None,
+            mime_type: None,
+            name: "docs".to_string(),
+            size: None,
+            title: Some("Docs".to_string()),
+            uri: "file:///docs".to_string(),
+            icons: None,
+            meta: None,
+        }],
+        resource_templates: vec![ResourceTemplate {
+            annotations: None,
+            uri_template: "file:///docs/{id}".to_string(),
+            name: "doc-template".to_string(),
+            title: Some("Doc Template".to_string()),
+            description: None,
+            mime_type: None,
+        }],
         auth_status: codex_app_server_protocol::McpAuthStatus::Unsupported,
     }];
 

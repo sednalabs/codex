@@ -79,6 +79,7 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
     );
     let (token_request_tx, mut token_request_rx) = mpsc::unbounded_channel();
     let oauth_metadata = json!({
+        "issuer": EXECUTOR_OAUTH_MCP_URL,
         "authorization_endpoint": "https://oauth-only.invalid/authorize",
         "token_endpoint": "http://oauth-only.invalid/token",
         "scopes_supported": ["read", "write"],
