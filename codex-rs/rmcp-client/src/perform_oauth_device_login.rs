@@ -1,3 +1,4 @@
+use crate::oauth_metadata::discover_metadata;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -126,7 +127,7 @@ async fn resolve_device_oauth_client_id(
 
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
     auth_manager.with_client(http_client.clone())?;
-    let metadata = auth_manager.discover_metadata().await?;
+    let metadata = discover_metadata(&auth_manager).await?;
     let registration_endpoint = metadata
         .registration_endpoint
         .as_deref()

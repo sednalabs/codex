@@ -1,3 +1,4 @@
+use crate::oauth_metadata::discover_metadata;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -482,7 +483,7 @@ async fn discover_device_only_oauth_with_http_client(
 async fn discover_streamable_http_oauth_with_manager(
     authorization_manager: &AuthorizationManager,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    match authorization_manager.discover_metadata().boxed().await {
+    match discover_metadata(authorization_manager).boxed().await {
         Ok(metadata) => Ok(Some(discovery_from_authorization_metadata(metadata))),
         Err(AuthError::NoAuthorizationSupport) => Ok(None),
         Err(err) => Err(err.into()),

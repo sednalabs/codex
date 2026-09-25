@@ -43,7 +43,7 @@ use rmcp::model::ElicitationSchema;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
-use rmcp::model::PrimitiveSchema;
+use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::Resource;
 use rmcp::model::ReadResourceRequestParams;
@@ -844,7 +844,7 @@ impl ServerHandler for ResourceAppsMcpServer {
         let uri = request.uri;
         if uri == TEST_ELICITATION_RESOURCE_URI {
             let requested_schema = ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
                 .build()
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
             let result = context

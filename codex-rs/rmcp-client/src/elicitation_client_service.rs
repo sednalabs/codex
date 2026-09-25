@@ -213,7 +213,7 @@ mod tests {
     use rmcp::model::BooleanSchema;
     use rmcp::model::ElicitRequestParams;
     use rmcp::model::ElicitationSchema;
-    use rmcp::model::PrimitiveSchema;
+    use rmcp::model::PrimitiveSchemaDefinition;
     use serde_json::Value;
     use serde_json::json;
 
@@ -308,7 +308,7 @@ mod tests {
             meta,
             message: "Confirm?".to_string(),
             requested_schema: ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
                 .build()
                 .expect("schema should build"),
         }

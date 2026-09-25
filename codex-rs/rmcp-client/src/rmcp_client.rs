@@ -50,7 +50,7 @@ use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
-use rmcp::transport::auth::OAuthState;
+use rmcp::transport::auth::AuthorizationManager;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use serde::Deserialize;
@@ -73,6 +73,7 @@ use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
+use crate::oauth_metadata::discover_metadata;
 use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
@@ -561,7 +562,14 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = initialize_result_rmcp.as_ref().clone();
+        let peer_info = initialize_result_rmcp.as_ref();
+        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
+            .with_protocol_version(peer_info.protocol_version.clone())
+            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
+                anyhow!("initialization succeeded but server implementation was missing")
+            })?);
+        initialize_result.instructions = peer_info.instructions.clone();
+        initialize_result.meta = peer_info.meta.clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
@@ -1415,23 +1423,13 @@ async fn create_oauth_transport_and_runtime(
         http_client.clone(),
         default_headers.clone(),
     ));
-    let mut oauth_state =
-        OAuthState::new_with_oauth_http_client(url.to_string(), oauth_http_client).await?;
-
-    oauth_state
-        .set_credentials(
-            &initial_tokens.client_id,
-            initial_tokens.token_response.0.clone(),
-        )
-        .await?;
-
-    let manager = match oauth_state {
-        OAuthState::Authorized(manager) => manager,
-        OAuthState::Unauthorized(manager) => manager,
-        _ => {
-            return Err(anyhow!("unexpected OAuth state during client setup"));
-        }
-    };
+    let mut manager =
+        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client).await?;
+    let metadata = discover_metadata(&manager).await?;
+    manager.set_metadata(metadata);
+    // OAuthPersistor below installs the request-only token view using the existing
+    // serialized adoption path. Do not call OAuthState::set_credentials: it performs
+    // another discovery and accepts SDK-synthesized OAuth endpoints.
 
     let auth_client = AuthClient::new(
         StreamableHttpClientAdapter::new(http_client, default_headers, /*auth_provider*/ None),

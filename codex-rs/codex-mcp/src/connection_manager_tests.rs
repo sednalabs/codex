@@ -845,7 +845,7 @@ async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fiel
                 requested_schema: rmcp::model::ElicitationSchema::builder()
                     .required_property(
                         "message",
-                        rmcp::model::PrimitiveSchema::String(rmcp::model::StringSchema::new()),
+                        rmcp::model::PrimitiveSchemaDefinition::String(rmcp::model::StringSchema::new()),
                     )
                     .build()
                     .expect("schema should build"),
@@ -962,7 +962,7 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
             requested_schema: rmcp::model::ElicitationSchema::builder()
                 .required_property(
                     "runtime",
-                    rmcp::model::PrimitiveSchema::String(rmcp::model::StringSchema::new()),
+                    rmcp::model::PrimitiveSchemaDefinition::String(rmcp::model::StringSchema::new()),
                 )
                 .build()
                 .expect("schema should build"),

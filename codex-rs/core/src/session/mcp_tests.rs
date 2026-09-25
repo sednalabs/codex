@@ -1,7 +1,7 @@
 use super::*;
 use rmcp::model::BooleanSchema;
 use rmcp::model::ElicitationSchema;
-use rmcp::model::PrimitiveSchema;
+use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::RequestMetaObject;
 use serde_json::json;
 
@@ -198,7 +198,7 @@ fn guardian_elicitation_review_request_declines_unsupported_opt_in_shapes() {
                 meta: guardian_meta(Some(json!({}))),
                 message: "Allow origin?".to_string(),
                 requested_schema: ElicitationSchema::builder()
-                    .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                    .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
                     .build()
                     .expect("schema should build"),
             },

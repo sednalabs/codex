@@ -3698,7 +3698,10 @@ active-time budget, and uncertain tool mutations are not retried.
 The SDK upgrade also adapts its direct consumers to typed request metadata,
 flat content and resource models, and non-exhaustive constructors. The existing
 initialize lifecycle and negotiated protocol version remain unchanged; SDK
-support for discovery does not opt this client into that lifecycle.
+support for discovery does not opt this client into that lifecycle. OAuth setup
+continues to require published metadata; SDK-synthesized endpoint fallback is
+refused for login, registration, and restored-token connections. Token restoration
+uses the existing serialized request-only credential adoption path.
 
 `codex.rmcp-client-transport` exercises observed request/cancellation IDs,
 blocked-POST independence, queued cancellation, capacity recovery after abort,

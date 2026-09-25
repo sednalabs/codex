@@ -3588,6 +3588,7 @@
         "codex-rs/rmcp-client/src/lib.rs",
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/rmcp-client/src/oauth_metadata.rs",
         "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
         "codex-rs/rmcp-client/src/elicitation_client_service.rs",
         "codex-rs/codex-mcp/src/elicitation.rs",

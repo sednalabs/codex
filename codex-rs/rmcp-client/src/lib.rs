@@ -6,6 +6,7 @@ mod in_process_transport;
 mod logging_client_handler;
 mod oauth;
 mod oauth_http_client;
+mod oauth_metadata;
 mod perform_oauth_device_login;
 mod perform_oauth_login;
 mod program_resolver;

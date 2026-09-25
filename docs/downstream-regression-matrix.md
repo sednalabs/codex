@@ -17,7 +17,9 @@ branch.
 `codex.rmcp-client-transport` runs the complete client suite, including a dedicated
 HTTP observer for blocked-POST independence, timeout and caller-drop cancellation
 IDs, saturated-queue removal, capacity recovery and uncertain-mutation no-replay.
-Existing active-time tests retain elicitation-pause coverage.
+Existing active-time tests retain elicitation-pause coverage. OAuth metadata
+regressions reject guessed endpoints and cover both configured-client and dynamic
+registration login paths when the server publishes no metadata.
 `codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.
 This includes typed metadata, content/resource models, and elicitation conversions
 in the app server, core, and terminal consumers.

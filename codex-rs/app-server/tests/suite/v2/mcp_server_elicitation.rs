@@ -54,7 +54,7 @@ use rmcp::model::InitializeResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
 use rmcp::model::MetaObject;
-use rmcp::model::PrimitiveSchema;
+use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::ServerRequest as McpServerRequest;
@@ -105,7 +105,7 @@ async fn mcp_server_form_elicitation_round_trip() -> Result<()> {
     let (request_id, params) = fixture.read_elicitation().await?;
     let requested_schema: McpElicitationSchema = serde_json::from_value(serde_json::to_value(
         ElicitationSchema::builder()
-            .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+            .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
             .build()
             .map_err(anyhow::Error::msg)?,
     )?)?;
@@ -692,7 +692,7 @@ impl ServerHandler for ElicitationAppsMcpServer {
         match self.scenario {
             ElicitationScenario::StandardForm => {
                 let requested_schema = ElicitationSchema::builder()
-                    .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                    .required_property("confirmed", PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()))
                     .build()
                     .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
                 let result = context
