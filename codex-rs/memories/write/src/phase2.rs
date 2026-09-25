@@ -5,6 +5,7 @@ use crate::metrics::MEMORY_PHASE_TWO_JOBS;
 use crate::metrics::MEMORY_PHASE_TWO_TOKEN_USAGE;
 use crate::phase2_attestation;
 use crate::prune_old_extension_resources;
+use crate::raw_memories_file;
 use crate::rebuild_raw_memories_file_from_memories;
 use crate::remove_memory_symlinks;
 use crate::runtime::MemoryStartupContext;
@@ -228,6 +229,12 @@ async fn sync_phase2_workspace_inputs(
     sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count).await?;
     if version == MemoryVersion::V1 {
         rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?;
+    } else {
+        match tokio::fs::remove_file(raw_memories_file(root)).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
     }
     prune_old_extension_resources(root).await;
     Ok(())
