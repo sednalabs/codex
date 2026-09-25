@@ -76,7 +76,7 @@ pub async fn run_codex_tool_session(
             let result = CallToolResult::error(vec![ContentBlock::text(format!(
                 "Failed to start Codex session: {e}"
             ))]);
-            outgoing.send_response(id.clone(), result).await;
+            outgoing.send_tool_response(id.clone(), result).await;
             return;
         }
     };
@@ -128,7 +128,7 @@ pub async fn run_codex_tool_session(
             format!("Failed to submit initial prompt: {e}"),
             Some(true),
         );
-        outgoing.send_response(id.clone(), result).await;
+        outgoing.send_tool_response(id.clone(), result).await;
         // unregister the id so we don't keep it in the map
         running_requests_id_to_codex_uuid.lock().await.remove(&id);
         return;
@@ -176,7 +176,7 @@ pub async fn run_codex_tool_session_reply(
             format!("Failed to submit user input: {e}"),
             Some(true),
         );
-        outgoing.send_response(request_id.clone(), result).await;
+        outgoing.send_tool_response(request_id.clone(), result).await;
         // unregister the id so we don't keep it in the map
         running_requests_id_to_codex_uuid
             .lock()
@@ -266,7 +266,7 @@ async fn run_codex_tool_session_inner(
                             err_event.message,
                             Some(true),
                         );
-                        outgoing.send_response(request_id.clone(), result).await;
+                        outgoing.send_tool_response(request_id.clone(), result).await;
                         break;
                     }
                     EventMsg::Warning(_)
@@ -316,7 +316,7 @@ async fn run_codex_tool_session_inner(
                         let result = create_call_tool_result_with_thread_id(
                             thread_id, text, /*is_error*/ None,
                         );
-                        outgoing.send_response(request_id.clone(), result).await;
+                        outgoing.send_tool_response(request_id.clone(), result).await;
                         // unregister the id so we don't keep it in the map
                         running_requests_id_to_codex_uuid
                             .lock()
@@ -418,7 +418,7 @@ async fn run_codex_tool_session_inner(
                     format!("Codex runtime error: {e}"),
                     Some(true),
                 );
-                outgoing.send_response(request_id.clone(), result).await;
+                outgoing.send_tool_response(request_id.clone(), result).await;
                 break;
             }
         }

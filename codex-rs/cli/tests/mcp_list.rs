@@ -72,6 +72,7 @@ async fn list_discovers_local_oauth_server_through_environment_proxy() -> Result
         })
         .to_string();
         let authorization_metadata = json!({
+            "issuer": "http://mcp-proxy.invalid",
             "authorization_endpoint": "https://oauth.example/authorize",
             "token_endpoint": "https://oauth.example/token",
         })
@@ -185,6 +186,7 @@ async fn list_with_macos_proxy_resolution_does_not_panic() -> Result<()> {
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", server.uri()),
             "authorization_endpoint": "https://oauth.example/authorize",
             "token_endpoint": "https://oauth.example/token",
         })))

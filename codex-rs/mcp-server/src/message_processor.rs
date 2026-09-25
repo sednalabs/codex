@@ -375,7 +375,7 @@ impl MessageProcessor {
             }
             _ => {
                 let result = tool_error_result(format!("Unknown tool '{name}'"));
-                self.outgoing.send_response(id, result).await;
+                self.outgoing.send_tool_response(id, result).await;
             }
         }
     }
@@ -394,7 +394,7 @@ impl MessageProcessor {
                         let result = tool_error_result(format!(
                             "Failed to load Codex configuration from overrides: {e}"
                         ));
-                        self.outgoing.send_response(id, result).await;
+                        self.outgoing.send_tool_response(id, result).await;
                         return;
                     }
                 },
@@ -402,7 +402,7 @@ impl MessageProcessor {
                     let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
-                    self.outgoing.send_response(id, result).await;
+                    self.outgoing.send_tool_response(id, result).await;
                     return;
                 }
             },
@@ -410,7 +410,7 @@ impl MessageProcessor {
                 let result = tool_error_result(
                     "Missing arguments for codex tool-call; the `prompt` field is required.",
                 );
-                self.outgoing.send_response(id, result).await;
+                self.outgoing.send_tool_response(id, result).await;
                 return;
             }
         };
@@ -453,7 +453,7 @@ impl MessageProcessor {
                     let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
-                    self.outgoing.send_response(request_id, result).await;
+                    self.outgoing.send_tool_response(request_id, result).await;
                     return;
                 }
             },
@@ -464,7 +464,7 @@ impl MessageProcessor {
                 let result = tool_error_result(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
                 );
-                self.outgoing.send_response(request_id, result).await;
+                self.outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
@@ -474,7 +474,7 @@ impl MessageProcessor {
             Err(e) => {
                 tracing::error!("Failed to parse thread_id: {e}");
                 let result = tool_error_result(format!("Failed to parse thread_id: {e}"));
-                self.outgoing.send_response(request_id, result).await;
+                self.outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
@@ -492,7 +492,7 @@ impl MessageProcessor {
                     format!("Session not found for thread_id: {thread_id}"),
                     Some(true),
                 );
-                outgoing.send_response(request_id, result).await;
+                outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
