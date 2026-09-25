@@ -1,0 +1,54 @@
+name: windows-loader-diagnostic
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Frozen source commit SHA
+        required: true
+        type: string
+      source_tree:
+        description: Frozen source tree SHA
+        required: true
+        type: string
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Verify frozen source identity
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.source_sha }}
+          EXPECTED_TREE: ${{ inputs.source_tree }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+      - uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          cache-scope: w14079-loader-diagnostic
+      - name: Build exact gnullvm executable
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ""
+        run: |
+          ./.github/scripts/run-bazel-ci.sh --windows-cross-compile --remote-download-toplevel -- build -- //codex-rs/cli:codex
+      - name: Run parent-side restricted-token loader probe
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem -Path bazel-bin -Filter codex.exe -Recurse | Select-Object -First 1).FullName
+          if (-not $exe) { throw 'Bazel did not materialize codex.exe' }
+          New-Item -ItemType Directory -Force -Path $env:RUNNER_TEMP\w14079 | Out-Null
+          .\.github\scripts\windows-loader-diagnostic.ps1 -Executable $exe -Output $env:RUNNER_TEMP\w14079\report.json
+      - name: Upload diagnostic manifest
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: w14079-windows-loader-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}\w14079\report.json
+          if-no-files-found: error
