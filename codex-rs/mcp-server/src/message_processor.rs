@@ -40,7 +40,7 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::outgoing_message::OutgoingMessageSender;
 
 fn tool_error_result(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![rmcp::model::Content::text(message.into())])
+    CallToolResult::error(vec![rmcp::model::ContentBlock::text(message.into())])
 }
 
 pub(crate) struct MessageProcessor {
@@ -337,7 +337,10 @@ impl MessageProcessor {
     ) {
         tracing::trace!("tools/list -> {params:?}");
         let result = rmcp::model::ListToolsResult {
+            result_type: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
                 create_tool_for_codex_tool_call_reply_param(),

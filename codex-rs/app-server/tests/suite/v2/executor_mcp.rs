@@ -420,9 +420,12 @@ impl ServerHandler for ExecutorHttpMcpServer {
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![tool],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 

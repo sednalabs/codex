@@ -36,19 +36,18 @@ use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::BooleanSchema;
-use rmcp::model::CreateElicitationRequestParams;
-use rmcp::model::CreateElicitationResult;
+use rmcp::model::ElicitRequestParams;
+use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::ElicitationSchema;
 use rmcp::model::ListResourcesResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::PrimitiveSchema;
 use rmcp::model::ProtocolVersion;
-use rmcp::model::RawResource;
+use rmcp::model::Resource;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
-use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
@@ -792,6 +791,7 @@ impl ServerHandler for ResourceAppsMcpServer {
         let cursor = request.and_then(|request| request.cursor);
         if cursor.is_none() {
             return Ok(ListResourcesResult {
+                result_type: None,
                 resources: vec![skill_resource(
                     "skill://plugin_ignored/ignored",
                     "plugin_ignored/ignored",
@@ -802,6 +802,8 @@ impl ServerHandler for ResourceAppsMcpServer {
                 )],
                 next_cursor: Some("skills-page".to_string()),
                 meta: None,
+                ttl_ms: None,
+                cache_scope: None,
             });
         }
         if cursor.as_deref() == Some("failing-page") {
@@ -818,6 +820,7 @@ impl ServerHandler for ResourceAppsMcpServer {
         }
 
         Ok(ListResourcesResult {
+            result_type: None,
             resources: vec![skill_resource(
                 SKILL_RESOURCE_URI,
                 "plugin_demo/deploy",
@@ -828,6 +831,8 @@ impl ServerHandler for ResourceAppsMcpServer {
             )],
             next_cursor: Some("failing-page".to_string()),
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -844,7 +849,7 @@ impl ServerHandler for ResourceAppsMcpServer {
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
             let result = context
                 .peer
-                .create_elicitation(CreateElicitationRequestParams::FormElicitationParams {
+                .create_elicitation(ElicitRequestParams::FormElicitationParams {
                     meta: None,
                     message: "Confirm the resource read.".to_string(),
                     requested_schema,
@@ -853,7 +858,7 @@ impl ServerHandler for ResourceAppsMcpServer {
                 .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
             assert_eq!(
                 result,
-                CreateElicitationResult::new(ElicitationAction::Decline)
+                ElicitResult::new(ElicitationAction::Decline)
             );
 
             return Ok(ReadResourceResult::new(vec![
@@ -919,17 +924,14 @@ fn skill_resource(
     plugin_name: &str,
     skill_name: &str,
 ) -> Resource {
-    Resource::new(
-        RawResource::new(uri, name)
-            .with_description(description)
-            .with_mime_type(mime_type)
-            .with_meta(skill_resource_meta(plugin_name, skill_name)),
-        /*annotations*/ None,
-    )
+    Resource::new(uri, name)
+        .with_description(description)
+        .with_mime_type(mime_type)
+        .with_meta(skill_resource_meta(plugin_name, skill_name))
 }
 
-fn skill_resource_meta(plugin_name: &str, skill_name: &str) -> Meta {
-    Meta(serde_json::Map::from_iter([
+fn skill_resource_meta(plugin_name: &str, skill_name: &str) -> MetaObject {
+    MetaObject(serde_json::Map::from_iter([
         ("plugin_name".to_string(), json!(plugin_name)),
         ("skill_name".to_string(), json!(skill_name)),
     ]))

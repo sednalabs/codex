@@ -3588,7 +3588,12 @@
         "codex-rs/rmcp-client/src/lib.rs",
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
-        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs"
+        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
+        "codex-rs/rmcp-client/src/elicitation_client_service.rs",
+        "codex-rs/codex-mcp/src/elicitation.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/mcp.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/tui/src/history_cell/mcp.rs"
       ],
       "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining.",
       "upstream_equivalent": false,

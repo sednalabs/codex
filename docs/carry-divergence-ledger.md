@@ -3695,6 +3695,11 @@ expiry, sends a cancellation notification. Completed requests retain rmcp's
 normal response cleanup. Existing elicitation pauses continue to suspend the
 active-time budget, and uncertain tool mutations are not retried.
 
+The SDK upgrade also adapts its direct consumers to typed request metadata,
+flat content and resource models, and non-exhaustive constructors. The existing
+initialize lifecycle and negotiated protocol version remain unchanged; SDK
+support for discovery does not opt this client into that lifecycle.
+
 `codex.rmcp-client-transport` exercises observed request/cancellation IDs,
 blocked-POST independence, queued cancellation, capacity recovery after abort,
 mutation no-replay and existing elicitation tests. `codex.rmcp-consumers-check`

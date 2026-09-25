@@ -307,9 +307,12 @@ impl ServerHandler for McpStatusServer {
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![tool],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 }
@@ -348,9 +351,12 @@ impl ServerHandler for SlowInventoryServer {
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![tool],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -361,9 +367,12 @@ impl ServerHandler for SlowInventoryServer {
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(ListResourcesResult {
+            result_type: None,
             resources: Vec::new(),
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -374,9 +383,12 @@ impl ServerHandler for SlowInventoryServer {
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(ListResourceTemplatesResult {
+            result_type: None,
             resource_templates: Vec::new(),
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 }

@@ -19,6 +19,8 @@ HTTP observer for blocked-POST independence, timeout and caller-drop cancellatio
 IDs, saturated-queue removal, capacity recovery and uncertain-mutation no-replay.
 Existing active-time tests retain elicitation-pause coverage.
 `codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.
+This includes typed metadata, content/resource models, and elicitation conversions
+in the app server, core, and terminal consumers.
 Installed-host first use is a separate acceptance step after protected delivery.
 
 ## Core default path

@@ -74,14 +74,20 @@ impl ServerHandler for ChangingPaginatedServer {
             let prefix = if generation == 0 { "old" } else { "new" };
             match page {
                 None => Ok(ListToolsResult {
+                    result_type: None,
                     tools: vec![Self::tool(&format!("{prefix}_first"))],
                     next_cursor: Some(String::new()),
                     meta: None,
+                    ttl_ms: None,
+                    cache_scope: None,
                 }),
                 Some("") => Ok(ListToolsResult {
+                    result_type: None,
                     tools: vec![Self::tool(&format!("{prefix}_later"))],
                     next_cursor: None,
                     meta: None,
+                    ttl_ms: None,
+                    cache_scope: None,
                 }),
                 Some(cursor) => Err(McpError::invalid_params(
                     ["unexpected cursor ", cursor].concat(),

@@ -56,7 +56,7 @@ use rmcp::RoleServer;
 use rmcp::ServerHandler;
 use rmcp::ServiceExt;
 use rmcp::model::ClientCapabilities;
-use rmcp::model::CreateElicitationRequestParams;
+use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitationAction;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
@@ -68,8 +68,8 @@ use rmcp::model::ListToolsResult;
 use rmcp::model::NumberOrString;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
-use rmcp::model::RawResource;
-use rmcp::model::RawResourceTemplate;
+use rmcp::model::Resource;
+use rmcp::model::ResourceTemplate;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
@@ -274,21 +274,16 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
             return Err(McpError::internal_error("resource list failed", None));
         }
         Ok(ListResourcesResult {
+            result_type: None,
             resources: vec![Resource::new(
-                RawResource {
-                    uri: format!("memo://{}", self.server_name),
-                    name: self.server_name.clone(),
-                    title: None,
-                    description: None,
-                    mime_type: Some("text/plain".to_string()),
-                    size: None,
-                    icons: None,
-                    meta: None,
-                },
-                /*annotations*/ None,
-            )],
+                format!("memo://{}", self.server_name),
+                self.server_name.clone(),
+            )
+            .with_mime_type("text/plain")],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -307,19 +302,16 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
             ));
         }
         Ok(ListResourceTemplatesResult {
+            result_type: None,
             resource_templates: vec![ResourceTemplate::new(
-                RawResourceTemplate {
-                    uri_template: format!("memo://{}/{{id}}", self.server_name),
-                    name: self.server_name.clone(),
-                    title: None,
-                    description: None,
-                    mime_type: Some("text/plain".to_string()),
-                    icons: None,
-                },
-                /*annotations*/ None,
-            )],
+                format!("memo://{}/{{id}}", self.server_name),
+                self.server_name.clone(),
+            )
+            .with_mime_type("text/plain")],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 }
@@ -368,9 +360,12 @@ impl ServerHandler for RefreshTestTransportFactory {
             release_list.notified().await;
         }
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![self.tool.clone()],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 }
@@ -807,7 +802,7 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
     let response = sender(
         NumberOrString::Number(1),
         codex_rmcp_client::Elicitation::Mcp(
-            CreateElicitationRequestParams::FormElicitationParams {
+            ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "Confirm?".to_string(),
                 requested_schema: rmcp::model::ElicitationSchema::builder()
@@ -844,7 +839,7 @@ async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fiel
     let response = sender(
         NumberOrString::Number(1),
         codex_rmcp_client::Elicitation::Mcp(
-            CreateElicitationRequestParams::FormElicitationParams {
+            ElicitRequestParams::FormElicitationParams {
                 meta: None,
                 message: "What should I say?".to_string(),
                 requested_schema: rmcp::model::ElicitationSchema::builder()
@@ -898,7 +893,7 @@ async fn concurrent_authority_updates_never_auto_approve_mixed_policy() {
     });
     let sender = manager.make_sender("server".to_string(), /*tx_event*/ None);
     let elicitation = codex_rmcp_client::Elicitation::Mcp(
-        CreateElicitationRequestParams::FormElicitationParams {
+        ElicitRequestParams::FormElicitationParams {
             meta: None,
             message: "Confirm?".to_string(),
             requested_schema: rmcp::model::ElicitationSchema::builder()
@@ -961,7 +956,7 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
     let sender_a = manager_a.make_sender("server".to_string(), Some(tx_event.clone()));
     let sender_b = manager_b.make_sender("server".to_string(), Some(tx_event));
     let elicitation = codex_rmcp_client::Elicitation::Mcp(
-        CreateElicitationRequestParams::FormElicitationParams {
+        ElicitRequestParams::FormElicitationParams {
             meta: None,
             message: "Which runtime?".to_string(),
             requested_schema: rmcp::model::ElicitationSchema::builder()
