@@ -41,10 +41,49 @@ def just_formatter_group(*, check: bool) -> FormatterGroup:
 
 
 def rust_formatter_group(*, check: bool) -> FormatterGroup:
-    args = ["cargo", "fmt", "--", "--config", "imports_granularity=Item"]
+    repository_files = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.rs",
+        ],
+        cwd=REPO_ROOT,
+    ).split(b"\0")
+    codex_root = REPO_ROOT / "codex-rs"
+    rust_files: list[tuple[str, str]] = []
+    for encoded_path in repository_files:
+        if not encoded_path:
+            continue
+        path = Path(os.fsdecode(encoded_path))
+        absolute_path = REPO_ROOT / path
+        if not absolute_path.is_file():
+            continue
+        rust_files.append(
+            (
+                path.as_posix(),
+                os.path.relpath(absolute_path, codex_root),
+            )
+        )
+    rust_files.sort(key=lambda item: item[0])
+
+    args = [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        str(codex_root / "rustfmt.toml"),
+        "--config",
+        "imports_granularity=Item,skip_children=true",
+        *(relative_path for _, relative_path in rust_files),
+    ]
     if check:
         args.append("--check")
-    command = Command(tuple(args), REPO_ROOT / "codex-rs")
+    command = Command(tuple(args), codex_root)
     return FormatterGroup("Rust", (command,))
 
 
