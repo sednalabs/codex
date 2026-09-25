@@ -1026,8 +1026,7 @@ async fn run_memory_phase_two_model_request_test(
             tokio::fs::write(root.join("memory_summary.md"), "v1\n\n## User Profile\nTest user\n\n## User preferences\nTest preference\n\n## General Tips\nTest tip\n\n## What's in Memory\nTest source\n").await?
         }
     }
-    let parent_permission_profile = config.permissions.effective_permission_profile();
-    phase2::run(context, config, parent_permission_profile).await;
+    phase2::run(context, config).await;
     let request = wait_for_single_request(&response).await;
     let turn_metadata: serde_json::Value = serde_json::from_str(
         request.body_json()["client_metadata"]["x-codex-turn-metadata"]

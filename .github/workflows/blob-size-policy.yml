@@ -2,6 +2,15 @@ name: blob-size-policy
 
 on:
   workflow_call:
+    inputs:
+      base_sha:
+        description: Exact comparison base commit for manual validation
+        required: false
+        type: string
+      head_sha:
+        description: Exact comparison head commit for manual validation
+        required: false
+        type: string
 
 jobs:
   check:
@@ -25,13 +34,22 @@ jobs:
           set -euo pipefail
 
           # PRs inspect the proposed diff; main pushes inspect only the commit
-          # range that just landed. Both paths feed the same blob-size checker.
+          # range that just landed. Manual validation must provide an explicit
+          # comparison base because workflow_dispatch has no event.before.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             base='${{ github.event.pull_request.base.sha }}'
             head='${{ github.event.pull_request.head.sha }}'
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            base='${{ inputs.base_sha }}'
+            head='${{ inputs.head_sha }}'
           else
             base='${{ github.event.before }}'
             head='${{ github.sha }}'
+          fi
+
+          if [[ -z "$base" || -z "$head" ]]; then
+            echo "comparison range is not bound (base='$base', head='$head')" >&2
+            exit 1
           fi
 
           echo "base=$base" >> "$GITHUB_OUTPUT"

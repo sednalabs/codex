@@ -1,5 +1,6 @@
 use crate::context::ContextualUserFragment;
 use crate::context::TerminalCompletionNotification;
+#[cfg(test)]
 use crate::context::TerminalCompletionStatus;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
@@ -162,13 +163,13 @@ impl InputQueue {
         {
             return;
         }
-        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS {
-            if let Some(older) = pending.pop_front() {
-                if let Some(next_oldest) = pending.front_mut() {
-                    next_oldest.coalesce(older);
-                } else {
-                    completion.coalesce(older);
-                }
+        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS
+            && let Some(older) = pending.pop_front()
+        {
+            if let Some(next_oldest) = pending.front_mut() {
+                next_oldest.coalesce(older);
+            } else {
+                completion.coalesce(older);
             }
         }
         pending.push_back(completion);
@@ -576,7 +577,7 @@ mod tests {
             InputQueueActivity::TerminalCompletion
         );
         assert_eq!(
-            input_queue.subscribe_activity(None).await.1,
+            input_queue.subscribe_activity(/*turn_state*/ None).await.1,
             Some(InputQueueActivity::TerminalCompletion)
         );
     }

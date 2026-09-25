@@ -16,6 +16,10 @@ on:
         description: Exact product candidate tree SHA validated by this dispatch
         required: true
         type: string
+      base_sha:
+        description: Exact comparison base commit used by the blob-size policy
+        required: true
+        type: string
 
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the
@@ -28,6 +32,9 @@ jobs:
   blob-size-policy:
     name: Blob size policy
     uses: ./.github/workflows/blob-size-policy.yml
+    with:
+      base_sha: ${{ inputs.base_sha }}
+      head_sha: ${{ inputs.candidate_sha }}
     secrets: inherit
 
   cargo-deny:
