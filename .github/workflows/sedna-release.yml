@@ -1579,15 +1579,19 @@ jobs:
           fi
 
           notes_flag=()
+          guidance_url="https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow"
+          verifier_command="scripts/install_sedna_release_asset --repository ${GH_REPO} --release-tag ${RELEASE_TAG} --dry-run"
           if [[ "${MACOS_RELEASE_MODE}" == "preview" ]]; then
-            preview_notes="### Intel macOS preview"$'\n\n'
-            preview_notes+="The Intel macOS asset is ad-hoc signed and **not Developer ID signed or notarized by Apple**. "
-            preview_notes+="It is a preview artifact, may be blocked by Gatekeeper, and is not an official supported macOS distribution."
+            preview_notes="### Intel macOS preview (x86_64)"$'\n\n'
+            preview_notes+="- **Target:** Intel x86_64 macOS with a 12.0 minimum deployment target. Apple Silicon is not included; Monterey runtime smoke is not claimed."
+            preview_notes+=$'\n'"- **Trust:** Ad-hoc signed only — **not Developer ID signed or notarized by Apple**. This preview may be blocked by Gatekeeper and is not an official supported macOS distribution."
+            preview_notes+=$'\n'"- **Safety:** Before running it, follow [release verification guidance](${guidance_url}). Run \`${verifier_command} --allow-prerelease --macos-preview\` in dry-run mode. Proceed only after success; never disable Gatekeeper or bypass checksum, signature, or provenance failures."
             notes_flag+=(--notes "${preview_notes}")
           elif [[ "${MACOS_RELEASE_MODE}" == "unnotarized" ]]; then
-            unnotarized_notes="### Intel macOS unnotarized asset"$'\n\n'
-            unnotarized_notes+="The Intel macOS asset is ad-hoc signed and **not Developer ID signed or notarized by Apple**. "
-            unnotarized_notes+="It is provided without an Apple identity and may be blocked by Gatekeeper."
+            unnotarized_notes="### Intel macOS unnotarized asset (x86_64)"$'\n\n'
+            unnotarized_notes+="- **Target:** Intel x86_64 macOS with a 12.0 minimum deployment target. Apple Silicon is not included; Monterey runtime smoke is not claimed."
+            unnotarized_notes+=$'\n'"- **Trust:** Ad-hoc signed only — **not Developer ID signed or notarized by Apple**. This asset may be blocked by Gatekeeper and is not an official supported macOS distribution."
+            unnotarized_notes+=$'\n'"- **Safety:** Before running it, follow [release verification guidance](${guidance_url}). Run \`${verifier_command} --macos-unnotarized\` in dry-run mode. Proceed only after success; never disable Gatekeeper or bypass checksum, signature, or provenance failures."
             notes_flag+=(--notes "${unnotarized_notes}")
           fi
 
