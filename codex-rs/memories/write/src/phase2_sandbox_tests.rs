@@ -22,7 +22,8 @@ async fn consolidation_uses_canonical_parent_enforcement() -> anyhow::Result<()>
         exclude_slash_tmp: true,
     };
 
-    let agent_config = agent::get_config(&test.config).expect("agent config should be created");
+    let agent_config = agent::get_config(&test.config, crate::stage_two::MODEL)
+        .expect("agent config should be created");
 
     assert_eq!(
         agent_config.permissions.permission_profile(),

@@ -19,13 +19,13 @@ use crate::workspace::write_workspace_diff;
 use codex_config::Constrained;
 use codex_core::config::Config;
 use codex_features::Feature;
-use codex_protocol::MemoryVersion;
-use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
+use codex_protocol::MemoryVersion;
+use codex_protocol::ThreadId;
 use codex_state::MemoryStore;
 use codex_state::Stage1Output;
 use std::collections::HashMap;
@@ -74,7 +74,10 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     }
 
     // 3. Build the locked-down config used by the consolidation agent.
-    let Some(agent_config) = agent::get_config(config.as_ref()) else {
+    let Some(agent_config) = agent::get_config(
+        config.as_ref(),
+        context.provider().memory_consolidation_preferred_model(),
+    ) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
         job::failed(context.as_ref(), &db, &claim, "failed_sandbox_policy").await;
@@ -349,7 +352,7 @@ mod job {
 mod agent {
     use super::*;
 
-    pub(super) fn get_config(config: &Config) -> Option<Config> {
+    pub(super) fn get_config(config: &Config, preferred_model: &str) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         let mut agent_config = config.clone();
 
@@ -372,6 +375,10 @@ mod agent {
             .features
             .disable(Feature::SkillMcpDependencyInstall);
 
+        // This internal worker must not invoke the parent process's legacy notify
+        // command. Managed hooks remain enabled through the normal hook policy.
+        agent_config.notify = None;
+
         // Sandbox policy
         let writable_roots = vec![root];
         // The consolidation agent only needs local memory-root write access and no network.
@@ -382,8 +389,7 @@ mod agent {
             exclude_slash_tmp: true,
         };
         agent_config
-            .permissions
-            .set_legacy_sandbox_policy(consolidation_sandbox_policy, agent_config.cwd.as_path())
+            .set_legacy_sandbox_policy(consolidation_sandbox_policy)
             .ok()?;
 
         agent_config.model = Some(
@@ -391,7 +397,7 @@ mod agent {
                 .memories
                 .consolidation_model
                 .clone()
-                .unwrap_or(crate::stage_two::MODEL.to_string()),
+                .unwrap_or_else(|| preferred_model.to_string()),
         );
         agent_config.model_reasoning_effort = Some(crate::stage_two::REASONING_EFFORT);
 

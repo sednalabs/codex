@@ -15,7 +15,8 @@ async fn consolidation_rebinds_workspace_roots_to_memory_root() -> anyhow::Resul
         .with_home(home)
         .build_with_auto_env(&server)
         .await?;
-    let agent_config = agent::get_config(&test.config).expect("agent config should be created");
+    let agent_config = agent::get_config(&test.config, crate::stage_two::MODEL)
+        .expect("agent config should be created");
     let root = memory_root(&test.config.codex_home);
 
     assert_eq!(agent_config.cwd, root);
