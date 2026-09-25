@@ -6,6 +6,11 @@ run-name: >-
 on:
   workflow_call:
     inputs:
+      refresh_dependency_artifacts:
+        description: Generate reviewable dependency locks and formatting artifacts on the hosted runner
+        required: false
+        type: boolean
+        default: false
       ref:
         required: false
         type: string
@@ -43,6 +48,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      refresh_dependency_artifacts:
+        description: Generate reviewable dependency locks and formatting artifacts on the hosted runner
+        required: false
+        type: boolean
+        default: false
       ref:
         description: Branch or tag to validate; this value is passed directly to actions/checkout for the validation-target checkout, so SHA pinning belongs in the dispatch/watch layer instead
         required: false
@@ -1468,3 +1478,31 @@ jobs:
               if signal:
                   print(f"- First blocker signal: `{signal}`")
           PY
+
+  dependency_artifacts:
+    name: Generate dependency artifacts (not validation proof)
+    needs: metadata
+    if: ${{ inputs.refresh_dependency_artifacts }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.head_sha }}
+          persist-credentials: false
+      - name: Verify generation source
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Generate reviewable artifacts
+        run: bash .github/scripts/validation-lanes/dependency-artifacts.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dependency-artifacts-${{ needs.metadata.outputs.head_sha }}
+          path: dist/dependency-artifacts/
+          if-no-files-found: error
