@@ -108,7 +108,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 "capabilities": {},
                 "serverInfo": { "name": "cancellation-test", "version": "0.0.0" }
             }),
-            true,
+            /*include_session*/ true,
         ),
         Some("notifications/initialized") | Some("notifications/cancelled") => {
             if method == Some("notifications/cancelled") {
@@ -137,7 +137,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
             json_response(
                 request.get("id").cloned(),
                 json!({ "content": [], "isError": false }),
-                false,
+                /*include_session*/ false,
             )
         }
         Some("resources/read") => json_response(
@@ -149,12 +149,12 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                     "text": "follow-on read"
                 }]
             }),
-            false,
+            /*include_session*/ false,
         ),
         _ => json_response(
             request.get("id").cloned(),
             json!({ "content": [], "isError": false }),
-            false,
+            /*include_session*/ false,
         ),
     }
 }
@@ -184,10 +184,15 @@ async fn blocked_posts_do_not_starve_an_independent_read() -> anyhow::Result<()>
     let task_client = client.clone();
     blocked.push(tokio::spawn(async move {
         task_client
-            .call_tool("blocked".to_string(), Some(json!({})), None, None)
+            .call_tool(
+                "blocked".to_string(),
+                Some(json!({})),
+                /*meta*/ None,
+                /*timeout*/ None,
+            )
             .await
     }));
-    state.wait_for_blocked(1).await?;
+    state.wait_for_blocked(/*count*/ 1).await?;
 
     let read = tokio::time::timeout(
         Duration::from_secs(2),
@@ -223,12 +228,12 @@ async fn timed_out_post_sends_matching_cancellation_and_reclaims_capacity() -> a
             .call_tool(
                 "blocked".to_string(),
                 Some(json!({})),
-                None,
+                /*meta*/ None,
                 Some(Duration::from_millis(100)),
             )
             .await
     });
-    state.wait_for_blocked(1).await?;
+    state.wait_for_blocked(/*count*/ 1).await?;
     let result = timed_out.await?;
     assert!(result.is_err(), "timed-out call unexpectedly succeeded");
     state.wait_for_cancellation().await?;
@@ -273,7 +278,12 @@ async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()>
         let client = client.clone();
         blocked.push(tokio::spawn(async move {
             client
-                .call_tool("blocked".to_string(), Some(json!({})), None, None)
+                .call_tool(
+                    "blocked".to_string(),
+                    Some(json!({})),
+                    /*meta*/ None,
+                    /*timeout*/ None,
+                )
                 .await
         }));
     }
@@ -281,7 +291,12 @@ async fn cancelled_queued_post_is_never_sent_or_executed() -> anyhow::Result<()>
 
     // Poll the actual call future, not a JoinHandle: it reaches rmcp's response
     // wait while every ordinary HTTP slot is held by an observed request.
-    let mut queued = Box::pin(client.call_tool("queued".to_string(), Some(json!({})), None, None));
+    let mut queued = Box::pin(client.call_tool(
+        "queued".to_string(),
+        Some(json!({})),
+        /*meta*/ None,
+        /*timeout*/ None,
+    ));
     assert!(futures::poll!(queued.as_mut()).is_pending());
     drop(queued);
     state.wait_for_cancellation().await?;
@@ -341,7 +356,7 @@ async fn timed_out_mutating_call_is_not_replayed() -> anyhow::Result<()> {
             .call_tool(
                 "mutate".to_string(),
                 Some(json!({ "value": "once" })),
-                None,
+                /*meta*/ None,
                 Some(Duration::from_millis(100)),
             )
             .await
@@ -368,10 +383,15 @@ async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result
     let task_client = client.clone();
     let request = tokio::spawn(async move {
         task_client
-            .call_tool("blocked".to_string(), Some(json!({})), None, None)
+            .call_tool(
+                "blocked".to_string(),
+                Some(json!({})),
+                /*meta*/ None,
+                /*timeout*/ None,
+            )
             .await
     });
-    state.wait_for_blocked(1).await?;
+    state.wait_for_blocked(/*count*/ 1).await?;
     let blocked_id = state.blocked_started.lock().await[0]
         .get("id")
         .cloned()
@@ -381,7 +401,12 @@ async fn externally_aborted_post_sends_matching_cancellation() -> anyhow::Result
         let task_client = client.clone();
         remaining.push(tokio::spawn(async move {
             task_client
-                .call_tool("blocked".to_string(), Some(json!({})), None, None)
+                .call_tool(
+                    "blocked".to_string(),
+                    Some(json!({})),
+                    /*meta*/ None,
+                    /*timeout*/ None,
+                )
                 .await
         }));
     }
