@@ -232,12 +232,11 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         mode: codex_protocol::openai_models::TruncationMode::Bytes,
         limit: 4,
     };
-    let (mut activity_rx, pending_activity) =
-        context
-            .session
-            .input_queue
-            .subscribe_activity(/*turn_state*/ None)
-            .await;
+    let (mut activity_rx, pending_activity) = context
+        .session
+        .input_queue
+        .subscribe_activity(/*turn_state*/ None)
+        .await;
     assert_eq!(pending_activity, None);
     spawn_exit_watcher(
         Arc::clone(&process),

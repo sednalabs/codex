@@ -80,9 +80,8 @@ fn write_restricted_token_uses_restricted_code_not_everyone() -> Result<()> {
     let has_restricted_code = unsafe {
         token_has_restricting_sid(restricted_token, restricted_code.as_ptr() as *mut c_void)
     };
-    let has_everyone = unsafe {
-        token_has_restricting_sid(restricted_token, everyone.as_ptr() as *mut c_void)
-    };
+    let has_everyone =
+        unsafe { token_has_restricting_sid(restricted_token, everyone.as_ptr() as *mut c_void) };
     unsafe {
         CloseHandle(restricted_token);
         CloseHandle(base_token);
