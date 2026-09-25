@@ -1956,6 +1956,50 @@
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.rmcp-client-transport",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/rmcp-client-transport.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.rmcp-consumers-check",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/rmcp-consumers-check.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
     }
   ],
   "followup_routes": [

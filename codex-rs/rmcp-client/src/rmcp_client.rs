@@ -66,6 +66,7 @@ use tracing::warn;
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
@@ -783,7 +784,7 @@ impl RmcpClient {
                 async move {
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
-                    let result = service
+                    let request = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
@@ -791,9 +792,16 @@ impl RmcpClient {
                             )),
                             options,
                         )
-                        .await?
-                        .await_response()
                         .await?;
+                    let guard = RequestCancellationGuard::new(
+                        request.peer.clone(),
+                        request.id.clone(),
+                    );
+                    // The guard covers caller/task drops and active timeout
+                    // drops; rmcp retains its normal response cleanup path.
+                    let result = request.await_response().await;
+                    guard.disarm();
+                    let result = result?;
                     match result {
                         ServerResult::CallToolResult(result) => Ok(result),
                         _ => Err(rmcp::service::ServiceError::UnexpectedResponse),

@@ -3574,6 +3574,48 @@
       "extraction_target": "upstream exact-target wait mailbox filtering"
     },
     {
+      "id": "rmcp-streamable-http-cancellation",
+      "title": "Streamable HTTP MCP request cancellation and independent backlog capacity",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "protocol-client",
+      "surface": [
+        "rmcp-client Streamable HTTP transport"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs"
+      ],
+      "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.rmcp-client-transport; codex.rmcp-consumers-check; codex.downstream-docs-check",
+      "tests": [
+        "blocked_posts_do_not_starve_an_independent_read",
+        "timed_out_post_sends_matching_cancellation_and_reclaims_capacity",
+        "cancelled_queued_post_is_never_sent_or_executed",
+        "timed_out_mutating_call_is_not_replayed",
+        "externally_aborted_post_sends_matching_cancellation",
+        "active_time_timeout_pauses_while_elicitation_is_pending"
+      ],
+      "owner": "downstream",
+      "notes": "The dedicated HTTP fixture records request and cancellation IDs, saturates ordinary transport capacity, and requires follow-on reads before releasing held requests. Keep explicit Drop cancellation until an upstream equivalent covers caller abort and active-time expiry; source presence alone is not installed-runtime acceptance.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        "codex-rs/rmcp-client/src/rmcp_client.rs"
+      ],
+      "extraction_target": "upstream request-handle cancellation and concurrent HTTP control capacity"
+    },
+
+    {
       "id": "strict-workflow-run-watcher-identity",
       "title": "Strict REST identity and pagination for virtual workflow runs",
       "status": "live",

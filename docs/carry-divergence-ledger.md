@@ -3686,3 +3686,18 @@ replacement or removal cannot preserve stale green backoff. Ordinary green
 PRs without an active queue entry retain bounded backoff. Queue failure,
 removal, readiness, credential, and mutation behavior remain fail-closed and
 separate ownership boundaries.
+
+## RMCP Streamable HTTP cancellation and backlog capacity
+
+The downstream client uses released rmcp 3.2 concurrent HTTP transport and a
+scoped request guard for `tools/call`. Dropping a call, including active-time
+expiry, sends a cancellation notification. Completed requests retain rmcp's
+normal response cleanup. Existing elicitation pauses continue to suspend the
+active-time budget, and uncertain tool mutations are not retried.
+
+`codex.rmcp-client-transport` exercises observed request/cancellation IDs,
+blocked-POST independence, queued cancellation, capacity recovery after abort,
+mutation no-replay and existing elicitation tests. `codex.rmcp-consumers-check`
+compiles all direct SDK consumers. Remove this guard when upstream provides
+both equivalent caller-drop cancellation and the existing concurrent control
+capacity; passing source tests alone does not prove an installed host adopted it.

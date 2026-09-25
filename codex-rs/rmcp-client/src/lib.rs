@@ -9,6 +9,7 @@ mod oauth_http_client;
 mod perform_oauth_device_login;
 mod perform_oauth_login;
 mod program_resolver;
+mod request_cancellation_guard;
 mod rmcp_client;
 mod startup_error;
 mod stdio_server_launcher;

@@ -12,6 +12,15 @@ that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream
 branch.
 
+## MCP Streamable HTTP cancellation
+
+`codex.rmcp-client-transport` runs the complete client suite, including a dedicated
+HTTP observer for blocked-POST independence, timeout and caller-drop cancellation
+IDs, saturated-queue removal, capacity recovery and uncertain-mutation no-replay.
+Existing active-time tests retain elicitation-pause coverage.
+`codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.
+Installed-host first use is a separate acceptance step after protected delivery.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
