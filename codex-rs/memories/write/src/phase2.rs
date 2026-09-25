@@ -101,7 +101,9 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
     let new_watermark = get_watermark(claim.watermark, &raw_memories);
 
     // 5. Sync the current inputs into the memory workspace.
-    if let Err(err) = sync_phase2_workspace_inputs(&root, &raw_memories).await {
+    if let Err(err) =
+        sync_phase2_workspace_inputs(&root, &raw_memories, config.memories.version).await
+    {
         tracing::error!("failed syncing phase2 workspace inputs: {err}");
         job::failed(
             context.as_ref(),
@@ -220,10 +222,13 @@ pub async fn run(context: Arc<MemoryStartupContext>, config: Arc<Config>) {
 async fn sync_phase2_workspace_inputs(
     root: &Path,
     raw_memories: &[Stage1Output],
+    version: MemoryVersion,
 ) -> std::io::Result<()> {
     let raw_memory_count = raw_memories.len();
     sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count).await?;
-    rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?;
+    if version == MemoryVersion::V1 {
+        rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count).await?;
+    }
     prune_old_extension_resources(root).await;
     Ok(())
 }
