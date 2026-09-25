@@ -24,6 +24,7 @@ use rmcp::model::ListToolsResult;
 use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResponse;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
@@ -560,7 +561,7 @@ impl ServerHandler for TestToolServer {
         &self,
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
+    ) -> Result<ReadResourceResponse, McpError> {
         if uri == MEMO_URI {
             Ok(ReadResourceResult::new(vec![
                 ResourceContents::TextResourceContents {
@@ -569,7 +570,8 @@ impl ServerHandler for TestToolServer {
                     text: Self::memo_text().to_string(),
                     meta: None,
                 },
-            ]))
+            ])
+            .into())
         } else {
             Err(McpError::resource_not_found(
                 "resource_not_found",

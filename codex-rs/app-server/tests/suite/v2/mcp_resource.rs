@@ -46,6 +46,7 @@ use rmcp::model::PaginatedRequestParams;
 use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResponse;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
@@ -840,7 +841,7 @@ impl ServerHandler for ResourceAppsMcpServer {
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         let uri = request.uri;
         if uri == TEST_ELICITATION_RESOURCE_URI {
             let requested_schema = ElicitationSchema::builder()
@@ -868,7 +869,8 @@ impl ServerHandler for ResourceAppsMcpServer {
                     text: TEST_ELICITATION_RESOURCE_TEXT.to_string(),
                     meta: None,
                 },
-            ]));
+            ])
+            .into());
         }
         if uri == SKILL_MAIN_PROMPT_URI {
             self.calls.main_prompt_reads.fetch_add(1, Ordering::Relaxed);
@@ -879,7 +881,8 @@ impl ServerHandler for ResourceAppsMcpServer {
                     text: SKILL_CONTENTS.to_string(),
                     meta: None,
                 },
-            ]));
+            ])
+            .into());
         }
         if uri == SKILL_REFERENCE_URI {
             self.calls.reference_reads.fetch_add(1, Ordering::Relaxed);
@@ -890,7 +893,8 @@ impl ServerHandler for ResourceAppsMcpServer {
                     text: SKILL_REFERENCE_CONTENTS.to_string(),
                     meta: None,
                 },
-            ]));
+            ])
+            .into());
         }
         if uri != TEST_RESOURCE_URI {
             return Err(rmcp::ErrorData::resource_not_found(
@@ -912,7 +916,8 @@ impl ServerHandler for ResourceAppsMcpServer {
                 blob: TEST_RESOURCE_BLOB.to_string(),
                 meta: None,
             },
-        ]))
+        ])
+        .into())
     }
 }
 
