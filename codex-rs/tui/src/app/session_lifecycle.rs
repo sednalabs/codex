@@ -252,6 +252,19 @@ fn agent_picker_subtitle(
     base
 }
 
+fn selected_picker_index(
+    selected_thread_id: Option<ThreadId>,
+    displayed_thread_ids: &[ThreadId],
+    active_thread_id: Option<ThreadId>,
+) -> Option<usize> {
+    selected_thread_id
+        .and_then(|thread_id| displayed_thread_ids.iter().position(|id| *id == thread_id))
+        .or_else(|| {
+            active_thread_id
+                .and_then(|thread_id| displayed_thread_ids.iter().position(|id| *id == thread_id))
+        })
+}
+
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let replace_active_picker = self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID);
@@ -295,7 +308,6 @@ impl App {
             self.active_thread_id,
             AGENT_PICKER_ROWS_PER_OPEN,
         );
-        self.agent_picker_visible_thread_ids = picker_thread_ids.clone();
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. A buffered active turn is positive liveness evidence; a completed
         // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
@@ -405,18 +417,13 @@ impl App {
         let previous_query = self
             .chat_widget
             .selection_view_search_query(AGENT_PICKER_VIEW_ID);
-        let mut initial_selected_idx = None;
         let mut items = Vec::new();
+        let mut displayed_thread_ids = Vec::new();
         for thread_id in picker_thread_ids {
             let Some(entry) = self.agent_navigation.get(&thread_id) else {
                 continue;
             };
-            let idx = items.len();
-            if previous_selected_thread_id == Some(thread_id)
-                || (previous_selected_thread_id.is_none() && self.active_thread_id == Some(thread_id))
-            {
-                initial_selected_idx = Some(idx);
-            }
+            displayed_thread_ids.push(thread_id);
             let id = thread_id;
             let is_primary = self.primary_thread_id == Some(thread_id);
             let name = entry
@@ -461,6 +468,12 @@ impl App {
                 ..Default::default()
             });
         }
+        let initial_selected_idx = selected_picker_index(
+            previous_selected_thread_id,
+            &displayed_thread_ids,
+            self.active_thread_id,
+        );
+        self.agent_picker_visible_thread_ids = displayed_thread_ids;
 
         let params = SelectionViewParams {
             view_id: Some(AGENT_PICKER_VIEW_ID),
@@ -654,6 +667,7 @@ impl App {
     pub(super) fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
+        self.request_agent_picker_refresh_if_open();
     }
 
     pub(super) async fn refresh_agent_picker_thread_liveness(
@@ -1987,6 +2001,27 @@ impl App {
         }
 
         Ok(AppRunControl::Continue)
+    }
+}
+
+#[cfg(test)]
+mod picker_selection_tests {
+    use super::selected_picker_index;
+    use codex_protocol::ThreadId;
+
+    #[test]
+    fn selection_remaps_against_final_displayed_rows() {
+        let removed = ThreadId::new();
+        let selected = ThreadId::new();
+        let active = ThreadId::new();
+        assert_eq!(
+            selected_picker_index(Some(selected), &[selected, active], None),
+            Some(0)
+        );
+        assert_eq!(
+            selected_picker_index(Some(removed), &[selected, active], Some(active)),
+            Some(1)
+        );
     }
 }
 
