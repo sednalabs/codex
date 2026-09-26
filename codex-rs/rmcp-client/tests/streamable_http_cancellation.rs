@@ -43,6 +43,7 @@ struct ServerState {
     error_after_send: Arc<Mutex<bool>>,
     blocked: Arc<Notify>,
     blocked_started: Arc<Notify>,
+    modern_protocol: Arc<Mutex<bool>>,
 }
 
 async fn spawn_server() -> anyhow::Result<(ServerState, String, tokio::task::JoinHandle<()>)> {
@@ -68,6 +69,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 .pointer("/params/protocolVersion")
                 .and_then(Value::as_str)
                 .unwrap_or("2025-06-18");
+            *state.modern_protocol.lock().await = protocol == "2026-07-28";
             json_response(
                 request.get("id").cloned(),
                 json!({
@@ -76,6 +78,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                     "serverInfo": { "name": "cancellation-test", "version": "0.0.0" }
                 }),
                 true,
+                protocol == "2026-07-28",
             )
         }
         Some("notifications/initialized") => accepted_response(),
@@ -99,6 +102,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 request.get("id").cloned(),
                 json!({ "content": [], "isError": false }),
                 false,
+                *state.modern_protocol.lock().await,
             )
         }
         Some("resources/read") => json_response(
@@ -109,8 +113,14 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 "text": "follow-on read"
             }]}),
             false,
+            *state.modern_protocol.lock().await,
         ),
-        _ => json_response(request.get("id").cloned(), json!({}), false),
+        _ => json_response(
+            request.get("id").cloned(),
+            json!({}),
+            false,
+            *state.modern_protocol.lock().await,
+        ),
     }
 }
 
@@ -120,13 +130,31 @@ fn accepted_response() -> Response {
     response
 }
 
-fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Response {
-    let body = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-        .unwrap_or_else(|error| panic!("serialize cancellation response: {error}"));
+fn json_response(
+    id: Option<Value>,
+    result: Value,
+    include_session: bool,
+    modern_protocol: bool,
+) -> Response {
+    let payload = json!({ "jsonrpc": "2.0", "id": id, "result": result });
+    let body = if modern_protocol {
+        let message = serde_json::to_string(&payload)
+            .unwrap_or_else(|error| panic!("serialize cancellation event: {error}"));
+        format!("event: message\ndata: {message}\n\n").into_bytes()
+    } else {
+        serde_json::to_vec(&payload)
+            .unwrap_or_else(|error| panic!("serialize cancellation response: {error}"))
+    };
     let mut response = Response::new(Body::from(body));
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let content_type = if modern_protocol {
+        "text/event-stream; charset=utf-8"
+    } else {
+        "application/json"
+    };
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(content_type),
+    );
     if include_session {
         response
             .headers_mut()
