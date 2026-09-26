@@ -17,8 +17,8 @@ esac
   //third_party/voice:native_sdk \
   //third_party/voice:native_link
 
-sdk="$(bazel cquery --noimplicit_deps --output=files --output_groups=sdk //third_party/voice:native_sdk | head -n 1)"
-native_link="$(bazel cquery --noimplicit_deps --output=files //third_party/voice:native_link | head -n 1)"
+sdk="$(bazel cquery --noimplicit_deps --output=files --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
+native_link="$(bazel cquery --noimplicit_deps --output=files //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
 native_lib="$(dirname "$native_link")"
 pkg_config="$(bazel cquery --noimplicit_deps --output=files //third_party/voice:pkg_config | head -n 1)"
 
