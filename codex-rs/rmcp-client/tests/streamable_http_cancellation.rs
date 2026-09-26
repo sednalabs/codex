@@ -21,16 +21,31 @@ use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::McpProtocolMode;
 use futures::FutureExt;
 use rmcp::model::ClientCapabilities;
+use rmcp::model::CallToolResponse;
+use rmcp::model::CallToolRequestParams;
+use rmcp::model::ContentBlock;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::FormElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
+use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResponse;
+use rmcp::model::ResourceContents;
+use rmcp::model::ServerCapabilities;
+use rmcp::model::ServerInfo;
+use rmcp::service::RequestContext;
+use rmcp::service::RoleServer;
+use rmcp::service::ServerHandler;
+use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
+use rmcp::transport::streamable_http_server::StreamableHttpService;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use serde_json::Value;
 use serde_json::json;
 use streamable_http_test_support::create_client;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 const SESSION_ID: &str = "cancellation-test-session";
 const SESSION_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
@@ -243,6 +258,88 @@ async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_clien
     Ok(client)
 }
 
+#[derive(Clone)]
+struct ModernCancellationServer {
+    started: Arc<Notify>,
+    cancelled: Arc<Notify>,
+}
+
+impl ServerHandler for ModernCancellationServer {
+    #[allow(deprecated)]
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+    }
+
+    async fn call_tool(
+        &self,
+        _request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        self.started.notify_waiters();
+        tokio::select! {
+            _ = context.ct.cancelled() => {
+                self.cancelled.notify_waiters();
+                Ok(rmcp::model::CallToolResult::success(vec![ContentBlock::text("cancelled")]).into())
+            }
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                Ok(rmcp::model::CallToolResult::success(vec![ContentBlock::text("ran_to_completion")]).into())
+            }
+        }
+    }
+
+    async fn read_resource(
+        &self,
+        ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        Ok(ReadResourceResponse::new(vec![ResourceContents::TextResourceContents {
+            uri,
+            mime_type: Some("text/plain".to_string()),
+            text: "follow-on read".to_string(),
+            meta: None,
+        }]))
+    }
+}
+
+async fn spawn_modern_server() -> anyhow::Result<(
+    Arc<Notify>,
+    Arc<Notify>,
+    CancellationToken,
+    String,
+)> {
+    let started = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let server_ct = CancellationToken::new();
+    let handler = ModernCancellationServer {
+        started: started.clone(),
+        cancelled: cancelled.clone(),
+    };
+    let service = StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_json_response(false)
+            .with_sse_keep_alive(Some(Duration::from_millis(100)))
+            .with_cancellation_token(server_ct.child_token()),
+    );
+    let router = Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
+    let shutdown = server_ct.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await;
+    });
+    Ok((started, cancelled, server_ct, format!("http://{address}")))
+}
+
 #[tokio::test]
 async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() -> anyhow::Result<()>
 {
@@ -329,10 +426,9 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
 
 #[tokio::test]
 async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<()> {
-    let (state, base_url, server) = spawn_server().await?;
+    let (started, cancelled, server_ct, base_url) = spawn_modern_server().await?;
     let client = Arc::new(create_modern_client(&base_url).await?);
     let task_client = client.clone();
-    let blocked_started = state.blocked_started.notified();
     let timed_out = tokio::spawn(async move {
         task_client
             .call_tool(
@@ -343,24 +439,23 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), blocked_started).await?;
+    tokio::time::timeout(Duration::from_secs(5), started.notified()).await?;
     assert!(timed_out.await?.is_err());
-    wait_for_cancellation(&state).await?;
-    let requests = { state.requests.lock().await.clone() };
-    let blocked_id = requests
-        .iter()
-        .find(|request| request.pointer("/params/name").and_then(Value::as_str) == Some("blocked"))
-        .and_then(|request| request.get("id"))
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("modern blocked id missing"))?;
-    let cancelled_id = state.cancellations.lock().await[0]
-        .pointer("/params/requestId")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("modern cancelled request id missing"))?;
-    assert_eq!(cancelled_id, blocked_id);
-    state.blocked.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(10), cancelled.notified()).await?;
+    let read = client
+        .read_resource(
+            ReadResourceRequestParams::new("memo://follow-on".to_string()),
+            Some(Duration::from_secs(2)),
+        )
+        .await?;
+    assert_eq!(
+        serde_json::to_value(read)?,
+        json!({
+            "contents": [{ "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read" }]
+        })
+    );
     client.shutdown().await;
-    server.abort();
+    server_ct.cancel();
     Ok(())
 }
 
