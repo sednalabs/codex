@@ -295,13 +295,13 @@ impl ServerHandler for ModernCancellationServer {
         &self,
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
         Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
             uri,
             mime_type: Some("text/plain".to_string()),
             text: "follow-on read".to_string(),
             meta: None,
-        }]))
+        }]).into())
     }
 }
 
