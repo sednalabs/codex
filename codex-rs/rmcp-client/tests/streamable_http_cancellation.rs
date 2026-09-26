@@ -64,6 +64,27 @@ async fn spawn_server() -> anyhow::Result<(ServerState, String, tokio::task::Joi
 async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
     state.requests.lock().await.push(request.clone());
     match request.get("method").and_then(Value::as_str) {
+        Some("server/discover") => {
+            *state.modern_protocol.lock().await = true;
+            json_response(
+                request.get("id").cloned(),
+                json!({
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "_meta": {
+                        "io.modelcontextprotocol/serverInfo": {
+                            "name": "cancellation-test",
+                            "version": "0.0.0"
+                        }
+                    },
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }),
+                false,
+                false,
+            )
+        }
         Some("initialize") => {
             let protocol = request
                 .pointer("/params/protocolVersion")
