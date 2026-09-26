@@ -467,7 +467,7 @@ pub struct SubAgentActivityItem {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case", export_to = "v2/")]
 pub enum SubAgentInteractionKind {
     SendMessage,
     FollowupTask,
