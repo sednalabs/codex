@@ -496,7 +496,7 @@ mod tests {
             AgentPath::root(),
             Vec::new(),
             "queued".to_string(),
-            false,
+            /* trigger_turn */ false,
         );
         queue
             .enqueue_mailbox_communication(message, Default::default())
