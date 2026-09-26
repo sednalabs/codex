@@ -148,7 +148,13 @@ impl InputQueue {
         let mailbox = self.mailbox_pending_mails.lock().await;
         let activity_rx = self.activity_tx.subscribe();
         let generation = self.mailbox_generation.load(Ordering::Acquire);
-        let pending = (!mailbox.is_empty()).then_some(InputQueueActivity::Mailbox);
+        let pending = if !mailbox.is_empty() {
+            Some(InputQueueActivity::Mailbox)
+        } else if self.has_pending_terminal_completions().await {
+            Some(InputQueueActivity::TerminalCompletion)
+        } else {
+            None
+        };
         let entries = mailbox
             .iter()
             .map(|mail| (mail.communication.author.clone(), mail.sequence))
