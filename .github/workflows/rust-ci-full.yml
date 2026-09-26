@@ -20,6 +20,7 @@ jobs:
         uses: dtolnay/rust-toolchain@1.95.0
       - name: PR901 recovery and cancellation tests
         run: |
+          cd codex-rs
           cargo test --locked -p codex-rmcp-client --test streamable_http_recovery
           cargo test --locked -p codex-rmcp-client --test streamable_http_cancellation
       - name: Focused rmcp consumer checks
