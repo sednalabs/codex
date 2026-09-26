@@ -32,12 +32,12 @@ jobs:
       - name: Checkout exact product candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 7a3d77474c9db4d26eb3cf6c146b99431c5c5d76
+          ref: 8b153f207b64ccb283f0ca67a01b2d07a40953ac
           persist-credentials: false
       - name: Record harness and product identities
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 7a3d77474c9db4d26eb3cf6c146b99431c5c5d76
+          test "$(git rev-parse HEAD)" = 8b153f207b64ccb283f0ca67a01b2d07a40953ac
           echo "product_sha=$(git rev-parse HEAD)"
           echo "harness_sha=${GITHUB_SHA}"
       - uses: ./.github/actions/setup-ci
@@ -91,12 +91,12 @@ jobs:
       - name: Checkout exact product candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 7a3d77474c9db4d26eb3cf6c146b99431c5c5d76
+          ref: 8b153f207b64ccb283f0ca67a01b2d07a40953ac
           persist-credentials: false
       - name: Record harness and product identities
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 7a3d77474c9db4d26eb3cf6c146b99431c5c5d76
+          test "$(git rev-parse HEAD)" = 8b153f207b64ccb283f0ca67a01b2d07a40953ac
           echo "product_sha=$(git rev-parse HEAD)"
           echo "harness_sha=${GITHUB_SHA}"
       - uses: ./.github/actions/setup-ci
