@@ -38,15 +38,10 @@ impl Drop for RequestCancellationGuard {
         let task = runtime.spawn(async move {
             let _ = peer
                 .send_notification(
-                    CancelledNotification {
-                        params: CancelledNotificationParam {
-                            request_id: Some(request_id),
-                            reason: Some("request cancelled".to_string()),
-                            meta: None,
-                        },
-                        method: rmcp::model::CancelledNotificationMethod,
-                        extensions: Default::default(),
-                    }
+                    CancelledNotification::new(CancelledNotificationParam::new(
+                        Some(request_id),
+                        Some("request cancelled".to_string()),
+                    ))
                     .into(),
                 )
                 .await;
