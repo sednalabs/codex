@@ -36,7 +36,7 @@ use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
-use rmcp::service::ServerHandler;
+use rmcp::ServerHandler;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -45,7 +45,6 @@ use serde_json::json;
 use streamable_http_test_support::create_client;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
 
 const SESSION_ID: &str = "cancellation-test-session";
 const SESSION_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
@@ -309,12 +308,11 @@ impl ServerHandler for ModernCancellationServer {
 async fn spawn_modern_server() -> anyhow::Result<(
     Arc<Notify>,
     Arc<Notify>,
-    CancellationToken,
     String,
+    tokio::task::JoinHandle<()>,
 )> {
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
-    let server_ct = CancellationToken::new();
     let handler = ModernCancellationServer {
         started: started.clone(),
         cancelled: cancelled.clone(),
@@ -325,19 +323,15 @@ async fn spawn_modern_server() -> anyhow::Result<(
         StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
             .with_json_response(false)
-            .with_sse_keep_alive(Some(Duration::from_millis(100)))
-            .with_cancellation_token(server_ct.child_token()),
+            .with_sse_keep_alive(Some(Duration::from_millis(100))),
     );
     let router = Router::new().nest_service("/mcp", service);
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let address = listener.local_addr()?;
-    let shutdown = server_ct.clone();
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router)
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await;
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
     });
-    Ok((started, cancelled, server_ct, format!("http://{address}")))
+    Ok((started, cancelled, format!("http://{address}"), server))
 }
 
 #[tokio::test]
@@ -426,7 +420,7 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
 
 #[tokio::test]
 async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<()> {
-    let (started, cancelled, server_ct, base_url) = spawn_modern_server().await?;
+    let (started, cancelled, base_url, server) = spawn_modern_server().await?;
     let client = Arc::new(create_modern_client(&base_url).await?);
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
@@ -455,7 +449,7 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
         })
     );
     client.shutdown().await;
-    server_ct.cancel();
+    server.abort();
     Ok(())
 }
 
