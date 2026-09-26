@@ -12,7 +12,6 @@ use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 pub use codex_http_client::RequestBuilder as CodexRequestBuilder;
 use codex_terminal_detection::user_agent;
-use codex_utils_version::RELEASE_VERSION;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::header::USER_AGENT;
@@ -163,7 +162,7 @@ pub fn get_codex_user_agent() -> String {
     let prefix = format!(
         "{}/{} ({} {}; {}) {}",
         originator.value.as_str(),
-        RELEASE_VERSION,
+        env!("CARGO_PKG_VERSION"),
         os_info.os_type(),
         os_info.version(),
         os_info.architecture().unwrap_or("unknown"),
