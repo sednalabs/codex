@@ -1296,7 +1296,7 @@ fn bundled_gpt6_models_build_responses_lite_requests() {
         let body = serde_json::to_value(&request).expect("request should serialize");
 
         assert_eq!(body["model"], slug);
-        assert_eq!(body["instructions"], "");
+        assert!(body.get("instructions").is_none());
         assert!(body["tools"].is_null());
         assert_eq!(body["parallel_tool_calls"], false);
         assert_eq!(body["text"]["verbosity"], "low");
