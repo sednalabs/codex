@@ -47,6 +47,7 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::items::SubAgentInteractionKind as CoreSubAgentInteractionKind;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_shell_command::parse_command::shlex_join;
@@ -456,6 +457,10 @@ pub enum ThreadItem {
         ///
         /// On spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Concrete mailbox operation represented by an interaction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        interaction_kind: Option<SubAgentInteractionKind>,
         /// Additive explicit provenance for the requested model.
         ///
         /// This remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.
@@ -1174,6 +1179,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
                 reasoning_effort: activity.reasoning_effort,
+                interaction_kind: activity.interaction_kind.map(Into::into),
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,
@@ -1614,6 +1620,23 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum SubAgentInteractionKind {
+    SendMessage,
+    FollowupTask,
+}
+
+impl From<CoreSubAgentInteractionKind> for SubAgentInteractionKind {
+    fn from(value: CoreSubAgentInteractionKind) -> Self {
+        match value {
+            CoreSubAgentInteractionKind::SendMessage => Self::SendMessage,
+            CoreSubAgentInteractionKind::FollowupTask => Self::FollowupTask,
+        }
+    }
 }
 
 impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {

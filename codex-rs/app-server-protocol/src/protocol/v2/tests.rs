@@ -2959,6 +2959,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             .expect("worker path"),
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        interaction_kind: None,
     });
 
     assert_eq!(
@@ -2970,6 +2971,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             agent_path: "/root/worker".to_string(),
             model: Some("gpt-5.4".to_string()),
             reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            interaction_kind: None,
         }
     );
 

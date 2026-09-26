@@ -1587,6 +1587,7 @@ mod tests {
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            interaction_kind: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
@@ -1601,6 +1602,7 @@ mod tests {
             agent_path: "/root/reviewer".to_string(),
             model: Some("gpt-5.4".to_string()),
             reasoning_effort: Some(ReasoningEffortConfig::High),
+            interaction_kind: None,
         };
 
         let rendered =

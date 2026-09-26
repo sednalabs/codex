@@ -3641,6 +3641,7 @@ mod tests {
                             .expect("agent path should parse"),
                         model: None,
                         reasoning_effort: None,
+                        interaction_kind: None,
                     }),
                     completed_at_ms: 42,
                 }),
