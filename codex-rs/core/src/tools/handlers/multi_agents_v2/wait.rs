@@ -830,13 +830,8 @@ fn causal_mailbox_index(
     if actionable.len() != 1 {
         return None;
     }
-    let mut target_entries = actionable.iter().filter(|(_, communication)| {
-        mailbox_sender_is_exact_target(&communication.author, target_agent_paths)
-    });
-    let Some((index, _)) = target_entries.next() else {
-        return None;
-    };
-    target_entries.next().is_none().then_some(*index)
+    let &(index, communication) = actionable.first()?;
+    mailbox_sender_is_exact_target(&communication.author, target_agent_paths).then_some(index)
 }
 
 fn target_set_relation(targetless: bool) -> String {
