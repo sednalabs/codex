@@ -1,12 +1,24 @@
 name: rust-ci-full
 on:
   workflow_call:
+    inputs:
+      include_windows:
+        description: Run Windows matrix jobs
+        required: false
+        type: boolean
+        default: true
   push:
     branches:
       # Main pushes enter through postmerge-ci. Keep this opt-in branch trigger
       # for developers who want the full suite before merging.
       - "**full-ci**"
   workflow_dispatch:
+    inputs:
+      include_windows:
+        description: Run Windows matrix jobs
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   # --- CI that doesn't need specific targets ---------------------------------
@@ -98,14 +110,12 @@ jobs:
       deployment: false
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-          - name: macOS
-            runner: macos-15
-          - name: Windows
-            runner: windows-2025
+      matrix: >-
+        ${{ fromJSON(
+          (inputs.include_windows || github.event_name != 'workflow_dispatch') &&
+          '{"include":[{"name":"Linux","runner":"ubuntu-24.04"},{"name":"macOS","runner":"macos-15"},{"name":"Windows","runner":"windows-2025"}]}' ||
+          '{"include":[{"name":"Linux","runner":"ubuntu-24.04"},{"name":"macOS","runner":"macos-15"}]}'
+        ) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -126,11 +136,16 @@ jobs:
         shell: bash
         run: |
           bazel_targets="$(./tools/argument-comment-lint/list-bazel-targets.sh)"
+          bazel_jobs=()
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            bazel_jobs+=(--jobs=8)
+          fi
           ./.github/scripts/run-bazel-ci.sh \
             -- \
             build \
             --config=argument-comment-lint \
             --keep_going \
+            "${bazel_jobs[@]}" \
             --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
             -- \
             ${bazel_targets}
@@ -163,52 +178,12 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            profile: dev
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: dev
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: dev
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: dev
-
-          # Also run representative release builds on Mac and Linux because
-          # there could be release-only build errors we want to catch.
-          # Hopefully this also pre-populates the build cache to speed up
-          # releases.
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            profile: release
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: release
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: release
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            profile: release
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            profile: release
+      matrix: >-
+        ${{ fromJSON(
+          (inputs.include_windows || github.event_name != 'workflow_dispatch') &&
+          '{"include":[{"runner":"macos-15","target":"aarch64-apple-darwin","profile":"dev"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","profile":"dev"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","profile":"dev"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","profile":"dev"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","profile":"dev"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","profile":"dev"},{"runner":"windows-2025","target":"x86_64-pc-windows-msvc","profile":"dev"},{"runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","profile":"dev"},{"runner":"macos-15","target":"aarch64-apple-darwin","profile":"release"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","profile":"release"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","profile":"release"},{"runner":"windows-2025","target":"x86_64-pc-windows-msvc","profile":"release"},{"runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","profile":"release"}]}' ||
+          '{"include":[{"runner":"macos-15","target":"aarch64-apple-darwin","profile":"dev"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin","profile":"dev"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","profile":"dev"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","profile":"dev"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","profile":"dev"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","profile":"dev"},{"runner":"macos-15","target":"aarch64-apple-darwin","profile":"release"},{"runner":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","profile":"release"},{"runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl","profile":"release"}]}'
+        ) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -464,6 +439,7 @@ jobs:
     secrets: inherit
 
   tests_windows_x64:
+    if: ${{ inputs.include_windows || github.event_name != 'workflow_dispatch' }}
     name: Tests — windows-2025 - x86_64-pc-windows-msvc
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
     with:
@@ -475,6 +451,7 @@ jobs:
     secrets: inherit
 
   tests_windows_arm64:
+    if: ${{ inputs.include_windows || github.event_name != 'workflow_dispatch' }}
     name: Tests — windows-11-arm - aarch64-pc-windows-msvc
     uses: ./.github/workflows/rust-ci-full-nextest-platform.yml
     with:
@@ -527,8 +504,10 @@ jobs:
           [[ '${{ needs.tests_macos_aarch64.result }}' == 'success' ]] || { echo 'tests_macos_aarch64 failed'; exit 1; }
           [[ '${{ needs.tests_linux_x64_remote.result }}' == 'success' ]] || { echo 'tests_linux_x64_remote failed'; exit 1; }
           [[ '${{ needs.tests_linux_arm64.result }}' == 'success' ]] || { echo 'tests_linux_arm64 failed'; exit 1; }
-          [[ '${{ needs.tests_windows_x64.result }}' == 'success' ]] || { echo 'tests_windows_x64 failed'; exit 1; }
-          [[ '${{ needs.tests_windows_arm64.result }}' == 'success' ]] || { echo 'tests_windows_arm64 failed'; exit 1; }
+          if [[ '${{ inputs.include_windows || github.event_name != 'workflow_dispatch' }}' == 'true' ]]; then
+            [[ '${{ needs.tests_windows_x64.result }}' == 'success' ]] || { echo 'tests_windows_x64 failed'; exit 1; }
+            [[ '${{ needs.tests_windows_arm64.result }}' == 'success' ]] || { echo 'tests_windows_arm64 failed'; exit 1; }
+          fi
 
       - name: sccache summary note
         if: always()
