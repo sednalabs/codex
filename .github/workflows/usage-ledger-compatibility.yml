@@ -1,0 +1,33 @@
+name: Usage ledger compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact commit SHA to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  state-usage-migration:
+    name: State usage migration compatibility
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Run usage migration compatibility tests
+        run: cargo test --locked -p codex-state runtime::usage_migration_compat
