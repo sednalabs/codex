@@ -19,6 +19,14 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_config_args+=(--config="$bazel_config")
 fi
 
+bazel_cquery() {
+  if (( ${#bazel_config_args[@]} > 0 )); then
+    bazel cquery "${bazel_config_args[@]}" "$@"
+  else
+    bazel cquery "$@"
+  fi
+}
+
 ./.github/scripts/run-bazel-ci.sh \
   --remote-download-all \
   --print-failed-action-summary \
@@ -26,10 +34,11 @@ fi
   //third_party/voice:native_sdk \
   //third_party/voice:native_link
 
-sdk="$(bazel cquery "${bazel_config_args[@]}" --noimplicit_deps --output=files --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
-native_link="$(bazel cquery "${bazel_config_args[@]}" --noimplicit_deps --output=files //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
+bazel_cquery_args=(--noimplicit_deps --output=files)
+sdk="$(bazel_cquery "${bazel_cquery_args[@]}" --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
+native_link="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
 native_lib="$(dirname "$native_link")"
-pkg_config="$(bazel cquery "${bazel_config_args[@]}" --noimplicit_deps --output=files //third_party/voice:pkg_config | head -n 1)"
+pkg_config="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:pkg_config | head -n 1)"
 
 [[ -n "$sdk" && -n "$native_link" && -n "$pkg_config" ]] || {
   echo "Bazel did not return all voice Cargo outputs" >&2
