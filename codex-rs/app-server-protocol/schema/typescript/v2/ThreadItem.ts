@@ -30,6 +30,7 @@ import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { SubAgentActivityKind } from "./SubAgentActivityKind";
+import type { SubAgentInteractionKind } from "./SubAgentInteractionKind";
 import type { TerminalWaitInfo } from "./TerminalWaitInfo";
 import type { UserInput } from "./UserInput";
 
@@ -168,4 +169,4 @@ model?: string,
 /**
  * Effective reasoning effort selected for the affected child, when known.
  */
-reasoningEffort?: ReasoningEffort, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };
+reasoningEffort?: ReasoningEffort, interactionKind?: SubAgentInteractionKind, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };

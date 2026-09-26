@@ -457,10 +457,6 @@ pub enum ThreadItem {
         ///
         /// On spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null.
         reasoning_effort: Option<ReasoningEffort>,
-        /// Concrete mailbox operation represented by an interaction.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        interaction_kind: Option<SubAgentInteractionKind>,
         /// Additive explicit provenance for the requested model.
         ///
         /// This remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.
@@ -518,6 +514,10 @@ pub enum ThreadItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         reasoning_effort: Option<ReasoningEffort>,
+        /// Concrete mailbox operation represented by an interaction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        interaction_kind: Option<SubAgentInteractionKind>,
     },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
