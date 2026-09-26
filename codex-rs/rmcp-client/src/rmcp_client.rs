@@ -92,6 +92,7 @@ use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::protocol_mode::McpProtocolMode;
+use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::startup_error::is_authentication_required_error;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
@@ -282,6 +283,11 @@ where
 pub(crate) enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
+    #[error("MCP request outcome is uncertain: {source}")]
+    UncertainService {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
 }
@@ -866,7 +872,7 @@ impl RmcpClient {
                     }
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
-                    let result = service
+                    let request = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
@@ -874,9 +880,14 @@ impl RmcpClient {
                             )),
                             options,
                         )
-                        .await?
-                        .await_response()
                         .await?;
+                    let guard =
+                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
+                    let result = request.await_response().await;
+                    if result.is_ok() {
+                        guard.disarm();
+                    }
+                    let result = result?;
                     match result {
                         ServerResult::CallToolResult(result) => Ok(result),
                         _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
@@ -891,9 +902,17 @@ impl RmcpClient {
                 Ok(result)
             }
             Err(error) => {
-                let Some(ClientOperationError::Service(ServiceError::TransportSend(transport))) =
-                    error.downcast_ref()
-                else {
+                let Some(operation_error) = error.downcast_ref::<ClientOperationError>() else {
+                    return authentication_required_result(error);
+                };
+                let service_error = match operation_error {
+                    ClientOperationError::Service(error)
+                    | ClientOperationError::UncertainService { source: error } => error,
+                    ClientOperationError::Timeout { .. } => {
+                        return authentication_required_result(error);
+                    }
+                };
+                let ServiceError::TransportSend(transport) = service_error else {
                     return authentication_required_result(error);
                 };
                 let Some(StreamableHttpError::AuthRequired(challenge)) =
@@ -1471,9 +1490,26 @@ impl RmcpClient {
                         label: label.to_string(),
                         duration,
                     })?
-                    .map_err(ClientOperationError::from)
+                    .map_err(|error| Self::classify_operation_error(label, error))
             }
-            None => operation(service).await.map_err(ClientOperationError::from),
+            None => operation(service)
+                .await
+                .map_err(|error| Self::classify_operation_error(label, error)),
+        }
+    }
+
+    fn classify_operation_error(
+        label: &str,
+        error: rmcp::service::ServiceError,
+    ) -> ClientOperationError {
+        // A tools/call may have reached and mutated the server before a
+        // session-expiry response. Reinitializing and replaying it would
+        // duplicate an uncertain side effect. Read/list operations retain
+        // their established recovery contract.
+        if label == "tools/call" && Self::is_transport_service_error(&error) {
+            ClientOperationError::UncertainService { source: error }
+        } else {
+            ClientOperationError::Service(error)
         }
     }
 
@@ -1481,25 +1517,41 @@ impl RmcpClient {
         if label != "tools/list" {
             return false;
         }
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
-            error
-        else {
+        let service_error = match error {
+            ClientOperationError::Service(error)
+            | ClientOperationError::UncertainService { source: error } => error,
+            ClientOperationError::Timeout { .. } => return false,
+        };
+        Self::is_session_expired_service_error(service_error)
+    }
+
+    fn is_session_expired_service_error(error: &rmcp::service::ServiceError) -> bool {
+        let rmcp::service::ServiceError::TransportSend(error) = error else {
             return false;
         };
-
         error
             .error
             .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
             .is_some_and(Self::is_retryable_streamable_http_error)
     }
 
+    fn is_transport_service_error(error: &rmcp::service::ServiceError) -> bool {
+        matches!(error, rmcp::service::ServiceError::TransportSend(_))
+    }
+
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
-            error
-        else {
+        let service_error = match error {
+            ClientOperationError::Service(error) => error,
+            ClientOperationError::UncertainService { .. }
+            | ClientOperationError::Timeout { .. } => return false,
+        };
+        Self::is_session_expired_service_404(service_error)
+    }
+
+    fn is_session_expired_service_404(error: &rmcp::service::ServiceError) -> bool {
+        let rmcp::service::ServiceError::TransportSend(error) = error else {
             return false;
         };
-
         error
             .error
             .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
