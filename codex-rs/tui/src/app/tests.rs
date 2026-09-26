@@ -1517,6 +1517,7 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
             agent_path: "/root/live-arrival".to_string(),
             model: None,
             reasoning_effort: None,
+            interaction_kind: None,
         },
     });
     let retained_activity = ServerNotification::ItemStarted(ItemStartedNotification {

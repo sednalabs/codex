@@ -3678,6 +3678,7 @@ mod tests {
                     agent_path: "/root/worker".to_string(),
                     model: None,
                     reasoning_effort: None,
+                    interaction_kind: None,
                 },
                 thread_id: conversation_id.to_string(),
                 turn_id: "turn-1".to_string(),
