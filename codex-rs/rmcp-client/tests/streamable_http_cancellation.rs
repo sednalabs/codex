@@ -377,7 +377,8 @@ async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() 
     assert_eq!(
         serde_json::to_value(read)?,
         json!({
-            "contents": [{ "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read" }]
+            "contents": [{ "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read" }],
+            "resultType": "complete"
         })
     );
     client.shutdown().await;
