@@ -272,7 +272,21 @@ WITH grouped AS (
     GROUP BY thread_id, turn_id, spawn_request_id
 )
 SELECT
-    *,
+    thread_id,
+    turn_id,
+    spawn_request_id,
+    provider_call_count,
+    priced_call_count,
+    unpriced_call_count,
+    uncached_input_tokens,
+    cached_input_tokens,
+    cache_write_input_tokens,
+    output_tokens,
+    total_tokens,
+    uncached_input_credits,
+    cached_input_credits,
+    output_credits,
+    priced_credits_total,
     unpriced_call_count > 0 AS partial,
     CASE WHEN unpriced_call_count = 0 THEN priced_credits_total END
         AS estimated_total_credits

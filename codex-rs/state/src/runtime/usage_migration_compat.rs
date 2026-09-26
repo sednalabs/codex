@@ -45,14 +45,15 @@ pub(crate) async fn migrator_for_usage_database(
     pool: &SqlitePool,
     base: &Migrator,
 ) -> anyhow::Result<Migrator> {
-    if !migration_table_exists(pool).await? {
+    let table_name = base.table_name.as_str();
+    if !migration_table_exists(pool, table_name).await? {
         return Ok(clone_migrator(base, base.migrations.to_vec()));
     }
 
     let mut migrations = base.migrations.to_vec();
-    let mut matched_variant = false;
     for variant in OLD_MAIN_VARIANTS {
-        let Some(recorded_checksum) = recorded_checksum(pool, variant.version).await? else {
+        let Some(recorded_checksum) = recorded_checksum(pool, table_name, variant.version).await?
+        else {
             continue;
         };
         if recorded_checksum == variant.checksum {
@@ -66,15 +67,10 @@ pub(crate) async fn migrator_for_usage_database(
                     )
                 })?;
             migration.checksum = Cow::Borrowed(variant.checksum);
-            matched_variant = true;
         }
     }
 
-    if matched_variant {
-        Ok(clone_migrator(base, migrations))
-    } else {
-        Ok(clone_migrator(base, base.migrations.to_vec()))
-    }
+    Ok(clone_migrator(base, migrations))
 }
 
 fn clone_migrator(base: &Migrator, migrations: Vec<Migration>) -> Migrator {
@@ -88,22 +84,27 @@ fn clone_migrator(base: &Migrator, migrations: Vec<Migration>) -> Migrator {
     }
 }
 
-async fn migration_table_exists(pool: &SqlitePool) -> anyhow::Result<bool> {
+async fn migration_table_exists(pool: &SqlitePool, table_name: &str) -> anyhow::Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
     )
+    .bind(table_name)
     .fetch_optional(pool)
     .await?
     .is_some())
 }
 
-async fn recorded_checksum(pool: &SqlitePool, version: i64) -> anyhow::Result<Option<Vec<u8>>> {
-    Ok(
-        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
-            .bind(version)
-            .fetch_optional(pool)
-            .await?,
-    )
+async fn recorded_checksum(
+    pool: &SqlitePool,
+    table_name: &str,
+    version: i64,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let quoted_table_name = format!("\"{}\"", table_name.replace('"', "\"\""));
+    let query = format!("SELECT checksum FROM {quoted_table_name} WHERE version = ?");
+    Ok(sqlx::query_scalar::<_, Vec<u8>>(&query)
+        .bind(version)
+        .fetch_optional(pool)
+        .await?)
 }
 
 #[cfg(test)]
@@ -111,7 +112,7 @@ mod tests {
     use super::OLD_MAIN_0001_CHECKSUM;
     use super::OLD_MAIN_0005_CHECKSUM;
     use super::migrator_for_usage_database;
-    use crate::migrations::USAGE_MIGRATOR;
+    use crate::migrations::{USAGE_MIGRATOR, runtime_usage_migrator};
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -154,6 +155,34 @@ mod tests {
                 .expect("migration should be embedded");
             assert_eq!(migration.checksum.as_ref(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn respects_custom_migration_table_name() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "CREATE TABLE custom_sqlx_migrations (version BIGINT PRIMARY KEY, checksum BLOB NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("custom migration metadata table should be created");
+        sqlx::query("INSERT INTO custom_sqlx_migrations (version, checksum) VALUES (?, ?)")
+            .bind(1_i64)
+            .bind(OLD_MAIN_0001_CHECKSUM)
+            .execute(&pool)
+            .await
+            .expect("custom historical checksum should be inserted");
+
+        let mut base = runtime_usage_migrator();
+        base.table_name = "custom_sqlx_migrations".to_owned();
+        let migrator = migrator_for_usage_database(&pool, &base)
+            .await
+            .expect("custom migration table should be recognized");
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == 1)
+            .expect("migration should be embedded");
+        assert_eq!(migration.checksum.as_ref(), OLD_MAIN_0001_CHECKSUM);
     }
 
     #[tokio::test]
@@ -272,7 +301,7 @@ mod tests {
         .await
         .expect("old-main usage call should be inserted");
 
-        let migrator = migrator_for_usage_database(&pool, &USAGE_MIGRATOR)
+        let migrator = migrator_for_usage_database(&pool, &runtime_usage_migrator())
             .await
             .expect("known old-main variants should be recognized");
         migrator
