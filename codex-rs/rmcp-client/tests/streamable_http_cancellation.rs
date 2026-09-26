@@ -96,8 +96,8 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                     "ttlMs": 0,
                     "cacheScope": "private"
                 }),
-                false,
-                false,
+                /*include_session*/ false,
+                /*modern_protocol*/ false,
             )
         }
         Some("initialize") => {
@@ -113,8 +113,8 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                     "capabilities": {},
                     "serverInfo": { "name": "cancellation-test", "version": "0.0.0" }
                 }),
-                true,
-                protocol == "2026-07-28",
+                /*include_session*/ true,
+                /*modern_protocol*/ protocol == "2026-07-28",
             )
         }
         Some("notifications/initialized") => accepted_response(),
@@ -222,12 +222,12 @@ async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_clien
         "modern-cancellation-test",
         &format!("{base_url}/mcp"),
         Some("test-bearer".to_string()),
-        None,
-        None,
+        /*http_headers*/ None,
+        /*env_http_headers*/ None,
         OAuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
         Environment::default_for_tests().get_http_client(),
-        None,
+        /*auth_provider*/ None,
         McpProtocolMode::V20260728,
     )
     .await?;
@@ -369,7 +369,7 @@ async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() 
             .call_tool(
                 "blocked".to_string(),
                 Some(json!({})),
-                None,
+                /*meta*/ None,
                 Some(Duration::from_millis(100)),
             )
             .await
@@ -419,8 +419,8 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
             .call_tool(
                 "mutate".to_string(),
                 Some(json!({ "value": "once" })),
-                None,
-                None,
+                /*meta*/ None,
+                /*timeout*/ None,
             )
             .await
     });
@@ -452,7 +452,7 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
             .call_tool(
                 "blocked".to_string(),
                 Some(json!({})),
-                None,
+                /*meta*/ None,
                 Some(Duration::from_millis(100)),
             )
             .await
@@ -494,7 +494,7 @@ async fn session_expiry_after_send_does_not_replay_a_mutation() -> anyhow::Resul
         .call_tool(
             "error-after-send".to_string(),
             Some(json!({ "value": "once" })),
-            None,
+            /*meta*/ None,
             Some(Duration::from_secs(2)),
         )
         .await;
