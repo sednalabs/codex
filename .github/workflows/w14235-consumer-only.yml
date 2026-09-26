@@ -1,0 +1,22 @@
+name: w14235-consumer-only
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  focused-rmcp-consumers:
+    name: w14235 focused rmcp consumers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact product candidate
+        uses: actions/checkout@v4
+        with:
+          repository: sednalabs/codex
+          ref: 2aa6bfc406cc597a2389144b069d447f871775ca
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Focused rmcp consumer checks
+        run: bash .github/scripts/validation-lanes/rmcp-consumers-check.sh
