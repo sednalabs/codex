@@ -40,7 +40,6 @@ sdk="$(bazel_cquery "${bazel_cquery_args[@]}" --output_groups=default,sdk //thir
 native_link="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
 native_lib="$(dirname "$native_link")"
 pkg_config="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:pkg_config | head -n 1)"
-system_pkg_config_path="$(pkg-config --variable=pc_path pkg-config 2>/dev/null || true)"
 
 [[ -n "$sdk" && -n "$native_link" && -n "$pkg_config" ]] || {
   echo "Bazel did not return all voice Cargo outputs" >&2
@@ -54,7 +53,10 @@ done
 {
   echo "PKG_CONFIG=$pkg_config"
   echo "PKG_CONFIG_LIBDIR=$sdk/lib/pkgconfig"
-  echo "PKG_CONFIG_PATH=$system_pkg_config_path"
+  echo "PKG_CONFIG_PATH="
+  if [[ "$target" == *-unknown-linux-gnu ]]; then
+    echo "OPENSSL_NO_PKG_CONFIG=1"
+  fi
   for key in \
     GLIB_2_0 GOBJECT_2_0 GIO_2_0 \
     GSTREAMER_1_0 GSTREAMER_BASE_1_0 GSTREAMER_APP_1_0 GSTREAMER_AUDIO_1_0; do
