@@ -336,9 +336,12 @@ async fn responses_client_stream_request_preserves_item_ids() -> Result<()> {
     };
     let expected = serde_json::to_value(&request)?;
 
-    let _stream = client
-        .stream_request(request, ResponsesOptions::default())
-        .await?;
+    let mut options = ResponsesOptions::default();
+    options.extra_headers.insert(
+        "x-openai-internal-codex-responses-lite",
+        HeaderValue::from_static("true"),
+    );
+    let _stream = client.stream_request(request, options).await?;
 
     let requests = state.take_stream_requests();
     assert_eq!(requests.len(), 1);
@@ -352,6 +355,12 @@ async fn responses_client_stream_request_preserves_item_ids() -> Result<()> {
     assert_eq!(
         prepared.headers.get(http::header::CONTENT_TYPE),
         Some(&HeaderValue::from_static("application/json"))
+    );
+    assert_eq!(
+        prepared
+            .headers
+            .get("x-openai-internal-codex-responses-lite"),
+        Some(&HeaderValue::from_static("true"))
     );
     Ok(())
 }
