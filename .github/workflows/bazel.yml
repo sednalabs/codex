@@ -330,6 +330,59 @@ jobs:
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
 
+  diagnostic-windows-loader:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Windows restricted-token loader diagnostic
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          cache-scope: w14079-loader-diagnostic
+      - name: Build exact gnullvm CLI
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          ./.github/scripts/run-bazel-ci.sh --windows-cross-compile --remote-download-toplevel -- \
+            build --platforms=//:windows_x86_64_gnullvm -- //codex-rs/cli:codex
+      - name: Bind diagnostic executable and report path
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path bazel-bin -Filter codex.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'exact gnullvm codex.exe was not materialized' }
+          $reportDir = Join-Path $env:RUNNER_TEMP 'w14079-loader'
+          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+          "W14079_DIAGNOSTIC_EXECUTABLE=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "W14079_DIAGNOSTIC_OUTPUT=$(Join-Path $reportDir 'report.json')" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run production-token loader diagnostic
+        shell: bash
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          test -n "${W14079_DIAGNOSTIC_EXECUTABLE:-}"
+          test -n "${W14079_DIAGNOSTIC_OUTPUT:-}"
+          ./.github/scripts/run-bazel-ci.sh --windows-cross-compile --remote-download-toplevel -- \
+            test --platforms=//:windows_x86_64_gnullvm \
+            --test_output=streamed --test_filter=diagnostic_production_loader_launch \
+            --test_env=W14079_DIAGNOSTIC_EXECUTABLE="${W14079_DIAGNOSTIC_EXECUTABLE}" \
+            --test_env=W14079_DIAGNOSTIC_OUTPUT="${W14079_DIAGNOSTIC_OUTPUT}" \
+            -- //codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests
+      - name: Upload loader diagnostic report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: w14079-loader-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}\w14079-loader
+          if-no-files-found: warn
+
   clippy:
     timeout-minutes: 30
     strategy:
