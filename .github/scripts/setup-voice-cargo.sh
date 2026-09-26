@@ -10,6 +10,11 @@ case "$target" in
   *) echo "voice Cargo setup does not support target $target" >&2; exit 2 ;;
 esac
 
+if [[ "$os" == linux ]]; then
+  distro_pkg_config="$(command -v pkg-config)"
+  [[ -x "$distro_pkg_config" ]] || { echo "distro pkg-config is unavailable" >&2; exit 1; }
+fi
+
 bazel_config=ci-linux
 if [[ "${RUNNER_OS:-}" == macOS ]]; then
   bazel_config=ci-macos
@@ -53,12 +58,24 @@ for path_name in sdk native_link pkg_config; do
 done
 native_lib="$(dirname "$native_link")"
 
+pkg_config_for_cargo="$pkg_config"
+if [[ "$os" == linux ]]; then
+  : "${RUNNER_TEMP:?RUNNER_TEMP is required for the pkg-config router}"
+  router="${PWD}/.github/scripts/pkg-config-router.sh"
+  [[ -x "$router" ]] || { echo "pkg-config router is not executable: $router" >&2; exit 1; }
+  wrapper="${RUNNER_TEMP}/codex-pkg-config-${target}"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nexport CODEX_PINNED_PKG_CONFIG=%q\nexport CODEX_VOICE_PKG_CONFIG_LIBDIR=%q\nexport CODEX_DISTRO_PKG_CONFIG=%q\nexec %q "$@"\n' \
+    "$pkg_config" "$sdk/lib/pkgconfig" "$distro_pkg_config" "$router" > "$wrapper"
+  chmod 0755 "$wrapper"
+  pkg_config_for_cargo="$wrapper"
+fi
+
 for path in "$sdk/lib/pkgconfig" "$native_lib" "$pkg_config"; do
   [[ -e "$path" ]] || { echo "missing voice Cargo input: $path" >&2; exit 1; }
 done
 
 {
-  echo "PKG_CONFIG=$pkg_config"
+  echo "PKG_CONFIG=$pkg_config_for_cargo"
   echo "PKG_CONFIG_LIBDIR=$sdk/lib/pkgconfig"
   echo "PKG_CONFIG_PATH="
   case "$target" in
