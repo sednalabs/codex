@@ -54,9 +54,16 @@ done
   echo "PKG_CONFIG=$pkg_config"
   echo "PKG_CONFIG_LIBDIR=$sdk/lib/pkgconfig"
   echo "PKG_CONFIG_PATH="
-  if [[ "$target" == *-unknown-linux-gnu ]]; then
-    echo "OPENSSL_DIR=/usr"
-  fi
+  case "$target" in
+    aarch64-unknown-linux-gnu)
+      echo "OPENSSL_DIR=/usr"
+      echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu"
+      ;;
+    x86_64-unknown-linux-gnu)
+      echo "OPENSSL_DIR=/usr"
+      echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu"
+      ;;
+  esac
   for key in \
     GLIB_2_0 GOBJECT_2_0 GIO_2_0 \
     GSTREAMER_1_0 GSTREAMER_BASE_1_0 GSTREAMER_APP_1_0 GSTREAMER_AUDIO_1_0; do
