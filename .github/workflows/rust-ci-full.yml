@@ -19,7 +19,6 @@ on:
 jobs:
   voice-cargo-linux:
     name: Voice Cargo routing — ${{ matrix.target }}
-    if: ${{ inputs.include_windows || github.event_name != 'workflow_dispatch' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -87,7 +86,6 @@ jobs:
 
   voice-cargo-macos:
     name: Voice Cargo routing — macOS
-    if: ${{ inputs.include_windows || github.event_name != 'workflow_dispatch' }}
     runs-on: macos-15
     steps:
       - name: Checkout exact product candidate
