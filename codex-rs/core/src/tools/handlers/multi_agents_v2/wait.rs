@@ -59,7 +59,11 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        if args.native_event_wait && args.targets.is_empty() {
+        let targetless_native_allowed = turn
+            .session_source
+            .get_agent_path()
+            .is_none_or(|path| path.is_root());
+        if args.native_event_wait && args.targets.is_empty() && !targetless_native_allowed {
             return Err(FunctionCallError::RespondToModel(
                 "native_event_wait requires at least one exact target".to_string(),
             ));
@@ -86,7 +90,24 @@ impl Handler {
         // native wait insensitive to entries that were already queued before
         // the wait began while retaining a single event-driven subscription.
         let (mut activity_rx, pending_activity, mailbox_generation, _pending_mailbox) =
-            session.input_queue.subscribe_native_activity().await;
+            if args.native_event_wait {
+                session.input_queue.subscribe_native_activity().await
+            } else {
+                let turn_state = session
+                    .input_queue
+                    .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
+                    .await;
+                let (rx, pending) = session
+                    .input_queue
+                    .subscribe_activity(turn_state.as_deref())
+                    .await;
+                (
+                    rx,
+                    pending,
+                    session.input_queue.mailbox_generation(),
+                    Vec::new(),
+                )
+            };
         let target_paths = target_ids
             .iter()
             .filter_map(|id| {
@@ -100,12 +121,13 @@ impl Handler {
         let mut statuses = HashMap::new();
         let mut status_futures = FuturesUnordered::new();
         for id in &target_ids {
-            let mut status_rx = session
-                .services
-                .agent_control
-                .subscribe_status(*id)
-                .await
-                .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+            let mut status_rx = match session.services.agent_control.subscribe_status(*id).await {
+                Ok(rx) => rx,
+                Err(_) => {
+                    statuses.insert(*id, AgentStatus::NotFound);
+                    continue;
+                }
+            };
             let status = status_rx.borrow().clone();
             if is_final(&status) {
                 statuses.insert(*id, status);
@@ -155,12 +177,14 @@ impl Handler {
         .await;
 
         let result = WaitAgentResult {
-            message: reason.message(),
+            message: format!(
+                "{} Wake cause: {}; origin: {}; disposition: {}.",
+                reason.message(),
+                reason.wake_cause(),
+                reason.notification_origin(),
+                reason.delivery_disposition()
+            ),
             timed_out,
-            wake_cause: reason.wake_cause().to_string(),
-            notification_origin: reason.notification_origin().to_string(),
-            delivery_disposition: reason.delivery_disposition().to_string(),
-            statuses,
         };
         session
             .emit_turn_item_completed(
@@ -175,7 +199,7 @@ impl Handler {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    agents_states: result.statuses.clone(),
+                    agents_states: statuses,
                 }),
             )
             .await;
@@ -209,14 +233,10 @@ enum ReturnWhen {
     All,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
-    pub(crate) wake_cause: String,
-    pub(crate) notification_origin: String,
-    pub(crate) delivery_disposition: String,
-    pub(crate) statuses: HashMap<ThreadId, AgentStatus>,
 }
 
 impl ToolOutput for WaitAgentResult {
@@ -330,7 +350,7 @@ async fn wait_for_event(
             ),
         >,
     >,
-    deadline: Instant,
+    mut deadline: Instant,
     native_event_wait: bool,
 ) -> (WaitReason, bool) {
     if terminal_rule_satisfied(target_ids, return_when, statuses) {
@@ -356,19 +376,24 @@ async fn wait_for_event(
                 if matches!(activity, InputQueueActivity::Steer) { return (WaitReason::Steer, false); }
                 if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
                     && !native_event_wait
-                { return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false); }
+                {
+                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
+                        return (WaitReason::TargetTerminal, false);
+                    }
+                    return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false);
+                }
                 if native_event_wait
                     && matches!(activity, InputQueueActivity::Mailbox)
                     && session.input_queue.mailbox_generation() > mailbox_generation
-                    && !target_ids.is_empty()
-                    && session
-                        .input_queue
-                        .pending_mailbox_authors()
-                        .await
-                        .iter()
-                        .any(|(author, sequence)| {
-                            *sequence > mailbox_generation && target_paths.contains(author)
-                        })
+                    && (target_ids.is_empty()
+                        || session
+                            .input_queue
+                            .pending_mailbox_authors()
+                            .await
+                            .iter()
+                            .any(|(author, sequence)| {
+                                *sequence > mailbox_generation && target_paths.contains(author)
+                            }))
                 {
                     return (WaitReason::Mailbox, false);
                 }
@@ -381,7 +406,13 @@ async fn wait_for_event(
                 if terminal_rule_satisfied(target_ids, return_when, statuses) { return (WaitReason::TargetTerminal, false); }
                 status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
             }
-            _ = tokio::time::sleep_until(deadline) => return (WaitReason::Timeout, true),
+            _ = tokio::time::sleep_until(deadline) => {
+                if native_event_wait {
+                    deadline = Instant::now() + Duration::from_secs(60);
+                    continue;
+                }
+                return (WaitReason::Timeout, true);
+            }
         }
     }
 }

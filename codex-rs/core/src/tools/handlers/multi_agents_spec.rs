@@ -528,12 +528,8 @@ fn wait_output_schema_v2() -> Value {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
             }
-            ,"wake_cause": {"type": "string"}
-            ,"notification_origin": {"type": "string"}
-            ,"delivery_disposition": {"type": "string"}
-            ,"statuses": {"type": "object", "additionalProperties": agent_status_output_schema()}
         },
-        "required": ["message", "timed_out", "wake_cause", "notification_origin", "delivery_disposition", "statuses"],
+        "required": ["message", "timed_out"],
         "additionalProperties": false
     })
 }

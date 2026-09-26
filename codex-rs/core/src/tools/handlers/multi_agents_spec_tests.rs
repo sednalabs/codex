@@ -469,10 +469,12 @@ fn wait_agent_tool_v2_exposes_exact_target_native_wait_contract() {
     );
     assert_eq!(parameters.required.as_ref(), None);
     let output = output_schema.expect("wait output schema").to_value();
-    assert!(output["properties"]["wake_cause"].is_object());
-    assert!(output["properties"]["notification_origin"].is_object());
-    assert!(output["properties"]["delivery_disposition"].is_object());
-    assert!(output["properties"]["statuses"].is_object());
+    assert_eq!(
+        output["properties"]["message"]["description"],
+        json!(
+            "Brief wait summary without the agent's final content, including any timeout adjustment."
+        )
+    );
 }
 
 #[test]
