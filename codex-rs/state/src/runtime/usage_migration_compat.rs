@@ -1,4 +1,7 @@
 use anyhow::Context;
+use sqlx::QueryBuilder;
+use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
@@ -100,11 +103,15 @@ async fn recorded_checksum(
     version: i64,
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let quoted_table_name = format!("\"{}\"", table_name.replace('"', "\"\""));
-    let query = format!("SELECT checksum FROM {quoted_table_name} WHERE version = ?");
-    Ok(sqlx::query_scalar::<_, Vec<u8>>(&*query)
-        .bind(version)
-        .fetch_optional(pool)
-        .await?)
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT checksum FROM ");
+    query
+        .push(quoted_table_name)
+        .push(" WHERE version = ")
+        .push_bind(version);
+    let row = query.build().fetch_optional(pool).await?;
+    row.map(|row| row.try_get::<Vec<u8>, _>("checksum"))
+        .transpose()
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
