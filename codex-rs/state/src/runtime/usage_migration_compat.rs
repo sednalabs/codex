@@ -128,6 +128,9 @@ mod tests {
 
     async fn test_pool() -> SqlitePool {
         let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create usage database directory");
         let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
         sqlite
             .open_read_write_pool(&codex_home.join("usage.sqlite"))
