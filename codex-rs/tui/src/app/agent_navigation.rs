@@ -960,10 +960,7 @@ mod tests {
         state.mark_turn_started(thread_id);
 
         let entry = state.get(&thread_id).expect("thread remains retained");
-        assert!(
-            entry.is_running,
-            "an explicit new turn must reopen the row"
-        );
+        assert!(entry.is_running, "an explicit new turn must reopen the row");
     }
 
     #[test]
