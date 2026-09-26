@@ -48,6 +48,9 @@ async fn production_http_forwards_headers_and_decodes_response() {
             }
         };
         stream
+            .set_nonblocking(/*nonblocking*/ false)
+            .expect("environment HTTP stream should use blocking reads");
+        stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("environment HTTP stream should get a read timeout");
         let mut request = Vec::new();

@@ -3155,10 +3155,10 @@ bundles during upstream sync merely because they once shared this carry entry.
   credential rejection such as `invalid_grant` (or the refresh token is
   missing). Malformed, non-OAuth, transient, and upstream-unavailable token
   responses must not be presented as authentication-required startup failures.
-  RMCP 1.8 erases the underlying OAuth error type, so the compatibility
-  classifier accepts only the stable `oauth2` server-error display envelope
-  for `invalid_grant`; a future typed RMCP rejection variant can remove this
-  narrow boundary.
+  RMCP 3.2 exposes `TokenRefreshRejected` and `AuthorizationRequired` directly;
+  the classifier uses those typed variants and no longer parses error-message
+  text. `TokenRefreshFailed` remains a non-terminal provider failure regardless
+  of its message.
 - The selected keyring backend is intentional carry now that upstream supports
   encrypted local secrets storage. Syncs must preserve both upstream
   concrete-store pinning and `AuthKeyringBackendKind::Secrets` support, plus the
@@ -3686,3 +3686,31 @@ replacement or removal cannot preserve stale green backoff. Ordinary green
 PRs without an active queue entry retain bounded backoff. Queue failure,
 removal, readiness, credential, and mutation behavior remain fail-closed and
 separate ownership boundaries.
+
+## RMCP Streamable HTTP cancellation and backlog capacity
+
+The downstream client uses released rmcp 3.2 concurrent HTTP transport and a
+scoped request guard for `tools/call`. Dropping a call, including active-time
+expiry, sends a cancellation notification. Completed requests retain rmcp's
+normal response cleanup. Existing elicitation pauses continue to suspend the
+active-time budget, and uncertain tool mutations are not retried.
+
+The SDK upgrade also adapts its direct consumers to typed request metadata,
+flat content and resource models, and non-exhaustive constructors. The client
+initialize lifecycle and negotiated protocol version remain unchanged; SDK
+support for discovery does not opt this client into that lifecycle. OAuth setup
+continues to require published metadata; SDK-synthesized endpoint fallback is
+refused for login, registration, and restored-token connections. Token restoration
+uses the existing serialized request-only credential adoption path.
+
+The manual stdio MCP server explicitly supports protocol revisions 2024-11-05,
+2025-03-26, and 2025-06-18. Other requested revisions receive 2025-06-18 during
+initialization, rather than an unsupported version claim. Its tool results use
+the SDK legacy projection so initialization and response shape agree.
+
+`codex.rmcp-client-transport` exercises observed request/cancellation IDs,
+blocked-POST independence, queued cancellation, capacity recovery after abort,
+mutation no-replay and existing elicitation tests. `codex.rmcp-consumers-check`
+compiles all direct SDK consumers. Remove this guard when upstream provides
+both equivalent caller-drop cancellation and the existing concurrent control
+capacity; passing source tests alone does not prove an installed host adopted it.

@@ -1,3 +1,4 @@
+use crate::oauth_metadata::discover_metadata;
 use std::collections::HashMap;
 use std::string::String;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use codex_http_client::OutboundProxyPolicy;
 use reqwest::Url;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::AuthorizationSession;
+use rmcp::transport::auth::AuthorizationRequest;
 use rmcp::transport::auth::OAuthClientConfig;
 use rmcp::transport::auth::OAuthHttpClient;
 use rmcp::transport::auth::OAuthState;
@@ -672,20 +674,22 @@ async fn start_authorization(
     redirect_uri: &str,
     oauth_client_id: Option<&str>,
 ) -> Result<OAuthState> {
-    let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
-    else {
-        let mut oauth_state =
-            OAuthState::new_with_oauth_http_client(server_url, http_client).await?;
-        oauth_state
-            .start_authorization(scopes, redirect_uri, Some("Codex"))
-            .await?;
-        return Ok(oauth_state);
-    };
-
     let mut auth_manager =
         AuthorizationManager::new_with_oauth_http_client(server_url, http_client).await?;
-    let metadata = auth_manager.discover_metadata().await?;
+    let metadata = discover_metadata(&auth_manager).await?;
     auth_manager.set_metadata(metadata);
+
+    let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
+    else {
+        let request = AuthorizationRequest::new(redirect_uri)
+            .with_scopes(scopes.iter().copied())
+            .with_client_name("Codex");
+        let session = AuthorizationSession::new(auth_manager, request)
+            .await
+            .map_err(|(_, error)| error)?;
+        return Ok(OAuthState::Session(session));
+    };
+
     auth_manager.configure_client(
         OAuthClientConfig::new(oauth_client_id, redirect_uri)
             .with_scopes(scopes.iter().map(|scope| (*scope).to_string()).collect()),
@@ -747,11 +751,13 @@ mod tests {
         let addr = listener.local_addr().expect("read metadata listener addr");
         let base_url = format!("http://{addr}");
         let metadata = json!({
+            "issuer": base_url,
             "authorization_endpoint": format!("{base_url}/oauth/authorize"),
             "token_endpoint": format!("{base_url}/oauth/token"),
             "scopes_supported": [""],
         });
-        let path_scoped_metadata = metadata.clone();
+        let mut path_scoped_metadata = metadata.clone();
+        path_scoped_metadata["issuer"] = json!(format!("{base_url}/mcp"));
         let app = Router::new()
             .route(
                 "/.well-known/oauth-authorization-server/mcp",
@@ -775,6 +781,57 @@ mod tests {
         });
 
         base_url
+    }
+
+    #[tokio::test]
+    async fn start_authorization_requires_published_metadata_for_both_client_id_paths() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let unexpected_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = unexpected_requests.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let observed = observed.clone();
+            async move {
+                if request.method() != axum::http::Method::GET
+                    || ["/authorize", "/token", "/register"].contains(&request.uri().path())
+                {
+                    observed.lock().unwrap().push((
+                        request.method().to_string(),
+                        request.uri().path().to_string(),
+                    ));
+                }
+                axum::http::StatusCode::NOT_FOUND
+            }
+        });
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for client_id in [None, Some("configured-client")] {
+            let result = start_authorization(
+                &format!("{base_url}/mcp"),
+                Arc::new(OAuthHttpClientAdapter::new(
+                    Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                        OutboundProxyPolicy::ReqwestDefault,
+                    ))),
+                    HeaderMap::new(),
+                )),
+                &[],
+                "http://127.0.0.1/callback",
+                client_id,
+            )
+            .await;
+            let error = match result {
+                Ok(_) => panic!("unpublished OAuth metadata must be refused"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error.downcast_ref::<rmcp::transport::auth::AuthError>(),
+                Some(rmcp::transport::auth::AuthError::NoAuthorizationSupport)
+            ));
+        }
+        server.abort();
+        assert_eq!(
+            *unexpected_requests.lock().unwrap(),
+            Vec::<(String, String)>::new()
+        );
     }
 
     #[tokio::test]

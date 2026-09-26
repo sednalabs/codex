@@ -891,7 +891,7 @@
         "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs"
       ],
-      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh. Only an explicit terminal credential rejection such as invalid_grant (or a missing refresh token) requires reauthentication; malformed, non-OAuth, transient, and upstream-unavailable refresh responses preserve durable credentials and remain ordinary refresh failures. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
+      "behavior": "Downstream treats MCP OAuth fallback credentials as best-effort state: empty or corrupt files no longer abort Auto-mode auth loading, writes replace the fallback file atomically, restored expired tokens remain visibly expired so the OAuth manager refreshes them before reconnecting, and proactive or unauthorized failures route through serialized refresh. Only an explicit terminal credential rejection such as invalid_grant (or a missing refresh token), represented by RMCP 3.2 typed TokenRefreshRejected or AuthorizationRequired errors, requires reauthentication; error-message text is not used for classification; malformed, non-OAuth, transient, and upstream-unavailable refresh responses preserve durable credentials and remain ordinary refresh failures. Upstream concrete-store pinning and RMCP persistence are retained; normal requests receive access-only credentials, refresh material is staged only inside the per-server refresh transaction, and every RMCP-derived durable save or delete rereads that pinned store under the same lock so newer rotating credentials are adopted rather than overwritten. Direct and Secrets keyring backends remain distinct, and refresh requests do not broaden explicitly stored scopes with authorization-server-advertised offline_access.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -3573,6 +3573,59 @@
       ],
       "extraction_target": "upstream exact-target wait mailbox filtering"
     },
+    {
+      "id": "rmcp-streamable-http-cancellation",
+      "title": "Streamable HTTP MCP request cancellation and independent backlog capacity",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "protocol-client",
+      "surface": [
+        "rmcp-client Streamable HTTP transport"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/rmcp-client/src/lib.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/mcp-server/src/message_processor.rs",
+        "codex-rs/mcp-server/src/outgoing_message.rs",
+        "codex-rs/mcp-server/tests/suite/codex_tool.rs",
+        "codex-rs/rmcp-client/src/oauth_metadata.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
+        "codex-rs/rmcp-client/src/elicitation_client_service.rs",
+        "codex-rs/codex-mcp/src/elicitation.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/mcp.rs",
+        "codex-rs/core/src/session/mcp.rs",
+        "codex-rs/tui/src/history_cell/mcp.rs"
+      ],
+      "behavior": "The rmcp 3.2 client propagates active and queued tools/call cancellation, preserves elicitation pause accounting, and keeps independent read traffic usable while a cancelled POST is draining. The manual stdio MCP server negotiates only implemented legacy protocol revisions and projects tool results onto that declared wire contract.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.rmcp-client-transport; codex.rmcp-consumers-check; codex.downstream-docs-check",
+      "tests": [
+        "blocked_posts_do_not_starve_an_independent_read",
+        "timed_out_post_sends_matching_cancellation_and_reclaims_capacity",
+        "cancelled_queued_post_is_never_sent_or_executed",
+        "timed_out_mutating_call_is_not_replayed",
+        "externally_aborted_post_sends_matching_cancellation",
+        "initialize_negotiates_only_implemented_protocol_versions",
+        "tool_responses_preserve_the_existing_wire_contract",
+        "active_time_timeout_pauses_while_elicitation_is_pending"
+      ],
+      "owner": "downstream",
+      "notes": "The dedicated HTTP fixture records request and cancellation IDs, saturates ordinary transport capacity, and requires follow-on reads before releasing held requests. Keep explicit Drop cancellation until an upstream equivalent covers caller abort and active-time expiry; source presence alone is not installed-runtime acceptance.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        "codex-rs/rmcp-client/src/rmcp_client.rs"
+      ],
+      "extraction_target": "upstream request-handle cancellation and concurrent HTTP control capacity"
+    },
+
     {
       "id": "strict-workflow-run-watcher-identity",
       "title": "Strict REST identity and pagination for virtual workflow runs",

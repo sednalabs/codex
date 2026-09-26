@@ -43,18 +43,19 @@ use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::BooleanSchema;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
-use rmcp::model::Content;
-use rmcp::model::CreateElicitationRequestParams;
+use rmcp::model::ContentBlock;
 use rmcp::model::CustomRequest;
+use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitationAction;
 use rmcp::model::ElicitationSchema;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::InitializeResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
-use rmcp::model::PrimitiveSchema;
+use rmcp::model::MetaObject;
+use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::ServerRequest as McpServerRequest;
@@ -105,7 +106,10 @@ async fn mcp_server_form_elicitation_round_trip() -> Result<()> {
     let (request_id, params) = fixture.read_elicitation().await?;
     let requested_schema: McpElicitationSchema = serde_json::from_value(serde_json::to_value(
         ElicitationSchema::builder()
-            .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+            .required_property(
+                "confirmed",
+                PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+            )
             .build()
             .map_err(anyhow::Error::msg)?,
     )?)?;
@@ -667,7 +671,7 @@ impl ServerHandler for ElicitationAppsMcpServer {
         );
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
-        let mut meta = Meta::new();
+        let mut meta = MetaObject::new();
         meta.0
             .insert("connector_id".to_string(), json!(CONNECTOR_ID));
         meta.0
@@ -675,9 +679,12 @@ impl ServerHandler for ElicitationAppsMcpServer {
         tool.meta = Some(meta);
 
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![tool],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -685,16 +692,19 @@ impl ServerHandler for ElicitationAppsMcpServer {
         &self,
         _request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         match self.scenario {
             ElicitationScenario::StandardForm => {
                 let requested_schema = ElicitationSchema::builder()
-                    .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                    .required_property(
+                        "confirmed",
+                        PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                    )
                     .build()
                     .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
                 let result = context
                     .peer
-                    .create_elicitation(CreateElicitationRequestParams::FormElicitationParams {
+                    .create_elicitation(ElicitRequestParams::FormElicitationParams {
                         meta: None,
                         message: ELICITATION_MESSAGE.to_string(),
                         requested_schema,
@@ -711,8 +721,9 @@ impl ServerHandler for ElicitationAppsMcpServer {
                     ElicitationAction::Accept => "accepted",
                     ElicitationAction::Decline => "declined",
                     ElicitationAction::Cancel => "cancelled",
+                    _ => "cancelled",
                 };
-                Ok(CallToolResult::success(vec![Content::text(output)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into())
             }
             ElicitationScenario::OpenAiForm => {
                 let result = context
@@ -742,10 +753,8 @@ impl ServerHandler for ElicitationAppsMcpServer {
                     .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
                 let result = match result {
                     rmcp::model::ClientResult::CustomResult(result) => result.0,
-                    rmcp::model::ClientResult::CreateElicitationResult(result) => {
-                        serde_json::to_value(result)
-                            .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?
-                    }
+                    rmcp::model::ClientResult::ElicitResult(result) => serde_json::to_value(result)
+                        .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?,
                     result => {
                         return Err(rmcp::ErrorData::internal_error(
                             format!("unexpected OpenAI form response: {result:?}"),
@@ -762,9 +771,10 @@ impl ServerHandler for ElicitationAppsMcpServer {
                         },
                     })
                 );
-                Ok(CallToolResult::success(vec![Content::text(
-                    "accepted monthly-review",
-                )]))
+                Ok(
+                    CallToolResult::success(vec![ContentBlock::text("accepted monthly-review")])
+                        .into(),
+                )
             }
         }
     }

@@ -18,6 +18,7 @@ use codex_shell_command::parse_command;
 use pretty_assertions::assert_eq;
 use rmcp::model::JsonRpcResponse;
 use rmcp::model::JsonRpcVersion2_0;
+use rmcp::model::ProtocolVersion;
 use rmcp::model::RequestId;
 use serde_json::json;
 use tempfile::TempDir;
@@ -39,6 +40,31 @@ use mcp_test_support::format_with_current_shell;
 // Windows CI can spend tens of seconds in session startup before the first
 // mock model request is sent.
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[tokio::test]
+async fn initialize_negotiates_only_implemented_protocol_versions() -> anyhow::Result<()> {
+    for (requested, expected) in [
+        (ProtocolVersion::V_2024_11_05, ProtocolVersion::V_2024_11_05),
+        (ProtocolVersion::V_2025_03_26, ProtocolVersion::V_2025_03_26),
+        (ProtocolVersion::V_2025_06_18, ProtocolVersion::V_2025_06_18),
+        (ProtocolVersion::V_2025_11_25, ProtocolVersion::V_2025_06_18),
+        (ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_06_18),
+        (
+            serde_json::from_value(json!("2099-01-01"))?,
+            ProtocolVersion::V_2025_06_18,
+        ),
+    ] {
+        let codex_home = TempDir::new()?;
+        create_config_toml(codex_home.path(), /*server_uri*/ "http://127.0.0.1:1")?;
+        let mut process = McpProcess::new(codex_home.path()).await?;
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            process.initialize_with_protocol_version(requested, expected),
+        )
+        .await??;
+    }
+    Ok(())
+}
 
 /// Test that a shell command that is not on the "trusted" list triggers an
 /// elicitation request to the MCP and that sending the approval runs the

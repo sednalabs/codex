@@ -112,20 +112,29 @@ impl McpProcess {
 
     /// Performs the initialization handshake with the MCP server.
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
+        self.initialize_with_protocol_version(
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_03_26,
+        )
+        .await
+    }
+
+    /// Verifies the server's complete handshake response for a requested protocol version.
+    pub async fn initialize_with_protocol_version(
+        &mut self,
+        requested: ProtocolVersion,
+        expected: ProtocolVersion,
+    ) -> anyhow::Result<()> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
         let mut capabilities = ClientCapabilities::default();
-        capabilities.elicitation = Some(ElicitationCapability {
-            form: Some(FormElicitationCapability {
-                schema_validation: None,
-            }),
-            url: None,
-        });
+        capabilities.elicitation =
+            Some(ElicitationCapability::new().with_form(FormElicitationCapability::default()));
         let params = InitializeRequestParams::new(
             capabilities,
             Implementation::new("elicitation test", "0.0.0").with_title("Elicitation Test"),
         )
-        .with_protocol_version(ProtocolVersion::V_2025_03_26);
+        .with_protocol_version(requested);
         let params_value = serde_json::to_value(params)?;
 
         self.send_jsonrpc_message(JsonRpcMessage::Request(JsonRpcRequest {
@@ -170,7 +179,7 @@ impl McpProcess {
                     "version": "0.0.0",
                     "user_agent": user_agent
                 },
-                "protocolVersion": ProtocolVersion::V_2025_03_26
+                "protocolVersion": expected
             })
         );
 

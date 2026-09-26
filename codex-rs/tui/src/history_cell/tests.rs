@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::Tool;
-use rmcp::model::Content;
+use rmcp::model::ContentBlock;
 
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 async fn test_config() -> Config {
@@ -176,12 +176,12 @@ fn assert_unstyled_lines(lines: &[Line<'static>]) {
 }
 
 fn image_block(data: &str) -> serde_json::Value {
-    serde_json::to_value(Content::image(data.to_string(), "image/png"))
+    serde_json::to_value(ContentBlock::image(data.to_string(), "image/png"))
         .expect("image content should serialize")
 }
 
 fn text_block(text: &str) -> serde_json::Value {
-    serde_json::to_value(Content::text(text)).expect("text content should serialize")
+    serde_json::to_value(ContentBlock::text(text)).expect("text content should serialize")
 }
 
 fn resource_link_block(
@@ -190,17 +190,15 @@ fn resource_link_block(
     title: Option<&str>,
     description: Option<&str>,
 ) -> serde_json::Value {
-    serde_json::to_value(Content::resource_link(rmcp::model::RawResource {
-        uri: uri.to_string(),
-        name: name.to_string(),
-        title: title.map(str::to_string),
-        description: description.map(str::to_string),
-        mime_type: None,
-        size: None,
-        icons: None,
-        meta: None,
-    }))
-    .expect("resource link content should serialize")
+    let mut resource = rmcp::model::Resource::new(uri, name);
+    if let Some(title) = title {
+        resource = resource.with_title(title);
+    }
+    if let Some(description) = description {
+        resource = resource.with_description(description);
+    }
+    serde_json::to_value(ContentBlock::resource_link(resource))
+        .expect("resource link content should serialize")
 }
 
 #[test]

@@ -40,8 +40,6 @@ fn client_initialize_error_requires_authentication(error: &ClientInitializeError
 }
 
 fn auth_error_requires_authentication(error: &AuthError) -> bool {
-    // RMCP 1.8 reports terminal refresh rejection as TokenRefreshFailed(String); preserve that
-    // marker only when its erased message still identifies the structured invalid_grant response.
     matches!(
         error,
         AuthError::AuthorizationRequired | AuthError::TokenExpired

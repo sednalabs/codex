@@ -5,7 +5,6 @@ use codex_protocol::models::ResponseItem;
 use codex_tools::ToolExecutionStatus;
 use codex_tools::ToolOutput;
 use pretty_assertions::assert_eq;
-use rmcp::model::AnnotateAble;
 use rmcp::model::ResourceContents;
 use serde_json::json;
 use std::collections::HashMap;
@@ -15,29 +14,11 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolPayload;
 
 fn resource(uri: &str, name: &str) -> Resource {
-    rmcp::model::RawResource {
-        uri: uri.to_string(),
-        name: name.to_string(),
-        title: None,
-        description: None,
-        mime_type: None,
-        size: None,
-        icons: None,
-        meta: None,
-    }
-    .no_annotation()
+    rmcp::model::Resource::new(uri, name)
 }
 
 fn template(uri_template: &str, name: &str) -> ResourceTemplate {
-    rmcp::model::RawResourceTemplate {
-        uri_template: uri_template.to_string(),
-        name: name.to_string(),
-        title: None,
-        description: None,
-        mime_type: None,
-        icons: None,
-    }
-    .no_annotation()
+    rmcp::model::ResourceTemplate::new(uri_template, name)
 }
 
 #[test]
@@ -53,8 +34,11 @@ fn resource_with_server_serializes_server_field() {
 #[test]
 fn list_resources_payload_from_single_server_copies_next_cursor() {
     let result = ListResourcesResult {
+        result_type: None,
         meta: None,
         next_cursor: Some("cursor-1".to_string()),
+        ttl_ms: None,
+        cache_scope: None,
         resources: vec![resource("memo://id", "memo")],
     };
     let payload = ListResourcesPayload::from_single_server("srv".to_string(), result);

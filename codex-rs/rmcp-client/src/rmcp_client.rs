@@ -26,10 +26,10 @@ use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::ClientNotification;
 use rmcp::model::ClientRequest;
-use rmcp::model::CreateElicitationRequestParams;
-use rmcp::model::CreateElicitationResult;
 use rmcp::model::CustomNotification;
 use rmcp::model::CustomRequest;
+use rmcp::model::ElicitRequestParams;
+use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
@@ -50,7 +50,7 @@ use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
-use rmcp::transport::auth::OAuthState;
+use rmcp::transport::auth::AuthorizationManager;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use serde::Deserialize;
@@ -73,6 +73,8 @@ use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
+use crate::oauth_metadata::discover_metadata;
+use crate::request_cancellation_guard::RequestCancellationGuard;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -270,7 +272,7 @@ fn extend_operation_deadline(deadline: &mut Option<Instant>, excluded_time: Dura
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Elicitation {
-    Mcp(CreateElicitationRequestParams),
+    Mcp(ElicitRequestParams),
     OpenAiForm {
         meta: Option<serde_json::Value>,
         message: String,
@@ -281,7 +283,7 @@ pub enum Elicitation {
 impl Elicitation {
     pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         match self {
-            Self::Mcp(request) => request.meta().map(|meta| &meta.0),
+            Self::Mcp(request) => request.meta().map(|meta| &meta.0.0),
             Self::OpenAiForm { meta, .. } => meta.as_ref().and_then(serde_json::Value::as_object),
         }
     }
@@ -296,8 +298,8 @@ pub struct ElicitationResponse {
     pub meta: Option<serde_json::Value>,
 }
 
-impl From<CreateElicitationResult> for ElicitationResponse {
-    fn from(value: CreateElicitationResult) -> Self {
+impl From<ElicitResult> for ElicitationResponse {
+    fn from(value: ElicitResult) -> Self {
         Self {
             action: value.action,
             content: value.content,
@@ -306,13 +308,11 @@ impl From<CreateElicitationResult> for ElicitationResponse {
     }
 }
 
-impl From<ElicitationResponse> for CreateElicitationResult {
+impl From<ElicitationResponse> for ElicitResult {
     fn from(value: ElicitationResponse) -> Self {
-        Self {
-            action: value.action,
-            content: value.content,
-            meta: None,
-        }
+        let mut result = Self::new(value.action);
+        result.content = value.content;
+        result
     }
 }
 
@@ -562,7 +562,14 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = initialize_result_rmcp.as_ref().clone();
+        let peer_info = initialize_result_rmcp.as_ref();
+        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
+            .with_protocol_version(peer_info.protocol_version.clone())
+            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
+                anyhow!("initialization succeeded but server implementation was missing")
+            })?);
+        initialize_result.instructions = peer_info.instructions.clone();
+        initialize_result.meta = peer_info.meta.clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
@@ -692,7 +699,7 @@ impl RmcpClient {
         self.tool_list_generation.load(Ordering::Acquire)
     }
 
-    fn meta_string(meta: Option<&rmcp::model::Meta>, key: &str) -> Option<String> {
+    fn meta_string(meta: Option<&rmcp::model::MetaObject>, key: &str) -> Option<String> {
         meta.and_then(|meta| meta.get(key))
             .and_then(Value::as_str)
             .map(str::trim)
@@ -766,7 +773,7 @@ impl RmcpClient {
             None => None,
         };
         let meta = match meta {
-            Some(Value::Object(map)) => Some(rmcp::model::Meta(map)),
+            Some(Value::Object(map)) => Some(rmcp::model::RequestMetaObject::from(map)),
             Some(other) => {
                 return Err(anyhow!(
                     "MCP tool request _meta must be a JSON object, got {other}"
@@ -783,7 +790,7 @@ impl RmcpClient {
                 async move {
                     let mut options = rmcp::service::PeerRequestOptions::no_options();
                     options.meta = meta;
-                    let result = service
+                    let request = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
@@ -791,9 +798,14 @@ impl RmcpClient {
                             )),
                             options,
                         )
-                        .await?
-                        .await_response()
                         .await?;
+                    let guard =
+                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
+                    // The guard covers caller/task drops and active timeout
+                    // drops; rmcp retains its normal response cleanup path.
+                    let result = request.await_response().await;
+                    guard.disarm();
+                    let result = result?;
                     match result {
                         ServerResult::CallToolResult(result) => Ok(result),
                         _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
@@ -1411,23 +1423,14 @@ async fn create_oauth_transport_and_runtime(
         http_client.clone(),
         default_headers.clone(),
     ));
-    let mut oauth_state =
-        OAuthState::new_with_oauth_http_client(url.to_string(), oauth_http_client).await?;
-
-    oauth_state
-        .set_credentials(
-            &initial_tokens.client_id,
-            initial_tokens.token_response.0.clone(),
-        )
-        .await?;
-
-    let manager = match oauth_state {
-        OAuthState::Authorized(manager) => manager,
-        OAuthState::Unauthorized(manager) => manager,
-        _ => {
-            return Err(anyhow!("unexpected OAuth state during client setup"));
-        }
-    };
+    let mut manager =
+        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
+            .await?;
+    let metadata = discover_metadata(&manager).await?;
+    manager.set_metadata(metadata);
+    // OAuthPersistor below installs the request-only token view using the existing
+    // serialized adoption path. Do not call OAuthState::set_credentials: it performs
+    // another discovery and accepts SDK-synthesized OAuth endpoints.
 
     let auth_client = AuthClient::new(
         StreamableHttpClientAdapter::new(http_client, default_headers, /*auth_provider*/ None),

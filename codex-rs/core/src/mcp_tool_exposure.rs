@@ -115,7 +115,6 @@ fn same_callable_contract(direct_tool: &McpToolInfo, app_tool: &McpToolInfo) -> 
         && direct_tool.tool.input_schema == app_tool.tool.input_schema
         && direct_tool.tool.output_schema == app_tool.tool.output_schema
         && direct_tool.tool.annotations == app_tool.tool.annotations
-        && direct_tool.tool.execution == app_tool.tool.execution
 }
 
 fn append_namespace_note(tool: &mut McpToolInfo, note: &str) {

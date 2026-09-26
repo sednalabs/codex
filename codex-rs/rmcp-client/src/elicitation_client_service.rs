@@ -7,7 +7,7 @@ use rmcp::model::ClientResult;
 use rmcp::model::CustomRequest;
 use rmcp::model::CustomResult;
 use rmcp::model::ElicitationAction;
-use rmcp::model::Meta;
+use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
 use rmcp::model::ServerNotification;
 use rmcp::model::ServerRequest;
@@ -95,11 +95,11 @@ impl Service<RoleClient> for ElicitationClientService {
         context: RequestContext<RoleClient>,
     ) -> Result<ClientResult, rmcp::ErrorData> {
         match request {
-            ServerRequest::CreateElicitationRequest(request) => {
+            ServerRequest::ElicitRequest(request) => {
                 let response = self
                     .create_elicitation(Elicitation::Mcp(request.params), context)
                     .await?;
-                // RMCP's typed CreateElicitationResult does not model result-level `_meta`.
+                // Preserve the application response metadata on both elicitation routes.
                 let result = elicitation_response_result(response)?;
                 Ok(ClientResult::CustomResult(result))
             }
@@ -154,7 +154,10 @@ fn openai_form_elicitation(request: CustomRequest) -> Result<Elicitation, rmcp::
     })
 }
 
-fn restore_context_meta(mut request: Elicitation, mut context_meta: Meta) -> Elicitation {
+fn restore_context_meta(
+    mut request: Elicitation,
+    mut context_meta: RequestMetaObject,
+) -> Elicitation {
     // RMCP lifts JSON-RPC `_meta` into RequestContext before invoking services.
     context_meta.remove(MCP_PROGRESS_TOKEN_META_KEY);
     if context_meta.is_empty() {
@@ -164,14 +167,14 @@ fn restore_context_meta(mut request: Elicitation, mut context_meta: Meta) -> Eli
     match &mut request {
         Elicitation::Mcp(request) => request
             .meta_mut()
-            .get_or_insert_with(Meta::new)
+            .get_or_insert_with(RequestMetaObject::new)
             .extend(context_meta),
         Elicitation::OpenAiForm { meta, .. } => {
             let meta = meta
                 .get_or_insert_with(|| Value::Object(Map::new()))
                 .as_object_mut();
             if let Some(meta) = meta {
-                meta.extend(context_meta.0);
+                meta.extend(context_meta.0.0);
             }
         }
     }
@@ -180,7 +183,7 @@ fn restore_context_meta(mut request: Elicitation, mut context_meta: Meta) -> Eli
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateElicitationResultWithMeta {
+struct ElicitResultWithMeta {
     action: ElicitationAction,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<Value>,
@@ -196,7 +199,7 @@ fn elicitation_response_result(
         content,
         meta,
     } = response;
-    let result = CreateElicitationResultWithMeta {
+    let result = ElicitResultWithMeta {
         action,
         content,
         meta,
@@ -211,9 +214,9 @@ fn elicitation_response_result(
 mod tests {
     use pretty_assertions::assert_eq;
     use rmcp::model::BooleanSchema;
-    use rmcp::model::CreateElicitationRequestParams;
+    use rmcp::model::ElicitRequestParams;
     use rmcp::model::ElicitationSchema;
-    use rmcp::model::PrimitiveSchema;
+    use rmcp::model::PrimitiveSchemaDefinition;
     use serde_json::Value;
     use serde_json::json;
 
@@ -303,21 +306,24 @@ mod tests {
         );
     }
 
-    fn form_request(meta: Option<Meta>) -> CreateElicitationRequestParams {
-        CreateElicitationRequestParams::FormElicitationParams {
+    fn form_request(meta: Option<RequestMetaObject>) -> ElicitRequestParams {
+        ElicitRequestParams::FormElicitationParams {
             meta,
             message: "Confirm?".to_string(),
             requested_schema: ElicitationSchema::builder()
-                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .required_property(
+                    "confirmed",
+                    PrimitiveSchemaDefinition::Boolean(BooleanSchema::new()),
+                )
                 .build()
                 .expect("schema should build"),
         }
     }
 
-    fn meta(value: Value) -> Meta {
+    fn meta(value: Value) -> RequestMetaObject {
         let Value::Object(map) = value else {
             panic!("meta must be an object");
         };
-        Meta(map)
+        RequestMetaObject::from(map)
     }
 }

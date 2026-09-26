@@ -1297,7 +1297,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use rmcp::model::JsonObject;
-    use rmcp::model::Meta;
+    use rmcp::model::MetaObject;
     use rmcp::transport::auth::AuthError;
 
     #[test]
@@ -1337,7 +1337,7 @@ mod tests {
             "test tool",
             Arc::new(JsonObject::default()),
         )
-        .with_meta(Meta(
+        .with_meta(MetaObject(
             serde_json::json!({
                 "connector_id": "connector_gmail",
                 "connector_name": "Gmail",

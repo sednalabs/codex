@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
+use rmcp::model::CallToolResult;
 use rmcp::model::CustomNotification;
 use rmcp::model::CustomRequest;
 use rmcp::model::ErrorData;
@@ -14,6 +15,7 @@ use rmcp::model::JsonRpcRequest;
 use rmcp::model::JsonRpcResponse;
 use rmcp::model::JsonRpcVersion2_0;
 use rmcp::model::RequestId;
+use rmcp::model::ServerResult;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -77,6 +79,13 @@ impl OutgoingMessageSender {
                 warn!("could not find callback for {id:?}");
             }
         }
+    }
+
+    /// Project SDK tool results onto this server's existing MCP wire contract.
+    pub(crate) async fn send_tool_response(&self, id: RequestId, response: CallToolResult) {
+        let mut response = ServerResult::CallToolResult(response);
+        response.strip_result_type_for_legacy_peer();
+        self.send_response(id, response).await;
     }
 
     pub(crate) async fn send_response<T: Serialize>(&self, id: RequestId, response: T) {
@@ -241,6 +250,36 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[tokio::test]
+    async fn tool_responses_preserve_the_existing_wire_contract() -> Result<()> {
+        for (response, expected) in [
+            (
+                CallToolResult::success(vec![rmcp::model::ContentBlock::text("done")]),
+                json!({"content": [{"type": "text", "text": "done"}], "isError": false}),
+            ),
+            (
+                CallToolResult::error(vec![rmcp::model::ContentBlock::text("failed")]),
+                json!({"content": [{"type": "text", "text": "failed"}], "isError": true}),
+            ),
+        ] {
+            let (sender, mut receiver) = mpsc::unbounded_channel();
+            let outgoing = OutgoingMessageSender::new(sender);
+            outgoing
+                .send_tool_response(RequestId::Number(42), response)
+                .await;
+            let message: OutgoingJsonRpcMessage = receiver
+                .recv()
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing tool response"))?
+                .into();
+            assert_eq!(
+                serde_json::to_value(message)?,
+                json!({"jsonrpc": "2.0", "id": 42, "result": expected})
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn outgoing_request_serializes_as_jsonrpc_request() {

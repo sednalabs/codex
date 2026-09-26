@@ -3745,7 +3745,7 @@
           "$ref": "#/definitions/McpServerElicitationAction"
         },
         "content": {
-          "description": "Structured user input for accepted elicitations, mirroring RMCP `CreateElicitationResult`.\n\nThis is nullable because decline/cancel responses have no content."
+          "description": "Structured user input for accepted elicitations, mirroring RMCP `ElicitResult`.\n\nThis is nullable because decline/cancel responses have no content."
         }
       },
       "required": [

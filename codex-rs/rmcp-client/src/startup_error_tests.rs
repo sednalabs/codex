@@ -4,16 +4,14 @@ use super::is_authentication_required_error;
 
 #[test]
 fn missing_refresh_token_requires_authentication() {
-    let error = anyhow::Error::new(AuthError::TokenRefreshFailed(
-        "No refresh token available".to_string(),
-    ));
+    let error = anyhow::Error::new(AuthError::AuthorizationRequired);
 
     assert!(is_authentication_required_error(&error));
 }
 
 #[test]
 fn invalid_grant_refresh_failure_requires_authentication() {
-    let error = anyhow::Error::new(AuthError::TokenRefreshFailed(
+    let error = anyhow::Error::new(AuthError::TokenRefreshRejected(
         "Server returned error response: invalid_grant: refresh token expired or revoked"
             .to_string(),
     ));
@@ -38,4 +36,16 @@ fn malformed_refresh_failure_does_not_require_authentication() {
     ));
 
     assert!(!is_authentication_required_error(&error));
+}
+
+#[test]
+fn untyped_refresh_failure_text_does_not_require_authentication() {
+    for message in [
+        "Server returned error response: invalid_grant: refresh token expired or revoked",
+        "No refresh token available",
+    ] {
+        let error = anyhow::Error::new(AuthError::TokenRefreshFailed(message.to_string()));
+
+        assert!(!is_authentication_required_error(&error));
+    }
 }

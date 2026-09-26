@@ -12,6 +12,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
@@ -20,11 +21,10 @@ use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
-use rmcp::model::RawResource;
-use rmcp::model::RawResourceTemplate;
 use rmcp::model::ReadResourceRequestParams;
+use rmcp::model::ReadResourceResponse;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceContents;
@@ -94,7 +94,7 @@ impl TestToolServer {
             Arc::new(thread_hint_schema),
         );
         thread_hint_tool.annotations = Some(ToolAnnotations::new().read_only(true));
-        let mut thread_hint_meta = Meta::new();
+        let mut thread_hint_meta = MetaObject::new();
         thread_hint_meta.insert("ui".to_string(), json!({ "visibility": [] }));
         thread_hint_tool.meta = Some(thread_hint_meta);
 
@@ -368,31 +368,17 @@ impl TestToolServer {
     }
 
     fn memo_resource() -> Resource {
-        let raw = RawResource {
-            uri: MEMO_URI.to_string(),
-            name: "example-note".to_string(),
-            title: Some("Example Note".to_string()),
-            description: Some("A sample MCP resource exposed for integration tests.".to_string()),
-            mime_type: Some("text/plain".to_string()),
-            size: None,
-            icons: None,
-            meta: None,
-        };
-        Resource::new(raw, None)
+        Resource::new(MEMO_URI, "example-note")
+            .with_title("Example Note")
+            .with_description("A sample MCP resource exposed for integration tests.")
+            .with_mime_type("text/plain")
     }
 
     fn memo_template() -> ResourceTemplate {
-        let raw = RawResourceTemplate {
-            uri_template: "memo://codex/{slug}".to_string(),
-            name: "codex-memo".to_string(),
-            title: Some("Codex Memo".to_string()),
-            description: Some(
-                "Template for memo://codex/{slug} resources used in tests.".to_string(),
-            ),
-            mime_type: Some("text/plain".to_string()),
-            icons: None,
-        };
-        ResourceTemplate::new(raw, None)
+        ResourceTemplate::new("memo://codex/{slug}", "codex-memo")
+            .with_title("Codex Memo")
+            .with_description("Template for memo://codex/{slug} resources used in tests.")
+            .with_mime_type("text/plain")
     }
 
     fn memo_text() -> &'static str {
@@ -530,13 +516,14 @@ impl ServerHandler for TestToolServer {
                 && let Some(cwd) = tools.iter_mut().find(|tool| tool.name == "cwd")
             {
                 cwd.meta
-                    .get_or_insert_with(Meta::new)
+                    .get_or_insert_with(MetaObject::new)
                     .insert("ui".to_string(), json!({ "visibility": ["app"] }));
             }
             Ok(ListToolsResult {
                 tools,
                 next_cursor: None,
                 meta: None,
+                ..Default::default()
             })
         }
     }
@@ -552,6 +539,7 @@ impl ServerHandler for TestToolServer {
                 resources: (*resources).clone(),
                 next_cursor: None,
                 meta: None,
+                ..Default::default()
             })
         }
     }
@@ -565,6 +553,7 @@ impl ServerHandler for TestToolServer {
             resource_templates: (*self.resource_templates).clone(),
             next_cursor: None,
             meta: None,
+            ..Default::default()
         })
     }
 
@@ -572,16 +561,17 @@ impl ServerHandler for TestToolServer {
         &self,
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ReadResourceResult, McpError> {
+    ) -> Result<ReadResourceResponse, McpError> {
         if uri == MEMO_URI {
-            Ok(ReadResourceResult::new(vec![
-                ResourceContents::TextResourceContents {
+            Ok(
+                ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
                     uri,
                     mime_type: Some("text/plain".to_string()),
                     text: Self::memo_text().to_string(),
                     meta: None,
-                },
-            ]))
+                }])
+                .into(),
+            )
         } else {
             Err(McpError::resource_not_found(
                 "resource_not_found",
@@ -594,21 +584,22 @@ impl ServerHandler for TestToolServer {
         &self,
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         match request.name.as_ref() {
             "client_capabilities" => Ok(Self::structured_result(json!({
                 "supportsOpenaiFormElicitation": self
                     .supports_openai_form_elicitation
                     .load(Ordering::Relaxed),
-            }))),
-            "sandbox_meta" => Ok(Self::structured_result(serde_json::Value::Object(
-                context.meta.0,
-            ))),
+            }))
+            .into()),
+            "sandbox_meta" => {
+                Ok(Self::structured_result(serde_json::Value::Object(context.meta.0.0)).into())
+            }
             "cwd" => {
                 let cwd = std::env::current_dir()
                     .map(|path| path.to_string_lossy().into_owned())
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-                Ok(Self::structured_result(json!({ "cwd": cwd })))
+                Ok(Self::structured_result(json!({ "cwd": cwd })).into())
             }
             "thread_hint" => {
                 let thread_id = context
@@ -620,11 +611,14 @@ impl ServerHandler for TestToolServer {
                         McpError::invalid_params("missing threadId metadata".to_string(), None)
                     })?;
                 Ok(CallToolResult::success(vec![
-                    rmcp::model::Content::text(format!(
+                    rmcp::model::ContentBlock::text(format!(
                         "manual history hint for thread {thread_id}"
                     )),
-                    rmcp::model::Content::text("unstructured notes/thread_hint fixture result"),
-                ]))
+                    rmcp::model::ContentBlock::text(
+                        "unstructured notes/thread_hint fixture result",
+                    ),
+                ])
+                .into())
             }
             "echo" | "echo-tool" => {
                 let args: EchoArgs = match request.arguments {
@@ -649,23 +643,19 @@ impl ServerHandler for TestToolServer {
                     "env": env_snapshot.get(env_name),
                 });
 
-                Ok(Self::structured_result(structured_content))
+                Ok(Self::structured_result(structured_content).into())
             }
             "encrypted_output" => {
-                let mut meta = Meta::new();
+                let mut meta = MetaObject::new();
                 meta.insert("codex/encryptedContent".to_string(), json!(true));
                 let mut result = CallToolResult::success(vec![
-                    rmcp::model::Content::text("Lookup completed"),
-                    rmcp::model::Annotated::new(
-                        rmcp::model::RawContent::Text(rmcp::model::RawTextContent {
-                            text: "gAAAA-test".to_string(),
-                            meta: Some(meta),
-                        }),
-                        None,
+                    rmcp::model::ContentBlock::text("Lookup completed"),
+                    rmcp::model::ContentBlock::Text(
+                        rmcp::model::TextContent::new("gAAAA-test").with_meta(meta),
                     ),
                 ]);
                 result.structured_content = Some(json!({"encrypted_output": "ignored"}));
-                Ok(result)
+                Ok(result.into())
             }
             "image" => {
                 // Read a data URL (e.g. data:image/png;base64,AAA...) from env and convert to
@@ -684,21 +674,24 @@ impl ServerHandler for TestToolServer {
                     )
                 })?;
 
-                Ok(CallToolResult::success(vec![rmcp::model::Content::image(
-                    data_b64, mime_type,
-                )]))
+                Ok(
+                    CallToolResult::success(vec![rmcp::model::ContentBlock::image(
+                        data_b64, mime_type,
+                    )])
+                    .into(),
+                )
             }
             "image_scenario" => {
                 let args = Self::parse_call_args::<ImageScenarioArgs>(&request, "image_scenario")?;
-                Self::image_scenario_result(args)
+                Self::image_scenario_result(args).map(Into::into)
             }
             "sync" => {
                 let args = Self::parse_call_args::<SyncArgs>(&request, "sync")?;
-                Self::sync_result(args).await
+                Self::sync_result(args).await.map(Into::into)
             }
             "sync_readonly" => {
                 let args = Self::parse_call_args::<SyncArgs>(&request, "sync_readonly")?;
-                Self::sync_result(args).await
+                Self::sync_result(args).await.map(Into::into)
             }
             other => Err(McpError::invalid_params(
                 format!("unknown tool: {other}"),
@@ -744,54 +737,49 @@ impl TestToolServer {
         let mut content = Vec::new();
         match args.scenario {
             ImageScenario::ImageOnly => {
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::ImageOnlyOriginalDetail => {
-                let mut meta = rmcp::model::Meta::new();
+                let mut meta = rmcp::model::MetaObject::new();
                 meta.insert(
                     "codex/imageDetail".to_string(),
                     serde_json::json!("original"),
                 );
-                content.push(rmcp::model::Annotated::new(
-                    rmcp::model::RawContent::Image(rmcp::model::RawImageContent {
-                        data: valid_data_b64,
-                        mime_type,
-                        meta: Some(meta),
-                    }),
-                    None,
+                content.push(rmcp::model::ContentBlock::Image(
+                    rmcp::model::ImageContent::new(valid_data_b64, mime_type).with_meta(meta),
                 ));
             }
             ImageScenario::TextThenImage => {
-                content.push(rmcp::model::Content::text(caption));
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::text(caption));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::InvalidBase64ThenImage => {
-                content.push(rmcp::model::Content::image(
+                content.push(rmcp::model::ContentBlock::image(
                     "not-base64".to_string(),
                     "image/png".to_string(),
                 ));
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::InvalidImageBytesThenImage => {
-                content.push(rmcp::model::Content::image(
+                content.push(rmcp::model::ContentBlock::image(
                     "bm90IGFuIGltYWdl".to_string(),
                     "image/png".to_string(),
                 ));
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::MultipleValidImages => {
-                content.push(rmcp::model::Content::image(
+                content.push(rmcp::model::ContentBlock::image(
                     valid_data_b64.clone(),
                     mime_type.clone(),
                 ));
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::ImageThenText => {
-                content.push(rmcp::model::Content::image(valid_data_b64, mime_type));
-                content.push(rmcp::model::Content::text(caption));
+                content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
+                content.push(rmcp::model::ContentBlock::text(caption));
             }
             ImageScenario::TextOnly => {
-                content.push(rmcp::model::Content::text(caption));
+                content.push(rmcp::model::ContentBlock::text(caption));
             }
         }
 

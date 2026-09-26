@@ -129,7 +129,7 @@ pub struct McpServerToolCallResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct McpToolCallResult {
-    // NOTE: `rmcp::model::Content` (and its `RawContent` variants) would be a more precise Rust
+    // NOTE: `rmcp::model::ContentBlock` would be a more precise Rust
     // representation of MCP content blocks. We intentionally use `serde_json::Value` here because
     // this crate exports JSON schema + TS types (`schemars`/`ts-rs`), and the rmcp model types
     // aren't set up to be schema/TS friendly (and would introduce heavier coupling to rmcp's Rust
@@ -287,6 +287,7 @@ impl From<rmcp::model::ElicitationAction> for McpServerElicitationAction {
             rmcp::model::ElicitationAction::Accept => Self::Accept,
             rmcp::model::ElicitationAction::Decline => Self::Decline,
             rmcp::model::ElicitationAction::Cancel => Self::Cancel,
+            _ => Self::Cancel,
         }
     }
 }
@@ -706,7 +707,7 @@ impl TryFrom<CoreElicitationRequest> for McpServerElicitationRequest {
 #[ts(export_to = "v2/")]
 pub struct McpServerElicitationRequestResponse {
     pub action: McpServerElicitationAction,
-    /// Structured user input for accepted elicitations, mirroring RMCP `CreateElicitationResult`.
+    /// Structured user input for accepted elicitations, mirroring RMCP `ElicitResult`.
     ///
     /// This is nullable because decline/cancel responses have no content.
     pub content: Option<JsonValue>,
@@ -716,18 +717,21 @@ pub struct McpServerElicitationRequestResponse {
     pub meta: Option<JsonValue>,
 }
 
-impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitationResult {
+impl From<McpServerElicitationRequestResponse> for rmcp::model::ElicitResult {
     fn from(value: McpServerElicitationRequestResponse) -> Self {
-        Self {
-            action: value.action.into(),
-            content: value.content,
-            meta: value.meta.and_then(json_value_to_rmcp_meta),
+        let mut result = Self::new(value.action.into());
+        if let Some(content) = value.content {
+            result = result.with_content(content);
         }
+        if let Some(meta) = value.meta.and_then(json_value_to_rmcp_meta) {
+            result = result.with_meta(meta);
+        }
+        result
     }
 }
 
-impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestResponse {
-    fn from(value: rmcp::model::CreateElicitationResult) -> Self {
+impl From<rmcp::model::ElicitResult> for McpServerElicitationRequestResponse {
+    fn from(value: rmcp::model::ElicitResult) -> Self {
         Self {
             action: value.action.into(),
             content: value.content,
@@ -736,13 +740,13 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
     }
 }
 
-fn json_value_to_rmcp_meta(value: JsonValue) -> Option<rmcp::model::Meta> {
+fn json_value_to_rmcp_meta(value: JsonValue) -> Option<rmcp::model::MetaObject> {
     match value {
-        JsonValue::Object(object) => Some(rmcp::model::Meta(object)),
+        JsonValue::Object(object) => Some(rmcp::model::MetaObject(object)),
         _ => None,
     }
 }
 
-fn rmcp_meta_to_json_value(meta: rmcp::model::Meta) -> JsonValue {
+fn rmcp_meta_to_json_value(meta: rmcp::model::MetaObject) -> JsonValue {
     JsonValue::Object(meta.0)
 }

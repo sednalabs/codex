@@ -25,7 +25,7 @@ use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use rmcp::model::CallToolResult;
-use rmcp::model::Content;
+use rmcp::model::ContentBlock;
 use rmcp::model::RequestId;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -40,7 +40,7 @@ pub(crate) fn create_call_tool_result_with_thread_id(
     is_error: Option<bool>,
 ) -> CallToolResult {
     let content_text = text;
-    let content = vec![Content::text(content_text.clone())];
+    let content = vec![ContentBlock::text(content_text.clone())];
     let structured_content = json!({
         "threadId": thread_id,
         "content": content_text,
@@ -73,10 +73,10 @@ pub async fn run_codex_tool_session(
     {
         Ok(res) => res,
         Err(e) => {
-            let result = CallToolResult::error(vec![Content::text(format!(
+            let result = CallToolResult::error(vec![ContentBlock::text(format!(
                 "Failed to start Codex session: {e}"
             ))]);
-            outgoing.send_response(id.clone(), result).await;
+            outgoing.send_tool_response(id.clone(), result).await;
             return;
         }
     };
@@ -128,7 +128,7 @@ pub async fn run_codex_tool_session(
             format!("Failed to submit initial prompt: {e}"),
             Some(true),
         );
-        outgoing.send_response(id.clone(), result).await;
+        outgoing.send_tool_response(id.clone(), result).await;
         // unregister the id so we don't keep it in the map
         running_requests_id_to_codex_uuid.lock().await.remove(&id);
         return;
@@ -176,7 +176,9 @@ pub async fn run_codex_tool_session_reply(
             format!("Failed to submit user input: {e}"),
             Some(true),
         );
-        outgoing.send_response(request_id.clone(), result).await;
+        outgoing
+            .send_tool_response(request_id.clone(), result)
+            .await;
         // unregister the id so we don't keep it in the map
         running_requests_id_to_codex_uuid
             .lock()
@@ -266,7 +268,9 @@ async fn run_codex_tool_session_inner(
                             err_event.message,
                             Some(true),
                         );
-                        outgoing.send_response(request_id.clone(), result).await;
+                        outgoing
+                            .send_tool_response(request_id.clone(), result)
+                            .await;
                         break;
                     }
                     EventMsg::Warning(_)
@@ -316,7 +320,9 @@ async fn run_codex_tool_session_inner(
                         let result = create_call_tool_result_with_thread_id(
                             thread_id, text, /*is_error*/ None,
                         );
-                        outgoing.send_response(request_id.clone(), result).await;
+                        outgoing
+                            .send_tool_response(request_id.clone(), result)
+                            .await;
                         // unregister the id so we don't keep it in the map
                         running_requests_id_to_codex_uuid
                             .lock()
@@ -418,7 +424,9 @@ async fn run_codex_tool_session_inner(
                     format!("Codex runtime error: {e}"),
                     Some(true),
                 );
-                outgoing.send_response(request_id.clone(), result).await;
+                outgoing
+                    .send_tool_response(request_id.clone(), result)
+                    .await;
                 break;
             }
         }

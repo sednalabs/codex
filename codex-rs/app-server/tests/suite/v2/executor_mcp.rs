@@ -26,6 +26,7 @@ use core_test_support::stdio_server_bin;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
 use rmcp::model::CallToolResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
@@ -78,6 +79,7 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
     );
     let (token_request_tx, mut token_request_rx) = mpsc::unbounded_channel();
     let oauth_metadata = json!({
+        "issuer": EXECUTOR_OAUTH_MCP_URL,
         "authorization_endpoint": "https://oauth-only.invalid/authorize",
         "token_endpoint": "http://oauth-only.invalid/token",
         "scopes_supported": ["read", "write"],
@@ -420,9 +422,12 @@ impl ServerHandler for ExecutorHttpMcpServer {
         tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
         Ok(ListToolsResult {
+            result_type: None,
             tools: vec![tool],
             next_cursor: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
         })
     }
 
@@ -430,7 +435,7 @@ impl ServerHandler for ExecutorHttpMcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let message = request
             .arguments
             .as_ref()
@@ -439,7 +444,8 @@ impl ServerHandler for ExecutorHttpMcpServer {
             .unwrap_or_default();
         Ok(CallToolResult::structured(json!({
             "echo": format!("ECHOING: {message}")
-        })))
+        }))
+        .into())
     }
 }
 

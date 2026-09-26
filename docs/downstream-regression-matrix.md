@@ -12,6 +12,23 @@ that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream
 branch.
 
+## MCP Streamable HTTP cancellation
+
+`codex.rmcp-client-transport` runs the complete client suite, including a dedicated
+HTTP observer for blocked-POST independence, timeout and caller-drop cancellation
+IDs, saturated-queue removal, capacity recovery and uncertain-mutation no-replay.
+Existing active-time tests retain elicitation-pause coverage. OAuth metadata
+regressions reject guessed endpoints and cover both configured-client and dynamic
+registration login paths when the server publishes no metadata.
+`codex.rmcp-consumers-check` compiles all direct SDK consumers and their targets.
+This includes typed metadata, content/resource models, and elicitation conversions
+in the app server, core, and terminal consumers.
+`initialize_negotiates_only_implemented_protocol_versions` exercises real stdio
+handshakes for supported, newer, and unknown revisions;
+`tool_responses_preserve_the_existing_wire_contract` and the existing tool-call
+integration tests preserve complete legacy JSON responses.
+Installed-host first use is a separate acceptance step after protected delivery.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
@@ -599,6 +616,8 @@ remain ordinary refresh failures: `rejected_refresh_token_requires_reauthorizati
 `transient_refresh_failure_does_not_require_reauthorization`, and
 `malformed_refresh_failure_does_not_require_reauthorization`, with the
 startup-error classifier tests covering the same terminal/non-terminal split.
+`untyped_refresh_failure_text_does_not_require_authentication` prevents
+error-message text from overriding RMCP 3.2 typed refresh classification.
 
 Native app-server coverage additionally proves that
 `validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool` keeps

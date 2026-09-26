@@ -1,3 +1,4 @@
+use crate::oauth_metadata::discover_metadata;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -126,7 +127,7 @@ async fn resolve_device_oauth_client_id(
 
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
     auth_manager.with_client(http_client.clone())?;
-    let metadata = auth_manager.discover_metadata().await?;
+    let metadata = discover_metadata(&auth_manager).await?;
     let registration_endpoint = metadata
         .registration_endpoint
         .as_deref()
@@ -800,6 +801,7 @@ mod tests {
         let addr = listener.local_addr().expect("read metadata listener addr");
         let base_url = format!("http://{addr}");
         let metadata = json!({
+            "issuer": base_url,
             "authorization_endpoint": format!("{base_url}/oauth/authorize"),
             "token_endpoint": format!("{base_url}/token"),
             "registration_endpoint": format!("{base_url}/register"),
@@ -807,7 +809,8 @@ mod tests {
             "grant_types_supported": grant_types_supported,
             "scopes_supported": ["offline_access"],
         });
-        let path_scoped_metadata = metadata.clone();
+        let mut path_scoped_metadata = metadata.clone();
+        path_scoped_metadata["issuer"] = json!(format!("{base_url}/mcp"));
         let router = Router::new()
             .route(
                 "/.well-known/oauth-authorization-server/mcp",

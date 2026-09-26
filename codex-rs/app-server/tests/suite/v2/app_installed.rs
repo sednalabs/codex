@@ -331,8 +331,11 @@ impl ServerHandler for InstalledAppsMcpServer {
             }
 
             Ok(ListToolsResult {
+                result_type: None,
                 meta: None,
                 next_cursor: None,
+                ttl_ms: None,
+                cache_scope: None,
                 tools: state
                     .tools
                     .lock()

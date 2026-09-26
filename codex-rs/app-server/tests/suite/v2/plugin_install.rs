@@ -38,7 +38,7 @@ use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -1429,6 +1429,7 @@ async fn plugin_install_starts_mcp_oauth_through_protected_resource_metadata() -
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": authorization_server.uri(),
             "authorization_endpoint": format!("{}/oauth/authorize", authorization_server.uri()),
             "token_endpoint": format!("{}/oauth/token", authorization_server.uri()),
             "registration_endpoint": format!("{}/oauth/register", authorization_server.uri()),
@@ -1887,9 +1888,12 @@ impl ServerHandler for PluginInstallMcpServer {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             Ok(ListToolsResult {
+                result_type: None,
                 tools,
                 next_cursor: None,
                 meta: None,
+                ttl_ms: None,
+                cache_scope: None,
             })
         }
     }
@@ -2034,7 +2038,7 @@ fn connector_tool(connector_id: &str, connector_name: &str) -> Result<Tool> {
     );
     tool.annotations = Some(ToolAnnotations::new().read_only(true));
 
-    let mut meta = Meta::new();
+    let mut meta = MetaObject::new();
     meta.0
         .insert("connector_id".to_string(), json!(connector_id));
     meta.0

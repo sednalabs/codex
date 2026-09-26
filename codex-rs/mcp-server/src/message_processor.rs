@@ -27,6 +27,7 @@ use rmcp::model::JsonRpcError;
 use rmcp::model::JsonRpcNotification;
 use rmcp::model::JsonRpcRequest;
 use rmcp::model::JsonRpcResponse;
+use rmcp::model::ProtocolVersion;
 use rmcp::model::RequestId;
 use rmcp::model::ServerCapabilities;
 use serde_json::json;
@@ -40,7 +41,7 @@ use crate::codex_tool_config::create_tool_for_codex_tool_call_reply_param;
 use crate::outgoing_message::OutgoingMessageSender;
 
 fn tool_error_result(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![rmcp::model::Content::text(message.into())])
+    CallToolResult::error(vec![rmcp::model::ContentBlock::text(message.into())])
 }
 
 pub(crate) struct MessageProcessor {
@@ -152,20 +153,24 @@ impl MessageProcessor {
             ClientRequest::CompleteRequest(params) => {
                 self.handle_complete(params.params);
             }
-            ClientRequest::GetTaskInfoRequest(_) => {
-                self.handle_unsupported_request(request_id, "tasks/get_info")
+            ClientRequest::GetTaskRequest(_) => {
+                self.handle_unsupported_request(request_id, "tasks/get")
                     .await;
             }
-            ClientRequest::ListTasksRequest(_) => {
-                self.handle_unsupported_request(request_id, "tasks/list")
-                    .await;
-            }
-            ClientRequest::GetTaskResultRequest(_) => {
-                self.handle_unsupported_request(request_id, "tasks/get_result")
+            ClientRequest::UpdateTaskRequest(_) => {
+                self.handle_unsupported_request(request_id, "tasks/update")
                     .await;
             }
             ClientRequest::CancelTaskRequest(_) => {
                 self.handle_unsupported_request(request_id, "tasks/cancel")
+                    .await;
+            }
+            ClientRequest::DiscoverRequest(_) => {
+                self.handle_unsupported_request(request_id, "server/discover")
+                    .await;
+            }
+            ClientRequest::SubscriptionsListenRequest(_) => {
+                self.handle_unsupported_request(request_id, "subscriptions/listen")
                     .await;
             }
             ClientRequest::CustomRequest(custom) => {
@@ -180,6 +185,9 @@ impl MessageProcessor {
                         ),
                     )
                     .await;
+            }
+            _ => {
+                self.handle_unsupported_request(request_id, "unknown").await;
             }
         }
     }
@@ -209,6 +217,9 @@ impl MessageProcessor {
             }
             ClientNotification::CustomNotification(_) => {
                 tracing::warn!("ignoring custom client notification");
+            }
+            _ => {
+                tracing::warn!("ignoring unknown client notification");
             }
         }
     }
@@ -269,8 +280,19 @@ impl MessageProcessor {
             .enable_tools()
             .enable_tool_list_changed()
             .build();
+        // This manual server implements the legacy wire contract, not the SDK's newer protocols.
+        let supported_versions = [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+        ];
+        let protocol_version = if supported_versions.contains(&params.protocol_version) {
+            params.protocol_version
+        } else {
+            ProtocolVersion::V_2025_06_18
+        };
         let initialize_result = InitializeResult::new(capabilities)
-            .with_protocol_version(params.protocol_version.clone())
+            .with_protocol_version(protocol_version)
             .with_server_info(server_info);
 
         let mut result_value = match serde_json::to_value(initialize_result) {
@@ -337,7 +359,10 @@ impl MessageProcessor {
     ) {
         tracing::trace!("tools/list -> {params:?}");
         let result = rmcp::model::ListToolsResult {
+            result_type: None,
             meta: None,
+            ttl_ms: None,
+            cache_scope: None,
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
                 create_tool_for_codex_tool_call_reply_param(),
@@ -362,7 +387,7 @@ impl MessageProcessor {
             }
             _ => {
                 let result = tool_error_result(format!("Unknown tool '{name}'"));
-                self.outgoing.send_response(id, result).await;
+                self.outgoing.send_tool_response(id, result).await;
             }
         }
     }
@@ -381,7 +406,7 @@ impl MessageProcessor {
                         let result = tool_error_result(format!(
                             "Failed to load Codex configuration from overrides: {e}"
                         ));
-                        self.outgoing.send_response(id, result).await;
+                        self.outgoing.send_tool_response(id, result).await;
                         return;
                     }
                 },
@@ -389,7 +414,7 @@ impl MessageProcessor {
                     let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
-                    self.outgoing.send_response(id, result).await;
+                    self.outgoing.send_tool_response(id, result).await;
                     return;
                 }
             },
@@ -397,7 +422,7 @@ impl MessageProcessor {
                 let result = tool_error_result(
                     "Missing arguments for codex tool-call; the `prompt` field is required.",
                 );
-                self.outgoing.send_response(id, result).await;
+                self.outgoing.send_tool_response(id, result).await;
                 return;
             }
         };
@@ -440,7 +465,7 @@ impl MessageProcessor {
                     let result = tool_error_result(format!(
                         "Failed to parse configuration for Codex tool: {e}"
                     ));
-                    self.outgoing.send_response(request_id, result).await;
+                    self.outgoing.send_tool_response(request_id, result).await;
                     return;
                 }
             },
@@ -451,7 +476,7 @@ impl MessageProcessor {
                 let result = tool_error_result(
                     "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
                 );
-                self.outgoing.send_response(request_id, result).await;
+                self.outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
@@ -461,7 +486,7 @@ impl MessageProcessor {
             Err(e) => {
                 tracing::error!("Failed to parse thread_id: {e}");
                 let result = tool_error_result(format!("Failed to parse thread_id: {e}"));
-                self.outgoing.send_response(request_id, result).await;
+                self.outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
@@ -479,7 +504,7 @@ impl MessageProcessor {
                     format!("Session not found for thread_id: {thread_id}"),
                     Some(true),
                 );
-                outgoing.send_response(request_id, result).await;
+                outgoing.send_tool_response(request_id, result).await;
                 return;
             }
         };
@@ -504,6 +529,10 @@ impl MessageProcessor {
         });
     }
 
+    #[expect(
+        deprecated,
+        reason = "retain logging for the negotiated legacy MCP protocol"
+    )]
     fn handle_set_level(&self, params: rmcp::model::SetLevelRequestParams) {
         tracing::info!("logging/setLevel -> params: {:?}", params);
     }
@@ -530,7 +559,10 @@ impl MessageProcessor {
     // ---------------------------------------------------------------------
 
     async fn handle_cancelled_notification(&self, params: rmcp::model::CancelledNotificationParam) {
-        let request_id = params.request_id;
+        let Some(request_id) = params.request_id else {
+            tracing::warn!("Cancellation notification omitted request_id");
+            return;
+        };
         // Create a stable string form early for logging and submission id.
         let request_id_string = request_id.to_string();
 
