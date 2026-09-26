@@ -40,6 +40,11 @@ sdk="$(bazel_cquery "${bazel_cquery_args[@]}" --output_groups=default,sdk //thir
 native_link="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
 pkg_config="$(bazel_cquery "${bazel_cquery_args[@]}" //third_party/voice:pkg_config | head -n 1)"
 
+[[ -n "$sdk" && -n "$native_link" && -n "$pkg_config" ]] || {
+  echo "Bazel did not return all voice Cargo outputs" >&2
+  exit 1
+}
+
 for path_name in sdk native_link pkg_config; do
   path_value="${!path_name}"
   if [[ "$path_value" != /* ]]; then
@@ -47,11 +52,6 @@ for path_name in sdk native_link pkg_config; do
   fi
 done
 native_lib="$(dirname "$native_link")"
-
-[[ -n "$sdk" && -n "$native_link" && -n "$pkg_config" ]] || {
-  echo "Bazel did not return all voice Cargo outputs" >&2
-  exit 1
-}
 
 for path in "$sdk/lib/pkgconfig" "$native_lib" "$pkg_config"; do
   [[ -e "$path" ]] || { echo "missing voice Cargo input: $path" >&2; exit 1; }
