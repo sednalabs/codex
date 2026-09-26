@@ -363,6 +363,11 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
+        // A terminal lifecycle observation wins over delayed activity or refresh responses.
+        // Thread ids are immutable, so a later running hint cannot represent a new incarnation.
+        if self.stopped_threads.contains(&thread_id) {
+            return;
+        }
         if self
             .threads
             .get(&thread_id)
@@ -370,7 +375,6 @@ impl AgentNavigationState {
         {
             return;
         }
-        self.stopped_threads.remove(&thread_id);
         self.set_running(thread_id, /*is_running*/ true);
     }
 
@@ -910,6 +914,28 @@ mod tests {
                 updated_at: Some(4),
             })
         );
+    }
+
+    #[test]
+    fn delayed_running_hint_cannot_revive_stopped_thread() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
+        assert!(state.upsert(
+            thread_id,
+            None,
+            None,
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        ));
+
+        state.mark_running(thread_id);
+        state.mark_stopped(thread_id);
+        state.mark_running(thread_id);
+
+        let entry = state.get(&thread_id).expect("thread remains retained");
+        assert!(!entry.is_running, "delayed activity must not revive a stopped row");
     }
 
     #[test]
