@@ -249,6 +249,21 @@ impl ChatWidget {
         self.bottom_pane.active_view_id()
     }
 
+    pub(crate) fn replace_selection_view_if_active(
+        &mut self,
+        view_id: &'static str,
+        params: SelectionViewParams,
+    ) -> bool {
+        let replaced = self
+            .bottom_pane
+            .replace_selection_view_if_active(view_id, params);
+        if replaced {
+            self.refresh_plan_mode_nudge();
+            self.request_redraw();
+        }
+        replaced
+    }
+
     pub(crate) fn can_launch_external_editor(&self) -> bool {
         self.bottom_pane.can_launch_external_editor()
     }

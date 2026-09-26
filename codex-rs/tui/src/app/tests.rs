@@ -5478,6 +5478,7 @@ async fn make_test_app_with_channels() -> (
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
             pending_agent_picker_refresh: false,
+            agent_picker_visible_thread_ids: Vec::new(),
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),

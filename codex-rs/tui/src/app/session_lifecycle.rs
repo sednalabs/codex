@@ -254,6 +254,7 @@ fn agent_picker_subtitle(
 
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+        let replace_active_picker = self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID);
         // A previously completed, truncated backfill already refreshed every retained row during
         // its bounded recovery. Reopening the picker must not issue an identical burst of reads;
         // a subsequent lifecycle event will invalidate this cache when new lineage is observed.
@@ -285,11 +286,16 @@ impl App {
                     .await;
             }
         }
+        let previous_selected_thread_id = self
+            .chat_widget
+            .selection_view_selected_index(AGENT_PICKER_VIEW_ID)
+            .and_then(|idx| self.agent_picker_visible_thread_ids.get(idx).copied());
         let (picker_thread_ids, picker_has_more) = self.agent_navigation.next_picker_thread_ids(
             self.primary_thread_id,
             self.active_thread_id,
             AGENT_PICKER_ROWS_PER_OPEN,
         );
+        self.agent_picker_visible_thread_ids = picker_thread_ids.clone();
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. A buffered active turn is positive liveness evidence; a completed
         // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
@@ -399,16 +405,16 @@ impl App {
         let previous_query = self
             .chat_widget
             .selection_view_search_query(AGENT_PICKER_VIEW_ID);
-        let previous_selected_idx = self
-            .chat_widget
-            .selection_view_selected_index(AGENT_PICKER_VIEW_ID);
-        let mut initial_selected_idx = previous_selected_idx;
+        let mut initial_selected_idx = None;
         let mut items = Vec::new();
-        for (idx, thread_id) in picker_thread_ids.into_iter().enumerate() {
+        for thread_id in picker_thread_ids {
             let Some(entry) = self.agent_navigation.get(&thread_id) else {
                 continue;
             };
-            if self.active_thread_id == Some(thread_id) {
+            let idx = items.len();
+            if previous_selected_thread_id == Some(thread_id)
+                || (previous_selected_thread_id.is_none() && self.active_thread_id == Some(thread_id))
+            {
                 initial_selected_idx = Some(idx);
             }
             let id = thread_id;
@@ -456,7 +462,7 @@ impl App {
             });
         }
 
-        self.chat_widget.show_selection_view(SelectionViewParams {
+        let params = SelectionViewParams {
             view_id: Some(AGENT_PICKER_VIEW_ID),
             title: Some("Subagents".to_string()),
             subtitle: Some(agent_picker_subtitle(
@@ -471,7 +477,13 @@ impl App {
             items,
             initial_selected_idx,
             ..Default::default()
-        });
+        };
+        if replace_active_picker {
+            self.chat_widget
+                .replace_selection_view_if_active(AGENT_PICKER_VIEW_ID, params);
+        } else {
+            self.chat_widget.show_selection_view(params);
+        }
     }
 
     async fn agent_picker_thread_usage(

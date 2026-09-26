@@ -595,6 +595,7 @@ pub(crate) struct App {
     pending_startup_thread_start: bool,
     /// Coalesces picker refreshes while a burst of subagent lifecycle events is queued.
     pending_agent_picker_refresh: bool,
+    agent_picker_visible_thread_ids: Vec<ThreadId>,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
     // Serialize plugin enablement writes per plugin so stale completions cannot
@@ -1097,6 +1098,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start,
             pending_agent_picker_refresh: false,
+            agent_picker_visible_thread_ids: Vec::new(),
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
