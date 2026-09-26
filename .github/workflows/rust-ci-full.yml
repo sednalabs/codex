@@ -13,11 +13,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sednalabs/codex
-          ref: c8ab746b72c411d908705fb7c73c9297ebf08c6b
+          ref: 2aa6bfc406cc597a2389144b069d447f871775ca
           fetch-depth: 1
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
-      - name: Focused recovery baseline
-        working-directory: codex-rs
-        run: cargo test --locked -p codex-rmcp-client --test streamable_http_recovery
+      - name: Focused rmcp consumer checks
+        run: bash .github/scripts/validation-lanes/rmcp-consumers-check.sh
