@@ -45,7 +45,7 @@ pub(crate) async fn migrator_for_usage_database(
     pool: &SqlitePool,
     base: &Migrator,
 ) -> anyhow::Result<Migrator> {
-    let table_name = base.table_name.as_str();
+    let table_name = base.table_name.as_ref();
     if !migration_table_exists(pool, table_name).await? {
         return Ok(clone_migrator(base, base.migrations.to_vec()));
     }
@@ -101,7 +101,7 @@ async fn recorded_checksum(
 ) -> anyhow::Result<Option<Vec<u8>>> {
     let quoted_table_name = format!("\"{}\"", table_name.replace('"', "\"\""));
     let query = format!("SELECT checksum FROM {quoted_table_name} WHERE version = ?");
-    Ok(sqlx::query_scalar::<_, Vec<u8>>(&query)
+    Ok(sqlx::query_scalar::<_, Vec<u8>>(&*query)
         .bind(version)
         .fetch_optional(pool)
         .await?)
@@ -112,7 +112,8 @@ mod tests {
     use super::OLD_MAIN_0001_CHECKSUM;
     use super::OLD_MAIN_0005_CHECKSUM;
     use super::migrator_for_usage_database;
-    use crate::migrations::{USAGE_MIGRATOR, runtime_usage_migrator};
+    use crate::migrations::USAGE_MIGRATOR;
+    use crate::migrations::runtime_usage_migrator;
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -174,7 +175,7 @@ mod tests {
             .expect("custom historical checksum should be inserted");
 
         let mut base = runtime_usage_migrator();
-        base.table_name = "custom_sqlx_migrations".to_owned();
+        base.table_name = "custom_sqlx_migrations".to_owned().into();
         let migrator = migrator_for_usage_database(&pool, &base)
             .await
             .expect("custom migration table should be recognized");
@@ -243,7 +244,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("compatibility migration should be made pending");
-        raw_sql(&old_main_views)
+        raw_sql(&*old_main_views)
             .execute(&pool)
             .await
             .expect("old-main views should be installed");
