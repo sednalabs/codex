@@ -151,15 +151,24 @@ async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
 mod tests {
     use super::repair_state_migrations;
     use crate::migrations::STATE_MIGRATOR;
+    use crate::runtime::test_support::unique_temp_dir;
+    use codex_utils_absolute_path::test_support::PathExt;
     use sqlx::Row;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
     async fn repairs_deployed_thread_source_schema_with_embedded_migration_metadata() {
-        let pool = SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
             .await
-            .expect("in-memory sqlite should open");
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.state_db_path())
+            .await
+            .expect("sqlite database should open");
         sqlx::query("CREATE TABLE threads (thread_source TEXT)")
             .execute(&pool)
             .await
