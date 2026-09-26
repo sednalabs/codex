@@ -54,8 +54,11 @@ jobs:
           "W14079_DIAGNOSTIC_EXECUTABLE=$exe" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $imports = @()
           $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          $import_status = 'unavailable'
           if ($dumpbin) {
-            $imports = @(& $dumpbin.Source /DEPENDENTS $exe 2>$null |
+            $dump_output = @(& $dumpbin.Source /DEPENDENTS $exe 2>$null)
+            if ($LASTEXITCODE -eq 0) { $import_status = 'parsed' } else { $import_status = 'parse_failed' }
+            $imports = @($dump_output |
               Where-Object { $_ -match '^\s{2,}([A-Za-z0-9_.-]+\.dll)\s*$' } |
               ForEach-Object { $matches[1] } | Sort-Object -Unique)
           }
@@ -70,6 +73,8 @@ jobs:
             validation_source_sha = $env:SOURCE_SHA
             validation_source_tree = $env:SOURCE_TREE
             executable = $exe
+            import_tool = if ($dumpbin) { $dumpbin.Source } else { $null }
+            import_status = $import_status
             imports = $imports
             resolved_path_candidates = $resolved
             note = 'This is import-table/path evidence only; loader section/KnownDll resolution remains unknown.'

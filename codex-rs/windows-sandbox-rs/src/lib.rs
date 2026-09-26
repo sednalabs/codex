@@ -1063,6 +1063,11 @@ mod windows_impl {
                     Ok(result) => serde_json::json!({"exit_code": result.exit_code, "timed_out": result.timed_out, "stderr": String::from_utf8_lossy(&result.stderr)}),
                     Err(error) => serde_json::json!({"error": error.to_string()}),
                 },
+                "comparison_scope": {
+                    "same_executable_argv_cwd_path": true,
+                    "production_helper_environment_delta": ["SBX_NONET_ACTIVE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PAGER", "GIT_PAGER"],
+                    "claim": "ordinary and restricted observations are a bounded control, not definitive DLL-causality proof; helper-added sandbox environment differences remain intentional"
+                },
                 "launch_path": "run_windows_sandbox_capture -> prepare_legacy_session_security -> CreateProcessAsUserW",
             });
             if let Some(path) = std::env::var_os("W14079_DIAGNOSTIC_OUTPUT") {
