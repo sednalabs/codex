@@ -579,7 +579,7 @@ pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<Plain
 pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path: &str) -> String {
     match kind {
         SubAgentActivityKind::Started => format!("Started `{agent_path}`"),
-        SubAgentActivityKind::Interacted => format!("Interacted with `{agent_path}`"),
+        SubAgentActivityKind::Interacted => format!("Sent input to `{agent_path}`"),
         SubAgentActivityKind::Interrupted => format!("Interrupted `{agent_path}`"),
     }
 }
@@ -592,7 +592,7 @@ fn sub_agent_activity_title(
 ) -> Line<'static> {
     let (prefix, path) = match kind {
         SubAgentActivityKind::Started => ("Started ", agent_path),
-        SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
+        SubAgentActivityKind::Interacted => ("Sent input to ", agent_path),
         SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
     };
     let mut spans = vec![

@@ -444,6 +444,14 @@ impl SubAgentActivityItem {
             agent_path: self.agent_path.clone(),
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
+            interaction_kind: self.interaction_kind.map(|kind| match kind {
+                crate::items::SubAgentInteractionKind::SendMessage => {
+                    crate::protocol::SubAgentInteractionKind::SendMessage
+                }
+                crate::items::SubAgentInteractionKind::FollowupTask => {
+                    crate::protocol::SubAgentInteractionKind::FollowupTask
+                }
+            }),
             kind: self.kind,
         })
     }

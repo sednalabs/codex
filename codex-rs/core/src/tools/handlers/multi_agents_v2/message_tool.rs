@@ -9,6 +9,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::items::SubAgentInteractionKind;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use futures::future::BoxFuture;
@@ -336,6 +337,10 @@ async fn handle_message_submission_inner(
             agent_path: receiver_agent_path.clone(),
             model: None,
             reasoning_effort: None,
+            interaction_kind: Some(match mode {
+                MessageDeliveryMode::QueueOnly => SubAgentInteractionKind::SendMessage,
+                MessageDeliveryMode::TriggerTurn => SubAgentInteractionKind::FollowupTask,
+            }),
             kind: SubAgentActivityKind::Interacted,
         },
     )
