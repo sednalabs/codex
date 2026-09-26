@@ -410,7 +410,6 @@ export type { SkillsListResponse } from "./SkillsListResponse";
 export type { SortDirection } from "./SortDirection";
 export type { SpendControlLimitSnapshot } from "./SpendControlLimitSnapshot";
 export type { SubAgentActivityKind } from "./SubAgentActivityKind";
-export type { SubAgentInteractionKind } from "./SubAgentInteractionKind";
 export type { SubagentMigration } from "./SubagentMigration";
 export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
 export type { TerminalWaitInfo } from "./TerminalWaitInfo";
