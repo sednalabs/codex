@@ -55,7 +55,7 @@ done
   echo "PKG_CONFIG_LIBDIR=$sdk/lib/pkgconfig"
   echo "PKG_CONFIG_PATH="
   if [[ "$target" == *-unknown-linux-gnu ]]; then
-    echo "OPENSSL_NO_PKG_CONFIG=1"
+    echo "OPENSSL_DIR=/usr"
   fi
   for key in \
     GLIB_2_0 GOBJECT_2_0 GIO_2_0 \
