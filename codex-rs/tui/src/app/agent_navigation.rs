@@ -932,12 +932,8 @@ mod tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
         assert!(state.upsert(
-            thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
         ));
 
         state.mark_running(thread_id);
@@ -945,7 +941,10 @@ mod tests {
         state.mark_running(thread_id);
 
         let entry = state.get(&thread_id).expect("thread remains retained");
-        assert!(!entry.is_running, "delayed activity must not revive a stopped row");
+        assert!(
+            !entry.is_running,
+            "delayed activity must not revive a stopped row"
+        );
     }
 
     #[test]
@@ -953,19 +952,18 @@ mod tests {
         let mut state = AgentNavigationState::default();
         let thread_id = ThreadId::new();
         assert!(state.upsert(
-            thread_id,
-            /*agent_nickname*/ None,
-            /*agent_role*/ None,
-            /*is_closed*/ false,
-            /*created_at*/ None,
-            /*updated_at*/ None,
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
         ));
 
         state.mark_stopped(thread_id);
         state.mark_turn_started(thread_id);
 
         let entry = state.get(&thread_id).expect("thread remains retained");
-        assert!(entry.is_running, "an explicit new turn must reopen the row");
+        assert!(
+            entry.is_running,
+            "an explicit new turn must reopen the row"
+        );
     }
 
     #[test]
