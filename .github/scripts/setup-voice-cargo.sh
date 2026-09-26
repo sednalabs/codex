@@ -11,7 +11,7 @@ case "$target" in
 esac
 
 ./.github/scripts/run-bazel-ci.sh \
-  --remote-download-toplevel \
+  --remote-download-all \
   --print-failed-action-summary \
   -- build -c opt --output_groups=default,sdk -- \
   //third_party/voice:native_sdk \

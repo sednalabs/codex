@@ -5,6 +5,7 @@ set -euo pipefail
 print_failed_bazel_test_logs=0
 print_failed_bazel_action_summary=0
 remote_download_toplevel=0
+remote_download_all=0
 windows_msvc_host_platform=0
 windows_cross_compile=0
 
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --remote-download-toplevel)
       remote_download_toplevel=1
+      shift
+      ;;
+    --remote-download-all)
+      remote_download_all=1
       shift
       ;;
     --windows-msvc-host-platform)
@@ -288,6 +293,10 @@ if [[ $remote_download_toplevel -eq 1 ]]; then
   # Override the CI config's remote_download_minimal setting when callers need
   # the built artifact to exist on disk after the command completes.
   post_config_bazel_args+=(--remote_download_toplevel)
+fi
+
+if [[ $remote_download_all -eq 1 ]]; then
+  post_config_bazel_args+=(--remote_download_all)
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
