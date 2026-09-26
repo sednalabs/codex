@@ -168,6 +168,7 @@ async fn handle_spawn_agent(
             agent_path: new_agent_path.clone(),
             model: effective_model.clone(),
             reasoning_effort: effective_reasoning_effort.clone(),
+            interaction_kind: None,
             kind: SubAgentActivityKind::Started,
         },
     )

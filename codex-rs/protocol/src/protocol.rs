@@ -34,6 +34,7 @@ use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::dynamic_tools::DynamicToolCallRequest;
 use crate::dynamic_tools::DynamicToolResponse;
 use crate::dynamic_tools::DynamicToolSpec;
+pub use crate::items::SubAgentInteractionKind;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
@@ -4565,6 +4566,9 @@ pub struct SubAgentActivityEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub interaction_kind: Option<SubAgentInteractionKind>,
     pub kind: SubAgentActivityKind,
 }
 
