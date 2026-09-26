@@ -284,7 +284,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Block on exact target status or mailbox events. Native event waits are driven by runtime events, preserve the mailbox boundary, and report wake provenance; they do not poll."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -528,8 +528,12 @@ fn wait_output_schema_v2() -> Value {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
             }
+            ,"wake_cause": {"type": "string"}
+            ,"notification_origin": {"type": "string"}
+            ,"delivery_disposition": {"type": "string"}
+            ,"statuses": {"type": "object", "additionalProperties": agent_status_output_schema()}
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "timed_out", "wake_cause", "notification_origin", "delivery_disposition", "statuses"],
         "additionalProperties": false
     })
 }
@@ -875,13 +879,35 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some("Agent id or canonical task name.".to_string())),
+                Some("Exact agents to wait on. Required for status completion.".to_string()),
+            ),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Internal lease in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string(Some(
+                "Return when any or all exact targets reach a terminal status.".to_string(),
+            )),
+        ),
+        (
+            "native_event_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Keep waiting on native runtime events across internal lease renewals; never poll."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

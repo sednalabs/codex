@@ -1265,7 +1265,7 @@ impl App {
             )
         };
         if is_turn_started {
-            self.agent_navigation.mark_running(thread_id);
+            self.agent_navigation.mark_turn_started(thread_id);
         } else if is_thread_closed {
             self.mark_agent_picker_thread_closed(thread_id);
         } else if turn_stopped {

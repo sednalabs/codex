@@ -434,7 +434,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn wait_agent_tool_v2_exposes_exact_target_native_wait_contract() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
@@ -456,11 +456,11 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .properties
         .as_ref()
         .expect("wait_agent should use object params");
-    assert!(!properties.contains_key("targets"));
+    assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(properties.contains_key("return_when"));
+    assert!(properties.contains_key("native_event_wait"));
+    assert!(description.contains("exact target status or mailbox events"));
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -468,12 +468,11 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
-    assert_eq!(
-        output_schema.expect("wait output schema").to_value()["properties"]["message"]["description"],
-        json!(
-            "Brief wait summary without the agent's final content, including any timeout adjustment."
-        )
-    );
+    let output = output_schema.expect("wait output schema").to_value();
+    assert!(output["properties"]["wake_cause"].is_object());
+    assert!(output["properties"]["notification_origin"].is_object());
+    assert!(output["properties"]["delivery_disposition"].is_object());
+    assert!(output["properties"]["statuses"].is_object());
 }
 
 #[test]
