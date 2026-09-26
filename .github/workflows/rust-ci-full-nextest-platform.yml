@@ -92,6 +92,18 @@ jobs:
           target: ${{ inputs.target }}
           cache-scope: rust-ci-full-nextest-voice-cargo
 
+      - name: Configure trusted rusty_v8 artifacts for nextest archive
+        if: >-
+          ${{ inputs.target == 'aarch64-apple-darwin' ||
+              inputs.target == 'x86_64-apple-darwin' ||
+              inputs.target == 'aarch64-unknown-linux-gnu' ||
+              inputs.target == 'x86_64-unknown-linux-gnu' ||
+              inputs.target == 'aarch64-unknown-linux-musl' ||
+              inputs.target == 'x86_64-unknown-linux-musl' }}
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ inputs.target }}
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ inputs.target }}
