@@ -436,9 +436,10 @@ impl App {
                 description: Some(description),
                 selected_description: Some(selected_description),
                 is_current: self.active_thread_id == Some(thread_id),
-                hidden_when_unfiltered: !is_primary
-                    && self.active_thread_id != Some(thread_id)
-                    && !entry.is_running,
+                // The agent tree is the primary view for this picker. Keep every retained
+                // thread visible when the query is empty; closed/stale rows remain searchable
+                // and are intentionally not hidden until the user asks for a filter.
+                hidden_when_unfiltered: false,
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],

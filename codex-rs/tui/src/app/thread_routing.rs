@@ -1013,7 +1013,7 @@ impl App {
             )
         };
         if is_turn_started {
-            self.agent_navigation.mark_running(thread_id);
+            self.agent_navigation.mark_turn_started(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
         }
