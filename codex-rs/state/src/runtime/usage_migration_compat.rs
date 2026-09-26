@@ -122,6 +122,7 @@ mod tests {
     use crate::migrations::USAGE_MIGRATOR;
     use crate::migrations::runtime_usage_migrator;
     use crate::runtime::test_support::unique_temp_dir;
+    use codex_utils_absolute_path::test_support::PathExt;
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
     use std::collections::BTreeSet;
