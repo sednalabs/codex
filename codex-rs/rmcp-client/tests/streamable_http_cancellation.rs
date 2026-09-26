@@ -322,6 +322,7 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
     let (state, base_url, server) = spawn_server().await?;
     let client = Arc::new(create_modern_client(&base_url).await?);
     let task_client = client.clone();
+    let blocked_started = state.blocked_started.notified();
     let timed_out = tokio::spawn(async move {
         task_client
             .call_tool(
@@ -332,7 +333,7 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(5), blocked_started).await?;
     assert!(timed_out.await?.is_err());
     wait_for_cancellation(&state).await?;
     let requests = { state.requests.lock().await.clone() };
