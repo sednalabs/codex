@@ -302,6 +302,7 @@ impl Handler {
                         mailbox_snapshot(
                             session.as_ref(),
                             &call_id,
+                            &receiver_thread_ids,
                             target_set_relation(receiver_thread_ids.is_empty()),
                             WakeSource::SubscriptionLoss,
                         )
@@ -379,6 +380,7 @@ impl Handler {
         let mailbox = mailbox_snapshot(
             session.as_ref(),
             &call_id,
+            &receiver_thread_ids,
             target_set_relation(receiver_thread_ids.is_empty()),
             wake_source,
         )
@@ -577,6 +579,7 @@ struct MailboxSnapshot {
 async fn mailbox_snapshot(
     session: &Session,
     wait_id: &str,
+    receiver_thread_ids: &[ThreadId],
     target_set_relation: String,
     wake_source: WakeSource,
 ) -> MailboxSnapshot {
@@ -588,14 +591,30 @@ async fn mailbox_snapshot(
             .await,
     );
     entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
+    let target_agent_paths = receiver_thread_ids
+        .iter()
+        .filter_map(|thread_id| {
+            session
+                .services
+                .agent_control
+                .get_agent_metadata(*thread_id)
+                .and_then(|metadata| metadata.agent_path)
+        })
+        .collect::<Vec<_>>();
     let causal_entry = (wake_source == WakeSource::Mailbox)
         .then(|| {
-            entries
+            let actionable = entries
                 .iter()
-                .find(|(communication, _, _)| is_actionable_wait_communication(communication))
+                .map(|(communication, _, _)| communication)
+                .collect::<Vec<_>>();
+            causal_mailbox_index(
+                &actionable,
+                receiver_thread_ids.is_empty(),
+                &target_agent_paths,
+            )
+            .and_then(|index| entries.get(index).cloned())
         })
-        .flatten()
-        .cloned();
+        .flatten();
     let wake_cause = if wake_source == WakeSource::Mailbox {
         causal_entry
             .as_ref()
@@ -776,6 +795,40 @@ async fn mailbox_snapshot(
             provider_turn_started: None,
         },
     }
+}
+
+fn mailbox_sender_is_exact_target(sender: &AgentPath, target_agent_paths: &[AgentPath]) -> bool {
+    target_agent_paths.iter().any(|target| target == sender)
+}
+
+fn mailbox_entry_is_causal(
+    communication: &codex_protocol::protocol::InterAgentCommunication,
+    targetless_wait: bool,
+    target_agent_paths: &[AgentPath],
+) -> bool {
+    is_actionable_wait_communication(communication)
+        && (targetless_wait
+            || mailbox_sender_is_exact_target(&communication.author, target_agent_paths))
+}
+
+fn causal_mailbox_index(
+    entries: &[&codex_protocol::protocol::InterAgentCommunication],
+    targetless_wait: bool,
+    target_agent_paths: &[AgentPath],
+) -> Option<usize> {
+    let actionable = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, communication)| is_actionable_wait_communication(communication))
+        .collect::<Vec<_>>();
+    if targetless_wait {
+        return actionable.first().map(|(index, _)| *index);
+    }
+    if actionable.len() != 1 {
+        return None;
+    }
+    let &(index, communication) = actionable.first()?;
+    mailbox_sender_is_exact_target(&communication.author, target_agent_paths).then_some(index)
 }
 
 fn target_set_relation(targetless: bool) -> String {
@@ -1456,6 +1509,109 @@ mod tests {
 
         assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&parent)).is_none());
         assert!(reverse_wait_error(Some(&reviewer), /*target_agent_path*/ None).is_none());
+    }
+
+    #[test]
+    fn exact_target_mailbox_causality_excludes_siblings_and_nested_descendants() {
+        let target = AgentPath::try_from("/root/reviewer").expect("target path");
+        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
+        let nested_descendant =
+            AgentPath::try_from("/root/reviewer/worker").expect("nested descendant path");
+        let targets = vec![target.clone()];
+
+        assert!(mailbox_sender_is_exact_target(&target, &targets));
+        assert!(!mailbox_sender_is_exact_target(&sibling, &targets));
+        assert!(!mailbox_sender_is_exact_target(
+            &nested_descendant,
+            &targets
+        ));
+    }
+
+    #[test]
+    fn mailbox_causality_distinguishes_target_wake_from_queued_progress() {
+        let target = AgentPath::try_from("/root/reviewer").expect("target path");
+        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
+        let targets = vec![target.clone()];
+        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
+            target,
+            AgentPath::root(),
+            Vec::new(),
+            "wake".to_string(),
+            /*trigger_turn*/ true,
+        );
+        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
+            sibling,
+            AgentPath::root(),
+            Vec::new(),
+            "sibling wake".to_string(),
+            /*trigger_turn*/ true,
+        );
+        let queued_progress = codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::try_from("/root/reviewer").expect("target path"),
+            AgentPath::root(),
+            Vec::new(),
+            "progress".to_string(),
+            /*trigger_turn*/ false,
+        );
+
+        assert!(mailbox_entry_is_causal(
+            &target_wake,
+            /*targetless_wait*/ false,
+            &targets
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &sibling_wake,
+            /*targetless_wait*/ false,
+            &targets
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &queued_progress,
+            /*targetless_wait*/ false,
+            &targets
+        ));
+    }
+
+    #[test]
+    fn mailbox_causality_is_conservative_when_outside_target_entries_are_present() {
+        let target = AgentPath::try_from("/root/reviewer").expect("target path");
+        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
+        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
+            target,
+            AgentPath::root(),
+            Vec::new(),
+            "target result".to_string(),
+            /*trigger_turn*/ false,
+        );
+        let target_wake = codex_protocol::protocol::InterAgentCommunication {
+            origin: Some(AgentCommunicationOrigin::Result),
+            ..target_wake
+        };
+        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
+            sibling,
+            AgentPath::root(),
+            Vec::new(),
+            "sibling result".to_string(),
+            /*trigger_turn*/ false,
+        );
+        let sibling_wake = codex_protocol::protocol::InterAgentCommunication {
+            origin: Some(AgentCommunicationOrigin::Result),
+            ..sibling_wake
+        };
+        let targets = vec![AgentPath::try_from("/root/reviewer").expect("target path")];
+        let entries = vec![&target_wake, &sibling_wake];
+
+        assert_eq!(
+            causal_mailbox_index(&entries, /*targetless_wait*/ false, &targets),
+            None
+        );
+        assert_eq!(
+            causal_mailbox_index(&[&target_wake], /*targetless_wait*/ false, &targets),
+            Some(0)
+        );
+        assert_eq!(
+            causal_mailbox_index(&[&sibling_wake], /*targetless_wait*/ false, &targets),
+            None
+        );
     }
 
     #[test]
