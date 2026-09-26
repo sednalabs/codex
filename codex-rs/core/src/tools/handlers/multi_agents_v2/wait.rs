@@ -797,10 +797,7 @@ async fn mailbox_snapshot(
     }
 }
 
-fn mailbox_sender_is_exact_target(
-    sender: &AgentPath,
-    target_agent_paths: &[AgentPath],
-) -> bool {
+fn mailbox_sender_is_exact_target(sender: &AgentPath, target_agent_paths: &[AgentPath]) -> bool {
     target_agent_paths.iter().any(|target| target == sender)
 }
 
@@ -1524,7 +1521,10 @@ mod tests {
 
         assert!(mailbox_sender_is_exact_target(&target, &targets));
         assert!(!mailbox_sender_is_exact_target(&sibling, &targets));
-        assert!(!mailbox_sender_is_exact_target(&nested_descendant, &targets));
+        assert!(!mailbox_sender_is_exact_target(
+            &nested_descendant,
+            &targets
+        ));
     }
 
     #[test]
