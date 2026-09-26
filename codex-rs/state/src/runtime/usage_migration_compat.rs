@@ -185,6 +185,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_migrator_has_current_standard_credit_rates() {
+        let pool = test_pool().await;
+        runtime_usage_migrator()
+            .run(&pool)
+            .await
+            .expect("usage migrations should apply");
+
+        let rates = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT model, rate_card_kind,
+                    printf('%.3f', credits_per_1m_uncached_input),
+                    printf('%.3f', credits_per_1m_cached_input),
+                    printf('%.3f', credits_per_1m_output)
+             FROM usage_codex_credit_rates
+             WHERE service_tier = 'default'
+               AND speed_mode = 'standard'
+               AND effective_to IS NULL
+             ORDER BY model, rate_card_kind",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("current standard credit rates should be readable")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let expected = [
+            ("gpt-5.2", "codex_token_based", "43.750", "4.375", "350.000"),
+            (
+                "gpt-5.3-codex",
+                "codex_token_based",
+                "43.750",
+                "4.375",
+                "350.000",
+            ),
+            ("gpt-5.4", "codex_token_based", "62.500", "6.250", "375.000"),
+            (
+                "gpt-5.4-mini",
+                "codex_token_based",
+                "18.750",
+                "1.875",
+                "113.000",
+            ),
+            (
+                "gpt-5.5",
+                "codex_token_based",
+                "125.000",
+                "12.500",
+                "750.000",
+            ),
+            (
+                "gpt-5.6",
+                "codex_token_based",
+                "100.000",
+                "10.000",
+                "500.000",
+            ),
+            (
+                "gpt-5.6-cyber",
+                "codex_token_based",
+                "312.500",
+                "31.250",
+                "1875.000",
+            ),
+            (
+                "gpt-5.6-luna",
+                "codex_token_based",
+                "5.000",
+                "0.500",
+                "30.000",
+            ),
+            (
+                "gpt-5.6-sol",
+                "codex_token_based",
+                "100.000",
+                "10.000",
+                "500.000",
+            ),
+            (
+                "gpt-5.6-terra",
+                "codex_token_based",
+                "50.000",
+                "5.000",
+                "300.000",
+            ),
+            (
+                "gpt-6-astra",
+                "codex_token_based",
+                "250.000",
+                "25.000",
+                "1250.000",
+            ),
+            (
+                "gpt-6-luna",
+                "codex_token_based",
+                "2.500",
+                "0.250",
+                "12.500",
+            ),
+            (
+                "gpt-6-sol",
+                "codex_token_based",
+                "50.000",
+                "5.000",
+                "250.000",
+            ),
+            (
+                "gpt-daybreak-blue",
+                "codex_token_based",
+                "100.000",
+                "10.000",
+                "500.000",
+            ),
+            (
+                "gpt-daybreak-blue-latest",
+                "codex_token_based",
+                "100.000",
+                "10.000",
+                "500.000",
+            ),
+            (
+                "gpt-daybreak-red",
+                "codex_token_based",
+                "312.500",
+                "31.250",
+                "1875.000",
+            ),
+            (
+                "gpt-daybreak-red-latest",
+                "codex_token_based",
+                "312.500",
+                "31.250",
+                "1875.000",
+            ),
+            (
+                "gpt-image-2",
+                "codex_token_based_image",
+                "200.000",
+                "50.000",
+                "750.000",
+            ),
+            (
+                "gpt-image-2",
+                "codex_token_based_text",
+                "125.000",
+                "31.250",
+                "250.000",
+            ),
+        ]
+        .into_iter()
+        .map(|(model, kind, input, cached, output)| {
+            (
+                model.to_string(),
+                kind.to_string(),
+                input.to_string(),
+                cached.to_string(),
+                output.to_string(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+        assert_eq!(rates, expected);
+    }
+
+    #[tokio::test]
     async fn preserves_known_old_main_checksums_in_memory() {
         let pool = test_pool().await;
         sqlx::query(
