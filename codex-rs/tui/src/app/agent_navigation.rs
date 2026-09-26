@@ -933,8 +933,8 @@ mod tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
         assert!(state.upsert(
             thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             /*is_closed*/ false,
             /*created_at*/ None,
             /*updated_at*/ None,
@@ -954,8 +954,8 @@ mod tests {
         let thread_id = ThreadId::new();
         assert!(state.upsert(
             thread_id,
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
             /*is_closed*/ false,
             /*created_at*/ None,
             /*updated_at*/ None,
