@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 
 pub(super) const SUBAGENT_BACKFILL_PAGE_SIZE: u32 = 100;
 const SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT: usize = 100;
+pub(super) const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 pub(super) struct LoadedSubagentBackfillProgress {
     primary_thread_id: ThreadId,
@@ -251,8 +252,22 @@ fn agent_picker_subtitle(
     base
 }
 
+fn selected_picker_index(
+    selected_thread_id: Option<ThreadId>,
+    displayed_thread_ids: &[ThreadId],
+    active_thread_id: Option<ThreadId>,
+) -> Option<usize> {
+    selected_thread_id
+        .and_then(|thread_id| displayed_thread_ids.iter().position(|id| *id == thread_id))
+        .or_else(|| {
+            active_thread_id
+                .and_then(|thread_id| displayed_thread_ids.iter().position(|id| *id == thread_id))
+        })
+}
+
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+        let replace_active_picker = self.chat_widget.active_view_id() == Some(AGENT_PICKER_VIEW_ID);
         // A previously completed, truncated backfill already refreshed every retained row during
         // its bounded recovery. Reopening the picker must not issue an identical burst of reads;
         // a subsequent lifecycle event will invalidate this cache when new lineage is observed.
@@ -284,6 +299,10 @@ impl App {
                     .await;
             }
         }
+        let previous_selected_thread_id = self
+            .chat_widget
+            .selection_view_selected_index(AGENT_PICKER_VIEW_ID)
+            .and_then(|idx| self.agent_picker_visible_thread_ids.get(idx).copied());
         let (picker_thread_ids, picker_has_more) = self.agent_navigation.next_picker_thread_ids(
             self.primary_thread_id,
             self.active_thread_id,
@@ -395,15 +414,16 @@ impl App {
             return;
         }
 
-        let mut initial_selected_idx = None;
+        let previous_query = self
+            .chat_widget
+            .selection_view_search_query(AGENT_PICKER_VIEW_ID);
         let mut items = Vec::new();
-        for (idx, thread_id) in picker_thread_ids.into_iter().enumerate() {
+        let mut displayed_thread_ids = Vec::new();
+        for thread_id in picker_thread_ids {
             let Some(entry) = self.agent_navigation.get(&thread_id) else {
                 continue;
             };
-            if self.active_thread_id == Some(thread_id) {
-                initial_selected_idx = Some(idx);
-            }
+            displayed_thread_ids.push(thread_id);
             let id = thread_id;
             let is_primary = self.primary_thread_id == Some(thread_id);
             let name = entry
@@ -436,9 +456,10 @@ impl App {
                 description: Some(description),
                 selected_description: Some(selected_description),
                 is_current: self.active_thread_id == Some(thread_id),
-                hidden_when_unfiltered: !is_primary
-                    && self.active_thread_id != Some(thread_id)
-                    && !entry.is_running,
+                // The agent tree is the primary view for this picker. Keep every retained
+                // thread visible when the query is empty; closed/stale rows remain searchable
+                // and are intentionally not hidden until the user asks for a filter.
+                hidden_when_unfiltered: false,
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],
@@ -447,8 +468,15 @@ impl App {
                 ..Default::default()
             });
         }
+        let initial_selected_idx = selected_picker_index(
+            previous_selected_thread_id,
+            &displayed_thread_ids,
+            self.active_thread_id,
+        );
+        self.agent_picker_visible_thread_ids = displayed_thread_ids;
 
-        self.chat_widget.show_selection_view(SelectionViewParams {
+        let params = SelectionViewParams {
+            view_id: Some(AGENT_PICKER_VIEW_ID),
             title: Some("Subagents".to_string()),
             subtitle: Some(agent_picker_subtitle(
                 lineage_truncated,
@@ -458,10 +486,17 @@ impl App {
             footer_hint: Some(standard_popup_hint_line()),
             is_searchable: true,
             search_placeholder: Some("Search agents or type 'closed'".to_string()),
+            initial_search_query: previous_query,
             items,
             initial_selected_idx,
             ..Default::default()
-        });
+        };
+        if replace_active_picker {
+            self.chat_widget
+                .replace_selection_view_if_active(AGENT_PICKER_VIEW_ID, params);
+        } else {
+            self.chat_widget.show_selection_view(params);
+        }
     }
 
     async fn agent_picker_thread_usage(
@@ -632,6 +667,7 @@ impl App {
     pub(super) fn mark_agent_picker_thread_closed(&mut self, thread_id: ThreadId) {
         self.agent_navigation.mark_closed(thread_id);
         self.sync_active_agent_label();
+        self.request_agent_picker_refresh_if_open();
     }
 
     pub(super) async fn refresh_agent_picker_thread_liveness(
@@ -1965,6 +2001,27 @@ impl App {
         }
 
         Ok(AppRunControl::Continue)
+    }
+}
+
+#[cfg(test)]
+mod picker_selection_tests {
+    use super::selected_picker_index;
+    use codex_protocol::ThreadId;
+
+    #[test]
+    fn selection_remaps_against_final_displayed_rows() {
+        let removed = ThreadId::new();
+        let selected = ThreadId::new();
+        let active = ThreadId::new();
+        assert_eq!(
+            selected_picker_index(Some(selected), &[selected, active], None),
+            Some(0)
+        );
+        assert_eq!(
+            selected_picker_index(Some(removed), &[selected, active], Some(active)),
+            Some(1)
+        );
     }
 }
 

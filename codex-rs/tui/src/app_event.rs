@@ -208,6 +208,8 @@ pub(crate) enum KeymapEditIntent {
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Rebuild the open agent picker after coalesced lifecycle updates.
+    RefreshAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 

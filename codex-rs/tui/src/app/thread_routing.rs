@@ -1013,9 +1013,10 @@ impl App {
             )
         };
         if is_turn_started {
-            self.agent_navigation.mark_running(thread_id);
+            self.agent_navigation.mark_turn_started(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
+            self.request_agent_picker_refresh_if_open();
         }
 
         if let Some(notification) = notification {
@@ -1109,6 +1110,17 @@ impl App {
         }
         self.sync_agent_picker_identity(thread_id);
         self.sync_active_agent_label();
+        self.request_agent_picker_refresh_if_open();
+    }
+
+    pub(super) fn request_agent_picker_refresh_if_open(&mut self) {
+        if self.chat_widget.active_view_id()
+            == Some(crate::app::session_lifecycle::AGENT_PICKER_VIEW_ID)
+            && !self.pending_agent_picker_refresh
+        {
+            self.pending_agent_picker_refresh = true;
+            let _ = self.app_event_tx.send(AppEvent::RefreshAgentPicker);
+        }
     }
 
     pub(super) async fn infer_session_for_thread_notification(
