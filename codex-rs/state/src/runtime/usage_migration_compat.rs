@@ -251,7 +251,8 @@ mod tests {
             .execute(&pool)
             .await
             .expect("compatibility migration should be made pending");
-        raw_sql(Box::leak(old_main_views.into_boxed_str()))
+        let old_main_views: &'static str = Box::leak(old_main_views.into_boxed_str());
+        raw_sql(old_main_views)
             .execute(&pool)
             .await
             .expect("old-main views should be installed");
