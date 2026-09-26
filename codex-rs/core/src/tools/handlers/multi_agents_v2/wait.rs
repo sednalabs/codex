@@ -13,6 +13,7 @@ use futures::stream::FuturesUnordered;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -74,7 +75,8 @@ impl Handler {
         for target in &args.targets {
             target_ids.push(resolve_agent_target(&session, &turn, target).await?);
         }
-        if target_ids.windows(2).any(|ids| ids[0] == ids[1]) {
+        let mut unique_targets = HashSet::with_capacity(target_ids.len());
+        if target_ids.iter().any(|id| !unique_targets.insert(*id)) {
             return Err(FunctionCallError::RespondToModel(
                 "targets must resolve to unique agents".to_string(),
             ));
@@ -261,7 +263,7 @@ impl WaitReason {
         match self {
             Self::TargetTerminal => "target_terminal",
             Self::Mailbox => "target_actionable_message",
-            Self::TerminalCompletion => "child_terminal_transition",
+            Self::TerminalCompletion => "terminal_completion",
             Self::Steer => "operator_message",
             Self::Timeout => "timeout_lease_expiry",
             Self::SubscriptionLoss => "runtime_system_event",
@@ -270,7 +272,7 @@ impl WaitReason {
     fn notification_origin(self) -> &'static str {
         match self {
             Self::Mailbox => "agent_mailbox",
-            Self::TerminalCompletion => "agent_status",
+            Self::TerminalCompletion => "unified_exec",
             Self::Steer => "operator",
             Self::TargetTerminal => "agent_status",
             Self::Timeout => "runtime",
