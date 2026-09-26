@@ -31,6 +31,7 @@ use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
+use rmcp::model::RequestId;
 use rmcp::model::ResourceContents;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
@@ -261,6 +262,8 @@ async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_clien
 struct ModernCancellationServer {
     started: Arc<Notify>,
     cancelled: Arc<Notify>,
+    invocations: Arc<Mutex<Vec<RequestId>>>,
+    cancellation_ids: Arc<Mutex<Vec<RequestId>>>,
 }
 
 impl ServerHandler for ModernCancellationServer {
@@ -279,9 +282,11 @@ impl ServerHandler for ModernCancellationServer {
         _request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        self.invocations.lock().await.push(context.id.clone());
         self.started.notify_waiters();
         tokio::select! {
             _ = context.ct.cancelled() => {
+                self.cancellation_ids.lock().await.push(context.id.clone());
                 self.cancelled.notify_waiters();
                 Ok(rmcp::model::CallToolResult::success(vec![ContentBlock::text("cancelled")]).into())
             }
@@ -305,17 +310,28 @@ impl ServerHandler for ModernCancellationServer {
     }
 }
 
+#[derive(Clone)]
+struct ModernCancellationState {
+    started: Arc<Notify>,
+    cancelled: Arc<Notify>,
+    invocations: Arc<Mutex<Vec<RequestId>>>,
+    cancellation_ids: Arc<Mutex<Vec<RequestId>>>,
+}
+
 async fn spawn_modern_server() -> anyhow::Result<(
-    Arc<Notify>,
-    Arc<Notify>,
+    ModernCancellationState,
     String,
     tokio::task::JoinHandle<()>,
 )> {
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    let cancellation_ids = Arc::new(Mutex::new(Vec::new()));
     let handler = ModernCancellationServer {
         started: started.clone(),
         cancelled: cancelled.clone(),
+        invocations: invocations.clone(),
+        cancellation_ids: cancellation_ids.clone(),
     };
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
@@ -331,7 +347,16 @@ async fn spawn_modern_server() -> anyhow::Result<(
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    Ok((started, cancelled, format!("http://{address}"), server))
+    Ok((
+        ModernCancellationState {
+            started,
+            cancelled,
+            invocations,
+            cancellation_ids,
+        },
+        format!("http://{address}"),
+        server,
+    ))
 }
 
 #[tokio::test]
@@ -420,7 +445,7 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
 
 #[tokio::test]
 async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<()> {
-    let (started, cancelled, base_url, server) = spawn_modern_server().await?;
+    let (state, base_url, server) = spawn_modern_server().await?;
     let client = Arc::new(create_modern_client(&base_url).await?);
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
@@ -433,9 +458,16 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), started.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(5), state.started.notified()).await?;
     assert!(timed_out.await?.is_err());
-    tokio::time::timeout(Duration::from_secs(10), cancelled.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(10), state.cancelled.notified()).await?;
+    let invocations = state.invocations.lock().await.clone();
+    let cancellation_ids = state.cancellation_ids.lock().await.clone();
+    assert_eq!(invocations.len(), 1, "timed-out call must not be replayed");
+    assert_eq!(
+        cancellation_ids, invocations,
+        "cancellation must target the same request"
+    );
     let read = client
         .read_resource(
             ReadResourceRequestParams::new("memo://follow-on".to_string()),
