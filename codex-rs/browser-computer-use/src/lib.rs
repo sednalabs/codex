@@ -151,7 +151,7 @@ pub async fn handle_browser_computer_use_for_codex_home(
 fn default_codex_home() -> Option<PathBuf> {
     codex_utils_home_dir::find_codex_home()
         .ok()
-        .map(codex_utils_home_dir::AbsolutePathBuf::into_path_buf)
+        .map(Into::into)
 }
 
 async fn handle_with_provider(
