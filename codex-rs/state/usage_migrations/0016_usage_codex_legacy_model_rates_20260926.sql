@@ -8,7 +8,11 @@ WHERE rate_id IN (
     'openai-gpt-5.6-luna-standard-20260402',
     'openai-gpt-5.6-terra-standard-20260402',
     'openai-gpt-5.6-luna-fast-20260727',
-    'openai-gpt-5.6-terra-fast-20260727'
+    'openai-gpt-5.6-terra-fast-20260727',
+    'openai-gpt-5.6-luna-standard-20260730',
+    'openai-gpt-5.6-terra-standard-20260730',
+    'openai-gpt-5.6-luna-fast-20260730',
+    'openai-gpt-5.6-terra-fast-20260730'
 )
   AND effective_to IS NULL;
 
