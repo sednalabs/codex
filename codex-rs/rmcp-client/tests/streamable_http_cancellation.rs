@@ -20,9 +20,10 @@ use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::McpProtocolMode;
 use futures::FutureExt;
-use rmcp::model::ClientCapabilities;
-use rmcp::model::CallToolResponse;
+use rmcp::ServerHandler;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResponse;
+use rmcp::model::ClientCapabilities;
 use rmcp::model::ContentBlock;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::FormElicitationCapability;
@@ -37,7 +38,6 @@ use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
-use rmcp::ServerHandler;
 use rmcp::transport::streamable_http_server::StreamableHttpServerConfig;
 use rmcp::transport::streamable_http_server::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -187,10 +187,9 @@ fn json_response(
     } else {
         "application/json"
     };
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static(content_type),
-    );
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
     if include_session {
         response
             .headers_mut()
@@ -301,12 +300,15 @@ impl ServerHandler for ModernCancellationServer {
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
-        Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
-            uri,
-            mime_type: Some("text/plain".to_string()),
-            text: "follow-on read".to_string(),
-            meta: None,
-        }]).into())
+        Ok(
+            ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                uri,
+                mime_type: Some("text/plain".to_string()),
+                text: "follow-on read".to_string(),
+                meta: None,
+            }])
+            .into(),
+        )
     }
 }
 
@@ -318,11 +320,8 @@ struct ModernCancellationState {
     cancellation_ids: Arc<Mutex<Vec<RequestId>>>,
 }
 
-async fn spawn_modern_server() -> anyhow::Result<(
-    ModernCancellationState,
-    String,
-    tokio::task::JoinHandle<()>,
-)> {
+async fn spawn_modern_server()
+-> anyhow::Result<(ModernCancellationState, String, tokio::task::JoinHandle<()>)> {
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
     let invocations = Arc::new(Mutex::new(Vec::new()));
