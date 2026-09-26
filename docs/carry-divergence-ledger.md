@@ -2,7 +2,7 @@
 
 > `status: current` · `authority: evidence` · `candidate: external exact-delivery receipt`
 
-The historical source-composition receipt is `77968332f63d31490d71ce462a868a7e224b75f1`
+The preserved historical source-composition receipt is `77968332f63d31490d71ce462a868a7e224b75f1`
 with tree `867e02cec96c67e5afaf363f965204ab28c9cfb2`; the final candidate is
 bound only by the current Ops handoff and hosted proof so this document never
 self-references a stale commit hash.
@@ -84,4 +84,4 @@ and an accepted Ops handoff to root. A source commit, branch, PR, workflow
 dispatch, partial green run, or review-in-progress is not terminal evidence.
 
 Windows material remains hosted-proof work only; this ledger makes no
-provisional P5 Windows acceptance claim.
+provisional P7 Windows acceptance claim.

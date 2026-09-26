@@ -12,7 +12,7 @@ proof and semantic review remain pending on this exact product head.
 | P6 tree | `6be24ec81e116584c248c937302e0dacb0949c94` |
 | Frozen upstream | `openai/codex` at `392f56a611c412b9b2eb1d9d4e59a3b42bee483a` |
 | Frozen upstream tree | `ac81df5b0332908409b60a0addc7e967eed868ea` |
-| Historical source composition SHA/tree | `77968332f63d31490d71ce462a868a7e224b75f1` / `867e02cec96c67e5afaf363f965204ab28c9cfb2` |
+| Preserved historical source composition SHA/tree | `77968332f63d31490d71ce462a868a7e224b75f1` / `867e02cec96c67e5afaf363f965204ab28c9cfb2` |
 | Final candidate SHA/tree | `external exact-delivery receipt; rehydrate before proof or landing` |
 | Candidate ancestry | `must remain rooted at frozen upstream; old origin/main is unrelated` |
 | Live origin/main | `c338b65e0a037eaa31e370d287805d757469a876` |
@@ -34,5 +34,5 @@ P7 product paths are limited to `.github/**`, `justfile`, validation
 configuration (`validation-lanes.json` and `test_ci_planners.py`), permitted Cargo/Bazel locks, and the three divergence/status
 evidence families named in w14079. PR #854, foreign dirty paths, proof
 overlays, and old origin/main are preserved with explicit track/owner
-dispositions. This status page does not claim provisional P5 Windows
+dispositions. This status page does not claim provisional P7 Windows
 acceptance.

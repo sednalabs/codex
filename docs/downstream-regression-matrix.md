@@ -28,4 +28,4 @@ the exact final product SHA and keep any proof overlay identity separate.
 ## Windows note
 
 Windows lanes remain required hosted evidence where they exercise affected
-contracts. This document does not claim provisional P5 Windows acceptance.
+contracts. This document does not claim provisional P7 Windows acceptance.
