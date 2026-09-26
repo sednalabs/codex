@@ -1243,6 +1243,79 @@ fn test_model_info() -> ModelInfo {
     .expect("deserialize test model info")
 }
 
+#[test]
+fn bundled_gpt6_models_build_responses_lite_requests() {
+    let client = test_model_client(SessionSource::Cli);
+    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("test provider should resolve");
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "synthetic request".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "synthetic instructions".to_string(),
+        },
+        parallel_tool_calls: true,
+        ..Default::default()
+    };
+
+    for slug in ["gpt-6-sol", "gpt-6-luna"] {
+        let model_info = codex_models_manager::bundled_models_response()
+            .expect("bundled model catalog should parse")
+            .models
+            .into_iter()
+            .find(|model| model.slug == slug)
+            .expect("GPT-6 model should be present in the bundled catalog");
+        assert!(model_info.use_responses_lite);
+
+        let request = client
+            .build_responses_request(
+                &provider,
+                &prompt,
+                &model_info,
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &responses_metadata,
+            )
+            .expect("synthetic request should build");
+        let body = serde_json::to_value(&request).expect("request should serialize");
+
+        assert_eq!(body["model"], slug);
+        assert_eq!(body["instructions"], "");
+        assert!(body["tools"].is_null());
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["text"]["verbosity"], "low");
+        assert!(matches!(
+            request.input.first(),
+            Some(ResponseItem::AdditionalTools { .. })
+        ));
+    }
+
+    let mut headers = http::HeaderMap::new();
+    super::add_responses_lite_header(&mut headers, true);
+    assert_eq!(
+        headers
+            .get(super::X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+}
+
 fn test_session_telemetry() -> SessionTelemetry {
     SessionTelemetry::new(
         ThreadId::new(),
