@@ -169,4 +169,8 @@ model?: string,
 /**
  * Effective reasoning effort selected for the affected child, when known.
  */
-reasoningEffort?: ReasoningEffort, interactionKind?: SubAgentInteractionKind, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };
+reasoningEffort?: ReasoningEffort,
+/**
+ * Concrete mailbox operation represented by an interaction.
+ */
+interactionKind?: SubAgentInteractionKind, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };
