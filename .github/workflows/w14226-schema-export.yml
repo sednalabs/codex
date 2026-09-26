@@ -1,0 +1,24 @@
+name: w14226 schema export (temporary)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        required: true
+        type: string
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Generate app-server schema fixtures
+        run: just write-app-server-schema
+      - name: Upload generated schema fixtures
+        uses: actions/upload-artifact@v4
+        with:
+          name: w14226-generated-schema-fixtures
+          path: codex-rs/app-server-protocol/schema
