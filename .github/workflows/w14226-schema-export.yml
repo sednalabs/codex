@@ -1,6 +1,9 @@
 name: w14226 schema export (temporary)
 
 on:
+  push:
+    branches:
+      - repair/w14226-agent-action-identity-hosted
   workflow_dispatch:
     inputs:
       ref:
