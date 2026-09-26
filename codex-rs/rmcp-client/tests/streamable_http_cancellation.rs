@@ -189,7 +189,17 @@ async fn wait_for_cancellation(state: &ServerState) -> anyhow::Result<()> {
     if already_cancelled {
         return Ok(());
     }
-    tokio::time::timeout(Duration::from_secs(5), state.cancellation_notify.notified()).await?;
+    if tokio::time::timeout(Duration::from_secs(5), state.cancellation_notify.notified())
+        .await
+        .is_err()
+    {
+        let requests = state.requests.lock().await.clone();
+        let methods = requests
+            .iter()
+            .filter_map(|request| request.get("method").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        anyhow::bail!("cancellation notification not observed; methods={methods:?}");
+    }
     Ok(())
 }
 
