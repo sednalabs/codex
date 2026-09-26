@@ -10,6 +10,11 @@ case "$target" in
   *) echo "voice Cargo setup does not support target $target" >&2; exit 2 ;;
 esac
 
+bazel_config=ci-linux
+if [[ "${RUNNER_OS:-}" == macOS ]]; then
+  bazel_config=ci-macos
+fi
+
 ./.github/scripts/run-bazel-ci.sh \
   --remote-download-all \
   --print-failed-action-summary \
@@ -17,10 +22,10 @@ esac
   //third_party/voice:native_sdk \
   //third_party/voice:native_link
 
-sdk="$(bazel cquery --noimplicit_deps --output=files --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
-native_link="$(bazel cquery --noimplicit_deps --output=files //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
+sdk="$(bazel cquery --config="$bazel_config" --noimplicit_deps --output=files --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
+native_link="$(bazel cquery --config="$bazel_config" --noimplicit_deps --output=files //third_party/voice:native_link | grep '/native_link_' | head -n 1)"
 native_lib="$(dirname "$native_link")"
-pkg_config="$(bazel cquery --noimplicit_deps --output=files //third_party/voice:pkg_config | head -n 1)"
+pkg_config="$(bazel cquery --config="$bazel_config" --noimplicit_deps --output=files //third_party/voice:pkg_config | head -n 1)"
 
 [[ -n "$sdk" && -n "$native_link" && -n "$pkg_config" ]] || {
   echo "Bazel did not return all voice Cargo outputs" >&2
