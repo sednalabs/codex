@@ -59,6 +59,20 @@
   ],
   "optional_lanes": [
     {
+      "id": "codex.rmcp-client-transport",
+      "workflow": ".github/workflows/rust-ci.yml",
+      "script": ".github/scripts/validation-lanes/rmcp-client-transport.sh",
+      "hosted_only": true,
+      "status": "focused-carry-proof"
+    },
+    {
+      "id": "codex.rmcp-consumers-check",
+      "workflow": ".github/workflows/rust-ci.yml",
+      "script": ".github/scripts/validation-lanes/rmcp-consumers-check.sh",
+      "hosted_only": true,
+      "status": "focused-carry-proof"
+    },
+    {
       "id": "rust-ci-full",
       "workflow": ".github/workflows/rust-ci-full.yml",
       "status": "excluded-from-required-cutline",

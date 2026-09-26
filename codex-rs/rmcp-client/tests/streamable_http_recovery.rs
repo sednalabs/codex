@@ -229,7 +229,8 @@ async fn streamable_http_tools_list_retries_json_rpc_transient_status() -> anyho
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyhow::Result<()> {
+async fn streamable_http_404_tools_call_is_not_replayed_after_session_expiry() -> anyhow::Result<()>
+{
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
 
@@ -244,8 +245,11 @@ async fn streamable_http_404_session_expiry_recovers_and_retries_once() -> anyho
     )
     .await?;
 
-    let recovered = call_echo_tool(&client, "recovered").await?;
-    assert_eq!(recovered, expected_echo_result("recovered"));
+    let error = call_echo_tool(&client, "recovered").await.unwrap_err();
+    assert!(
+        error.to_string().contains("404") || error.to_string().contains("session expired"),
+        "expected uncertain session-expiry error, got: {error:#}"
+    );
 
     Ok(())
 }
@@ -259,8 +263,12 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     );
     let client = create_client_with_http_client(&base_url, Arc::new(http_client.clone())).await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
 
     arm_session_post_failure(
         &base_url,
@@ -271,9 +279,14 @@ async fn streamable_http_session_recovery_retries_initialize_failure() -> anyhow
     .await?;
     http_client.fail_next_initialize();
 
-    let recovered = call_echo_tool(&client, "recovered-after-retry").await?;
+    let recovered = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
     assert_eq!(http_client.initialize_attempts(), 3);
-    assert_eq!(recovered, expected_echo_result("recovered-after-retry"));
+    assert_eq!(recovered, expected);
 
     Ok(())
 }
@@ -401,8 +414,12 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     let (_server, base_url) = spawn_streamable_http_server().await?;
     let client = create_client(&base_url).await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
 
     arm_session_post_failure(
         &base_url,
@@ -412,15 +429,26 @@ async fn streamable_http_404_recovery_only_retries_once() -> anyhow::Result<()> 
     )
     .await?;
 
-    let error = call_echo_tool(&client, "double-404").await.unwrap_err();
+    let error = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
     let error_message = error.to_string();
     assert!(
         error_message.contains("404") || error_message.contains("session expired"),
         "expected session-expiry error, got: {error:#}"
     );
 
-    let recovered = call_echo_tool(&client, "after-double-404").await?;
-    assert_eq!(recovered, expected_echo_result("after-double-404"));
+    let recovered = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
+    assert_eq!(recovered, expected);
 
     Ok(())
 }
