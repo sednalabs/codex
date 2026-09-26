@@ -188,7 +188,7 @@ async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_clien
 async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() -> anyhow::Result<()>
 {
     let (state, base_url, server) = spawn_server().await?;
-    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
+    let client = Arc::new(create_client(&base_url).await?);
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
         task_client
@@ -238,7 +238,7 @@ async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() 
 #[tokio::test]
 async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Result<()> {
     let (state, base_url, server) = spawn_server().await?;
-    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
+    let client = Arc::new(create_client(&base_url).await?);
     let task_client = client.clone();
     let request = tokio::spawn(async move {
         task_client
@@ -308,7 +308,7 @@ async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<(
 async fn session_expiry_after_send_does_not_replay_a_mutation() -> anyhow::Result<()> {
     let (state, base_url, server) = spawn_server().await?;
     *state.error_after_send.lock().await = true;
-    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
+    let client = Arc::new(create_client(&base_url).await?);
     let result = client
         .call_tool(
             "error-after-send".to_string(),
