@@ -455,6 +455,7 @@ mod tests {
     use super::deny_root_capabilities_for_path;
     use super::legacy_session_capability_roots;
     use super::prepare_legacy_spawn_context;
+    use super::prepare_legacy_session_security;
     use super::prepare_spawn_context_common;
     use super::root_capability_sids;
     use crate::cap::load_or_create_cap_sids;
@@ -466,7 +467,11 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
     use std::path::Path;
+    use std::os::windows::fs::OpenOptionsExt;
     use tempfile::TempDir;
+    use windows_sys::Win32::Security::{ImpersonateLoggedOnUser, RevertToSelf};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+    use windows_sys::Win32::Foundation::CloseHandle;
 
     fn workspace_profile(
         network_policy: NetworkSandboxPolicy,
@@ -484,6 +489,60 @@ mod tests {
 
     fn workspace_roots_for(root: &Path) -> Vec<AbsolutePathBuf> {
         vec![AbsolutePathBuf::from_absolute_path(root).expect("absolute workspace root")]
+    }
+
+    /// Diagnostic only: exercise the exact legacy production token and record whether
+    /// the test executable is reachable with the loader's read/execute access mask.
+    /// This intentionally uses `prepare_legacy_session_security`; it does not construct
+    /// a surrogate token or add a capability SID.
+    #[test]
+    fn diagnostic_legacy_token_runtime_access() -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cwd = TempDir::new()?;
+        let security = prepare_legacy_session_security(
+            true,
+            codex_home.path(),
+            cwd.path(),
+            [cwd.path().to_path_buf()],
+        )?;
+        let executable = std::env::var_os("W14079_DIAGNOSTIC_EXECUTABLE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(std::env::current_exe()?);
+        let access = unsafe {
+            if ImpersonateLoggedOnUser(security.h_token) == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                let result = std::fs::OpenOptions::new()
+                    .read(true)
+                    .access_mode(FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
+                    .open(&executable)
+                    .map(|_| ())
+                    .map_err(|error| std::io::Error::new(error.kind(), error.to_string()));
+                RevertToSelf();
+                result
+            }
+        };
+        let report = serde_json::json!({
+            "schema": "w14079-production-token-loader-diagnostic-v1",
+            "executable": executable.display().to_string(),
+            "cwd": cwd.path().display().to_string(),
+            "uses_write_capabilities": true,
+            "write_root_sids": security.write_root_sids.iter().map(|root| serde_json::json!({
+                "root": root.root.display().to_string(),
+                "sid": root.sid_str,
+            })).collect::<Vec<_>>(),
+            "access": match access {
+                Ok(()) => serde_json::json!({"read_execute": true}),
+                Err(error) => serde_json::json!({"read_execute": false, "error": error.to_string()}),
+            },
+            "observer": "production prepare_legacy_session_security; no WRITE_RESTRICTED; no surrogate SID",
+        });
+        if let Some(path) = std::env::var_os("W14079_DIAGNOSTIC_OUTPUT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+        }
+        eprintln!("{report}");
+        unsafe { CloseHandle(security.h_token); }
+        Ok(())
     }
 
     fn should_apply_network_block(permission_profile: &PermissionProfile) -> bool {
