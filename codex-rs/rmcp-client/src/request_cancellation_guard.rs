@@ -8,8 +8,10 @@ use rmcp::service::RoleClient;
 ///
 /// rmcp deliberately keeps request cleanup separate from protocol cancellation.
 /// Keeping this guard around each response future ensures caller cancellation
-/// and operation timeouts release the server-side request without replaying the
-/// operation.
+/// and operation timeouts release the in-flight operation without replaying it.
+/// The transport maps this cancellation to the protocol: legacy requests send
+/// `notifications/cancelled`, while modern streamable HTTP requests close the
+/// originating response stream and let the server's request context cancel.
 pub(crate) struct RequestCancellationGuard {
     peer: Option<Peer<RoleClient>>,
     request_id: RequestId,
