@@ -1016,9 +1016,6 @@ mod windows_impl {
             let executable = std::env::var_os("W14079_DIAGNOSTIC_EXECUTABLE")
                 .map(std::path::PathBuf::from)
                 .unwrap_or(std::env::current_exe()?);
-            let ordinary = std::process::Command::new(&executable)
-                .arg("--version")
-                .output()?;
             let temporary = tempfile::tempdir()?;
             let cwd = temporary.path().join("workspace");
             let codex_home = temporary.path().join("codex-home");
@@ -1029,6 +1026,22 @@ mod windows_impl {
             if let Some(path) = std::env::var_os("PATH") {
                 env_map.insert("PATH".to_string(), path.to_string_lossy().into_owned());
             }
+            let mut ordinary_command = std::process::Command::new(&executable);
+            ordinary_command.arg("--version").current_dir(&cwd).env_clear();
+            for (key, value) in &env_map { ordinary_command.env(key, value); }
+            let mut ordinary_child = ordinary_command.spawn()?;
+            let started = std::time::Instant::now();
+            let ordinary = loop {
+                if let Some(status) = ordinary_child.try_wait()? {
+                    break serde_json::json!({"status": status.code(), "success": status.success(), "timed_out": false});
+                }
+                if started.elapsed() >= std::time::Duration::from_secs(120) {
+                    ordinary_child.kill()?;
+                    let _ = ordinary_child.wait()?;
+                    break serde_json::json!({"status": null, "success": false, "timed_out": true});
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
             let restricted = super::run_windows_sandbox_capture(
                 &PermissionProfile::workspace_write(),
                 &[workspace],
@@ -1045,7 +1058,7 @@ mod windows_impl {
                 "validation_source_sha": std::env::var("W14079_VALIDATION_SOURCE_SHA").ok(),
                 "validation_source_tree": std::env::var("W14079_VALIDATION_SOURCE_TREE").ok(),
                 "executable": executable.display().to_string(),
-                "ordinary": {"status": ordinary.status.code(), "success": ordinary.status.success()},
+                "ordinary": ordinary,
                 "restricted": match &restricted {
                     Ok(result) => serde_json::json!({"exit_code": result.exit_code, "timed_out": result.timed_out, "stderr": String::from_utf8_lossy(&result.stderr)}),
                     Err(error) => serde_json::json!({"error": error.to_string()}),
