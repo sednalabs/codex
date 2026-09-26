@@ -33,6 +33,7 @@ use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallS
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
+pub use codex_protocol::items::SubAgentInteractionKind;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
@@ -47,8 +48,6 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
-use codex_protocol::protocol::SubAgentInteractionKind as CoreEventSubAgentInteractionKind;
-use codex_protocol::items::SubAgentInteractionKind as CoreSubAgentInteractionKind;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_shell_command::parse_command::shlex_join;
@@ -1621,32 +1620,6 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export_to = "v2/")]
-pub enum SubAgentInteractionKind {
-    SendMessage,
-    FollowupTask,
-}
-
-impl From<CoreSubAgentInteractionKind> for SubAgentInteractionKind {
-    fn from(value: CoreSubAgentInteractionKind) -> Self {
-        match value {
-            CoreSubAgentInteractionKind::SendMessage => Self::SendMessage,
-            CoreSubAgentInteractionKind::FollowupTask => Self::FollowupTask,
-        }
-    }
-}
-
-impl From<CoreEventSubAgentInteractionKind> for SubAgentInteractionKind {
-    fn from(value: CoreEventSubAgentInteractionKind) -> Self {
-        match value {
-            CoreEventSubAgentInteractionKind::SendMessage => Self::SendMessage,
-            CoreEventSubAgentInteractionKind::FollowupTask => Self::FollowupTask,
-        }
-    }
 }
 
 impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {

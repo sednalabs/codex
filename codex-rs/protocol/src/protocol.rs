@@ -34,6 +34,7 @@ use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::dynamic_tools::DynamicToolCallRequest;
 use crate::dynamic_tools::DynamicToolResponse;
 use crate::dynamic_tools::DynamicToolSpec;
+pub use crate::items::SubAgentInteractionKind;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
@@ -4569,14 +4570,6 @@ pub struct SubAgentActivityEvent {
     #[ts(optional)]
     pub interaction_kind: Option<SubAgentInteractionKind>,
     pub kind: SubAgentActivityKind,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
-pub enum SubAgentInteractionKind {
-    SendMessage,
-    FollowupTask,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
