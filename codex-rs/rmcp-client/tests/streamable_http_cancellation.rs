@@ -30,7 +30,7 @@ use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::ReadResourceRequestParams;
-use rmcp::model::ReadResourceResponse;
+use rmcp::model::ReadResourceResult;
 use rmcp::model::ResourceContents;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
@@ -295,8 +295,8 @@ impl ServerHandler for ModernCancellationServer {
         &self,
         ReadResourceRequestParams { uri, .. }: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
-        Ok(ReadResourceResponse::new(vec![ResourceContents::TextResourceContents {
+    ) -> Result<ReadResourceResult, rmcp::ErrorData> {
+        Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
             uri,
             mime_type: Some("text/plain".to_string()),
             text: "follow-on read".to_string(),
