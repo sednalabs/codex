@@ -21,11 +21,35 @@ jobs:
       run:
         working-directory: codex-rs
     steps:
+      - name: Require exact manual candidate SHA
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          CANDIDATE_REF: ${{ inputs.ref }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          if [[ ! "${CANDIDATE_REF}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "workflow_dispatch ref must be a full 40-hex commit SHA" >&2
+            exit 1
+          fi
+
       - name: Check out exact candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref }}
           persist-credentials: false
+
+      - name: Verify exact candidate checkout
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          expected_sha="$(printf '%s' "${EXPECTED_SHA}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+            echo "exact candidate checkout mismatch: expected ${expected_sha}, got ${actual_sha}" >&2
+            exit 1
+          fi
 
       - uses: ./.github/actions/setup-ci
 
