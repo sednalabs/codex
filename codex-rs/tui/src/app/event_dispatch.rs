@@ -2190,6 +2190,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::RefreshAgentPicker => {
+                self.pending_agent_picker_refresh = false;
+                if self.chat_widget.active_view_id()
+                    == Some(crate::app::session_lifecycle::AGENT_PICKER_VIEW_ID)
+                {
+                    self.open_agent_picker(app_server).await;
+                }
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;

@@ -241,6 +241,14 @@ impl ChatWidget {
         self.bottom_pane.search_query_for_active_view(view_id)
     }
 
+    pub(crate) fn selection_view_selected_index(&self, view_id: &'static str) -> Option<usize> {
+        self.bottom_pane.selected_index_for_active_view(view_id)
+    }
+
+    pub(crate) fn active_view_id(&self) -> Option<&'static str> {
+        self.bottom_pane.active_view_id()
+    }
+
     pub(crate) fn can_launch_external_editor(&self) -> bool {
         self.bottom_pane.can_launch_external_editor()
     }

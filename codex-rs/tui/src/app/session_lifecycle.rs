@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 
 pub(super) const SUBAGENT_BACKFILL_PAGE_SIZE: u32 = 100;
 const SUBAGENT_BACKFILL_REFRESHES_PER_ATTEMPT: usize = 100;
+pub(super) const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 pub(super) struct LoadedSubagentBackfillProgress {
     primary_thread_id: ThreadId,
@@ -395,7 +396,13 @@ impl App {
             return;
         }
 
-        let mut initial_selected_idx = None;
+        let previous_query = self
+            .chat_widget
+            .selection_view_search_query(AGENT_PICKER_VIEW_ID);
+        let previous_selected_idx = self
+            .chat_widget
+            .selection_view_selected_index(AGENT_PICKER_VIEW_ID);
+        let mut initial_selected_idx = previous_selected_idx;
         let mut items = Vec::new();
         for (idx, thread_id) in picker_thread_ids.into_iter().enumerate() {
             let Some(entry) = self.agent_navigation.get(&thread_id) else {
@@ -450,6 +457,7 @@ impl App {
         }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
+            view_id: Some(AGENT_PICKER_VIEW_ID),
             title: Some("Subagents".to_string()),
             subtitle: Some(agent_picker_subtitle(
                 lineage_truncated,
@@ -459,6 +467,7 @@ impl App {
             footer_hint: Some(standard_popup_hint_line()),
             is_searchable: true,
             search_placeholder: Some("Search agents or type 'closed'".to_string()),
+            initial_search_query: previous_query,
             items,
             initial_selected_idx,
             ..Default::default()

@@ -1496,7 +1496,6 @@ impl BottomPane {
         !self.view_stack.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn active_view_id(&self) -> Option<&'static str> {
         self.view_stack.last().and_then(|view| view.view_id())
     }
