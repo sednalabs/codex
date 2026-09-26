@@ -9,8 +9,6 @@ use std::time::UNIX_EPOCH;
 
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ClientResponsePayload;
-use codex_app_server_protocol::ComputerUseCallParams;
-use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result;
@@ -32,7 +30,6 @@ use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
 
-use crate::computer_use::ComputerUseRouter;
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
 pub(crate) use codex_app_server_transport::ConnectionId;
@@ -237,15 +234,6 @@ impl ThreadScopedOutgoingMessageSender {
         T: Into<ClientResponsePayload>,
     {
         self.outgoing.send_response(request_id, response).await;
-    }
-
-    /// Dispatch a typed computer-use call through the injected provider seam.
-    pub(crate) async fn dispatch_computer_use(
-        &self,
-        router: &ComputerUseRouter,
-        request: ComputerUseCallParams,
-    ) -> ComputerUseCallResponse {
-        router.dispatch(request).await
     }
 }
 
