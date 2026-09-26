@@ -10,11 +10,13 @@ voice_modules=(
   gstreamer-1.0 gstreamer-base-1.0 gstreamer-app-1.0
   gstreamer-audio-1.0 gstreamer-tag-1.0
 )
-is_voice_module() {
-  local module="$1"
+is_voice_query() {
+  local query="$1"
   local candidate
   for candidate in "${voice_modules[@]}"; do
-    [[ "$module" == "$candidate" ]] && return 0
+    # pkg-config-rust passes version requirements as one module argument,
+    # for example `glib-2.0 >= 2.56`.
+    [[ "$query" == "$candidate" || "$query" == "$candidate "* ]] && return 0
   done
   return 1
 }
@@ -41,7 +43,7 @@ done
 
 voice_count=0
 for module in "${modules[@]}"; do
-  if is_voice_module "$module"; then
+  if is_voice_query "$module"; then
     ((voice_count += 1))
   fi
 done
