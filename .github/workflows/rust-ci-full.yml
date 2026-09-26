@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sednalabs/codex
-          ref: a1e3c55aeec6ea52c7b8d82b8cedc6b8f5e584ef
+          ref: 196061c5cc0fa8d7d2ada40b811a705a8a9c61da
           fetch-depth: 1
           persist-credentials: false
       - name: Install Rust toolchain
