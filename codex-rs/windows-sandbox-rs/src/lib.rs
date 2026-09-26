@@ -945,6 +945,7 @@ mod windows_impl {
 
     #[cfg(test)]
     mod tests {
+        use codex_utils_absolute_path::AbsolutePathBuf;
         use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
         use codex_protocol::models::PermissionProfile;
         use codex_protocol::permissions::NetworkSandboxPolicy;
