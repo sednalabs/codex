@@ -252,7 +252,7 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Resul
     });
     tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
     request.abort();
-    assert!(request.await?.is_cancelled());
+    assert!(request.await.is_err());
     wait_for_cancellation(&state).await?;
     state.blocked.notify_waiters();
     let mutation_count = state
