@@ -1016,7 +1016,7 @@ impl ThreadHistoryBuilder {
             agent_path: String::from(payload.agent_path.clone()),
             model: payload.model.clone(),
             reasoning_effort: payload.reasoning_effort.clone(),
-            interaction_kind: payload.interaction_kind.map(Into::into),
+            interaction_kind: payload.interaction_kind,
         });
     }
 

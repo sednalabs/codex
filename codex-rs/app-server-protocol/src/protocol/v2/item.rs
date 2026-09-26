@@ -1179,7 +1179,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
                 reasoning_effort: activity.reasoning_effort,
-                interaction_kind: activity.interaction_kind.map(Into::into),
+                interaction_kind: activity.interaction_kind,
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,

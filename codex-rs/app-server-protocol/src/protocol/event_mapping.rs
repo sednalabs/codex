@@ -227,7 +227,7 @@ pub fn item_event_to_server_notification(
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
                 reasoning_effort: activity.reasoning_effort,
-                interaction_kind: activity.interaction_kind.map(Into::into),
+                interaction_kind: activity.interaction_kind,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
