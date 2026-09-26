@@ -137,7 +137,7 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
             json_response(
                 request.get("id").cloned(),
                 json!({ "content": [], "isError": false }),
-                false,
+                /*include_session*/ false,
                 *state.modern_protocol.lock().await,
             )
         }
@@ -148,13 +148,13 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
                 "mimeType": "text/plain",
                 "text": "follow-on read"
             }]}),
-            false,
+            /*include_session*/ false,
             *state.modern_protocol.lock().await,
         ),
         _ => json_response(
             request.get("id").cloned(),
             json!({}),
-            false,
+            /*include_session*/ false,
             *state.modern_protocol.lock().await,
         ),
     }
