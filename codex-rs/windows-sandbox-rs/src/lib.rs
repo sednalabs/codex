@@ -1006,6 +1006,59 @@ mod windows_impl {
                 .expect("unsupported profiles do not need ACL preflight");
             }
         }
+
+        /// Diagnostic only: exercise the real legacy ACL/token/launch path against
+        /// the actual runtime executable supplied by the hosted workflow. The ordinary
+        /// control runs first; the sandbox path performs production ACL preparation,
+        /// CreateProcessAsUserW, bounded wait, and job cleanup through capture.
+        #[test]
+        fn diagnostic_production_loader_launch() -> anyhow::Result<()> {
+            let executable = std::env::var_os("W14079_DIAGNOSTIC_EXECUTABLE")
+                .map(std::path::PathBuf::from)
+                .unwrap_or(std::env::current_exe()?);
+            let ordinary = std::process::Command::new(&executable)
+                .arg("--version")
+                .output()?;
+            let temporary = tempfile::tempdir()?;
+            let cwd = temporary.path().join("workspace");
+            let codex_home = temporary.path().join("codex-home");
+            std::fs::create_dir_all(&cwd)?;
+            std::fs::create_dir_all(&codex_home)?;
+            let workspace = AbsolutePathBuf::from_absolute_path(&cwd)?;
+            let mut env_map = std::collections::HashMap::new();
+            if let Some(path) = std::env::var_os("PATH") {
+                env_map.insert("PATH".to_string(), path.to_string_lossy().into_owned());
+            }
+            let restricted = super::run_windows_sandbox_capture(
+                &PermissionProfile::workspace_write(),
+                &[workspace],
+                &codex_home,
+                vec![executable.display().to_string(), "--version".to_string()],
+                &cwd,
+                env_map,
+                Some(120_000),
+                None,
+            );
+            let report = serde_json::json!({
+                "schema": "w14079-production-token-loader-diagnostic-v2",
+                "workflow_host_sha": std::env::var("GITHUB_SHA").ok(),
+                "validation_source_sha": std::env::var("W14079_VALIDATION_SOURCE_SHA").ok(),
+                "validation_source_tree": std::env::var("W14079_VALIDATION_SOURCE_TREE").ok(),
+                "executable": executable.display().to_string(),
+                "ordinary": {"status": ordinary.status.code(), "success": ordinary.status.success()},
+                "restricted": match &restricted {
+                    Ok(result) => serde_json::json!({"exit_code": result.exit_code, "timed_out": result.timed_out, "stderr": String::from_utf8_lossy(&result.stderr)}),
+                    Err(error) => serde_json::json!({"error": error.to_string()}),
+                },
+                "launch_path": "run_windows_sandbox_capture -> prepare_legacy_session_security -> CreateProcessAsUserW",
+            });
+            if let Some(path) = std::env::var_os("W14079_DIAGNOSTIC_OUTPUT") {
+                std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+            }
+            eprintln!("{report}");
+            let _ = restricted;
+            Ok(())
+        }
     }
 }
 

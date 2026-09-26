@@ -43,9 +43,33 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path $env:RUNNER_TEMP\w14079 | Out-Null
           "W14079_DIAGNOSTIC_OUTPUT=$env:RUNNER_TEMP\w14079\report.json" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "W14079_VALIDATION_SOURCE_SHA=${{ inputs.source_sha }}" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "W14079_VALIDATION_SOURCE_TREE=${{ inputs.source_tree }}" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           $exe = (Get-ChildItem -Path bazel-bin -Filter codex.exe -Recurse | Select-Object -First 1).FullName
           if (-not $exe) { throw 'Bazel did not materialize codex.exe' }
           "W14079_DIAGNOSTIC_EXECUTABLE=$exe" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $imports = @()
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            $imports = @(& $dumpbin.Source /DEPENDENTS $exe 2>$null |
+              Where-Object { $_ -match '^\s{2,}([A-Za-z0-9_.-]+\.dll)\s*$' } |
+              ForEach-Object { $matches[1] } | Sort-Object -Unique)
+          }
+          $resolved = foreach ($name in $imports) {
+            $matches = @($env:PATH -split ';' | Where-Object { $_ } |
+              ForEach-Object { $candidate = Join-Path $_ $name; if (Test-Path -LiteralPath $candidate -PathType Leaf) { (Resolve-Path -LiteralPath $candidate).Path } })
+            [ordered]@{ name = $name; paths = $matches }
+          }
+          [ordered]@{
+            schema = 'w14079-runtime-import-manifest-v1'
+            workflow_host_sha = $env:GITHUB_SHA
+            validation_source_sha = '${{ inputs.source_sha }}'
+            validation_source_tree = '${{ inputs.source_tree }}'
+            executable = $exe
+            imports = $imports
+            resolved_path_candidates = $resolved
+            note = 'This is import-table/path evidence only; loader section/KnownDll resolution remains unknown.'
+          } | ConvertTo-Json -Depth 8 | Set-Content $env:RUNNER_TEMP\w14079\imports.json -Encoding utf8
       - name: Execute exact production-token test
         shell: bash
         run: |
