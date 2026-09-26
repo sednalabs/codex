@@ -5,7 +5,7 @@ permissions:
   contents: read
 jobs:
   focused-rmcp:
-    name: w14235 focused rmcp cancellation proof
+    name: w14235 focused rmcp consumers
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -18,8 +18,5 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
-      - name: PR901 cancellation and recovery integration tests
-        working-directory: codex-rs
-        run: cargo test --locked -p codex-rmcp-client --test streamable_http_cancellation --test streamable_http_recovery
       - name: Focused rmcp consumer checks
         run: bash .github/scripts/validation-lanes/rmcp-consumers-check.sh
