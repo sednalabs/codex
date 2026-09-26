@@ -15,6 +15,8 @@ use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::InspectAgentTreeHandler;
+use crate::tools::handlers::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
+use crate::tools::handlers::multi_agents_common::model_supports_multi_agent_backend;
 use crate::tools::handlers::multi_agents_common::resolve_spawn_agent_model_request;
 use crate::tools::handlers::multi_agents_common::validate_spawn_agent_reasoning_effort;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -34,6 +36,7 @@ use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -1202,6 +1205,19 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
         .expect("test config should allow feature update");
     set_turn_config(&mut turn, config);
 
+    let expected_available = session
+        .services
+        .models_manager
+        .list_models(RefreshStrategy::Offline, turn.config.http_client_factory())
+        .await
+        .into_iter()
+        .filter(|model| model.show_in_picker)
+        .filter(|model| model_supports_multi_agent_backend(model, MultiAgentVersion::V2))
+        .take(MAX_SPAWN_AGENT_MODEL_OVERRIDES)
+        .map(|model| model.model)
+        .collect::<Vec<_>>()
+        .join(", ");
+
     let err = SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
@@ -1220,9 +1236,9 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
 
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel(
-            "Unknown model `v1-only-model` for spawn_agent. Available models: gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5".to_string()
-        )
+        FunctionCallError::RespondToModel(format!(
+            "Unknown model `v1-only-model` for spawn_agent. Available models: {expected_available}"
+        ))
     );
 }
 
