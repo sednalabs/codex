@@ -32,7 +32,8 @@ bazel_cquery() {
   --print-failed-action-summary \
   -- build -c opt --output_groups=default,sdk -- \
   //third_party/voice:native_sdk \
-  //third_party/voice:native_link
+  //third_party/voice:native_link \
+  //third_party/voice:pkg_config
 
 bazel_cquery_args=(-c opt --noimplicit_deps --output=files)
 sdk="$(bazel_cquery "${bazel_cquery_args[@]}" --output_groups=default,sdk //third_party/voice:native_sdk | grep '/native_runtime_' | head -n 1)"
