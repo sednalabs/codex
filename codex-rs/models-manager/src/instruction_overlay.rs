@@ -7,6 +7,8 @@
 use codex_protocol::openai_models::ModelInfo;
 
 const TARGET_SLUGS: &[&str] = &[
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
