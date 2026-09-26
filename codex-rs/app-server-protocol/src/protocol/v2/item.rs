@@ -47,6 +47,7 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::SubAgentInteractionKind as CoreEventSubAgentInteractionKind;
 use codex_protocol::items::SubAgentInteractionKind as CoreSubAgentInteractionKind;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
@@ -1635,6 +1636,15 @@ impl From<CoreSubAgentInteractionKind> for SubAgentInteractionKind {
         match value {
             CoreSubAgentInteractionKind::SendMessage => Self::SendMessage,
             CoreSubAgentInteractionKind::FollowupTask => Self::FollowupTask,
+        }
+    }
+}
+
+impl From<CoreEventSubAgentInteractionKind> for SubAgentInteractionKind {
+    fn from(value: CoreEventSubAgentInteractionKind) -> Self {
+        match value {
+            CoreEventSubAgentInteractionKind::SendMessage => Self::SendMessage,
+            CoreEventSubAgentInteractionKind::FollowupTask => Self::FollowupTask,
         }
     }
 }
