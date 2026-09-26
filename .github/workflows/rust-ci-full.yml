@@ -224,6 +224,12 @@ jobs:
             sudo apt-get update -y
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev
           fi
+      - name: Prepare pinned voice SDK for direct Cargo
+        if: ${{ contains(matrix.target, 'apple-darwin') || contains(matrix.target, 'unknown-linux-gnu') || contains(matrix.target, 'windows-msvc') }}
+        uses: ./.github/actions/setup-voice-cargo
+        with:
+          target: ${{ matrix.target }}
+          cache-scope: rust-ci-full-voice-cargo
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ matrix.target }}
