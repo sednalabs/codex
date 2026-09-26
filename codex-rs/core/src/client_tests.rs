@@ -1307,7 +1307,7 @@ fn bundled_gpt6_models_build_responses_lite_requests() {
     }
 
     let mut headers = http::HeaderMap::new();
-    super::add_responses_lite_header(&mut headers, true);
+    super::add_responses_lite_header(&mut headers, /*use_responses_lite*/ true);
     assert_eq!(
         headers
             .get(super::X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER)
