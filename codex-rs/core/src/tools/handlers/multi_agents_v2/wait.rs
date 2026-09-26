@@ -612,16 +612,7 @@ async fn mailbox_snapshot(
                 receiver_thread_ids.is_empty(),
                 &target_agent_paths,
             )
-            .and_then(|index| {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, (communication, _, _))| {
-                        is_actionable_wait_communication(communication)
-                    })
-                    .nth(index)
-                    .map(|(_, entry)| entry.clone())
-            })
+            .and_then(|index| entries.get(index).cloned())
         })
         .flatten();
     let wake_cause = if wake_source == WakeSource::Mailbox {
