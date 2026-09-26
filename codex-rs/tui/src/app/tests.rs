@@ -667,7 +667,6 @@ async fn replay_thread_snapshot_restores_draft_and_queued_input() {
             mode: None,
             model: None,
             reasoning_effort: None,
-            interaction_kind: None,
             developer_instructions: None,
         },
     );
