@@ -121,17 +121,18 @@ mod tests {
     use super::migrator_for_usage_database;
     use crate::migrations::USAGE_MIGRATOR;
     use crate::migrations::runtime_usage_migrator;
+    use crate::runtime::test_support::unique_temp_dir;
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
-    use sqlx::sqlite::SqlitePoolOptions;
     use std::collections::BTreeSet;
 
     async fn test_pool() -> SqlitePool {
-        SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
+        let codex_home = unique_temp_dir();
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        sqlite
+            .open_read_write_pool(&codex_home.join("usage.sqlite"))
             .await
-            .expect("in-memory usage database should open")
+            .expect("usage database should open")
     }
 
     #[tokio::test]
