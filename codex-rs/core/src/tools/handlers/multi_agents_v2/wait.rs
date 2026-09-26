@@ -58,6 +58,11 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
+        if args.native_event_wait && args.targets.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "native_event_wait requires at least one exact target".to_string(),
+            ));
+        }
         let timeout_ms = resolve_timeout(
             args.timeout_ms,
             turn.config.multi_agent_v2.min_wait_timeout_ms,
@@ -78,11 +83,8 @@ impl Handler {
         // Capture the mailbox boundary before subscribing. This makes a
         // native wait insensitive to entries that were already queued before
         // the wait began while retaining a single event-driven subscription.
-        let mailbox_generation = session.input_queue.mailbox_generation();
-        let (mut activity_rx, pending_activity) = session
-            .input_queue
-            .subscribe_activity(/*turn_state*/ None)
-            .await;
+        let (mut activity_rx, pending_activity, mailbox_generation, _pending_mailbox) =
+            session.input_queue.subscribe_native_activity().await;
         let target_paths = target_ids
             .iter()
             .filter_map(|id| {
@@ -234,6 +236,7 @@ impl ToolOutput for WaitAgentResult {
 enum WaitReason {
     TargetTerminal,
     Mailbox,
+    TerminalCompletion,
     Steer,
     Timeout,
     SubscriptionLoss,
@@ -246,6 +249,9 @@ impl WaitReason {
                 "Wait completed: target reached the requested terminal condition.".into()
             }
             Self::Mailbox => "Wait completed: eligible mailbox activity arrived.".into(),
+            Self::TerminalCompletion => {
+                "Wait completed: a terminal completion event arrived.".into()
+            }
             Self::Steer => "Wait interrupted by operator input.".into(),
             Self::Timeout => "Wait timed out.".into(),
             Self::SubscriptionLoss => "Wait ended because an event subscription was lost.".into(),
@@ -255,6 +261,7 @@ impl WaitReason {
         match self {
             Self::TargetTerminal => "target_terminal",
             Self::Mailbox => "target_actionable_message",
+            Self::TerminalCompletion => "child_terminal_transition",
             Self::Steer => "operator_message",
             Self::Timeout => "timeout_lease_expiry",
             Self::SubscriptionLoss => "runtime_system_event",
@@ -263,6 +270,7 @@ impl WaitReason {
     fn notification_origin(self) -> &'static str {
         match self {
             Self::Mailbox => "agent_mailbox",
+            Self::TerminalCompletion => "agent_status",
             Self::Steer => "operator",
             Self::TargetTerminal => "agent_status",
             Self::Timeout => "runtime",
@@ -272,6 +280,7 @@ impl WaitReason {
     fn delivery_disposition(self) -> &'static str {
         match self {
             Self::Mailbox => "queued",
+            Self::TerminalCompletion => "terminal",
             Self::Steer => "turn_triggered",
             Self::TargetTerminal => "terminal",
             Self::Timeout => "lease_expired",
@@ -329,11 +338,12 @@ async fn wait_for_event(
         if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
             return (WaitReason::Steer, false);
         }
-        if matches!(
-            pending_activity,
-            Some(InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
-        ) {
-            return (WaitReason::Mailbox, false);
+        match pending_activity {
+            Some(InputQueueActivity::Mailbox) => return (WaitReason::Mailbox, false),
+            Some(InputQueueActivity::TerminalCompletion) => {
+                return (WaitReason::TerminalCompletion, false);
+            }
+            _ => {}
         }
     }
     loop {
@@ -343,11 +353,23 @@ async fn wait_for_event(
                 let activity = *activity_rx.borrow_and_update();
                 if matches!(activity, InputQueueActivity::Steer) { return (WaitReason::Steer, false); }
                 if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
-                    && (!native_event_wait
-                        || (session.input_queue.mailbox_generation() > mailbox_generation
-                            && (target_ids.is_empty()
-                                || session.input_queue.pending_mailbox_authors().await.iter().any(|author| target_paths.contains(author)))))
-                { return (WaitReason::Mailbox, false); }
+                    && !native_event_wait
+                { return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false); }
+                if native_event_wait
+                    && matches!(activity, InputQueueActivity::Mailbox)
+                    && session.input_queue.mailbox_generation() > mailbox_generation
+                    && !target_ids.is_empty()
+                    && session
+                        .input_queue
+                        .pending_mailbox_authors()
+                        .await
+                        .iter()
+                        .any(|(author, sequence)| {
+                            *sequence > mailbox_generation && target_paths.contains(author)
+                        })
+                {
+                    return (WaitReason::Mailbox, false);
+                }
             }
             status = status_futures.next(), if !status_futures.is_empty() => {
                 let Some((id, mut rx, changed)) = status else { continue; };

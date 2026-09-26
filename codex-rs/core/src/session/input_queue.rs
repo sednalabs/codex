@@ -94,6 +94,7 @@ pub(crate) struct InputQueue {
 
 struct PendingMailboxCommunication {
     communication: InterAgentCommunication,
+    sequence: u64,
     start_options: TurnStartOptions,
     _diagnostics_guard: GaugeGuard,
 }
@@ -136,20 +137,39 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
+    pub(crate) async fn subscribe_native_activity(
+        &self,
+    ) -> (
+        watch::Receiver<InputQueueActivity>,
+        Option<InputQueueActivity>,
+        u64,
+        Vec<(codex_protocol::AgentPath, u64)>,
+    ) {
+        let mailbox = self.mailbox_pending_mails.lock().await;
+        let activity_rx = self.activity_tx.subscribe();
+        let generation = self.mailbox_generation.load(Ordering::Acquire);
+        let pending = (!mailbox.is_empty()).then_some(InputQueueActivity::Mailbox);
+        let entries = mailbox
+            .iter()
+            .map(|mail| (mail.communication.author.clone(), mail.sequence))
+            .collect();
+        (activity_rx, pending, generation, entries)
+    }
+
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
-        self.mailbox_pending_mails
-            .lock()
-            .await
-            .push_back(PendingMailboxCommunication {
-                communication,
-                start_options,
-                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
-            });
-        self.mailbox_generation.fetch_add(1, Ordering::Relaxed);
+        let mut mailbox = self.mailbox_pending_mails.lock().await;
+        let sequence = self.mailbox_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        mailbox.push_back(PendingMailboxCommunication {
+            communication,
+            start_options,
+            sequence,
+            _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+        });
+        drop(mailbox);
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
@@ -159,12 +179,12 @@ impl InputQueue {
         self.mailbox_generation.load(Ordering::Acquire)
     }
 
-    pub(crate) async fn pending_mailbox_authors(&self) -> Vec<codex_protocol::AgentPath> {
+    pub(crate) async fn pending_mailbox_authors(&self) -> Vec<(codex_protocol::AgentPath, u64)> {
         self.mailbox_pending_mails
             .lock()
             .await
             .iter()
-            .map(|mail| mail.communication.author.clone())
+            .map(|mail| (mail.communication.author.clone(), mail.sequence))
             .collect()
     }
 
