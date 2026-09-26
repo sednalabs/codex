@@ -1187,6 +1187,8 @@ mod tests {
         String,
     );
 
+    type Gpt6CreditEstimateStatusRow = (String, Option<String>, Option<f64>, Option<f64>, String);
+
     #[derive(Debug, PartialEq, sqlx::FromRow)]
     struct CreditThreadSummaryRow {
         provider_call_count: i64,
@@ -2014,6 +2016,261 @@ ORDER BY provider_call_id
                 },
             ]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credit_views_cover_gpt6_rates_aliases_and_partial_rollups() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        let rates: Vec<(String, String, String, f64, f64, f64)> = sqlx::query_as(
+            r#"
+SELECT rate_id, model, speed_mode, credits_per_1m_uncached_input,
+       credits_per_1m_cached_input, credits_per_1m_output
+FROM usage_codex_credit_rates
+WHERE model IN ('gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol')
+ORDER BY rate_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            rates,
+            vec![
+                (
+                    "openai-gpt-6-astra-fast-20260926".into(),
+                    "gpt-6-astra".into(),
+                    "fast".into(),
+                    625.0,
+                    62.5,
+                    3125.0,
+                ),
+                (
+                    "openai-gpt-6-astra-standard-20260905".into(),
+                    "gpt-6-astra".into(),
+                    "standard".into(),
+                    250.0,
+                    25.0,
+                    1250.0,
+                ),
+                (
+                    "openai-gpt-6-luna-fast-20260926".into(),
+                    "gpt-6-luna".into(),
+                    "fast".into(),
+                    6.25,
+                    0.625,
+                    31.25,
+                ),
+                (
+                    "openai-gpt-6-luna-standard-20260926".into(),
+                    "gpt-6-luna".into(),
+                    "standard".into(),
+                    2.5,
+                    0.25,
+                    12.5,
+                ),
+                (
+                    "openai-gpt-6-sol-fast-20260926".into(),
+                    "gpt-6-sol".into(),
+                    "fast".into(),
+                    125.0,
+                    12.5,
+                    625.0,
+                ),
+                (
+                    "openai-gpt-6-sol-standard-20260926".into(),
+                    "gpt-6-sol".into(),
+                    "standard".into(),
+                    50.0,
+                    5.0,
+                    250.0,
+                ),
+            ]
+        );
+
+        for (id, model, tier, fast, started_at) in [
+            (
+                "gpt6-luna-standard",
+                "gpt-6-luna",
+                "default",
+                false,
+                "2026-09-26T00:00:00Z",
+            ),
+            (
+                "gpt6-sol-fast",
+                "gpt-6-sol",
+                "priority",
+                true,
+                "2026-09-26T00:00:00Z",
+            ),
+            (
+                "gpt6-astra-fast",
+                "gpt-6-astra",
+                "priority",
+                true,
+                "2026-09-26T01:00:00Z",
+            ),
+            (
+                "gpt6-luna-before",
+                "gpt-6-luna",
+                "default",
+                false,
+                "2026-09-25T23:59:59Z",
+            ),
+        ] {
+            insert_test_provider_call(
+                pool,
+                TestProviderCall {
+                    id,
+                    thread_id: "gpt6",
+                    started_at,
+                    requested_model: Some(model),
+                    actual_model: Some(model),
+                    actual_tier: Some(tier),
+                    fast_mode_used: Some(fast),
+                    billing_surface: "chatgpt_credits",
+                    account_plan: Some("pro"),
+                    uncached: 1_000_000,
+                    cached: 1_000_000,
+                    cache_write: 0,
+                    output: 1_000_000,
+                    total: 3_000_000,
+                    provider_reported_credits: None,
+                },
+            )
+            .await?;
+        }
+        insert_test_provider_call(
+            pool,
+            TestProviderCall {
+                id: "gpt6-provider-reported",
+                thread_id: "gpt6",
+                started_at: "2026-09-26T02:00:00Z",
+                requested_model: Some("gpt-6-luna"),
+                actual_model: Some("gpt-6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: Some(7.25),
+            },
+        )
+        .await?;
+        insert_test_provider_call(
+            pool,
+            TestProviderCall {
+                id: "gpt6-unknown",
+                thread_id: "gpt6",
+                started_at: "2026-09-26T03:00:00Z",
+                requested_model: Some("gpt-6-unknown"),
+                actual_model: Some("gpt-6-unknown"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE usage_provider_calls SET turn_id = 'gpt6-turn' WHERE thread_id = 'gpt6'",
+        )
+        .execute(pool)
+        .await?;
+
+        let rows: Vec<Gpt6CreditEstimateStatusRow> = sqlx::query_as(
+            r#"
+SELECT provider_call_id, rate_id, estimated_total_credits,
+       rate_card_estimated_total_credits, pricing_status
+FROM usage_provider_call_credit_estimates
+WHERE thread_id = 'gpt6'
+ORDER BY provider_call_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "gpt6-astra-fast".into(),
+                    Some("openai-gpt-6-astra-fast-20260926".into()),
+                    Some(3812.5),
+                    Some(3812.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "gpt6-luna-before".into(),
+                    None,
+                    None,
+                    None,
+                    "model_rate_missing".into(),
+                ),
+                (
+                    "gpt6-luna-standard".into(),
+                    Some("openai-gpt-6-luna-standard-20260926".into()),
+                    Some(15.25),
+                    Some(15.25),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "gpt6-provider-reported".into(),
+                    Some("openai-gpt-6-luna-standard-20260926".into()),
+                    Some(7.25),
+                    Some(15.25),
+                    "provider_reported".into(),
+                ),
+                (
+                    "gpt6-sol-fast".into(),
+                    Some("openai-gpt-6-sol-fast-20260926".into()),
+                    Some(762.5),
+                    Some(762.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "gpt6-unknown".into(),
+                    None,
+                    None,
+                    None,
+                    "model_rate_missing".into(),
+                ),
+            ]
+        );
+
+        let summary: (i64, i64, i64, bool, Option<f64>, Option<f64>) = sqlx::query_as(
+            r#"
+SELECT provider_call_count, priced_call_count, unpriced_call_count, partial,
+       estimated_total_credits, priced_credits_total
+FROM usage_thread_credit_summary
+WHERE thread_id = 'gpt6'
+"#,
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(summary, (6, 4, 2, true, None, Some(4597.5)));
+        let turn_summary: (i64, i64, i64, bool, Option<f64>, Option<f64>) = sqlx::query_as(
+            r#"
+SELECT provider_call_count, priced_call_count, unpriced_call_count, partial,
+       estimated_total_credits, priced_credits_total
+FROM usage_turn_credit_summary
+WHERE thread_id = 'gpt6' AND turn_id = 'gpt6-turn'
+"#,
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(turn_summary, summary);
         Ok(())
     }
 
