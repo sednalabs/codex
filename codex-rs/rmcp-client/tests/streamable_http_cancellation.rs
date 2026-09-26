@@ -45,23 +45,19 @@ struct ServerState {
     blocked_started: Arc<Notify>,
 }
 
-async fn spawn_server() -> (ServerState, String, tokio::task::JoinHandle<()>) {
+async fn spawn_server() -> anyhow::Result<(ServerState, String, tokio::task::JoinHandle<()>)> {
     let state = ServerState::default();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind cancellation test server");
-    let address = listener
-        .local_addr()
-        .expect("read cancellation test address");
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
     let router = Router::new()
         .route("/mcp", post(handle_mcp))
         .with_state(state.clone());
     let task = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .await
-            .expect("serve cancellation test server");
+        if let Err(error) = axum::serve(listener, router).await {
+            eprintln!("cancellation test server stopped: {error}");
+        }
     });
-    (state, format!("http://{address}"), task)
+    Ok((state, format!("http://{address}"), task))
 }
 
 async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
@@ -91,10 +87,9 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
         Some("tools/call") => {
             let name = request.pointer("/params/name").and_then(Value::as_str);
             if name == Some("error-after-send") && *state.error_after_send.lock().await {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Body::empty())
-                    .expect("valid expired-session response");
+                let mut response = Response::new(Body::empty());
+                *response.status_mut() = StatusCode::NOT_FOUND;
+                return response;
             }
             if matches!(name, Some("blocked" | "mutate")) {
                 state.blocked_started.notify_waiters();
@@ -120,20 +115,18 @@ async fn handle_mcp(State(state): State<ServerState>, Json(request): Json<Value>
 }
 
 fn accepted_response() -> Response {
-    Response::builder()
-        .status(StatusCode::ACCEPTED)
-        .body(Body::empty())
-        .expect("valid notification response")
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::ACCEPTED;
+    response
 }
 
 fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Response {
     let body = serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-        .expect("serialize cancellation response");
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .expect("valid JSON response");
+        .unwrap_or_else(|error| panic!("serialize cancellation response: {error}"));
+    let mut response = Response::new(Body::from(body));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     if include_session {
         response
             .headers_mut()
@@ -142,13 +135,13 @@ fn json_response(id: Option<Value>, result: Value, include_session: bool) -> Res
     response
 }
 
-async fn wait_for_cancellation(state: &ServerState) {
-    if !state.cancellations.lock().await.is_empty() {
-        return;
+async fn wait_for_cancellation(state: &ServerState) -> anyhow::Result<()> {
+    let already_cancelled = { !state.cancellations.lock().await.is_empty() };
+    if already_cancelled {
+        return Ok(());
     }
-    tokio::time::timeout(Duration::from_secs(5), state.cancellation_notify.notified())
-        .await
-        .expect("cancellation notification");
+    tokio::time::timeout(Duration::from_secs(5), state.cancellation_notify.notified()).await?;
+    Ok(())
 }
 
 async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_client::RmcpClient> {
@@ -192,13 +185,10 @@ async fn create_modern_client(base_url: &str) -> anyhow::Result<codex_rmcp_clien
 }
 
 #[tokio::test]
-async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() {
-    let (state, base_url, server) = spawn_server().await;
-    let client = Arc::new(
-        create_client(&format!("{base_url}/mcp"))
-            .await
-            .expect("client"),
-    );
+async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() -> anyhow::Result<()>
+{
+    let (state, base_url, server) = spawn_server().await?;
+    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
         task_client
@@ -210,25 +200,22 @@ async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() 
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified())
-        .await
-        .expect("blocked request");
-    assert!(timed_out.await.expect("join timed-out call").is_err());
-    wait_for_cancellation(&state).await;
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    assert!(timed_out.await?.is_err());
+    wait_for_cancellation(&state).await?;
 
-    let requests = state.requests.lock().await;
+    let requests = { state.requests.lock().await.clone() };
     let blocked_id = requests
         .iter()
         .find(|request| request.pointer("/params/name").and_then(Value::as_str) == Some("blocked"))
         .and_then(|request| request.get("id"))
         .cloned()
-        .expect("blocked id");
+        .ok_or_else(|| anyhow::anyhow!("blocked id missing"))?;
     let cancelled_id = state.cancellations.lock().await[0]
         .pointer("/params/requestId")
         .cloned()
-        .expect("cancelled request id");
+        .ok_or_else(|| anyhow::anyhow!("cancelled request id missing"))?;
     assert_eq!(cancelled_id, blocked_id);
-    drop(requests);
 
     state.blocked.notify_waiters();
     let read = client
@@ -236,26 +223,22 @@ async fn timed_out_call_sends_matching_cancellation_and_allows_follow_on_read() 
             rmcp::model::ReadResourceRequestParams::new("memo://follow-on".to_string()),
             Some(Duration::from_secs(2)),
         )
-        .await
-        .expect("follow-on read");
+        .await?;
     assert_eq!(
-        serde_json::to_value(read).expect("serialize read"),
+        serde_json::to_value(read)?,
         json!({
             "contents": [{ "uri": "memo://follow-on", "mimeType": "text/plain", "text": "follow-on read" }]
         })
     );
     client.shutdown().await;
     server.abort();
+    Ok(())
 }
 
 #[tokio::test]
-async fn dropped_call_is_cancelled_without_replaying_mutation() {
-    let (state, base_url, server) = spawn_server().await;
-    let client = Arc::new(
-        create_client(&format!("{base_url}/mcp"))
-            .await
-            .expect("client"),
-    );
+async fn dropped_call_is_cancelled_without_replaying_mutation() -> anyhow::Result<()> {
+    let (state, base_url, server) = spawn_server().await?;
+    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
     let task_client = client.clone();
     let request = tokio::spawn(async move {
         task_client
@@ -267,12 +250,10 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() {
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified())
-        .await
-        .expect("mutating request");
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
     request.abort();
-    assert!(request.await.expect_err("aborted request").is_cancelled());
-    wait_for_cancellation(&state).await;
+    assert!(request.await?.is_cancelled());
+    wait_for_cancellation(&state).await?;
     state.blocked.notify_waiters();
     let mutation_count = state
         .requests
@@ -284,16 +265,13 @@ async fn dropped_call_is_cancelled_without_replaying_mutation() {
     assert_eq!(mutation_count, 1);
     client.shutdown().await;
     server.abort();
+    Ok(())
 }
 
 #[tokio::test]
-async fn modern_timed_out_call_sends_matching_cancellation() {
-    let (state, base_url, server) = spawn_server().await;
-    let client = Arc::new(
-        create_modern_client(&base_url)
-            .await
-            .expect("modern client"),
-    );
+async fn modern_timed_out_call_sends_matching_cancellation() -> anyhow::Result<()> {
+    let (state, base_url, server) = spawn_server().await?;
+    let client = Arc::new(create_modern_client(&base_url).await?);
     let task_client = client.clone();
     let timed_out = tokio::spawn(async move {
         task_client
@@ -305,38 +283,32 @@ async fn modern_timed_out_call_sends_matching_cancellation() {
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified())
-        .await
-        .expect("modern blocked request");
-    assert!(timed_out.await.expect("join modern timeout").is_err());
-    wait_for_cancellation(&state).await;
-    let requests = state.requests.lock().await;
+    tokio::time::timeout(Duration::from_secs(5), state.blocked_started.notified()).await?;
+    assert!(timed_out.await?.is_err());
+    wait_for_cancellation(&state).await?;
+    let requests = { state.requests.lock().await.clone() };
     let blocked_id = requests
         .iter()
         .find(|request| request.pointer("/params/name").and_then(Value::as_str) == Some("blocked"))
         .and_then(|request| request.get("id"))
         .cloned()
-        .expect("modern blocked id");
+        .ok_or_else(|| anyhow::anyhow!("modern blocked id missing"))?;
     let cancelled_id = state.cancellations.lock().await[0]
         .pointer("/params/requestId")
         .cloned()
-        .expect("modern cancelled request id");
+        .ok_or_else(|| anyhow::anyhow!("modern cancelled request id missing"))?;
     assert_eq!(cancelled_id, blocked_id);
-    drop(requests);
     state.blocked.notify_waiters();
     client.shutdown().await;
     server.abort();
+    Ok(())
 }
 
 #[tokio::test]
-async fn session_expiry_after_send_does_not_replay_a_mutation() {
-    let (state, base_url, server) = spawn_server().await;
+async fn session_expiry_after_send_does_not_replay_a_mutation() -> anyhow::Result<()> {
+    let (state, base_url, server) = spawn_server().await?;
     *state.error_after_send.lock().await = true;
-    let client = Arc::new(
-        create_client(&format!("{base_url}/mcp"))
-            .await
-            .expect("client"),
-    );
+    let client = Arc::new(create_client(&format!("{base_url}/mcp")).await?);
     let result = client
         .call_tool(
             "error-after-send".to_string(),
@@ -346,7 +318,7 @@ async fn session_expiry_after_send_does_not_replay_a_mutation() {
         )
         .await;
     assert!(result.is_err(), "uncertain mutation unexpectedly succeeded");
-    wait_for_cancellation(&state).await;
+    wait_for_cancellation(&state).await?;
     let mutation_count = state
         .requests
         .lock()
@@ -359,4 +331,5 @@ async fn session_expiry_after_send_does_not_replay_a_mutation() {
     assert_eq!(mutation_count, 1, "uncertain mutation must not be replayed");
     client.shutdown().await;
     server.abort();
+    Ok(())
 }
