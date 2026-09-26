@@ -89,7 +89,7 @@ impl Handler {
         // Capture the mailbox boundary before subscribing. This makes a
         // native wait insensitive to entries that were already queued before
         // the wait began while retaining a single event-driven subscription.
-        let (mut activity_rx, pending_activity, mailbox_generation, _pending_mailbox) =
+        let (mut activity_rx, mut pending_activity, mailbox_generation, _pending_mailbox) =
             if args.native_event_wait {
                 session.input_queue.subscribe_native_activity().await
             } else {
@@ -108,6 +108,15 @@ impl Handler {
                     Vec::new(),
                 )
             };
+        if args.native_event_wait
+            && pending_activity.is_none()
+            && session
+                .input_queue
+                .has_pending_input(&session.active_turn)
+                .await
+        {
+            pending_activity = Some(InputQueueActivity::Steer);
+        }
         let target_paths = target_ids
             .iter()
             .filter_map(|id| {
@@ -123,9 +132,12 @@ impl Handler {
         for id in &target_ids {
             let mut status_rx = match session.services.agent_control.subscribe_status(*id).await {
                 Ok(rx) => rx,
-                Err(_) => {
-                    statuses.insert(*id, AgentStatus::NotFound);
-                    continue;
+                Err(err) => {
+                    if err.to_string().to_ascii_lowercase().contains("not found") {
+                        statuses.insert(*id, AgentStatus::NotFound);
+                        continue;
+                    }
+                    return Err(FunctionCallError::RespondToModel(err.to_string()));
                 }
             };
             let status = status_rx.borrow().clone();
@@ -176,16 +188,21 @@ impl Handler {
         )
         .await;
 
-        let result = WaitAgentResult {
-            message: format!(
-                "{} Wake cause: {}; origin: {}; disposition: {}.",
-                reason.message(),
+        let mut message = reason.message();
+        if let Some(requested) = args.timeout_ms.filter(|requested| *requested < timeout_ms) {
+            message = format!(
+                "{message}\n\nRequested timeout of {requested}ms was clamped to the minimum of {timeout_ms}ms."
+            );
+        }
+        if args.native_event_wait {
+            message = format!(
+                "{message} Wake cause: {}; origin: {}; disposition: {}.",
                 reason.wake_cause(),
                 reason.notification_origin(),
                 reason.delivery_disposition()
-            ),
-            timed_out,
-        };
+            );
+        }
+        let result = WaitAgentResult { message, timed_out };
         session
             .emit_turn_item_completed(
                 &turn,
@@ -267,14 +284,10 @@ enum WaitReason {
 impl WaitReason {
     fn message(self) -> String {
         match self {
-            Self::TargetTerminal => {
-                "Wait completed: target reached the requested terminal condition.".into()
+            Self::TargetTerminal | Self::Mailbox | Self::TerminalCompletion => {
+                "Wait completed.".into()
             }
-            Self::Mailbox => "Wait completed: eligible mailbox activity arrived.".into(),
-            Self::TerminalCompletion => {
-                "Wait completed: a terminal completion event arrived.".into()
-            }
-            Self::Steer => "Wait interrupted by operator input.".into(),
+            Self::Steer => "Wait interrupted by new input.".into(),
             Self::Timeout => "Wait timed out.".into(),
             Self::SubscriptionLoss => "Wait ended because an event subscription was lost.".into(),
         }
@@ -320,9 +333,7 @@ fn resolve_timeout(
     let min = min.max(0);
     let max = max.max(min);
     match requested {
-        Some(value) if value < min => Err(FunctionCallError::RespondToModel(format!(
-            "timeout_ms must be at least {min}"
-        ))),
+        Some(value) if value < min => Ok(min),
         Some(value) if value > max => Err(FunctionCallError::RespondToModel(format!(
             "timeout_ms must be at most {max}"
         ))),
@@ -356,6 +367,15 @@ async fn wait_for_event(
     if terminal_rule_satisfied(target_ids, return_when, statuses) {
         return (WaitReason::TargetTerminal, false);
     }
+    if matches!(
+        pending_activity,
+        Some(InputQueueActivity::TerminalCompletion)
+    ) {
+        return (WaitReason::TerminalCompletion, false);
+    }
+    if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
+        return (WaitReason::Steer, false);
+    }
     if !native_event_wait {
         if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
             return (WaitReason::Steer, false);
@@ -374,6 +394,20 @@ async fn wait_for_event(
                 if changed.is_err() { return (WaitReason::SubscriptionLoss, false); }
                 let activity = *activity_rx.borrow_and_update();
                 if matches!(activity, InputQueueActivity::Steer) { return (WaitReason::Steer, false); }
+                if matches!(activity, InputQueueActivity::TerminalCompletion) {
+                    return (WaitReason::TerminalCompletion, false);
+                }
+                if matches!(activity, InputQueueActivity::Mailbox) {
+                    for id in target_ids {
+                        let status = session.services.agent_control.get_status(*id).await;
+                        if is_final(&status) {
+                            statuses.insert(*id, status);
+                        }
+                    }
+                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
+                        return (WaitReason::TargetTerminal, false);
+                    }
+                }
                 if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
                     && !native_event_wait
                 {
@@ -391,8 +425,10 @@ async fn wait_for_event(
                             .pending_mailbox_authors()
                             .await
                             .iter()
-                            .any(|(author, sequence)| {
-                                *sequence > mailbox_generation && target_paths.contains(author)
+                            .any(|(author, sequence, trigger_turn)| {
+                                *sequence > mailbox_generation
+                                    && *trigger_turn
+                                    && target_paths.contains(author)
                             }))
                 {
                     return (WaitReason::Mailbox, false);

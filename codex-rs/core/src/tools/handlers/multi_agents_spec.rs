@@ -886,7 +886,7 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(format!(
-                "Internal lease in milliseconds. Defaults to {}, min {}, max {}.",
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
             ))),
         ),

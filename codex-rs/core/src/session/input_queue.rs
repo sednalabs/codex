@@ -143,21 +143,27 @@ impl InputQueue {
         watch::Receiver<InputQueueActivity>,
         Option<InputQueueActivity>,
         u64,
-        Vec<(codex_protocol::AgentPath, u64)>,
+        Vec<(codex_protocol::AgentPath, u64, bool)>,
     ) {
         let mailbox = self.mailbox_pending_mails.lock().await;
         let activity_rx = self.activity_tx.subscribe();
         let generation = self.mailbox_generation.load(Ordering::Acquire);
-        let pending = if !mailbox.is_empty() {
-            Some(InputQueueActivity::Mailbox)
-        } else if self.has_pending_terminal_completions().await {
+        let pending = if self.has_pending_terminal_completions().await {
             Some(InputQueueActivity::TerminalCompletion)
+        } else if !mailbox.is_empty() {
+            Some(InputQueueActivity::Mailbox)
         } else {
             None
         };
         let entries = mailbox
             .iter()
-            .map(|mail| (mail.communication.author.clone(), mail.sequence))
+            .map(|mail| {
+                (
+                    mail.communication.author.clone(),
+                    mail.sequence,
+                    mail.communication.trigger_turn,
+                )
+            })
             .collect();
         (activity_rx, pending, generation, entries)
     }
@@ -185,12 +191,20 @@ impl InputQueue {
         self.mailbox_generation.load(Ordering::Acquire)
     }
 
-    pub(crate) async fn pending_mailbox_authors(&self) -> Vec<(codex_protocol::AgentPath, u64)> {
+    pub(crate) async fn pending_mailbox_authors(
+        &self,
+    ) -> Vec<(codex_protocol::AgentPath, u64, bool)> {
         self.mailbox_pending_mails
             .lock()
             .await
             .iter()
-            .map(|mail| (mail.communication.author.clone(), mail.sequence))
+            .map(|mail| {
+                (
+                    mail.communication.author.clone(),
+                    mail.sequence,
+                    mail.communication.trigger_turn,
+                )
+            })
             .collect()
     }
 
