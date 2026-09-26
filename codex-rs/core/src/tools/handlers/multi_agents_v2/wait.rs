@@ -1554,9 +1554,21 @@ mod tests {
             /*trigger_turn*/ false,
         );
 
-        assert!(mailbox_entry_is_causal(&target_wake, false, &targets));
-        assert!(!mailbox_entry_is_causal(&sibling_wake, false, &targets));
-        assert!(!mailbox_entry_is_causal(&queued_progress, false, &targets));
+        assert!(mailbox_entry_is_causal(
+            &target_wake,
+            /*targetless_wait*/ false,
+            &targets
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &sibling_wake,
+            /*targetless_wait*/ false,
+            &targets
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &queued_progress,
+            /*targetless_wait*/ false,
+            &targets
+        ));
     }
 
     #[test]
@@ -1570,6 +1582,10 @@ mod tests {
             "target result".to_string(),
             /*trigger_turn*/ false,
         );
+        let target_wake = codex_protocol::protocol::InterAgentCommunication {
+            origin: Some(AgentCommunicationOrigin::Result),
+            ..target_wake
+        };
         let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
             sibling,
             AgentPath::root(),
@@ -1577,16 +1593,23 @@ mod tests {
             "sibling result".to_string(),
             /*trigger_turn*/ false,
         );
+        let sibling_wake = codex_protocol::protocol::InterAgentCommunication {
+            origin: Some(AgentCommunicationOrigin::Result),
+            ..sibling_wake
+        };
         let targets = vec![AgentPath::try_from("/root/reviewer").expect("target path")];
         let entries = vec![&target_wake, &sibling_wake];
 
-        assert_eq!(causal_mailbox_index(&entries, false, &targets), None);
         assert_eq!(
-            causal_mailbox_index(&[&target_wake], false, &targets),
+            causal_mailbox_index(&entries, /*targetless_wait*/ false, &targets),
+            None
+        );
+        assert_eq!(
+            causal_mailbox_index(&[&target_wake], /*targetless_wait*/ false, &targets),
             Some(0)
         );
         assert_eq!(
-            causal_mailbox_index(&[&sibling_wake], false, &targets),
+            causal_mailbox_index(&[&sibling_wake], /*targetless_wait*/ false, &targets),
             None
         );
     }
