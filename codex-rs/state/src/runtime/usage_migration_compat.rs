@@ -124,6 +124,7 @@ mod tests {
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
     use sqlx::sqlite::SqlitePoolOptions;
+    use std::collections::BTreeSet;
 
     async fn test_pool() -> SqlitePool {
         SqlitePoolOptions::new()
@@ -132,6 +133,53 @@ mod tests {
             .await
             .expect("in-memory usage database should open")
     }
+
+    #[tokio::test]
+    async fn usage_migrator_covers_supported_credit_models() {
+        let pool = test_pool().await;
+        runtime_usage_migrator()
+            .run(&pool)
+            .await
+            .expect("usage migrations should apply");
+
+        let models = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT model FROM usage_codex_credit_rates ORDER BY model",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("credit-rate models should be readable")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            "gpt-5.2",
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6",
+            "gpt-5.6-cyber",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
+            "gpt-daybreak-blue",
+            "gpt-daybreak-blue-latest",
+            "gpt-daybreak-red",
+            "gpt-daybreak-red-latest",
+            "gpt-image-2",
+        ])
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        let missing = expected.difference(&models).collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "credit-rate model coverage is missing {missing:?}"
+        );
+    }
+
     #[tokio::test]
     async fn preserves_known_old_main_checksums_in_memory() {
         let pool = test_pool().await;
