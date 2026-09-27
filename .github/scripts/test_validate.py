@@ -69,6 +69,13 @@ class ValidateArgvTests(TestCase):
                 with self.assertRaises(SystemExit):
                     VALIDATE.gh_command(args, self.request())
 
+    def test_rejects_unapproved_profile(self) -> None:
+        args = self.args()
+        args.profile = "rust_minimal; echo nope"
+
+        with self.assertRaises(SystemExit):
+            VALIDATE.gh_command(args, self.request())
+
     def test_watch_validation_does_not_require_dispatch_sha(self) -> None:
         args = self.args()
         args.target_sha = None

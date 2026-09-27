@@ -21,9 +21,10 @@ SAFE_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PROFILES = {"rust_minimal", "rust_integration"}
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]+$")
+TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 TARGET_KINDS = {"lib", "integration"}
 MAX_TESTS = 64
+MAX_REQUEST_CHARS = 32768
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,6 +42,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize_request(raw: str, profile: str) -> tuple[str, dict]:
+    if not isinstance(raw, str) or len(raw) > MAX_REQUEST_CHARS:
+        raise SystemExit(f"request JSON must be at most {MAX_REQUEST_CHARS} characters")
+    if profile not in PROFILES:
+        raise SystemExit("request profile is not an allowed validation profile")
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -90,6 +95,8 @@ def validate_command_inputs(args: argparse.Namespace, *, require_target_sha: boo
 
     if not SAFE_REPO.fullmatch(args.repo):
         raise SystemExit("--repo must be in OWNER/REPOSITORY form")
+    if args.profile not in PROFILES:
+        raise SystemExit("--profile must be an allowed validation profile")
     if require_target_sha and (not args.target_sha or not SHA.fullmatch(args.target_sha)):
         raise SystemExit("--target-sha must be a full 40-character commit SHA")
     if not SAFE_REF.fullmatch(args.workflow_host_ref) or not SAFE_REF.fullmatch(args.base_ref):
@@ -145,6 +152,7 @@ def watch_run(args: argparse.Namespace) -> int:
     return subprocess.run(
         ["gh", "run", "watch", str(args.run_id), "--repo", args.repo, "--exit-status"],
         check=False,
+        shell=False,
     ).returncode
 
 
@@ -165,12 +173,15 @@ def main() -> int:
     print(json.dumps(plan(args, request_json), indent=2, sort_keys=True))
     if not args.dispatch:
         return 0
-    # Request values are schema-checked by the hosted workflow and are passed
-    # as explicit gh argv values; no shell evaluation or arbitrary flags occur.
+    # Security invariant: the executable and option names are fixed literals;
+    # repo/ref/SHA/profile/request values have strict allowlist or schema
+    # validation, each is one argv value after a fixed option, shell=False is
+    # explicit, and no shell evaluation or arbitrary flags can occur.
     # lgtm [py/command-line-injection]
     return subprocess.run(  # lgtm [py/command-line-injection]
         gh_command(args, request_json),  # lgtm [py/command-line-injection]
         check=False,
+        shell=False,
     ).returncode
 
 
