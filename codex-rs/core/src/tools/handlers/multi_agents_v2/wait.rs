@@ -96,10 +96,11 @@ impl Handler {
             ));
         }
 
-        // Capture the mailbox boundary before subscribing. This makes a
-        // native wait insensitive to entries that were already queued before
-        // the wait began while retaining a single event-driven subscription.
-        let (mut activity_rx, mut pending_activity, mailbox_generation, _pending_mailbox) =
+        // Capture the mailbox boundary and receiver under the queue's native
+        // activity boundary. This makes a native wait insensitive to entries
+        // already queued before it began while retaining a single
+        // event-driven subscription with no enqueue gap.
+        let (mut activity_rx, mut pending_activity, mailbox_generation, pending_mailbox) =
             if args.native_event_wait {
                 session.input_queue.subscribe_native_activity().await
             } else {
@@ -195,6 +196,7 @@ impl Handler {
             status_futures: &mut status_futures,
             deadline,
             native_event_wait: args.native_event_wait,
+            pending_mailbox: &pending_mailbox,
         })
         .await;
 
@@ -364,6 +366,7 @@ struct WaitEventContext<'a> {
     status_futures: &'a mut StatusFutures,
     deadline: Instant,
     native_event_wait: bool,
+    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
 }
 
 async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
@@ -379,6 +382,7 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         status_futures,
         mut deadline,
         native_event_wait,
+        pending_mailbox,
     } = context;
     if terminal_rule_satisfied(target_ids, return_when, statuses) {
         return (WaitReason::TargetTerminal, false);
@@ -391,6 +395,16 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
     }
     if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
         return (WaitReason::Steer, false);
+    }
+    if native_event_wait
+        && mailbox_wake_matches(
+            target_ids,
+            target_paths,
+            pending_mailbox,
+            mailbox_generation,
+        )
+    {
+        return (WaitReason::Mailbox, false);
     }
     if !native_event_wait {
         if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
@@ -432,22 +446,16 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                     }
                     return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false);
                 }
-                if native_event_wait
-                    && matches!(activity, InputQueueActivity::Mailbox)
-                    && session.input_queue.mailbox_generation() > mailbox_generation
-                    && (target_ids.is_empty()
-                        || session
-                            .input_queue
-                            .pending_mailbox_authors()
-                            .await
-                            .iter()
-                            .any(|(author, sequence, trigger_turn)| {
-                                *sequence > mailbox_generation
-                                    && *trigger_turn
-                                    && target_paths.contains(author)
-                            }))
-                {
-                    return (WaitReason::Mailbox, false);
+                if native_event_wait && matches!(activity, InputQueueActivity::Mailbox) {
+                    let pending_mailbox = session.input_queue.pending_mailbox_authors().await;
+                    if mailbox_wake_matches(
+                        target_ids,
+                        target_paths,
+                        &pending_mailbox,
+                        mailbox_generation,
+                    ) {
+                        return (WaitReason::Mailbox, false);
+                    }
                 }
             }
             status = status_futures.next(), if !status_futures.is_empty() => {
@@ -459,14 +467,25 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                 status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
             }
             _ = tokio::time::sleep_until(deadline) => {
-                if native_event_wait {
-                    deadline = Instant::now() + Duration::from_secs(60);
-                    continue;
-                }
                 return (WaitReason::Timeout, true);
             }
         }
     }
+}
+
+fn mailbox_wake_matches(
+    target_ids: &[ThreadId],
+    target_paths: &[codex_protocol::AgentPath],
+    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
+    mailbox_generation: u64,
+) -> bool {
+    pending_mailbox
+        .iter()
+        .any(|(author, sequence, trigger_turn)| {
+            *sequence > mailbox_generation
+                && *trigger_turn
+                && (target_ids.is_empty() || target_paths.contains(author))
+        })
 }
 
 fn terminal_rule_satisfied(
@@ -484,5 +503,55 @@ fn terminal_rule_satisfied(
         ReturnWhen::All => target_ids
             .iter()
             .all(|id| statuses.get(id).is_some_and(is_final)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::AgentPath;
+
+    fn path(value: &str) -> codex_protocol::AgentPath {
+        AgentPath::try_from(value).expect("agent path")
+    }
+
+    #[test]
+    fn native_wait_ignores_queue_only_mailbox_progress() {
+        let worker = path("/root/worker");
+        let target_paths = vec![worker.clone()];
+        let queued_only = vec![(worker, 1, false)];
+        assert!(!mailbox_wake_matches(
+            &[ThreadId::new()],
+            &target_paths,
+            &queued_only,
+            0,
+        ));
+    }
+
+    #[test]
+    fn native_wait_accepts_actionable_target_mailbox_progress() {
+        let worker = path("/root/worker");
+        let target_paths = vec![worker.clone()];
+        let actionable = vec![(worker, 1, true)];
+        assert!(mailbox_wake_matches(
+            &[ThreadId::new()],
+            &target_paths,
+            &actionable,
+            0,
+        ));
+    }
+
+    #[test]
+    fn targetless_native_wait_accepts_any_actionable_mailbox_progress() {
+        let worker = path("/root/worker");
+        let actionable = vec![(worker, 1, true)];
+        assert!(mailbox_wake_matches(&[], &[], &actionable, 0));
+    }
+
+    #[test]
+    fn native_wait_does_not_replay_the_snapshot_boundary() {
+        let worker = path("/root/worker");
+        let snapshot = vec![(worker, 1, true)];
+        assert!(!mailbox_wake_matches(&[], &[], &snapshot, 1));
     }
 }

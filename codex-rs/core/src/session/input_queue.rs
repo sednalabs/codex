@@ -87,6 +87,11 @@ pub(crate) struct TurnInputQueue {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    // Serializes the native wait snapshot with mailbox publication. Without a
+    // shared boundary, an enqueue can land after the snapshot but before the
+    // receiver subscription and its sequence can be mistaken for the
+    // snapshot boundary, losing the wake.
+    native_activity_boundary: Mutex<()>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
     mailbox_generation: AtomicU64,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
@@ -106,6 +111,7 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
+            native_activity_boundary: Mutex::new(()),
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
             mailbox_generation: AtomicU64::new(0),
             terminal_completions: Mutex::new(VecDeque::new()),
@@ -145,6 +151,12 @@ impl InputQueue {
         u64,
         Vec<(codex_protocol::AgentPath, u64, bool)>,
     ) {
+        let _boundary = self.native_activity_boundary.lock().await;
+        let activity_rx = self.activity_tx.subscribe();
+        // Capture the sequence boundary while publication is excluded. Any
+        // entry in this snapshot is already queued; later entries have a
+        // strictly greater sequence and are observable through `activity_rx`.
+        let generation = self.mailbox_generation.load(Ordering::Acquire);
         let (mailbox_empty, entries) = {
             let mailbox = self.mailbox_pending_mails.lock().await;
             let entries = mailbox
@@ -159,8 +171,6 @@ impl InputQueue {
                 .collect();
             (mailbox.is_empty(), entries)
         };
-        let activity_rx = self.activity_tx.subscribe();
-        let generation = self.mailbox_generation.load(Ordering::Acquire);
         let pending = if self.has_pending_terminal_completions().await {
             Some(InputQueueActivity::TerminalCompletion)
         } else if !mailbox_empty {
@@ -176,6 +186,7 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        let _boundary = self.native_activity_boundary.lock().await;
         let mut mailbox = self.mailbox_pending_mails.lock().await;
         let sequence = self.mailbox_generation.fetch_add(1, Ordering::AcqRel) + 1;
         mailbox.push_back(PendingMailboxCommunication {
@@ -507,6 +518,49 @@ mod tests {
         assert!(queue.mailbox_generation() > before);
         let snapshot = queue.mailbox_generation();
         assert_eq!(queue.mailbox_generation(), snapshot);
+    }
+
+    #[tokio::test]
+    async fn native_activity_snapshot_has_a_stable_generation_boundary() {
+        let queue = InputQueue::new();
+        queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "already queued",
+                    /*trigger_turn*/ true,
+                ),
+                Default::default(),
+            )
+            .await;
+
+        let (mut activity_rx, pending, generation, snapshot) =
+            queue.subscribe_native_activity().await;
+        assert_eq!(pending, Some(InputQueueActivity::Mailbox));
+        assert_eq!(generation, 1);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].1, generation);
+
+        queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "arrived after subscription",
+                    /*trigger_turn*/ true,
+                ),
+                Default::default(),
+            )
+            .await;
+        activity_rx.changed().await.expect("mailbox update");
+        assert!(
+            queue
+                .pending_mailbox_authors()
+                .await
+                .iter()
+                .any(|(_, sequence, _)| *sequence > generation)
+        );
     }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
