@@ -208,3 +208,8 @@ log *args:
 [windows]
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
+
+# Validation-only exact proof for w14250. This recipe is carried only on the
+# disposable validation ref and is not part of the product candidate.
+core-multi-agent-orchestration-targeted:
+    .github/scripts/validation-lanes/run-w14250-native-wait-exact.sh
