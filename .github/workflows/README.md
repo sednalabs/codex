@@ -101,6 +101,11 @@ contract today.
   protected branch or scheduled runs. Do not cache Rust toolchain executables or
   pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
   they are compiled outputs, not the source extraction data CodeQL needs.
+- Explicit, reviewed `codeql[rule-id]` source suppressions are applied through
+  the pinned `advanced-security/dismiss-alerts` action. It only dismisses
+  findings carrying a matching suppression in the uploaded SARIF; an
+  unsuppressed finding remains an open required-gate failure, and removing a
+  suppression reopens the finding on the next protected scan.
 - When a pull request closes, `cancel-pr-runs.yml` cancels active PR-scoped
   workflow runs for that PR. Merged PRs still get the authoritative post-merge
   CodeQL scan from the `main` push; the canceller deliberately leaves protected
