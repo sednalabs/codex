@@ -366,7 +366,7 @@ struct WaitEventContext<'a> {
     status_futures: &'a mut StatusFutures,
     deadline: Instant,
     native_event_wait: bool,
-    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
+    pending_mailbox: &'a [(codex_protocol::AgentPath, u64, bool)],
 }
 
 async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
