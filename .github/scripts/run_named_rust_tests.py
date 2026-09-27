@@ -210,9 +210,9 @@ def main() -> int:
             "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         }
     )
-    output = Path("rust-tests-v1-results.json")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path("rust-tests-v1-results.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(
         json.dumps(
             {"status": result.get("status"), "failure_code": result.get("failure_code", "")},
