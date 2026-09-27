@@ -700,6 +700,12 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
+    /// The base instructions were carried from a parent whose model
+    /// instructions were already resolved.  They must be recomposed after a
+    /// child model is selected instead of being mistaken for an operator
+    /// override.
+    pub base_instructions_are_inherited: bool,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -1547,6 +1553,7 @@ impl Config {
             model_auto_compact_token_limit: self.model_auto_compact_token_limit,
             tool_output_token_limit: self.tool_output_token_limit,
             base_instructions: self.base_instructions.clone(),
+            base_instructions_are_inherited: self.base_instructions_are_inherited,
             personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
@@ -4041,6 +4048,7 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
+            base_instructions_are_inherited: false,
             personality,
             developer_instructions,
             compact_prompt,

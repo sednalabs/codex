@@ -192,6 +192,13 @@ pub(crate) fn build_agent_spawn_config(
 ) -> Result<Config, FunctionCallError> {
     let mut config = build_agent_shared_config(turn)?;
     config.base_instructions = Some(base_instructions.text.clone());
+    // A child normally receives the parent's effective model instructions. If
+    // those bytes still equal the parent's selected model composition, they
+    // are not an operator override and must be recomposed after child model
+    // selection (including the fork-owned provider overlay). Preserve a true
+    // operator override verbatim.
+    config.base_instructions_are_inherited =
+        base_instructions.text == turn.model_info.get_model_instructions(turn.personality);
     Ok(config)
 }
 

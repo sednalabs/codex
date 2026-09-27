@@ -1335,3 +1335,29 @@ async fn openai_overlay_applies_after_remote_and_cache_composition() {
             .contains(sentence)
     );
 }
+
+#[tokio::test]
+async fn inherited_model_instructions_are_recomposed_after_child_selection() {
+    const SENTENCE: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let mut parent = remote_model("gpt-6-sol", "Parent", /*priority*/ 7);
+    parent.base_instructions = format!("parent {SENTENCE}");
+    let mut child = remote_model("gpt-6-luna", "Child", /*priority*/ 7);
+    child.base_instructions = format!("child {SENTENCE}");
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![parent, child.clone()],
+    });
+
+    let info = manager
+        .get_model_info(
+            "gpt-6-luna",
+            &ModelsManagerConfig {
+                base_instructions: Some("parent already resolved".to_string()),
+                base_instructions_are_inherited: true,
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+
+    assert_eq!(info.base_instructions, child.base_instructions);
+    assert!(info.base_instructions.contains(SENTENCE));
+}

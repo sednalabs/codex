@@ -49,7 +49,9 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
         };
     }
 
-    if let Some(base_instructions) = &config.base_instructions {
+    if let Some(base_instructions) = &config.base_instructions
+        && !config.base_instructions_are_inherited
+    {
         model.base_instructions = base_instructions.clone();
         clear_instruction_messages(&mut model);
     } else {
