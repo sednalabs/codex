@@ -7,7 +7,8 @@ archive_file="${VALIDATION_LAB_NEXTEST_ARCHIVE_FILE:-${RUNNER_TEMP:-/tmp}/codex-
 mkdir -p "$(dirname "${archive_file}")"
 
 archive_extract_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/codex-core-carry-archive.XXXXXX")"
-trap 'rm -rf "${archive_extract_dir}"' EXIT
+helper_stage_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/codex-core-carry-helpers.XXXXXX")"
+trap 'rm -rf "${archive_extract_dir}" "${helper_stage_dir}"' EXIT
 
 # Build the runtime helpers from this exact checkout and target directory. They
 # are not test binaries, so cargo-nextest does not include them in its archive.
@@ -22,7 +23,7 @@ cargo nextest archive \
   --test all \
   --archive-file "${archive_file}"
 
-helper_archive_dir="${archive_extract_dir}/validation-lab/helpers"
+helper_archive_dir="${helper_stage_dir}/validation-lab/helpers"
 mkdir -p "${helper_archive_dir}"
 for helper in codex-code-mode-host test_stdio_server; do
   source_path="${CARGO_TARGET_DIR:-target}/debug/${helper}"
@@ -41,10 +42,19 @@ test_stdio_server=$(sha256sum "${helper_archive_dir}/test_stdio_server" | awk '{
 EOF
 
 # Repack the nextest archive with the two runtime helpers adjacent to its
-# metadata. nextest ignores the validation-lab namespace, while the consumer
-# extracts it explicitly and never invokes a consumer-side Cargo build.
+# metadata. Stage helpers separately and install them only after extracting the
+# original archive so an archive-owned path cannot overwrite the helpers.
 tar --zstd -xf "${archive_file}" -C "${archive_extract_dir}"
+mkdir -p "${archive_extract_dir}/validation-lab/helpers"
+cp --preserve=mode,timestamps "${helper_archive_dir}/"* "${archive_extract_dir}/validation-lab/helpers/"
 tar --zstd -cf "${archive_file}.tmp" -C "${archive_extract_dir}" .
 mv "${archive_file}.tmp" "${archive_file}"
+
+for helper in manifest codex-code-mode-host test_stdio_server; do
+  if ! tar --zstd -tf "${archive_file}" | sed 's#^\./##' | grep -Fxq "validation-lab/helpers/${helper}"; then
+    echo "repacked nextest archive is missing validation-lab/helpers/${helper}" >&2
+    exit 1
+  fi
+done
 
 du -h "${archive_file}"
