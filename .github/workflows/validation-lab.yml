@@ -1349,7 +1349,6 @@ jobs:
       }}
     uses: ./.github/workflows/_validation-named-tests.yml
     with:
-      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
       target_sha: ${{ needs.metadata.outputs.head_sha }}
       base_ref: ${{ needs.metadata.outputs.base_ref }}
       base_sha: ${{ needs.metadata.outputs.base_sha }}

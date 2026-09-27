@@ -39,7 +39,6 @@ jobs:
   named_tests:
     uses: ./.github/workflows/_validation-named-tests.yml
     with:
-      checkout_ref: ${{ inputs.target_sha }}
       target_sha: ${{ inputs.target_sha }}
       base_ref: ${{ inputs.base_ref }}
       harness_sha: ${{ github.sha }}
