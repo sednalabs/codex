@@ -16,6 +16,7 @@ use codex_core_api::AskForApproval;
 use codex_core_api::AuthCredentialsStoreMode;
 use codex_core_api::AuthManager;
 use codex_core_api::AutoCompactTokenLimitScope;
+use codex_core_api::BaseInstructionsProvenance;
 use codex_core_api::CodexAppsToolsCache;
 use codex_core_api::CodexHomeUserInstructionsProvider;
 use codex_core_api::CodexThread;
@@ -208,6 +209,8 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         hide_agent_reasoning: false,
         show_raw_agent_reasoning: false,
         base_instructions: None,
+        // No sample-supplied instruction layer exists; the selected model owns the base text.
+        base_instructions_provenance: BaseInstructionsProvenance::Model,
         developer_instructions: None,
         user_instructions: None,
         guardian_policy_config: None,
