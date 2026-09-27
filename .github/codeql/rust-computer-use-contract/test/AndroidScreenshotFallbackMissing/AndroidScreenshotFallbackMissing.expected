@@ -1,0 +1,1 @@
+| codex-rs/computer-use-runtime/src/lib.rs:7:1:9:1 | fn screenshot_fallback_response | Android degraded visual observation must preserve a screenshot fallback and convert provider artifacts into native image output when direct MCP image content is unavailable. |
