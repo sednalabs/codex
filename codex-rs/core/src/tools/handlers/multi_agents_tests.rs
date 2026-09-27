@@ -6773,9 +6773,7 @@ async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
         .get_model_instructions(turn.personality)
         .to_string();
     Arc::make_mut(&mut turn.config).set_base_instructions_override(Some(instructions.clone()));
-    let base_instructions = BaseInstructions {
-        text: instructions,
-    };
+    let base_instructions = BaseInstructions { text: instructions };
 
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
