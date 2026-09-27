@@ -16,6 +16,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -86,11 +88,13 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    mailbox_generation: AtomicU64,
     terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
 }
 
 struct PendingMailboxCommunication {
     communication: InterAgentCommunication,
+    sequence: u64,
     start_options: TurnStartOptions,
     _diagnostics_guard: GaugeGuard,
 }
@@ -103,6 +107,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            mailbox_generation: AtomicU64::new(0),
             terminal_completions: Mutex::new(VecDeque::new()),
         }
     }
@@ -132,20 +137,75 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
+    pub(crate) async fn subscribe_native_activity(
+        &self,
+    ) -> (
+        watch::Receiver<InputQueueActivity>,
+        Option<InputQueueActivity>,
+        u64,
+        Vec<(codex_protocol::AgentPath, u64, bool)>,
+    ) {
+        let mailbox = self.mailbox_pending_mails.lock().await;
+        let activity_rx = self.activity_tx.subscribe();
+        let generation = self.mailbox_generation.load(Ordering::Acquire);
+        let pending = if self.has_pending_terminal_completions().await {
+            Some(InputQueueActivity::TerminalCompletion)
+        } else if !mailbox.is_empty() {
+            Some(InputQueueActivity::Mailbox)
+        } else {
+            None
+        };
+        let entries = mailbox
+            .iter()
+            .map(|mail| {
+                (
+                    mail.communication.author.clone(),
+                    mail.sequence,
+                    mail.communication.trigger_turn,
+                )
+            })
+            .collect();
+        (activity_rx, pending, generation, entries)
+    }
+
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        let mut mailbox = self.mailbox_pending_mails.lock().await;
+        let sequence = self.mailbox_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        mailbox.push_back(PendingMailboxCommunication {
+            communication,
+            start_options,
+            sequence,
+            _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+        });
+        drop(mailbox);
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    /// Monotonic boundary for native waits. A waiter captures this value before
+    /// subscribing so messages already queued cannot be reported as a new wake.
+    pub(crate) fn mailbox_generation(&self) -> u64 {
+        self.mailbox_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn pending_mailbox_authors(
+        &self,
+    ) -> Vec<(codex_protocol::AgentPath, u64, bool)> {
         self.mailbox_pending_mails
             .lock()
             .await
-            .push_back(PendingMailboxCommunication {
-                communication,
-                start_options,
-                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
-            });
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+            .iter()
+            .map(|mail| {
+                (
+                    mail.communication.author.clone(),
+                    mail.sequence,
+                    mail.communication.trigger_turn,
+                )
+            })
+            .collect()
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -426,6 +486,25 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn mailbox_generation_advances_only_for_newly_enqueued_messages() {
+        let queue = InputQueue::new();
+        let before = queue.mailbox_generation();
+        let message = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root(),
+            Vec::new(),
+            "queued".to_string(),
+            /*trigger_turn*/ false,
+        );
+        queue
+            .enqueue_mailbox_communication(message, Default::default())
+            .await;
+        assert!(queue.mailbox_generation() > before);
+        let snapshot = queue.mailbox_generation();
+        assert_eq!(queue.mailbox_generation(), snapshot);
+    }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
     #[test_case::test_case("FunctionCallOutput", TurnInput::FunctionCallOutput)]

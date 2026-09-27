@@ -173,6 +173,24 @@ impl AgentNavigationState {
         {
             return;
         }
+        // Delayed activity notifications must not revive a thread after an
+        // authoritative stop. Only the explicit turn-start lifecycle event
+        // is allowed to reopen the row.
+        if self.stopped_threads.contains(&thread_id) {
+            return;
+        }
+        self.set_running(thread_id, /*is_running*/ true);
+    }
+
+    /// Reopens a stopped row only when a new turn has actually started.
+    pub(crate) fn mark_turn_started(&mut self, thread_id: ThreadId) {
+        if self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+        {
+            return;
+        }
         self.stopped_threads.remove(&thread_id);
         self.set_running(thread_id, /*is_running*/ true);
     }
@@ -512,5 +530,25 @@ mod tests {
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
             Some("Main [default]".to_string())
         );
+    }
+
+    #[test]
+    fn delayed_running_activity_does_not_revive_stopped_thread() {
+        let (mut state, _main_thread_id, first_agent_id, _) = populated_state();
+
+        state.mark_stopped(first_agent_id);
+        state.mark_running(first_agent_id);
+
+        assert!(!state.get(&first_agent_id).expect("agent row").is_running);
+    }
+
+    #[test]
+    fn explicit_turn_start_reopens_stopped_thread() {
+        let (mut state, _main_thread_id, first_agent_id, _) = populated_state();
+
+        state.mark_stopped(first_agent_id);
+        state.mark_turn_started(first_agent_id);
+
+        assert!(state.get(&first_agent_id).expect("agent row").is_running);
     }
 }
