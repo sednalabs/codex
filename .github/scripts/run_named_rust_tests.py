@@ -22,10 +22,11 @@ from typing import Any
 SCHEMA_VERSION = "rust-tests-v1"
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]+$")
+TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
 MAX_TESTS = 64
+MAX_REQUEST_CHARS = 32768
 MAX_DIAGNOSTIC_CHARS = 4096
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
@@ -77,8 +78,11 @@ def fail(code: str, message: str) -> dict[str, Any]:
 
 
 def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    raw = os.environ.get("RUST_TEST_REQUEST_JSON", "")
+    if len(raw) > MAX_REQUEST_CHARS:
+        return None, fail("request_too_large", "request exceeds the hosted size bound")
     try:
-        payload = json.loads(os.environ.get("RUST_TEST_REQUEST_JSON", ""))
+        payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         return None, fail("request_invalid_json", f"request could not be decoded: {exc}")
     if not isinstance(payload, dict):
@@ -122,13 +126,32 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
 
 
 def cargo_args(request: dict[str, Any], *, list_only: bool, test_name: str = "") -> list[str]:
-    # Package/target/test values are regex-validated by load_request before
-    # this argv-only construction; no shell evaluation occurs.
-    args = ["cargo", "test", "--locked", "-p", request["package"]]  # lgtm [py/command-line-injection]
-    if request["target_kind"] == "lib":
+    # Revalidate at the command-construction boundary as well as at input
+    # loading. Every dynamic value is bounded by the typed Rust-name grammar.
+    package = request.get("package")
+    target_kind = request.get("target_kind")
+    target = request.get("target", "")
+    if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
+        raise ValueError("package is not a safe Cargo package name")
+    if target_kind not in ALLOWED_TARGET_KINDS:
+        raise ValueError("target kind is not in the hosted allowlist")
+    if target_kind == "integration":
+        if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
+            raise ValueError("integration target is not a safe Cargo target name")
+    elif target not in ("", None, "lib"):
+        raise ValueError("lib requests must not name an integration target")
+    if list_only:
+        if test_name:
+            raise ValueError("inventory requests must not name a test")
+    elif not isinstance(test_name, str) or not TEST_RE.fullmatch(test_name):
+        raise ValueError("test name is not a safe fully-qualified Rust name")
+    # The executable and option names are fixed; validated values are each one
+    # argv element, with no shell/eval or option reinterpretation.
+    args = ["cargo", "test", "--locked", "-p", package]  # lgtm [py/command-line-injection]
+    if target_kind == "lib":
         args.append("--lib")
     else:
-        args.extend(["--test", request["target"]])  # lgtm [py/command-line-injection]
+        args.extend(["--test", target])  # lgtm [py/command-line-injection]
     args.append("--")
     if list_only:
         args.append("--list")
@@ -154,16 +177,17 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
-    # The request schema strictly validates package and target names. The
-    # command remains intentionally argv-based (never shell-evaluated).
-    # lgtm [py/command-line-injection]
+    # The command remains intentionally argv-based (never shell-evaluated);
+    # cargo_args revalidates every request-derived value at the sink boundary.
+    inventory_command = cargo_args(request, list_only=True)
     inventory = subprocess.run(  # lgtm [py/command-line-injection]
-        cargo_args(request, list_only=True),
+        inventory_command,  # lgtm [py/command-line-injection]
         cwd=manifest_root,
         env=env,
         text=True,
         capture_output=True,
         check=False,
+        shell=False,
     )
     names = listed_tests(inventory.stdout)
     if inventory.returncode != 0:
@@ -205,16 +229,17 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         )
         return result
     for name in request["tests"]:
-        # Test names are restricted to the Rust fully-qualified-name grammar
-        # before reaching this argv-only invocation.
-        # lgtm [py/command-line-injection]
+        # cargo_args revalidates the Rust fully-qualified name before this
+        # argv-only invocation; no shell or arbitrary flag can be introduced.
+        test_command = cargo_args(request, list_only=False, test_name=name)
         completed = subprocess.run(  # lgtm [py/command-line-injection]
-            cargo_args(request, list_only=False, test_name=name),
+            test_command,  # lgtm [py/command-line-injection]
             cwd=manifest_root,
             env=env,
             text=True,
             capture_output=True,
             check=False,
+            shell=False,
         )
         output = "\n".join(
             value for value in (completed.stdout, completed.stderr) if value

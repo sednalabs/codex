@@ -90,6 +90,17 @@ class NamedRustTests(TestCase):
         self.assertLessEqual(len(value), MODULE.MAX_DIAGNOSTIC_CHARS + 60)
         self.assertIn("see hosted job log", value)
 
+    def test_command_builder_rejects_untrusted_values_at_the_sink(self) -> None:
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args({**REQUEST, "package": "--workspace"}, list_only=True)
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args(
+                {**REQUEST, "target_kind": "integration", "target": "$(touch nope)"},
+                list_only=True,
+            )
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
+
 
 if __name__ == "__main__":
     main()
