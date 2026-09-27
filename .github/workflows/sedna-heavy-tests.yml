@@ -18,6 +18,7 @@ on:
         type: choice
         options:
           - all
+          - codex.thread-manager-sample-targeted
           - core-compile-smoke
           - codex.model-catalog-compat-targeted
           - core-carry-core-smoke

@@ -4,24 +4,22 @@
 # The order is intentional: a failure is stronger than cancellation, which is
 # stronger than a successful member of the same validation family.
 combined_validation_result() {
-  local result
+  local result max_weight=0 weight
   for result in "$@"; do
-    if [[ "${result}" == "failure" ]]; then
-      printf '%s\n' failure
-      return 0
+    case "${result}" in
+      failure) weight=3 ;;
+      cancelled) weight=2 ;;
+      success) weight=1 ;;
+      *) weight=0 ;;
+    esac
+    if (( weight > max_weight )); then
+      max_weight="${weight}"
     fi
   done
-  for result in "$@"; do
-    if [[ "${result}" == "cancelled" ]]; then
-      printf '%s\n' cancelled
-      return 0
-    fi
-  done
-  for result in "$@"; do
-    if [[ "${result}" == "success" ]]; then
-      printf '%s\n' success
-      return 0
-    fi
-  done
-  printf '%s\n' skipped
+  case "${max_weight}" in
+    3) printf '%s\n' failure ;;
+    2) printf '%s\n' cancelled ;;
+    1) printf '%s\n' success ;;
+    *) printf '%s\n' skipped ;;
+  esac
 }

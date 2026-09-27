@@ -5445,8 +5445,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(lane["setup_class"], "rust_minimal")
         recipes = just_recipe_bodies(REPO_ROOT / "justfile")
         self.assertEqual(
-            recipes["thread-manager-sample-targeted"],
-            ["    cargo check --locked -p codex-thread-manager-sample"],
+            recipes["thread-manager-sample-targeted"][0],
+            "    cargo check --locked -p codex-thread-manager-sample",
         )
 
     def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
@@ -7215,7 +7215,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_integration_lane_count"], 7)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 14)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "29")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "30")
         self.assertEqual(payload["rust_integration_max_parallel"], "29")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:

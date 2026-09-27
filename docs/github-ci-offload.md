@@ -306,7 +306,8 @@ scripts/dispatch-validation-lab-snapshot.sh \
 
 What it does:
 
-1. Builds a disposable commit from the explicitly named local paths without
+1. Builds a disposable commit from the explicitly named paths (relative to
+   the invocation directory) without
    rewriting the current branch. It refuses to sweep other dirty paths unless
    `--include-all` is explicitly supplied.
 2. Pushes that commit to a disposable `validation/snapshot-*` ref on `origin`.

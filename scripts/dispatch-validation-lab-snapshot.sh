@@ -153,6 +153,7 @@ fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 git_dir="$(git rev-parse --git-dir)"
+repo_prefix="$(git rev-parse --show-prefix)"
 
 if [[ "${include_all}" == "true" && "${#paths[@]}" -gt 0 ]]; then
   echo "--include-all cannot be combined with --path" >&2
@@ -171,6 +172,7 @@ EOF
   fi
 fi
 
+resolved_paths=()
 for path in "${paths[@]}"; do
   case "${path}" in
     ""|/*|.|..|../*|*/../*|*/..)
@@ -178,7 +180,9 @@ for path in "${paths[@]}"; do
       exit 2
       ;;
   esac
+  resolved_paths+=("${repo_prefix}${path}")
 done
+paths=("${resolved_paths[@]}")
 
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 if [[ -z "$current_branch" ]]; then
