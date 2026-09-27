@@ -548,7 +548,11 @@ async fn fail_mcp_post_when_armed(
                     has_session_id && mcp_method.as_deref() == Some("notifications/initialized")
                 }
                 ArmedFailureTarget::Session => {
-                    has_session_id && mcp_method.as_deref() != Some("notifications/initialized")
+                    has_session_id
+                        && !matches!(
+                            mcp_method.as_deref(),
+                            Some("notifications/initialized" | "notifications/cancelled")
+                        )
                 }
             }
         {

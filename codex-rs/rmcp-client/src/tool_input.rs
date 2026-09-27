@@ -28,6 +28,7 @@ use serde_json::Value;
 
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::request_cancellation_guard::RequestCancellationGuard;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +53,12 @@ pub(crate) async fn call_tool(
                 )
                 .await?;
             let id = handle.id.clone();
-            Ok::<_, ServiceError>((id, handle.await_response().await?))
+            let guard = RequestCancellationGuard::new(handle.peer.clone(), id.clone());
+            let response = handle.await_response().await;
+            if response.is_ok() {
+                guard.disarm();
+            }
+            Ok::<_, ServiceError>((id, response?))
         }
         .await;
         let (id, result) = response.map_err(|error| {

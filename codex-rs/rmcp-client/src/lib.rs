@@ -22,6 +22,7 @@ mod oauth_refresh_mode;
 mod perform_oauth_login;
 mod program_resolver;
 mod protocol_mode;
+mod request_cancellation_guard;
 mod rmcp_client;
 mod service_error;
 mod startup_error;
