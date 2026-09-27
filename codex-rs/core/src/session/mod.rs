@@ -117,6 +117,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::HistoryPosition;
@@ -661,11 +662,18 @@ impl Session {
         let history_mode = conversation_history.get_history_mode(
             requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
         );
+        let persisted_base_instructions =
+            match conversation_history.get_base_instructions_provenance() {
+                BaseInstructionsProvenance::Model => None,
+                BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown => {
+                    conversation_history.get_base_instructions().map(|s| s.text)
+                }
+            };
         let base_instructions = config
             .base_instructions
             .clone()
             .filter(|_| config.base_instructions_are_explicit)
-            .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
+            .or(persisted_base_instructions)
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
 
         // Respect thread-start tools. For resumed/forked threads, read from the db first, then

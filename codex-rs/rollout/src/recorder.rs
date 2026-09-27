@@ -57,6 +57,7 @@ use crate::state_db;
 use crate::state_db::StateDbHandle;
 use codex_git_utils::collect_git_info;
 use codex_git_utils::get_git_repo_root;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::GitInfo as ProtocolGitInfo;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::InitialHistory;
@@ -100,6 +101,7 @@ pub enum RolloutRecorderParams {
         thread_source: Option<ThreadSource>,
         originator: String,
         base_instructions: BaseInstructions,
+        base_instructions_provenance: BaseInstructionsProvenance,
         dynamic_tools: Vec<DynamicToolSpec>,
         selected_capability_roots: Vec<SelectedCapabilityRoot>,
         multi_agent_version: Option<MultiAgentVersion>,
@@ -195,6 +197,7 @@ impl RolloutRecorderParams {
             thread_source,
             originator,
             base_instructions,
+            base_instructions_provenance: BaseInstructionsProvenance::Unknown,
             dynamic_tools,
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -208,6 +211,20 @@ impl RolloutRecorderParams {
     pub fn with_session_id(mut self, session_id: SessionId) -> Self {
         if let Self::Create { session_id: id, .. } = &mut self {
             *id = session_id;
+        }
+        self
+    }
+
+    pub fn with_base_instructions_provenance(
+        mut self,
+        provenance: BaseInstructionsProvenance,
+    ) -> Self {
+        if let Self::Create {
+            base_instructions_provenance: current,
+            ..
+        } = &mut self
+        {
+            *current = provenance;
         }
         self
     }
@@ -806,6 +823,7 @@ impl RolloutRecorder {
                 thread_source,
                 originator,
                 base_instructions,
+                base_instructions_provenance,
                 dynamic_tools,
                 selected_capability_roots,
                 multi_agent_version,
@@ -845,6 +863,7 @@ impl RolloutRecorder {
                     thread_source,
                     model_provider: Some(config.model_provider_id().to_string()),
                     base_instructions: Some(base_instructions),
+                    base_instructions_provenance,
                     dynamic_tools: if dynamic_tools.is_empty() {
                         None
                     } else {

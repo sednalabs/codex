@@ -214,6 +214,38 @@ async fn apply_role_preserves_unspecified_keys() {
 }
 
 #[tokio::test]
+async fn apply_role_preserves_operator_instruction_override_provenance() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.base_instructions = Some("operator instructions".to_string());
+    config.base_instructions_are_explicit = true;
+    let role_path = write_role_config(
+        &home,
+        "explorer-instructions.toml",
+        "model = \"role-model\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(
+        config.base_instructions.as_deref(),
+        Some("operator instructions")
+    );
+    assert!(config.base_instructions_are_explicit);
+    assert!(!config.base_instructions_are_inherited);
+}
+
+#[tokio::test]
 async fn apply_role_reports_explicit_service_tier() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let role_path = write_role_config(

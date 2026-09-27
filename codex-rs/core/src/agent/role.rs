@@ -196,6 +196,15 @@ mod reload {
                 .model_verbosity
                 .clone_from(&config.model_verbosity);
         }
+        // Preserve the current instruction source when the role reload did
+        // not replace the operator's value. Inherited model instructions are
+        // deliberately retained as inherited so a later child selection can
+        // recompose them; a changed role/user layer becomes an explicit
+        // override through normal config loading.
+        if next_config.base_instructions == config.base_instructions {
+            next_config.base_instructions_are_inherited = config.base_instructions_are_inherited;
+            next_config.base_instructions_are_explicit = config.base_instructions_are_explicit;
+        }
         Ok(next_config)
     }
 
@@ -259,6 +268,7 @@ mod reload {
             service_tier: preserve_current_service_tier.then(|| config.service_tier.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
+            base_instructions: config.base_instructions.clone(),
             ..Default::default()
         }
     }

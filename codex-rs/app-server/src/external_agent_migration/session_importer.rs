@@ -320,6 +320,11 @@ impl ExternalAgentSessionImporter {
                     .clone()
                     .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             },
+            base_instructions_provenance: if config.base_instructions.is_some() {
+                codex_protocol::protocol::BaseInstructionsProvenance::Operator
+            } else {
+                codex_protocol::protocol::BaseInstructionsProvenance::Model
+            },
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: Some(MultiAgentVersion::V1),
