@@ -101,6 +101,27 @@ impl Handler {
                 "targets must resolve to unique agents".to_string(),
             ));
         }
+        if args.native_event_wait {
+            let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
+                session
+                    .services
+                    .agent_control
+                    .get_agent_metadata(session.thread_id)
+                    .and_then(|metadata| metadata.agent_path)
+            });
+            for target_id in &target_ids {
+                let target_agent_path = session
+                    .services
+                    .agent_control
+                    .get_agent_metadata(*target_id)
+                    .and_then(|metadata| metadata.agent_path);
+                if let Some(message) =
+                    reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
+                {
+                    return Err(FunctionCallError::RespondToModel(message));
+                }
+            }
+        }
 
         // Capture the mailbox boundary and receiver under the queue's native
         // activity boundary. This makes a native wait insensitive to entries
@@ -516,6 +537,30 @@ fn terminal_rule_satisfied(
     }
 }
 
+/// A native wait on the current agent or one of its ancestors creates a reverse
+/// dependency: the ancestor normally waits for this child to return, so both
+/// sides can remain in native waits forever. Bounded non-native status waits
+/// retain their existing compatibility, while descendants and unrelated peers
+/// remain valid native wait targets.
+fn reverse_wait_error(
+    current_agent_path: Option<&codex_protocol::AgentPath>,
+    target_agent_path: Option<&codex_protocol::AgentPath>,
+) -> Option<String> {
+    let (Some(current), Some(target)) = (current_agent_path, target_agent_path) else {
+        return None;
+    };
+    let target_is_current_or_ancestor = target == current
+        || current
+            .as_str()
+            .strip_prefix(target.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    target_is_current_or_ancestor.then(|| {
+        format!(
+            "wait target `{target}` is the current agent or an ancestor of `{current}`; return the decision-complete result to the parent instead of waiting on it"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +648,30 @@ mod tests {
             ReturnWhen::All,
             &statuses,
         ));
+    }
+
+    #[test]
+    fn reverse_wait_rejects_parent_and_self_but_allows_noncyclic_targets() {
+        let parent = path("/root/staff_r2_signing");
+        let reviewer = path("/root/staff_r2_signing/staff_custody_review");
+        let child = path("/root/staff_r2_signing/staff_custody_review/worker");
+        let sibling = path("/root/staff_r2_signing/other_review");
+
+        let parent_error = reverse_wait_error(Some(&reviewer), Some(&parent))
+            .expect("a reviewer must not wait on its parent");
+        assert!(parent_error.contains("current agent or an ancestor"));
+        assert!(reverse_wait_error(Some(&reviewer), Some(&reviewer)).is_some());
+        assert!(reverse_wait_error(Some(&reviewer), Some(&child)).is_none());
+        assert!(reverse_wait_error(Some(&reviewer), Some(&sibling)).is_none());
+    }
+
+    #[test]
+    fn reverse_wait_guard_is_conservative_when_paths_are_unknown() {
+        let reviewer = path("/root/staff_r2_signing/staff_custody_review");
+        let parent = path("/root/staff_r2_signing");
+
+        assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&parent)).is_none());
+        assert!(reverse_wait_error(Some(&reviewer), /*target_agent_path*/ None).is_none());
     }
 
     #[tokio::test]
