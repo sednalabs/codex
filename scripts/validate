@@ -182,7 +182,8 @@ def main() -> int:
     # explicit, and no shell evaluation or arbitrary flags can occur.
     # lgtm [py/command-line-injection]
     return subprocess.run(  # lgtm [py/command-line-injection]
-        gh_command(args, request_json),  # lgtm [py/command-line-injection]
+        # codeql[py/command-line-injection]
+        gh_command(args, request_json),
         check=False,
         shell=False,
     ).returncode

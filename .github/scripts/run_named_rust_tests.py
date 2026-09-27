@@ -186,7 +186,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     inventory_command = cargo_args(request, list_only=True)
     # lgtm [py/command-line-injection]
     inventory = subprocess.run(
-        # lgtm [py/command-line-injection]
+        # codeql[py/command-line-injection]
         inventory_command,
         cwd=manifest_root,
         env=env,
@@ -241,7 +241,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         test_command = cargo_args(request, list_only=False, test_name=name)
         # lgtm [py/command-line-injection]
         completed = subprocess.run(
-            # lgtm [py/command-line-injection]
+            # codeql[py/command-line-injection]
             test_command,
             cwd=manifest_root,
             env=env,
