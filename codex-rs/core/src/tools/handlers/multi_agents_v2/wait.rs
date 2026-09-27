@@ -380,7 +380,7 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         return_when,
         statuses,
         status_futures,
-        mut deadline,
+        deadline,
         native_event_wait,
         pending_mailbox,
     } = context;
@@ -524,7 +524,7 @@ mod tests {
             &[ThreadId::new()],
             &target_paths,
             &queued_only,
-            0,
+            /*mailbox_generation*/ 0,
         ));
     }
 
@@ -537,7 +537,7 @@ mod tests {
             &[ThreadId::new()],
             &target_paths,
             &actionable,
-            0,
+            /*mailbox_generation*/ 0,
         ));
     }
 
@@ -545,13 +545,23 @@ mod tests {
     fn targetless_native_wait_accepts_any_actionable_mailbox_progress() {
         let worker = path("/root/worker");
         let actionable = vec![(worker, 1, true)];
-        assert!(mailbox_wake_matches(&[], &[], &actionable, 0));
+        assert!(mailbox_wake_matches(
+            &[],
+            &[],
+            &actionable,
+            /*mailbox_generation*/ 0,
+        ));
     }
 
     #[test]
     fn native_wait_does_not_replay_the_snapshot_boundary() {
         let worker = path("/root/worker");
         let snapshot = vec![(worker, 1, true)];
-        assert!(!mailbox_wake_matches(&[], &[], &snapshot, 1));
+        assert!(!mailbox_wake_matches(
+            &[],
+            &[],
+            &snapshot,
+            /*mailbox_generation*/ 1,
+        ));
     }
 }
