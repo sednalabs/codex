@@ -17,7 +17,7 @@ history.
 Options:
   --repo <owner/name>          GitHub repo (default: sednalabs/codex)
   --remote <name>              Git remote to push to (default: origin)
-  --dispatch-ref <ref>         Workflow-host ref for validation-lab (default: main)
+  --dispatch-ref <ref>         Workflow-host ref; must be the trusted main ref
   --base-ref <ref>              Exact comparison base for H/B/T evidence (default: main)
   --profile <name>             validation-lab profile (default: targeted)
   --lane-set <name>            validation-lab lane set (default: all except targeted)
@@ -47,6 +47,7 @@ EOF
 repo="sednalabs/codex"
 remote="origin"
 dispatch_ref="main"
+trusted_workflow_host_ref="main"
 profile="targeted"
 lane_set=""
 lanes=""
@@ -141,6 +142,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$dispatch_ref" != "$trusted_workflow_host_ref" ]]; then
+  echo "--dispatch-ref must be exactly ${trusted_workflow_host_ref}" >&2
+  exit 2
+fi
 
 if [[ -z "$lane_set" && "$profile" != "targeted" ]]; then
   lane_set="all"
