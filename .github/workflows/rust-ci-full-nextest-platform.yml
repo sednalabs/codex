@@ -6,26 +6,6 @@ on:
       runner:
         required: true
         type: string
-      runner_group:
-        required: false
-        default: ""
-        type: string
-      runner_labels:
-        required: false
-        default: ""
-        type: string
-      archive_runner:
-        required: false
-        default: ""
-        type: string
-      archive_runner_group:
-        required: false
-        default: ""
-        type: string
-      archive_runner_labels:
-        required: false
-        default: ""
-        type: string
       target:
         required: true
         type: string
@@ -51,7 +31,8 @@ on:
 jobs:
   archive:
     name: Build nextest archive
-    runs-on: ${{ inputs.archive_runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.archive_runner_group, inputs.archive_runner_labels)) || inputs.archive_runner != '' && inputs.archive_runner || inputs.runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner_group, inputs.runner_labels)) || inputs.runner }}
+    # The caller supplies a standard public GitHub-hosted label.
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     defaults:
       run:
@@ -60,7 +41,7 @@ jobs:
       # Windows ARM64 archives are built on Windows x64, while their shards run
       # on native Windows ARM64. Key producer-side caches by the archive runner
       # so the cross-compile build reuses the Windows x64 cache lineage.
-      ARCHIVE_CACHE_RUNNER: ${{ inputs.archive_runner != '' && inputs.archive_runner || inputs.runner }}
+      ARCHIVE_CACHE_RUNNER: ${{ inputs.runner }}
       USE_SCCACHE: ${{ inputs.use_sccache && 'true' || 'false' }}
       CODEX_CI_PROFILE: ${{ inputs.profile }}
       CODEX_CI_TARGET: ${{ inputs.target }}
@@ -74,6 +55,13 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
+
+      - name: Set up pinned voice Cargo dependencies
+        if: ${{ runner.os != 'Windows' && (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'unknown-linux-gnu')) }}
+        uses: ./.github/actions/setup-voice-cargo
+        with:
+          target: ${{ inputs.target }}
+          cache-scope: nextest-voice-${{ inputs.artifact_id }}
 
       - name: Install Linux build dependencies
         if: ${{ runner.os == 'Linux' }}
@@ -308,7 +296,7 @@ jobs:
   shard:
     name: Tests shard ${{ matrix.shard }}/4
     needs: archive
-    runs-on: ${{ inputs.runner_group != '' && fromJSON(format('{{"group":"{0}","labels":"{1}"}}', inputs.runner_group, inputs.runner_labels)) || inputs.runner }}
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     defaults:
       run:
