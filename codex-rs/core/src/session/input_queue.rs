@@ -199,8 +199,8 @@ impl InputQueue {
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
-    /// Monotonic boundary for native waits. A waiter captures this value before
-    /// subscribing so messages already queued cannot be reported as a new wake.
+    /// Monotonic mailbox boundary used to distinguish entries already queued
+    /// from entries published after a wait begins.
     pub(crate) fn mailbox_generation(&self) -> u64 {
         self.mailbox_generation.load(Ordering::Acquire)
     }
@@ -561,6 +561,86 @@ mod tests {
                 .iter()
                 .any(|(_, sequence, _)| *sequence > generation)
         );
+    }
+
+    #[tokio::test]
+    async fn native_activity_subscription_serializes_snapshot_and_publication() {
+        let queue = Arc::new(InputQueue::new());
+        let boundary = queue.native_activity_boundary.lock().await;
+
+        let subscriber_queue = Arc::clone(&queue);
+        let subscriber =
+            tokio::spawn(async move { subscriber_queue.subscribe_native_activity().await });
+        tokio::task::yield_now().await;
+        assert!(!subscriber.is_finished());
+
+        let publisher_queue = Arc::clone(&queue);
+        let publisher = tokio::spawn(async move {
+            publisher_queue
+                .enqueue_mailbox_communication(
+                    make_mail(
+                        AgentPath::try_from("/root/worker").expect("agent path"),
+                        AgentPath::root(),
+                        "arrived across subscription",
+                        /*trigger_turn*/ true,
+                    ),
+                    Default::default(),
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!publisher.is_finished());
+
+        // Tokio's mutex wakes queued lockers in FIFO order: the subscriber
+        // captures its receiver and generation before publication can proceed.
+        drop(boundary);
+        let (mut activity_rx, pending, generation, snapshot) =
+            subscriber.await.expect("subscriber task");
+        assert_eq!(pending, None);
+        assert_eq!(generation, 0);
+        assert!(snapshot.is_empty());
+
+        publisher.await.expect("publisher task");
+        activity_rx.changed().await.expect("mailbox update");
+        assert!(
+            queue
+                .pending_mailbox_authors()
+                .await
+                .iter()
+                .any(|(_, sequence, trigger_turn)| *sequence > generation && *trigger_turn)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_native_snapshot_releases_publication_boundary() {
+        let queue = Arc::new(InputQueue::new());
+        let holder_queue = Arc::clone(&queue);
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::spawn(async move {
+            let _boundary = holder_queue.native_activity_boundary.lock().await;
+            acquired_tx.send(()).expect("acquisition receiver");
+            std::future::pending::<()>().await;
+        });
+        acquired_rx.await.expect("boundary acquisition");
+
+        holder.abort();
+        let cancelled = holder.await.expect_err("holder should be cancelled");
+        assert!(cancelled.is_cancelled());
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            queue.enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    AgentPath::root(),
+                    "publication after cancellation",
+                    /*trigger_turn*/ true,
+                ),
+                Default::default(),
+            ),
+        )
+        .await
+        .expect("cancelled snapshot must release boundary");
     }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]

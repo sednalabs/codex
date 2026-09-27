@@ -549,7 +549,10 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 app.thread_event_channels[&id].store.lock().await.session
             );
             assert!(!app.agent_navigation.get(&id).unwrap().is_closed);
-            app.agent_navigation.mark_running(id);
+            assert!(!app.agent_navigation.get(&id).unwrap().is_running);
+            // Reconnection restores reachability, but only an authoritative
+            // turn-start transition should revive a stopped navigation row.
+            app.agent_navigation.mark_turn_started(id);
             assert!(app.agent_navigation.get(&id).unwrap().is_running);
             assert_eq!(
                 app.chat_widget.composer_text_with_pending(),

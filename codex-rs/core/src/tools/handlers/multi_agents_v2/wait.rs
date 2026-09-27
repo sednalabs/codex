@@ -145,7 +145,7 @@ impl Handler {
             })
             .collect::<Vec<_>>();
         let mut statuses = HashMap::new();
-        let mut status_futures = FuturesUnordered::new();
+        let mut status_futures: StatusFutures = FuturesUnordered::new();
         for id in &target_ids {
             let mut status_rx = match session.services.agent_control.subscribe_status(*id).await {
                 Ok(rx) => rx,
@@ -519,7 +519,9 @@ fn terminal_rule_satisfied(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::tests::make_session_and_context;
     use codex_protocol::AgentPath;
+    use codex_protocol::protocol::InterAgentCommunication;
 
     fn path(value: &str) -> codex_protocol::AgentPath {
         AgentPath::try_from(value).expect("agent path")
@@ -576,7 +578,164 @@ mod tests {
     }
 
     #[test]
-    fn native_wait_lease_is_internal_and_longer_than_the_removed_rearm_cadence() {
-        assert!(NATIVE_WAIT_LEASE >= Duration::from_secs(60 * 60));
+    fn completion_rule_distinguishes_any_from_all() {
+        let first = ThreadId::new();
+        let second = ThreadId::new();
+        let statuses = HashMap::from([(first, AgentStatus::Shutdown)]);
+
+        assert!(terminal_rule_satisfied(
+            &[first, second],
+            ReturnWhen::Any,
+            &statuses,
+        ));
+        assert!(!terminal_rule_satisfied(
+            &[first, second],
+            ReturnWhen::All,
+            &statuses,
+        ));
+
+        let statuses = HashMap::from([
+            (first, AgentStatus::Shutdown),
+            (second, AgentStatus::Shutdown),
+        ]);
+        assert!(terminal_rule_satisfied(
+            &[first, second],
+            ReturnWhen::All,
+            &statuses,
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_wait_all_stays_pending_until_every_target_is_terminal() {
+        let (session, _) = make_session_and_context().await;
+        let (mut activity_rx, pending_activity, mailbox_generation, pending_mailbox) =
+            session.input_queue.subscribe_native_activity().await;
+        let first = ThreadId::new();
+        let second = ThreadId::new();
+        let (first_tx, mut first_rx) = tokio::sync::watch::channel(AgentStatus::Running);
+        let (second_tx, mut second_rx) = tokio::sync::watch::channel(AgentStatus::Running);
+        let mut statuses = HashMap::new();
+        let mut status_futures: StatusFutures = FuturesUnordered::new();
+        status_futures.push(
+            async move {
+                let changed = first_rx.changed().await;
+                (first, first_rx, changed)
+            }
+            .boxed(),
+        );
+        status_futures.push(
+            async move {
+                let changed = second_rx.changed().await;
+                (second, second_rx, changed)
+            }
+            .boxed(),
+        );
+        let target_ids = [first, second];
+        let target_paths = Vec::new();
+        let wait = wait_for_event(WaitEventContext {
+            session: &session,
+            activity_rx: &mut activity_rx,
+            pending_activity,
+            mailbox_generation,
+            target_ids: &target_ids,
+            target_paths: &target_paths,
+            return_when: ReturnWhen::All,
+            statuses: &mut statuses,
+            status_futures: &mut status_futures,
+            deadline: Instant::now() + NATIVE_WAIT_LEASE,
+            native_event_wait: true,
+            pending_mailbox: &pending_mailbox,
+        });
+        tokio::pin!(wait);
+
+        first_tx
+            .send(AgentStatus::Shutdown)
+            .expect("first status receiver");
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("all returned after one target: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        second_tx
+            .send(AgentStatus::Shutdown)
+            .expect("second status receiver");
+        assert_eq!(wait.await, (WaitReason::TargetTerminal, false));
+    }
+
+    #[tokio::test]
+    async fn native_lease_expiry_and_queue_only_mail_stay_inside_wait() {
+        let (session, _) = make_session_and_context().await;
+        let (mut activity_rx, pending_activity, mailbox_generation, pending_mailbox) =
+            session.input_queue.subscribe_native_activity().await;
+        let target_ids = Vec::new();
+        let target_paths = Vec::new();
+        let mut statuses = HashMap::new();
+        let mut status_futures: StatusFutures = FuturesUnordered::new();
+
+        tokio::time::pause();
+        let wait = wait_for_event(WaitEventContext {
+            session: &session,
+            activity_rx: &mut activity_rx,
+            pending_activity,
+            mailbox_generation,
+            target_ids: &target_ids,
+            target_paths: &target_paths,
+            return_when: ReturnWhen::Any,
+            statuses: &mut statuses,
+            status_futures: &mut status_futures,
+            deadline: Instant::now() + Duration::from_millis(5),
+            native_event_wait: true,
+            pending_mailbox: &pending_mailbox,
+        });
+        tokio::pin!(wait);
+
+        session
+            .input_queue
+            .enqueue_mailbox_communication(
+                InterAgentCommunication::new(
+                    path("/root/worker"),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "queued progress".to_string(),
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("queue-only mail completed native wait: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        tokio::time::advance(Duration::from_millis(5)).await;
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("initial native lease escaped the tool: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        tokio::time::advance(NATIVE_WAIT_LEASE).await;
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("renewed native lease escaped the tool: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        session
+            .input_queue
+            .enqueue_mailbox_communication(
+                InterAgentCommunication::new(
+                    path("/root/worker"),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "action required".to_string(),
+                    /*trigger_turn*/ true,
+                ),
+                Default::default(),
+            )
+            .await;
+        assert_eq!(wait.await, (WaitReason::Mailbox, false));
+        tokio::time::resume();
     }
 }
