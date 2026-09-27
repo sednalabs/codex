@@ -178,6 +178,7 @@ build-for-release:
 # wrapper commit is not part of the product candidate.
 tui-agent-picker-targeted:
     #!/usr/bin/env bash
+    set -euo pipefail
     export RUST_MIN_STACK=16777216
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
