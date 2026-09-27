@@ -2747,8 +2747,15 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     Ok(())
 }
 
-#[tokio::test]
-async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()> {
+#[test]
+fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()> {
+    crate::test_support::run_large_stack_test(
+        "handle_start_side_seeds_navigation_before_thread_started",
+        handle_start_side_seeds_navigation_before_thread_started_impl,
+    )
+}
+
+async fn handle_start_side_seeds_navigation_before_thread_started_impl() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let config = app.chat_widget.config_ref().clone();
     let parent_thread_id = ThreadId::from_string(
