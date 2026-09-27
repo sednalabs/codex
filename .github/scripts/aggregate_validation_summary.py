@@ -65,6 +65,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rust-batching-mode", default="")
     parser.add_argument("--rust-batching-reason", default="")
     parser.add_argument("--cache-occupancy-json", default="")
+    parser.add_argument(
+        "--job-results-json-file",
+        default="",
+        help="JSON object containing every fanout job result for reconciliation",
+    )
     parser.add_argument("--lane-summary-dir", required=True)
     parser.add_argument("--output", required=True)
     return parser.parse_args()
@@ -112,6 +117,48 @@ def load_optional_json(path: str) -> dict:
     except JSONDecodeError:
         return {"available": False, "error": "cache occupancy JSON was malformed"}
     return payload if isinstance(payload, dict) else {}
+
+
+def load_job_results(path: str) -> dict[str, str]:
+    """Load the raw result of every validation-lab job, without inference."""
+
+    payload = load_optional_json(path)
+    return {
+        str(name): str(result)
+        for name, result in payload.items()
+        if isinstance(name, str) and isinstance(result, str)
+    }
+
+
+def reconcile_job_results(job_results: dict[str, str]) -> dict:
+    expected = [
+        "metadata",
+        "smoke_workflow_lanes",
+        "smoke_node_lanes",
+        "smoke_rust_minimal_lanes",
+        "smoke_rust_integration_lanes",
+        "smoke_release_lanes",
+        "workflow_lanes",
+        "node_lanes",
+        "rust_minimal_lanes",
+        "rust_minimal_batches",
+        "nextest_archives",
+        "rust_integration_archive_lanes",
+        "rust_integration_lanes",
+        "rust_integration_batches",
+        "release_lanes",
+        "artifact",
+        "named_tests",
+    ]
+    missing = [name for name in expected if name not in job_results]
+    unexpected = sorted(set(job_results) - set(expected))
+    return {
+        "expected_jobs": expected,
+        "missing_jobs": missing,
+        "unexpected_jobs": unexpected,
+        "complete": not missing and not unexpected,
+        "result": combined_result(*(job_results.get(name, "") for name in expected)),
+    }
 
 
 def lane_status(lane: dict) -> str:
@@ -688,6 +735,8 @@ def main() -> None:
         selected_lane_ids_payload if isinstance(selected_lane_ids_payload, list) else []
     )
     explicit_lanes = [lane.strip() for lane in args.explicit_lanes.split(",") if lane.strip()]
+    raw_job_results = load_job_results(args.job_results_json_file)
+    job_result_reconciliation = reconcile_job_results(raw_job_results)
 
     summary_input_signals: list[str] = []
     if planned_matrix_invalid:
@@ -906,6 +955,8 @@ def main() -> None:
                 "planned": parse_bool(args.run_artifact),
                 "result": args.artifact_result,
             },
+            "raw_results": raw_job_results,
+            "reconciliation": job_result_reconciliation,
         },
         "dedupe": {
             "should_skip": dedupe_should_skip,
@@ -942,6 +993,8 @@ def main() -> None:
                     args.planner_fingerprint or "",
                 ]
             ),
+            "job_results": raw_job_results,
+            "job_result_reconciliation": job_result_reconciliation,
         },
     }
 

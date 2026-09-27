@@ -588,6 +588,90 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     return list(highest_priority_routes[0].get("lane_ids", []))
 
 
+def select_followup_plan(files: list[str], routes: list[dict]) -> dict:
+    """Select reverse consumers compositionally, with explicit coverage.
+
+    The legacy selector intentionally returns no route when a change crosses
+    route boundaries.  That is safe but loses useful targeted feedback.  This
+    planner keeps the exact whole-route result when available, otherwise
+    assigns each changed path to its highest-priority route and reports any
+    uncovered or ambiguous paths so callers can take the controlled frontier
+    fallback instead of silently under-testing a mixed change.
+    """
+
+    if not files:
+        return {
+            "lane_ids": [],
+            "route_ids": [],
+            "covered_files": [],
+            "uncovered_files": [],
+            "ambiguous_files": [],
+            "complete": False,
+        }
+
+    exact = select_followup_lanes(files, routes)
+    if exact:
+        exact_routes = []
+        for route in routes:
+            if list(route.get("lane_ids", [])) == exact:
+                exact_routes.append(str(route.get("route_id") or "<unknown>"))
+        return {
+            "lane_ids": exact,
+            "route_ids": exact_routes,
+            "covered_files": list(files),
+            "uncovered_files": [],
+            "ambiguous_files": [],
+            "complete": True,
+        }
+
+    candidates_by_file: dict[str, list[tuple[dict, int]]] = {}
+    for path in files:
+        candidates: list[tuple[dict, int]] = []
+        for route in routes:
+            allowed_paths = route.get("allowed_paths", [])
+            required_any_paths = route.get("required_any_paths", [])
+            if not allowed_paths or not any(path_matches(path, pattern) for pattern in allowed_paths):
+                continue
+            if required_any_paths and not any(
+                path_matches(path, pattern) for pattern in required_any_paths
+            ):
+                continue
+            candidates.append((route, followup_route_priority(route)))
+        candidates_by_file[path] = candidates
+
+    selected_routes: dict[str, dict] = {}
+    covered_files: list[str] = []
+    ambiguous_files: list[str] = []
+    uncovered_files: list[str] = []
+    for path, candidates in candidates_by_file.items():
+        if not candidates:
+            uncovered_files.append(path)
+            continue
+        highest = max(priority for _, priority in candidates)
+        winners = [route for route, priority in candidates if priority == highest]
+        if len(winners) != 1:
+            ambiguous_files.append(path)
+            continue
+        route = winners[0]
+        route_id = str(route.get("route_id") or "<unknown>")
+        selected_routes[route_id] = route
+        covered_files.append(path)
+
+    lane_ids: list[str] = []
+    for route in selected_routes.values():
+        for lane_id in route.get("lane_ids", []):
+            if lane_id not in lane_ids:
+                lane_ids.append(lane_id)
+    return {
+        "lane_ids": lane_ids,
+        "route_ids": sorted(selected_routes),
+        "covered_files": covered_files,
+        "uncovered_files": uncovered_files,
+        "ambiguous_files": ambiguous_files,
+        "complete": not uncovered_files and not ambiguous_files and bool(lane_ids),
+    }
+
+
 def parse_changed_files(raw: str) -> list[str]:
     if not raw.strip():
         return []
@@ -700,6 +784,7 @@ def recommendation_payload(
     domains: list[str],
     changed_files: list[str],
     include_explicit_lanes: bool = False,
+    coverage: dict | None = None,
 ) -> dict:
     return {
         "profile": profile,
@@ -713,6 +798,7 @@ def recommendation_payload(
         "domains": domains,
         "changed_file_count": len(changed_files),
         "include_explicit_lanes": include_explicit_lanes,
+        "coverage": coverage or {},
         "dispatch_inputs": {
             "profile": profile,
             "lane_set": lane_set,
@@ -732,7 +818,11 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
         args.changed_files_json
     )
 
-    def emit_fallback(reason: str, domains: list[str] | None = None) -> None:
+    def emit_fallback(
+        reason: str,
+        domains: list[str] | None = None,
+        coverage: dict | None = None,
+    ) -> None:
         emit(
             recommendation_payload(
                 profile="frontier",
@@ -743,6 +833,7 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
                 source="conservative_fallback",
                 domains=domains or ["unknown"],
                 changed_files=changed_files,
+                coverage=coverage,
             )
         )
 
@@ -750,8 +841,9 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
         emit_fallback(metadata_issue)
         return
 
-    route_lanes = select_followup_lanes(changed_files, catalog.get("followup_routes", []))
-    if route_lanes:
+    route_plan = select_followup_plan(changed_files, catalog.get("followup_routes", []))
+    route_lanes = route_plan["lane_ids"]
+    if route_lanes and route_plan["complete"]:
         require_known_route_lanes(catalog_by_id, route_lanes)
         route_domains = sorted(
             {
@@ -776,6 +868,29 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
                     bool(catalog_by_id.get(lane_id, {}).get("explicit_only"))
                     for lane_id in route_lanes
                 ),
+                coverage=route_plan,
+            )
+        )
+        return
+
+    if route_lanes:
+        # A partial route match is useful evidence but cannot be accepted as
+        # complete coverage.  Use the catalog frontier fallback while keeping
+        # the composed route identity in the recommendation for diagnosis.
+        emit(
+            recommendation_payload(
+                profile="frontier",
+                lane_set="all",
+                lane_ids=[],
+                reason=(
+                    "changed files crossed follow-up routes; composed consumers were "
+                    "partial, so the controlled frontier fallback is required"
+                ),
+                confidence="low",
+                source="composed_followup_fallback",
+                domains=[recommendation_domain(path) for path in changed_files],
+                changed_files=changed_files,
+                coverage=route_plan,
             )
         )
         return
@@ -803,6 +918,7 @@ def recommend_lab_plan(args: argparse.Namespace) -> None:
     emit_fallback(
         "changed files crossed domains or did not match a known validation route",
         unique_domains or ["unknown"],
+        route_plan,
     )
 
 

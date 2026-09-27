@@ -108,6 +108,34 @@ ID rather than passing an arbitrary shell command. For example,
 targeted proof. The lane is explicit-only and therefore does not widen routine
 smoke or frontier runs.
 
+For a new exact test question, use the typed `rust-tests-v1` interface instead
+of adding a one-off command to a workflow. It accepts only a package, `lib` or
+named integration target, an allowlisted hosted profile, and fully-qualified
+test names. The hosted job inventories the selected Cargo target first and
+fails closed when a requested name is missing or ambiguous; it then records a
+separate result for each requested test. A passing Cargo invocation that ran
+zero tests therefore cannot become false coverage. The request and result
+artifact carry the exact harness/base/target identity and a request
+fingerprint.
+
+The operator-facing `scripts/validate` helper previews this request by
+default. Add `--dispatch` to cross the write boundary, and `--watch` to use
+the SHA-guarded blocking workflow watcher through terminal state:
+
+```bash
+scripts/validate \
+  --target-sha <full-candidate-sha> \
+  --profile rust_minimal \
+  --request-json '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-core","target_kind":"lib","target":"","tests":["completion_rule_distinguishes_any_from_all"]}'
+```
+
+The helper never accepts a shell command, arbitrary Cargo flags, or an implicit
+dirty-tree snapshot. Use the existing snapshot helper first when the candidate
+is not already on a remote ref. For a terminal watch, set
+`CODEX_WORKFLOW_WATCHER` to the installed SHA-guarded blocking watcher and add
+`--dispatch --watch`; the public helper intentionally does not embed a
+workstation path.
+
 The snapshot helper never sweeps a dirty worktree implicitly. Pass one or more
 `--path <repo-relative-path>` arguments for the intended files, or use
 `--include-all` only when the complete dirty tree is explicitly in scope. A
@@ -185,6 +213,16 @@ route covers the changed files. If no exact route is available, it falls back to
 single-domain rules for workflow, docs, release, UI protocol, or Rust core
 changes. Empty, incomplete, cross-domain, or unknown metadata recommends
 `profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+When a change crosses several exact follow-up routes, the planner composes the
+highest-priority reverse consumers and reports covered, uncovered, and
+ambiguous paths. Any partial composition takes the controlled frontier
+fallback; it is never presented as complete targeted coverage.
+Configuration and policy edits require the same reverse-consumer treatment:
+their route entry must name every affected consumer seam (including nested
+fixtures and generated/config-derived readers). The standalone sample lane is
+not a substitute for a Config route. If the catalog cannot prove those
+consumers, the planner records the paths as uncovered and takes the frontier
+fallback rather than claiming targeted completeness.
 
 The recommendation output is planner guidance only. It does not change default
 or required gates, does not make checkout-trust decisions, and does not dispatch

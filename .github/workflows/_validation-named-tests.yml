@@ -1,0 +1,190 @@
+name: _validation-named-tests
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        required: true
+        type: string
+      target_sha:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
+      base_sha:
+        required: false
+        type: string
+        default: ""
+      harness_sha:
+        required: true
+        type: string
+      profile:
+        required: true
+        type: string
+      request_json:
+        required: true
+        type: string
+      artifact_name:
+        required: false
+        type: string
+        default: validation-named-tests
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: Run exact named Rust tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+      VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+      VALIDATION_BASE_REF: ${{ inputs.base_ref }}
+      VALIDATION_EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+      VALIDATION_EXPECTED_HARNESS_SHA: ${{ inputs.harness_sha }}
+      VALIDATION_PROFILE: ${{ inputs.profile }}
+      REQUEST_JSON: ${{ inputs.request_json }}
+    steps:
+      - name: Check out trusted workflow helpers
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.harness_sha }}
+          path: .workflow-src
+
+      - name: Check out exact validation target
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.checkout_ref }}
+          path: validation-target
+
+      - name: Check out comparison base
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.base_ref }}
+          path: validation-base
+
+      - name: Verify H/B/T checkout identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${VALIDATION_TARGET_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "target_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "${VALIDATION_EXPECTED_HARNESS_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "harness_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          target_sha="$(git -C validation-target rev-parse HEAD)"
+          base_sha="$(git -C validation-base rev-parse HEAD)"
+          harness_sha="$(git -C .workflow-src rev-parse HEAD)"
+          if [[ "${target_sha}" != "${VALIDATION_TARGET_SHA}" ]]; then
+            echo "target checkout does not match requested target SHA" >&2
+            exit 1
+          fi
+          if [[ "${harness_sha}" != "${VALIDATION_EXPECTED_HARNESS_SHA}" ]]; then
+            echo "workflow helper checkout does not match requested harness SHA" >&2
+            exit 1
+          fi
+          if [[ -n "${VALIDATION_EXPECTED_BASE_SHA}" && "${base_sha}" != "${VALIDATION_EXPECTED_BASE_SHA}" ]]; then
+            echo "comparison-base checkout does not match requested base SHA" >&2
+            exit 1
+          fi
+          {
+            echo "VALIDATION_TARGET_SHA=${target_sha}"
+            echo "VALIDATION_BASE_SHA=${base_sha}"
+            echo "VALIDATION_HARNESS_SHA=${harness_sha}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Bind js_repl Node runtime
+        shell: bash
+        run: echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "${GITHUB_ENV}"
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Write typed request without exposing it in logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST_PATH="${RUNNER_TEMP}/rust-tests-v1-request.json"
+          REQUEST_PATH="${REQUEST_PATH}" REQUEST_JSON="${REQUEST_JSON}" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          Path(os.environ["REQUEST_PATH"]).write_text(
+              os.environ["REQUEST_JSON"], encoding="utf-8"
+          )
+          PY
+          echo "RUST_TEST_REQUEST=${REQUEST_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Inventory and run exact named tests
+        id: named_tests
+        continue-on-error: true
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py \
+            --repo-root "${GITHUB_WORKSPACE}/validation-target" \
+            --request-file "${RUST_TEST_REQUEST}" \
+            --expected-profile "${VALIDATION_PROFILE}" \
+            --results-out "${RUNNER_TEMP}/rust-tests-v1-results.json"
+
+      - name: Append named-test evidence
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RESULT_PATH: ${{ runner.temp }}/rust-tests-v1-results.json
+        run: |
+          set -euo pipefail
+          RESULT_PATH="${RESULT_PATH}" python3 - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RESULT_PATH"])
+          if not path.exists():
+              print("### Named test evidence\n- No result artifact was produced.")
+          else:
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              identity = payload.get("identity") or {}
+              print("### Named test evidence")
+              print(f"- Status: `{payload.get('status', 'unknown')}`")
+              print(f"- Request fingerprint: `{payload.get('request_fingerprint', '')}`")
+              print(f"- Harness SHA: `{identity.get('harness_sha', '')}`")
+              print(f"- Base SHA: `{identity.get('base_sha', '')}`")
+              print(f"- Candidate SHA: `{identity.get('target_sha', '')}`")
+              print(f"- Executed tests: `{len(payload.get('tests') or [])}`")
+              if payload.get("failure_code"):
+                  print(f"- Failure code: `{payload['failure_code']}`")
+          PY
+
+      - name: Upload named-test evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/rust-tests-v1-results.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Preserve failed exact-test result
+        if: ${{ steps.named_tests.outcome == 'failure' }}
+        shell: bash
+        run: exit 1

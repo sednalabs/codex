@@ -914,6 +914,69 @@ class RouteSelectionTests(unittest.TestCase):
             self.routes,
         )
         self.assertEqual(lanes, ["codex.thread-manager-sample-targeted"])
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")["thread-manager-sample-targeted"]
+        )
+        self.assertIn("cargo check --locked -p codex-thread-manager-sample", recipe)
+        self.assertIn(
+            "cargo clippy --locked -p codex-thread-manager-sample --all-targets -- -D warnings",
+            recipe,
+        )
+
+    def test_core_config_changes_select_reverse_public_consumers_and_lint(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/core-api/src/config.rs"],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.core-config-consumers-targeted",
+                "codex.thread-manager-sample-targeted",
+            ],
+        )
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")["core-config-consumers-targeted"]
+        )
+        self.assertIn("cargo clippy --locked -p codex-core-api", recipe)
+
+    def test_composed_followup_plan_reports_complete_reverse_consumers(self) -> None:
+        routes = [
+            {
+                "route_id": "left",
+                "priority": 2,
+                "allowed_paths": ["left/**"],
+                "lane_ids": ["lane.left"],
+            },
+            {
+                "route_id": "right",
+                "priority": 2,
+                "allowed_paths": ["right/**"],
+                "lane_ids": ["lane.right"],
+            },
+        ]
+        plan = RESOLVE_VALIDATION_PLAN.select_followup_plan(
+            ["left/change.rs", "right/change.rs"], routes
+        )
+        self.assertTrue(plan["complete"])
+        self.assertEqual(plan["lane_ids"], ["lane.left", "lane.right"])
+        self.assertEqual(plan["uncovered_files"], [])
+
+    def test_composed_followup_plan_marks_uncovered_paths_for_frontier_fallback(self) -> None:
+        routes = [
+            {
+                "route_id": "left",
+                "priority": 2,
+                "allowed_paths": ["left/**"],
+                "lane_ids": ["lane.left"],
+            }
+        ]
+        plan = RESOLVE_VALIDATION_PLAN.select_followup_plan(
+            ["left/change.rs", "unknown/change.rs"], routes
+        )
+        self.assertFalse(plan["complete"])
+        self.assertEqual(plan["lane_ids"], ["lane.left"])
+        self.assertEqual(plan["uncovered_files"], ["unknown/change.rs"])
 
     def test_v2_residency_route_stays_on_multi_agent_orchestration_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -11397,6 +11460,20 @@ jobs:
             text=True,
         )
         self.assertEqual(cancelled.stdout.strip(), "cancelled")
+
+    def test_validation_summary_reconciles_every_fanout_job(self) -> None:
+        expected = {
+            name: "skipped"
+            for name in AGGREGATE_VALIDATION_SUMMARY.reconcile_job_results({})[
+                "expected_jobs"
+            ]
+        }
+        expected["metadata"] = "success"
+        expected["rust_minimal_lanes"] = "failure"
+        reconciliation = AGGREGATE_VALIDATION_SUMMARY.reconcile_job_results(expected)
+        self.assertTrue(reconciliation["complete"])
+        self.assertEqual(reconciliation["missing_jobs"], [])
+        self.assertEqual(reconciliation["result"], "failure")
 
     def test_aggregate_summary_treats_exact_plan_reuse_as_success(self) -> None:
         args = mock.Mock(

@@ -135,6 +135,13 @@ core-compile-smoke:
 # name the historical consumer without widening every smoke run.
 thread-manager-sample-targeted:
     cargo check --locked -p codex-thread-manager-sample
+    cargo clippy --locked -p codex-thread-manager-sample --all-targets -- -D warnings
+
+# Reverse consumers for Config/core-api edits. Keep the public API and the
+# standalone consumer in one hosted compile/lint question.
+core-config-consumers-targeted:
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo check --locked -p codex-core-api -p codex-thread-manager-sample
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo clippy --locked -p codex-core-api -p codex-thread-manager-sample --all-targets -- -D warnings
 
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:
