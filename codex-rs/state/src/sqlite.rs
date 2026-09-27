@@ -9,6 +9,7 @@ use crate::DbTelemetry;
 use crate::migrations::repair_legacy_recency_migration_version;
 use crate::runtime::RuntimeDbInitError;
 use crate::runtime::migration_repair::repair_state_migrations;
+use crate::runtime::usage_migration_compat::migrator_for_usage_database;
 use crate::telemetry;
 use crate::telemetry::DbKind;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -297,11 +298,20 @@ impl SqliteConfig {
         })?;
         let started = Instant::now();
         let migrate_result = async {
+            let usage_migrator = if matches!(spec.kind, DbKind::Usage) {
+                Some(migrator_for_usage_database(&pool, migrator).await?)
+            } else {
+                None
+            };
+            let migration_migrator = usage_migrator.as_ref().unwrap_or(migrator);
             if matches!(spec.kind, DbKind::State) {
-                repair_legacy_recency_migration_version(&pool, migrator).await?;
-                repair_state_migrations(&pool, migrator).await?;
+                repair_legacy_recency_migration_version(&pool, migration_migrator).await?;
+                repair_state_migrations(&pool, migration_migrator).await?;
             }
-            migrator.run(&pool).await.map_err(anyhow::Error::from)
+            migration_migrator
+                .run(&pool)
+                .await
+                .map_err(anyhow::Error::from)
         }
         .await;
         telemetry::record_init_result(
