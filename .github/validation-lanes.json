@@ -1,6 +1,52 @@
 {
   "lanes": [
     {
+      "lane_id": "codex.thread-manager-sample-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "thread-manager-sample-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
+      "lane_id": "codex.core-config-consumers-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "core-config-consumers-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "core-compile-smoke",
       "groups": [
         "core"
@@ -2004,6 +2050,24 @@
   ],
   "followup_routes": [
     {
+      "route_id": "thread-manager-sample-consumer",
+      "priority": 10,
+      "lane_ids": [
+        "codex.thread-manager-sample-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/thread-manager-sample/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/thread-manager-sample/**"
+      ]
+    },
+    {
       "route_id": "workflow-ci-planner",
       "lane_ids": [
         "codex.workflow-ci-sanity",
@@ -2024,13 +2088,19 @@
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
+        ".github/workflows/_validation-named-tests.yml",
+        ".github/workflows/validation-named-tests.yml",
+        ".github/validation-named-tests.json",
         ".github/scripts/aggregate_validation_summary.py",
+        ".github/scripts/run_named_rust_tests.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/prepare_codeql_diff_ranges.py",
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/test_run_named_rust_tests.py",
+        ".github/scripts/test_validate.py",
         ".github/scripts/validation_plan_fingerprint.py",
         ".github/scripts/write_lane_summary.py",
         ".github/scripts/validation-lanes/build-nextest-archive-core-carry-pilot.sh",
@@ -2044,6 +2114,7 @@
         "docs/validation_workflow.md",
         "scripts/downstream-divergence-audit.py",
         "scripts/resolve_sedna_release_version",
+        "scripts/validate",
         "justfile"
       ],
       "required_any_paths": [
@@ -2061,18 +2132,47 @@
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-heavy-tests.yml",
         ".github/workflows/validation-lab.yml",
+        ".github/workflows/_validation-named-tests.yml",
+        ".github/workflows/validation-named-tests.yml",
+        ".github/validation-named-tests.json",
         ".github/scripts/aggregate_validation_summary.py",
+        ".github/scripts/run_named_rust_tests.py",
         ".github/scripts/check_markdown_links.py",
         ".github/scripts/prepare_codeql_diff_ranges.py",
         ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/test_run_named_rust_tests.py",
+        ".github/scripts/test_validate.py",
         ".github/scripts/validation_plan_fingerprint.py",
         ".github/scripts/validation-lanes/downstream-divergence-audit.sh",
         ".github/scripts/validation-lanes/downstream-docs-check.sh",
         "scripts/downstream-divergence-audit.py",
-        "scripts/resolve_sedna_release_version"
+        "scripts/resolve_sedna_release_version",
+        "scripts/validate"
+      ]
+    },
+    {
+      "route_id": "core-config-public-consumers",
+      "priority": 9,
+      "lane_ids": [
+        "codex.core-config-consumers-targeted",
+        "codex.thread-manager-sample-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/core-api/**",
+        "codex-rs/core/src/config/**",
+        "codex-rs/thread-manager-sample/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core-api/**",
+        "codex-rs/core/src/config/**"
       ]
     },
     {

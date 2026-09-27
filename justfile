@@ -144,6 +144,23 @@ core-compile-smoke:
     cargo check -p codex-thread-manager-sample --all-targets
     cargo fmt -p codex-core -p codex-core-api -p codex-thread-manager-sample -- --check
 
+# Exact downstream compile reproduction for the standalone ThreadManager
+# sample. Keep this as an explicit validation-lab lane so targeted proof can
+# name the historical consumer without widening every smoke run.
+thread-manager-sample-targeted:
+    cargo fmt -p codex-thread-manager-sample -- --check
+    cargo check --locked -p codex-thread-manager-sample
+    TARGETED_CLIPPY_PACKAGES='["codex-thread-manager-sample"]' .github/scripts/run_targeted_clippy.sh
+
+# Reverse consumers for Config/core-api edits. Keep the public API and the
+# standalone consumer in one hosted compile/lint question. The Clippy step
+# deliberately uses the shared target-bound helper so this lane proves the
+# same denied-lint contract as rust-ci without widening to the workspace.
+core-config-consumers-targeted:
+    cargo fmt -p codex-core-api -p codex-thread-manager-sample -- --check
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo check --locked -p codex-core-api -p codex-thread-manager-sample
+    TARGETED_CLIPPY_PACKAGES='["codex-core-api","codex-thread-manager-sample"]' .github/scripts/run_targeted_clippy.sh
+
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:
     cargo test -p codex-protocol --lib model_catalog_deserializer
