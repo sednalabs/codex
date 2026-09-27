@@ -68,7 +68,7 @@ jobs:
               "actions": ("none", "./.codeql-runtime/codeql-actions.yml"),
               "c-cpp": ("none", "./.github/codeql/codeql-config.yml"),
               "javascript-typescript": ("none", "./.github/codeql/codeql-config.yml"),
-              "python": ("none", "./.github/codeql/codeql-config.yml"),
+              "python": ("none", "./.github/codeql/codeql-python.yml"),
           }
           include = []
           for language in languages:

@@ -72,9 +72,10 @@ contract today.
   code scanning receives the full configured category set for PR alert
   comparison.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings, `.github/codeql/codeql-actions.yml` for Actions-only query
-  additions, and `.github/codeql/codeql-rust.yml` for Rust-specific contract
-  checks. The
+  settings, `.github/codeql/codeql-python.yml` for Python analysis and its
+  alert-suppression query, `.github/codeql/codeql-actions.yml` for Actions-only
+  query additions, and `.github/codeql/codeql-rust.yml` for Rust-specific
+  contract checks. The
   Actions lane prepares a runtime config so same-repository pull requests can
   validate checked-out query-pack changes, while fork pull requests use the
   trusted-base copy of `.github/codeql/actions-workflow-security` when it is
