@@ -124,7 +124,8 @@ def main() -> int:
     # as explicit gh argv values; no shell evaluation or arbitrary flags occur.
     # lgtm [py/command-line-injection]
     return subprocess.run(  # lgtm [py/command-line-injection]
-        gh_command(args, request_json), check=False
+        gh_command(args, request_json),  # lgtm [py/command-line-injection]
+        check=False,
     ).returncode
 
 

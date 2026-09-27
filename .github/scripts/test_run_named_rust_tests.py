@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, mock
 
 
 SCRIPT = Path(__file__).with_name("run_named_rust_tests.py")
@@ -27,7 +26,7 @@ REQUEST = {
 }
 
 
-class NamedRustTests(unittest.TestCase):
+class NamedRustTests(TestCase):
     def completed(self, stdout: str = "", stderr: str = "", code: int = 0):
         return subprocess.CompletedProcess(
             args=["cargo", "test"],

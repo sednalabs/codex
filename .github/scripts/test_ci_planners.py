@@ -919,7 +919,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("cargo check --locked -p codex-thread-manager-sample", recipe)
         self.assertIn(
-            "cargo clippy --locked -p codex-thread-manager-sample --all-targets -- -D warnings",
+            "TARGETED_CLIPPY_PACKAGES='[\"codex-thread-manager-sample\"]'",
             recipe,
         )
 
@@ -4722,14 +4722,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_validation_lab_only_fetches_target_history_for_artifact_versioning(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
         metadata_steps = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])
-        target_checkout = next(
-            step for step in metadata_steps if step.get("name") == "Check out validation target"
+        materialize = next(
+            step
+            for step in metadata_steps
+            if step.get("name") == "Materialize exact validation target and base"
         )
-
+        materialize_env = materialize.get("env") or {}
+        materialize_run = materialize.get("run") or ""
         self.assertEqual(
-            (target_checkout.get("with") or {}).get("fetch-depth"),
-            "${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}",
+            materialize_env.get("NEED_TAGS"),
+            "${{ inputs.profile == 'artifact' || inputs.artifact_build }}",
         )
+        self.assertIn('fetch_args+=(--depth=1)', materialize_run)
+        self.assertIn('git fetch --tags origin', materialize_run)
+        self.assertIn('git worktree add --detach "${GITHUB_WORKSPACE}/validation-target"', materialize_run)
 
         compute_plan = next(
             step for step in metadata_steps if step.get("name") == "Compute validation-lab plan"
@@ -7384,7 +7390,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_workflow_lane_count"], 8)
         self.assertEqual(payload["selected_node_lane_count"], 3)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 15)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 16)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 7)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 14)
         self.assertEqual(payload["selected_release_lane_count"], 1)
