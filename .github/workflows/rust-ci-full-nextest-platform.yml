@@ -197,6 +197,10 @@ jobs:
           echo "CARGO_BUILD_RUSTC_WRAPPER=" >> "$GITHUB_ENV"
 
       - name: Build nextest archive
+        env:
+          # The archive contains every test binary; omit debug info here to
+          # keep the hosted runner's finite disk available for linking.
+          CARGO_PROFILE_CI_TEST_DEBUG: "0"
         shell: bash
         run: |
           set -euo pipefail
