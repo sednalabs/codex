@@ -191,6 +191,10 @@ jobs:
           set -euo pipefail
           sccache --stop-server || true
           rm -rf "${SCCACHE_DIR}"
+          # The fallback cache was reclaimed to protect the runner's disk;
+          # keep the archive build from immediately repopulating it.
+          echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_RUSTC_WRAPPER=" >> "$GITHUB_ENV"
 
       - name: Build nextest archive
         shell: bash
