@@ -1193,6 +1193,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     incompatible_model.slug = "v1-only-model".to_string();
     incompatible_model.display_name = "V1-only model".to_string();
     incompatible_model.multi_agent_version = Some(MultiAgentVersion::V1);
+    incompatible_model.priority = i32::MIN;
     catalog.models.push(incompatible_model);
     session.services.models_manager = Arc::new(StaticModelsManager::new(
         /*auth_manager*/ None, catalog,
@@ -1233,6 +1234,16 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
         .await
         .err()
         .expect("a model assigned only to V1 should be rejected");
+
+    if let FunctionCallError::RespondToModel(message) = &err {
+        let available = message
+            .strip_prefix("Unknown model `v1-only-model` for spawn_agent. Available models: ")
+            .expect("the rejection should identify the unknown model and available models");
+        assert!(
+            !available.split(", ").any(|model| model == "v1-only-model"),
+            "a V1-only model must not be advertised as eligible for a V2 child"
+        );
+    }
 
     assert_eq!(
         err,
