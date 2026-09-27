@@ -147,16 +147,19 @@ def cargo_args(request: dict[str, Any], *, list_only: bool, test_name: str = "")
         raise ValueError("test name is not a safe fully-qualified Rust name")
     # The executable and option names are fixed; validated values are each one
     # argv element, with no shell/eval or option reinterpretation.
-    args = ["cargo", "test", "--locked", "-p", package]  # lgtm [py/command-line-injection]
+    # lgtm [py/command-line-injection]
+    args = ["cargo", "test", "--locked", "-p", package]
     if target_kind == "lib":
         args.append("--lib")
     else:
-        args.extend(["--test", target])  # lgtm [py/command-line-injection]
+        # lgtm [py/command-line-injection]
+        args.extend(["--test", target])
     args.append("--")
     if list_only:
         args.append("--list")
     else:
-        args.extend([test_name, "--exact", "--test-threads=1"])  # lgtm [py/command-line-injection]
+        # lgtm [py/command-line-injection]
+        args.extend([test_name, "--exact", "--test-threads=1"])
     return args
 
 
@@ -179,9 +182,12 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     env.setdefault("RUST_MIN_STACK", "8388608")
     # The command remains intentionally argv-based (never shell-evaluated);
     # cargo_args revalidates every request-derived value at the sink boundary.
+    # lgtm [py/command-line-injection]
     inventory_command = cargo_args(request, list_only=True)
-    inventory = subprocess.run(  # lgtm [py/command-line-injection]
-        inventory_command,  # lgtm [py/command-line-injection]
+    # lgtm [py/command-line-injection]
+    inventory = subprocess.run(
+        # lgtm [py/command-line-injection]
+        inventory_command,
         cwd=manifest_root,
         env=env,
         text=True,
@@ -231,9 +237,12 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     for name in request["tests"]:
         # cargo_args revalidates the Rust fully-qualified name before this
         # argv-only invocation; no shell or arbitrary flag can be introduced.
+        # lgtm [py/command-line-injection]
         test_command = cargo_args(request, list_only=False, test_name=name)
-        completed = subprocess.run(  # lgtm [py/command-line-injection]
-            test_command,  # lgtm [py/command-line-injection]
+        # lgtm [py/command-line-injection]
+        completed = subprocess.run(
+            # lgtm [py/command-line-injection]
+            test_command,
             cwd=manifest_root,
             env=env,
             text=True,
