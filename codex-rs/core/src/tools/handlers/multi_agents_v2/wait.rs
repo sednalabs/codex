@@ -366,9 +366,7 @@ struct WaitEventContext<'a> {
     native_event_wait: bool,
 }
 
-async fn wait_for_event(
-    context: WaitEventContext<'_>,
-) -> (WaitReason, bool) {
+async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
     let WaitEventContext {
         session,
         activity_rx,
