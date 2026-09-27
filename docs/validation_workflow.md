@@ -131,10 +131,10 @@ scripts/validate \
 
 The helper never accepts a shell command, arbitrary Cargo flags, or an implicit
 dirty-tree snapshot. Use the existing snapshot helper first when the candidate
-is not already on a remote ref. For a terminal watch, set
-`CODEX_WORKFLOW_WATCHER` to the installed SHA-guarded blocking watcher and add
-`--dispatch --watch`; the public helper intentionally does not embed a
-workstation path.
+is not already on a remote ref. Dispatch first, then use the returned Actions
+run id for a separate blocking watch (`scripts/validate --watch --run-id
+<run-id>` or `gh run watch <run-id> --exit-status`). The public helper does not
+embed a workstation path or watcher implementation.
 
 The snapshot helper never sweeps a dirty worktree implicitly. Pass one or more
 `--path <repo-relative-path>` arguments for the intended files, or use

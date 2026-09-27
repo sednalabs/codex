@@ -14,8 +14,8 @@ artifacts.
   - safety: accepts no shell command, arbitrary Cargo flag, secret, or local
     runner selection; it always uses a standard `ubuntu-24.04` hosted runner
   - operation: `scripts/validate` is a no-write dry run unless `--dispatch` is
-    supplied; `--watch` delegates one exact-SHA blocking watch to the bundled
-    workflow watcher
+    supplied; after dispatch, `--watch --run-id <id>` performs one exact-run
+    blocking watch through GitHub CLI
 
 - `validation-lab`
   - trigger: manual dispatch only

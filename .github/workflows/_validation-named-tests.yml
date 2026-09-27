@@ -46,7 +46,7 @@ jobs:
       VALIDATION_EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
       VALIDATION_EXPECTED_HARNESS_SHA: ${{ inputs.harness_sha }}
       VALIDATION_PROFILE: ${{ inputs.profile }}
-      REQUEST_JSON: ${{ inputs.request_json }}
+      RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
     steps:
       - name: Check out trusted workflow helpers
         uses: actions/checkout@v7
@@ -118,21 +118,6 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Write typed request without exposing it in logs
-        shell: bash
-        run: |
-          set -euo pipefail
-          REQUEST_PATH="${RUNNER_TEMP}/rust-tests-v1-request.json"
-          REQUEST_PATH="${REQUEST_PATH}" REQUEST_JSON="${REQUEST_JSON}" python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          Path(os.environ["REQUEST_PATH"]).write_text(
-              os.environ["REQUEST_JSON"], encoding="utf-8"
-          )
-          PY
-          echo "RUST_TEST_REQUEST=${REQUEST_PATH}" >> "${GITHUB_ENV}"
-
       - name: Inventory and run exact named tests
         id: named_tests
         continue-on-error: true
@@ -140,17 +125,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py \
-            --repo-root "${GITHUB_WORKSPACE}/validation-target" \
-            --request-file "${RUST_TEST_REQUEST}" \
-            --expected-profile "${VALIDATION_PROFILE}" \
-            --results-out "${RUNNER_TEMP}/rust-tests-v1-results.json"
+          python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
 
       - name: Append named-test evidence
         if: ${{ always() }}
         shell: bash
         env:
-          RESULT_PATH: ${{ runner.temp }}/rust-tests-v1-results.json
+          RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
         run: |
           set -euo pipefail
           RESULT_PATH="${RESULT_PATH}" python3 - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
@@ -180,7 +161,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
-          path: ${{ runner.temp }}/rust-tests-v1-results.json
+          path: validation-target/rust-tests-v1-results.json
           if-no-files-found: error
           retention-days: 3
 

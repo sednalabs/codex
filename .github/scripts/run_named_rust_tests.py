@@ -10,13 +10,11 @@ zero selected tests from being mistaken for coverage.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -30,17 +28,6 @@ ALLOWED_TARGET_KINDS = {"lib", "integration"}
 MAX_TESTS = 64
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--request-file")
-    source.add_argument("--request-json")
-    parser.add_argument("--repo-root", required=True)
-    parser.add_argument("--results-out", required=True)
-    parser.add_argument("--expected-profile", default="")
-    return parser.parse_args()
-
-
 def fail(code: str, message: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -52,15 +39,10 @@ def fail(code: str, message: str) -> dict[str, Any]:
     }
 
 
-def load_request(args: argparse.Namespace) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     try:
-        raw = (
-            Path(args.request_file).read_text(encoding="utf-8")
-            if args.request_file
-            else str(args.request_json)
-        )
-        payload = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(os.environ.get("RUST_TEST_REQUEST_JSON", ""))
+    except json.JSONDecodeError as exc:
         return None, fail("request_invalid_json", f"request could not be decoded: {exc}")
     if not isinstance(payload, dict):
         return None, fail("request_not_object", "request must be a JSON object")
@@ -82,7 +64,8 @@ def load_request(args: argparse.Namespace) -> tuple[dict[str, Any] | None, dict[
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
-    if args.expected_profile and profile != args.expected_profile:
+    expected_profile = os.environ.get("VALIDATION_PROFILE", "")
+    if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
     if not isinstance(tests, list) or not tests or len(tests) > MAX_TESTS:
         return None, fail("tests_invalid", f"tests must contain 1..{MAX_TESTS} names")
@@ -132,6 +115,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
+    # The request schema strictly validates package and target names. The
+    # command remains intentionally argv-based (never shell-evaluated).
+    # lgtm [py/command-line-injection]
     inventory = subprocess.run(
         cargo_args(request, list_only=True),
         cwd=manifest_root,
@@ -174,6 +160,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         )
         return result
     for name in request["tests"]:
+        # Test names are restricted to the Rust fully-qualified-name grammar
+        # before reaching this argv-only invocation.
+        # lgtm [py/command-line-injection]
         completed = subprocess.run(
             cargo_args(request, list_only=False, test_name=name),
             cwd=manifest_root,
@@ -209,9 +198,8 @@ def git_sha(repo_root: Path) -> str:
 
 
 def main() -> int:
-    args = parse_args()
-    request, error = load_request(args)
-    result = error or run_request(request or {}, Path(args.repo_root).resolve())
+    request, error = load_request()
+    result = error or run_request(request or {}, Path.cwd().resolve())
     result.setdefault("identity", {})
     result["identity"].update(
         {
@@ -222,10 +210,15 @@ def main() -> int:
             "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         }
     )
-    output = Path(args.results_out)
+    output = Path("rust-tests-v1-results.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"status": result.get("status"), "failure_code": result.get("failure_code", "")}, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": result.get("status"), "failure_code": result.get("failure_code", "")},
+            sort_keys=True,
+        )
+    )
     return 0 if result.get("status") == "success" else 1
 
 
