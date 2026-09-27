@@ -11,6 +11,8 @@ trap 'rm -rf "${archive_extract_dir}"' EXIT
 
 # Build the runtime helpers from this exact checkout and target directory. They
 # are not test binaries, so cargo-nextest does not include them in its archive.
+target="${VALIDATION_LAB_RUST_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+source "../.github/scripts/validation-lanes/setup-rusty-v8.sh" "${target}"
 cargo build \
   -p codex-code-mode-host --bin codex-code-mode-host \
   -p codex-rmcp-client --bin test_stdio_server
