@@ -486,11 +486,10 @@ core-persisted-subagent-descendants-targeted:
     cargo test -p codex-core agent::role::tests::apply_role_refreshes_model_instructions_only_when_personality_opt_out_changes --lib -- --exact --test-threads=1
     cargo test -p codex-core tools::handlers::multi_agents::tests::build_agent_spawn_config_uses_captured_step_settings_and_turn_context_values --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::resume::resume_switches_models_recomposes_model_instructions -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::base_instructions_override_disables_personality_template -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::remote_compact_v2_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
 
 # Focused app-server collab-spawn requested/effective identity projection slice.
@@ -684,8 +683,7 @@ state-migration-repair-targeted:
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
-    cargo test -p codex-thread-store live_thread_tests::concurrent_appends_keep_sqlite_metadata_in_canonical_history_order --lib -- --exact --test-threads=1
-    cargo test -p codex-thread-store live_thread_tests::persist_waits_for_append_observation_before_flushing_pending_metadata --lib -- --exact --test-threads=1
+    cargo test -p codex-thread-store thread_metadata_sync::tests::resume_history_waits_for_append_before_flushing_metadata --lib -- --exact --test-threads=1
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 
