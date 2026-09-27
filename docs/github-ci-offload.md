@@ -5,6 +5,22 @@ artifacts.
 
 ## Lanes
 
+- `validation-named-tests`
+  - trigger: explicit manual dispatch through `scripts/validate`
+  - purpose: hosted, exact named-test proof for one Cargo package/target seam
+  - contract: accepts a `rust-tests-v1` typed JSON request, selects a target
+    only from the committed closed command catalog, inventories the selected
+    target, rejects unknown, missing, or ambiguous test names, then records
+    each requested test result against immutable harness/base/target identities
+  - safety: accepts no shell command, arbitrary Cargo flag, secret, or local
+    runner selection; it always uses a standard `ubuntu-24.04` hosted runner
+  - command catalog: `.github/validation-named-tests.json` is the reviewed
+    extension point for complete target inventory and execution argv tuples;
+    unknown target selectors fail before Cargo starts
+  - operation: `scripts/validate` is a no-write dry run unless `--dispatch` is
+    supplied; after dispatch, `--watch --run-id <id>` performs one exact-run
+    blocking watch through GitHub CLI
+
 - `validation-lab`
   - trigger: manual dispatch only
   - purpose: remote-first validation for scratch refs, integration refs, orphan-branch experiments,
@@ -24,13 +40,13 @@ artifacts.
   - purpose: cancel stale PR-scoped workflow runs after a PR is merged or
     closed so long-running checks such as Rust CodeQL do not keep spending
     minutes after their pre-merge decision point has passed
-  - protected branch handoff: the cleanup leaves `main` and `upstream-main`
-    push runs alone; after a merge, the `main` push run is the authoritative
+  - branch handoff: the cleanup leaves `main` and `upstream-main` push runs
+    alone; after a merge, the `main` push run is the authoritative
     branch-tip proof and surfaces CodeQL findings through repository code
     scanning rather than as live PR feedback
   - retention: ordinary workflow logs only
 - `codeql`
-  - trigger: PRs, protected branch pushes, schedule, and manual dispatch
+  - trigger: PRs, branch pushes, schedule, and manual dispatch
   - purpose: authoritative CodeQL code scanning through the checked-in advanced
     setup
   - PR routing: the language router keeps the workflow-level check alive while
@@ -38,13 +54,13 @@ artifacts.
     unrelated PRs report success through the required gate without starting
     analysis jobs; PR planning uses the base checkout plus GitHub PR file
     metadata instead of fetching contributor-controlled head repositories
-  - full-scan fallback: protected branch pushes, schedules, manual dispatch,
+  - full-scan fallback: branch pushes, schedules, manual dispatch,
     unavailable PR metadata, and edits to CodeQL workflow/config/router
     fixtures run the full Actions, C/C++, JavaScript/TypeScript, Python, and
     Rust matrix; if the base checkout does not yet contain the router script,
     the workflow emits that full matrix directly
   - cache policy: use CodeQL native dependency caching in restore-only mode for
-    PRs and restore/store mode for protected branch or scheduled runs; keep
+    PRs and restore/store mode for branch or scheduled runs; keep
     manual Rust caches limited to Cargo registry/git data and do not cache
     toolchain executables in the security scanning workflow
   - not covered: GitHub Code Quality is deliberately disabled; checked-in
@@ -253,6 +269,8 @@ gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \
+  -f target_sha=<exact-target-sha> \
+  -f base_ref=main \
   -f profile=targeted \
   -f lane_set=ui-protocol
 ```
@@ -265,6 +283,8 @@ gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \
+  -f target_sha=<exact-target-sha> \
+  -f base_ref=main \
   -f profile=targeted \
   -f lanes=codex.blocking-waits-app-server-targeted,codex.app-server-protocol-test
 ```
@@ -294,16 +314,22 @@ Use the snapshot helper:
 ```bash
 scripts/dispatch-validation-lab-snapshot.sh \
   --profile targeted \
-  --lanes codex.app-server-protocol-test,codex.app-server-thread-cwd-targeted
+  --lanes codex.app-server-protocol-test,codex.app-server-thread-cwd-targeted \
+  --base-ref main \
+  --path codex-rs/app-server-protocol/src \
+  --path codex-rs/app-server-thread-cwd-targeted/src
 ```
 
 What it does:
 
-1. Builds a disposable commit from the current local worktree state without
-   rewriting the current branch.
+1. Builds a disposable commit from the explicitly named paths (relative to
+   the invocation directory) without
+   rewriting the current branch. It refuses to sweep other dirty paths unless
+   `--include-all` is explicitly supplied.
 2. Pushes that commit to a disposable `validation/snapshot-*` ref on `origin`.
 3. Dispatches `validation-lab.yml` from downstream `main` against that pushed
-   snapshot ref.
+   snapshot ref, binding the snapshot commit as `target_sha` and `base_ref` as
+   the comparison base.
 
 This is the preferred low-friction path when the real question is "prove the
 exact local tree remotely" and the branch is not yet in public-PR shape.

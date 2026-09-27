@@ -88,7 +88,78 @@ Preferred pattern:
 1. Create/push a disposable `validation/snapshot-*` ref from the exact local
    tree.
 2. Dispatch `validation-lab.yml` from downstream `main`.
-3. Pass the snapshot branch name via workflow input `ref`.
+3. Pass the snapshot branch name via workflow input `ref`; the helper also
+   supplies the resulting commit as `target_sha` and an explicit `base_ref`.
+
+Every run records three immutable identities in its proof artifact:
+
+- **H (harness):** the workflow commit that planned and executed the run;
+- **B (base):** the exact comparison-base commit checked out by `base_ref`;
+- **T (target):** the exact validation commit, verified against `target_sha`.
+
+Do not treat a branch name, a green aggregate, or a prior run as proof for a
+different H/B/T tuple. The planner fingerprint includes H, B, T, the resolved
+lane matrix, and the normalized complete `test_request` plus `test_profile`,
+so evidence reuse is rejected when any of them changes. The workflow's
+optional `question_key` is a stable owned-question identity for automatic
+supersession; it deliberately excludes T. T remains in the evidence
+fingerprint, so a newer candidate supersedes the same question without
+aliasing its proof to an older commit. Use a distinct question key when two
+independent questions otherwise share the same branch and lane selection.
+
+For a historical named-test reproduction, select the exact allowlisted lane
+ID rather than passing an arbitrary shell command. For example,
+`codex.thread-manager-sample-targeted` runs the standalone
+`codex-thread-manager-sample` compile that was omitted from an earlier
+targeted proof. The lane is explicit-only and therefore does not widen routine
+smoke or frontier runs.
+
+For a new exact test question, use the typed `rust-tests-v1` interface instead
+of adding a one-off command to a workflow. Its package/target selector must
+match an entry in the committed `.github/validation-named-tests.json` command
+catalog. Each entry contains complete, fixed inventory and execution argv
+tuples; arbitrary packages, targets, flags, and shell fragments are not an
+extension mechanism. Add a reviewed catalog entry when a new Cargo target is
+needed. Fully-qualified requested test names remain selectors only: the hosted
+job inventories the selected target, fails closed when a requested name is
+missing or ambiguous, then runs the immutable target command and reconciles
+each requested name against its exact result. A passing Cargo invocation that
+ran zero selected tests therefore cannot become false coverage. The request
+and result artifact carry the exact harness/base/target identity and a request
+fingerprint. The runner also reconciles Cargo's result counts and fails when
+the named test is ignored, absent from the result, or does not produce exactly
+one passing non-ignored execution; bounded diagnostics point to the hosted
+job log for the complete output.
+
+The operator-facing `scripts/validate` helper previews this request by
+default. Add `--dispatch` to cross the write boundary, and `--watch` to use
+the SHA-guarded blocking workflow watcher through terminal state:
+
+```bash
+scripts/validate \
+  --target-sha <full-candidate-sha> \
+  --profile rust_minimal \
+  --request-json '{"schema_version":"rust-tests-v1","profile":"rust_minimal","package":"codex-core","target_kind":"lib","target":"","tests":["completion_rule_distinguishes_any_from_all"]}'
+```
+
+The helper never accepts a shell command, arbitrary Cargo flags, or an implicit
+dirty-tree snapshot. Its dispatch target is pinned to the protected
+`sednalabs/codex` `main` workflow host; other repositories or workflow-host
+refs are rejected. Candidate and comparison refs remain typed data passed to
+that trusted workflow, not a way to select workflow code. The dispatch helper
+keeps the executable, repository, workflow ref, and option names constant and
+passes validated request fields through `gh workflow run --json` on stdin;
+they are never interpolated into a command-line argument. Use the existing
+snapshot helper first when the candidate is not already on a remote ref.
+Dispatch first, then use the returned Actions run id for a separate blocking
+watch (`scripts/validate --watch --run-id <run-id>` or `gh run watch <run-id>
+--exit-status`). The public helper does not embed a workstation path or
+watcher implementation.
+
+The snapshot helper never sweeps a dirty worktree implicitly. Pass one or more
+`--path <repo-relative-path>` arguments for the intended files, or use
+`--include-all` only when the complete dirty tree is explicitly in scope. A
+dirty tree without either choice is rejected before staging.
 
 For the concrete command helper and dispatch examples, use
 [`github-ci-offload.md`](github-ci-offload.md) (`validation-lab` dispatch rule
@@ -162,6 +233,16 @@ route covers the changed files. If no exact route is available, it falls back to
 single-domain rules for workflow, docs, release, UI protocol, or Rust core
 changes. Empty, incomplete, cross-domain, or unknown metadata recommends
 `profile=frontier` with `lane_set=all` rather than silently narrowing the run.
+When a change crosses several exact follow-up routes, the planner composes the
+highest-priority reverse consumers and reports covered, uncovered, and
+ambiguous paths. Any partial composition takes the controlled frontier
+fallback; it is never presented as complete targeted coverage.
+Configuration and policy edits require the same reverse-consumer treatment:
+their route entry must name every affected consumer seam (including nested
+fixtures and generated/config-derived readers). The standalone sample lane is
+not a substitute for a Config route. If the catalog cannot prove those
+consumers, the planner records the paths as uncovered and takes the frontier
+fallback rather than claiming targeted completeness.
 
 The recommendation output is planner guidance only. It does not change default
 or required gates, does not make checkout-trust decisions, and does not dispatch

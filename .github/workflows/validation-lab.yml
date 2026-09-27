@@ -9,6 +9,14 @@ on:
       ref:
         required: false
         type: string
+      target_sha:
+        required: false
+        type: string
+        default: ""
+      base_ref:
+        required: false
+        type: string
+        default: main
       profile:
         required: true
         type: string
@@ -41,11 +49,33 @@ on:
       supersession_key:
         required: false
         type: string
+        default: ""
+      question_key:
+        required: false
+        type: string
+        default: ""
+      test_request:
+        required: false
+        type: string
+        default: ""
+      test_profile:
+        required: false
+        type: string
+        default: rust_minimal
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch or tag to validate; this value is passed directly to actions/checkout for the validation-target checkout, so SHA pinning belongs in the dispatch/watch layer instead
+        description: Branch or tag to validate when target_sha is not supplied
         required: false
+        type: string
+      target_sha:
+        description: Exact target commit SHA; the run fails if the target checkout resolves to another commit
+        required: false
+        type: string
+      base_ref:
+        description: Exact comparison-base branch, tag, or commit ref used for H/B/T evidence
+        required: false
+        default: main
         type: string
       profile:
         description: Validation depth/profile
@@ -122,21 +152,41 @@ on:
         description: Optional retention label for compare/milestone/retain runs
         required: false
         type: string
+      question_key:
+        description: >-
+          Stable owned-question identity; target SHA is deliberately excluded
+        required: false
+        type: string
+      test_request:
+        description: Optional rust-tests-v1 typed exact-test request
+        required: false
+        type: string
+      test_profile:
+        description: Hosted profile for the optional rust-tests-v1 request
+        required: false
+        type: choice
+        options:
+          - rust_minimal
+          - rust_integration
+        default: rust_minimal
 
 concurrency:
   group: >-
     ${{
       inputs.supersession_mode == 'auto' &&
       format(
-        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}',
-        inputs.ref || github.ref_name,
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}::{8}::{9}::{10}',
+        inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name,
+        inputs.base_ref || 'main',
         inputs.profile,
         inputs.lane_set,
         inputs.lanes || 'default',
         inputs.fanout_tier || 'enterprise',
         inputs.rust_batching || 'auto',
         inputs.artifact_build && 'artifact' || 'no-artifact',
-        inputs.include_explicit_lanes && 'explicit' || 'default'
+        inputs.include_explicit_lanes && 'explicit' || 'default',
+        inputs.test_profile || 'rust_minimal',
+        inputs.test_request != '' && 'named-tests' || 'no-named-tests'
       ) ||
       format(
         'validation-lab::retained::{0}::{1}::{2}',
@@ -156,6 +206,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       host_ref: ${{ steps.meta.outputs.host_ref }}
+      harness_sha: ${{ steps.meta.outputs.harness_sha }}
+      base_ref: ${{ steps.meta.outputs.base_ref }}
+      base_sha: ${{ steps.meta.outputs.base_sha }}
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
       head_sha: ${{ steps.meta.outputs.head_sha }}
@@ -228,16 +281,48 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Check out validation target
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
-          persist-credentials: false
-          # This input is consumed by actions/checkout as a branch-or-tag selector.
-          # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
-          # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
-          ref: ${{ inputs.ref || github.sha }}
-          path: validation-target
+      - name: Materialize exact validation target and base
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          TARGET_REF: ${{ inputs.ref }}
+          BASE_REF: ${{ inputs.base_ref || 'main' }}
+          NEED_TAGS: ${{ inputs.profile == 'artifact' || inputs.artifact_build }}
+        run: |
+          set -euo pipefail
+          safe_ref() {
+            [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]]
+          }
+          target_ref="${TARGET_SHA:-${TARGET_REF:-${GITHUB_SHA}}}"
+          if [[ -n "${TARGET_SHA}" && ! "${TARGET_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "target_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ -z "${TARGET_SHA}" ]] && ! safe_ref "${target_ref}"; then
+            echo "target ref must be a safe repository ref" >&2
+            exit 1
+          fi
+          if ! safe_ref "${BASE_REF}"; then
+            echo "base_ref must be a safe repository ref" >&2
+            exit 1
+          fi
+          fetch_args=(--no-tags)
+          if [[ "${NEED_TAGS}" != "true" ]]; then
+            fetch_args+=(--depth=1)
+          fi
+          git fetch "${fetch_args[@]}" origin -- "${target_ref}"
+          target_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ -n "${TARGET_SHA}" && "${target_sha}" != "${TARGET_SHA}" ]]; then
+            echo "target fetch did not resolve to requested target SHA" >&2
+            exit 1
+          fi
+          if [[ "${NEED_TAGS}" == "true" ]]; then
+            git fetch --tags origin
+          fi
+          git fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          base_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          git worktree add --detach "${GITHUB_WORKSPACE}/validation-target" "${target_sha}"
+          git worktree add --detach "${GITHUB_WORKSPACE}/validation-base" "${base_sha}"
 
       - name: Compute validation-lab plan
         id: meta
@@ -246,8 +331,10 @@ jobs:
           LAB_HOST_REF: ${{ github.ref_name }}
           LAB_WORKFLOW_REF: ${{ github.workflow_ref }}
           LAB_WORKFLOW_SHA: ${{ github.sha }}
-          LAB_CHECKOUT_REF: ${{ inputs.ref || github.sha }}
-          LAB_DISPLAY_REF: ${{ inputs.ref || github.ref_name }}
+          LAB_CHECKOUT_REF: ${{ inputs.target_sha || inputs.ref || github.sha }}
+          LAB_TARGET_SHA: ${{ inputs.target_sha }}
+          LAB_BASE_REF: ${{ inputs.base_ref || 'main' }}
+          LAB_DISPLAY_REF: ${{ inputs.target_sha || inputs.ref || github.ref_name }}
           LAB_PROFILE: ${{ inputs.profile }}
           LAB_LANE_SET: ${{ inputs.lane_set }}
           LAB_FANOUT_TIER: ${{ inputs.fanout_tier || 'enterprise' }}
@@ -256,6 +343,8 @@ jobs:
           LAB_RUST_BATCHING_OVERRIDE: ${{ vars.VALIDATION_LAB_RUST_BATCHING }}
           LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
           LAB_INCLUDE_EXPLICIT_LANES: ${{ inputs.include_explicit_lanes }}
+          LAB_TEST_REQUEST: ${{ inputs.test_request }}
+          LAB_TEST_PROFILE: ${{ inputs.test_profile || 'rust_minimal' }}
         run: |
           set -euo pipefail
 
@@ -263,12 +352,22 @@ jobs:
           checkout_ref="${LAB_CHECKOUT_REF}"
           display_ref="${LAB_DISPLAY_REF}"
           target_checkout="${GITHUB_WORKSPACE}/validation-target"
+          base_checkout="${GITHUB_WORKSPACE}/validation-base"
           catalog_path="${target_checkout}/.github/validation-lanes.json"
           catalog_args=()
           if [[ -f "${catalog_path}" ]]; then
             catalog_args+=(--catalog-path "${catalog_path}")
           fi
           head_sha="$(git -C "${target_checkout}" rev-parse HEAD)"
+          base_sha="$(git -C "${base_checkout}" rev-parse HEAD)"
+          if [[ -n "${LAB_TARGET_SHA}" && ! "${LAB_TARGET_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "target_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ -n "${LAB_TARGET_SHA}" && "${head_sha}" != "${LAB_TARGET_SHA}" ]]; then
+            echo "target checkout ${head_sha} does not match requested target SHA ${LAB_TARGET_SHA}" >&2
+            exit 1
+          fi
           short_sha="$(git -C "${target_checkout}" rev-parse --short=8 HEAD)"
           display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           if [[ "${LAB_PROFILE}" == "artifact" || "${LAB_ARTIFACT_BUILD}" == "true" ]]; then
@@ -373,6 +472,7 @@ jobs:
             --workflow validation-lab.yml \
             --workflow-ref "${LAB_WORKFLOW_REF}" \
             --workflow-sha "${LAB_WORKFLOW_SHA}" \
+            --base-sha "${base_sha}" \
             --target-head-sha "${head_sha}" \
             --profile "${LAB_PROFILE}" \
             --lane-set "${LAB_LANE_SET}" \
@@ -381,10 +481,15 @@ jobs:
             --rust-batching "${LAB_RUST_BATCHING}" \
             --artifact-build "${LAB_ARTIFACT_BUILD}" \
             --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" \
+            --test-request "${LAB_TEST_REQUEST}" \
+            --test-profile "${LAB_TEST_PROFILE}" \
             < "${selection_meta_path}")"
 
           {
             echo "host_ref=${host_ref}"
+            echo "harness_sha=${LAB_WORKFLOW_SHA}"
+            echo "base_ref=${LAB_BASE_REF}"
+            echo "base_sha=${base_sha}"
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${display_ref}"
             echo "head_sha=${head_sha}"
@@ -509,6 +614,7 @@ jobs:
             echo "- Reused run: ${{ steps.dedupe.outputs.matched_run_url || 'none' }}"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
             echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
+            echo "- Owned question key: \`${{ inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name }}\`"
             echo "- Profile notes: ${{ steps.meta.outputs.profile_notes }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1273,6 +1379,26 @@ jobs:
       needs_sccache: true
       cache_policy: ${{ inputs.supersession_mode != 'auto' && 'write-fallback' || 'restore-only' }}
 
+  named_tests:
+    name: Validation-lab exact named tests
+    needs:
+      - metadata
+    if: >-
+      ${{
+        needs.metadata.result == 'success' &&
+        needs.metadata.outputs.dedupe_should_skip != 'true' &&
+        inputs.test_request != ''
+      }}
+    uses: ./.github/workflows/_validation-named-tests.yml
+    with:
+      target_sha: ${{ needs.metadata.outputs.head_sha }}
+      base_ref: ${{ needs.metadata.outputs.base_ref }}
+      base_sha: ${{ needs.metadata.outputs.base_sha }}
+      harness_sha: ${{ needs.metadata.outputs.harness_sha }}
+      profile: ${{ inputs.test_profile || 'rust_minimal' }}
+      request_json: ${{ inputs.test_request }}
+      artifact_name: validation-named-tests-${{ github.run_id }}
+
   summary:
     name: Validation-lab summary
     needs:
@@ -1292,6 +1418,7 @@ jobs:
       - rust_integration_batches
       - release_lanes
       - artifact
+      - named_tests
     if: ${{ always() && needs.metadata.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -1336,6 +1463,23 @@ jobs:
           RUST_INTEGRATION_ARCHIVE_RESULT: ${{ needs.rust_integration_archive_lanes.result || 'skipped' }}
           RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
           RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
+          JOB_METADATA_RESULT: ${{ needs.metadata.result || 'skipped' }}
+          JOB_SMOKE_WORKFLOW_RESULT: ${{ needs.smoke_workflow_lanes.result || 'skipped' }}
+          JOB_SMOKE_NODE_RESULT: ${{ needs.smoke_node_lanes.result || 'skipped' }}
+          JOB_SMOKE_RUST_MINIMAL_RESULT: ${{ needs.smoke_rust_minimal_lanes.result || 'skipped' }}
+          JOB_SMOKE_RUST_INTEGRATION_RESULT: ${{ needs.smoke_rust_integration_lanes.result || 'skipped' }}
+          JOB_SMOKE_RELEASE_RESULT: ${{ needs.smoke_release_lanes.result || 'skipped' }}
+          JOB_WORKFLOW_RESULT: ${{ needs.workflow_lanes.result || 'skipped' }}
+          JOB_NODE_RESULT: ${{ needs.node_lanes.result || 'skipped' }}
+          JOB_RUST_MINIMAL_RESULT: ${{ needs.rust_minimal_lanes.result || 'skipped' }}
+          JOB_RUST_MINIMAL_BATCH_RESULT: ${{ needs.rust_minimal_batches.result || 'skipped' }}
+          JOB_NEXTEST_ARCHIVE_RESULT: ${{ needs.nextest_archives.result || 'skipped' }}
+          JOB_RUST_INTEGRATION_ARCHIVE_RESULT: ${{ needs.rust_integration_archive_lanes.result || 'skipped' }}
+          JOB_RUST_INTEGRATION_RESULT: ${{ needs.rust_integration_lanes.result || 'skipped' }}
+          JOB_RUST_INTEGRATION_BATCH_RESULT: ${{ needs.rust_integration_batches.result || 'skipped' }}
+          JOB_RELEASE_RESULT: ${{ needs.release_lanes.result || 'skipped' }}
+          JOB_ARTIFACT_RESULT: ${{ needs.artifact.result || 'skipped' }}
+          JOB_NAMED_TESTS_RESULT: ${{ needs.named_tests.result || 'skipped' }}
         run: |
           set -euo pipefail
           summary_file="${RUNNER_TEMP}/validation-summary.json"
@@ -1349,24 +1493,46 @@ jobs:
               smoke_gate_result="success"
             fi
           fi
-          combined_result() {
-            local first="$1"
-            local second="$2"
-            if [[ "${first}" == "failure" || "${second}" == "failure" ]]; then
-              echo "failure"
-            elif [[ "${first}" == "cancelled" || "${second}" == "cancelled" ]]; then
-              echo "cancelled"
-            elif [[ "${first}" == "success" || "${second}" == "success" ]]; then
-              echo "success"
-            else
-              echo "skipped"
-            fi
-          }
+          # Keep this alias for callers in older workflow snapshots; the
+          # implementation is variadic so later archive/batch results are
+          # never silently ignored.
+          source .github/scripts/combined_validation_result.sh
+          combined_result() { combined_validation_result "$@"; }
           rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
           rust_integration_result="$(combined_result "${NEXTEST_ARCHIVE_RESULT}" "${RUST_INTEGRATION_ARCHIVE_RESULT}" "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
+          job_results_file="${RUNNER_TEMP}/validation-job-results.json"
+          python3 - <<'PY' > "${job_results_file}"
+          import json
+          import os
+
+          names = {
+              "metadata": "JOB_METADATA_RESULT",
+              "smoke_workflow_lanes": "JOB_SMOKE_WORKFLOW_RESULT",
+              "smoke_node_lanes": "JOB_SMOKE_NODE_RESULT",
+              "smoke_rust_minimal_lanes": "JOB_SMOKE_RUST_MINIMAL_RESULT",
+              "smoke_rust_integration_lanes": "JOB_SMOKE_RUST_INTEGRATION_RESULT",
+              "smoke_release_lanes": "JOB_SMOKE_RELEASE_RESULT",
+              "workflow_lanes": "JOB_WORKFLOW_RESULT",
+              "node_lanes": "JOB_NODE_RESULT",
+              "rust_minimal_lanes": "JOB_RUST_MINIMAL_RESULT",
+              "rust_minimal_batches": "JOB_RUST_MINIMAL_BATCH_RESULT",
+              "nextest_archives": "JOB_NEXTEST_ARCHIVE_RESULT",
+              "rust_integration_archive_lanes": "JOB_RUST_INTEGRATION_ARCHIVE_RESULT",
+              "rust_integration_lanes": "JOB_RUST_INTEGRATION_RESULT",
+              "rust_integration_batches": "JOB_RUST_INTEGRATION_BATCH_RESULT",
+              "release_lanes": "JOB_RELEASE_RESULT",
+              "artifact": "JOB_ARTIFACT_RESULT",
+              "named_tests": "JOB_NAMED_TESTS_RESULT",
+          }
+          print(json.dumps({name: os.environ.get(env_name, "skipped") for name, env_name in names.items()}))
+          PY
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ needs.metadata.outputs.host_ref }}" \
+            --workflow-sha "${{ needs.metadata.outputs.harness_sha }}" \
+            --base-ref "${{ needs.metadata.outputs.base_ref }}" \
+            --base-sha "${{ needs.metadata.outputs.base_sha }}" \
+            --workflow-file "validation-lab.yml" \
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.head_sha }}" \
@@ -1382,6 +1548,7 @@ jobs:
             --explicit-lanes "${{ inputs.lanes }}" \
             --supersession-mode "${{ inputs.supersession_mode }}" \
             --supersession-key "${{ inputs.supersession_key }}" \
+            --question-key "${{ inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name }}" \
             --dedupe-should-skip "${{ needs.metadata.outputs.dedupe_should_skip }}" \
             --dedupe-reason "${{ needs.metadata.outputs.dedupe_reason }}" \
             --dedupe-matched-run-id "${{ needs.metadata.outputs.dedupe_matched_run_id }}" \
@@ -1405,6 +1572,7 @@ jobs:
             --rust-batching-mode "${{ needs.metadata.outputs.rust_batching_mode }}" \
             --rust-batching-reason "${{ needs.metadata.outputs.rust_batching_reason }}" \
             --cache-occupancy-json "${CACHE_OCCUPANCY_FILE:-}" \
+            --job-results-json-file "${job_results_file}" \
             --lane-summary-dir "${RUNNER_TEMP}/validation-lane-summaries" \
             --output "${summary_file}"
           echo "SUMMARY_FILE=${summary_file}" >> "$GITHUB_ENV"

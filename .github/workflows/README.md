@@ -67,14 +67,16 @@ contract today.
   `build-mode: none`. This keeps coverage over the vendored C sandbox code and
   Rust sources without relying on CodeQL autobuild, which has no useful build
   system to discover in this repository.
-- Pull requests intentionally use the same static language matrix as protected
-  branch scans. Keep the workflow free of file-diff language routers so GitHub
-  code scanning receives the full configured category set for PR alert
-  comparison.
+- Pull requests and merge-queue runs use `classify_ci_paths.py` to select the
+  affected CodeQL languages from changed paths. If base checkout or path
+  classification fails, the planner falls back to the full language matrix.
+  Protected branch pushes, schedules, and manual dispatches retain full
+  repository coverage, so path-scoped PR analysis does not replace the
+  authoritative branch scans.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings, `.github/codeql/codeql-actions.yml` for Actions-only query
-  additions, and `.github/codeql/codeql-rust.yml` for Rust-specific contract
-  checks. The
+  settings, `.github/codeql/codeql-actions.yml` for Actions-only
+  query additions, and `.github/codeql/codeql-rust.yml` for Rust-specific
+  contract checks. The
   Actions lane prepares a runtime config so same-repository pull requests can
   validate checked-out query-pack changes, while fork pull requests use the
   trusted-base copy of `.github/codeql/actions-workflow-security` when it is
@@ -101,6 +103,10 @@ contract today.
   protected branch or scheduled runs. Do not cache Rust toolchain executables or
   pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
   they are compiled outputs, not the source extraction data CodeQL needs.
+- CodeQL findings are evaluated by GitHub code scanning itself. A successful
+  repository-owned analysis summary is not a dismissal or proof that the
+  separate code-scanning result is clean; the applicable ruleset must require
+  and report that result independently before protected landing.
 - When a pull request closes, `cancel-pr-runs.yml` cancels active PR-scoped
   workflow runs for that PR. Merged PRs still get the authoritative post-merge
   CodeQL scan from the `main` push; the canceller deliberately leaves protected
