@@ -148,8 +148,15 @@ async fn wait_for_model_available(manager: &SharedModelsManager, slug: &str) {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Result<()> {
+#[test]
+fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Result<()> {
+    core_test_support::run_large_stack_test(
+        "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
+        spawn_agent_description_lists_visible_models_and_reasoning_efforts_impl(),
+    )
+}
+
+async fn spawn_agent_description_lists_visible_models_and_reasoning_efforts_impl() -> Result<()> {
     let server = start_mock_server().await;
     mount_models_once(
         &server,

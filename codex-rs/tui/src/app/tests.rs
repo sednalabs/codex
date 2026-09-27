@@ -2422,17 +2422,13 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 
 #[test]
 fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -> Result<()> {
-    const WORKER_THREADS: usize = 1;
-    const TEST_STACK_SIZE_BYTES: usize = 12 * 1024 * 1024;
+    crate::test_support::run_large_stack_test(
+        "selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children",
+        selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children_impl,
+    )
+}
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(WORKER_THREADS)
-        .thread_stack_size(TEST_STACK_SIZE_BYTES)
-        .enable_all()
-        .build()?;
-
-    // Keep the scenario and its large setup/resume futures off the test thread's stack.
-    runtime.block_on(Box::pin(async {
+async fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children_impl() -> Result<()> {
         let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
         let root_thread_id = ThreadId::new();
         let rollout_dir = app
@@ -2614,8 +2610,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             !std::iter::from_fn(|| app_event_rx.try_recv().ok())
                 .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
-        Ok(())
-    }))
+    Ok(())
 }
 
 #[test]
