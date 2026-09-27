@@ -6970,7 +6970,10 @@ mod tests {
             if provenance == BaseInstructionsProvenance::Unknown {
                 assert!(serialized.get("base_instructions_provenance").is_none());
             } else {
-                assert_eq!(serialized["base_instructions_provenance"], json!(provenance));
+                assert_eq!(
+                    serialized["base_instructions_provenance"],
+                    json!(provenance)
+                );
             }
             let round_trip: SessionMeta = serde_json::from_value(serialized)?;
             assert_eq!(round_trip.base_instructions_provenance, provenance);

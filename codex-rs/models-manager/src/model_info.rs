@@ -1,5 +1,4 @@
 use codex_protocol::config_types::Personality;
-use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
@@ -10,6 +9,7 @@ use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 
 use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
