@@ -40,7 +40,10 @@ if [[ ! -f "${manifest}" ]]; then
   exit 1
 fi
 
-expected_sha="${VALIDATION_LAB_EXPECTED_SHA:-${GITHUB_SHA:-}}"
+# GITHUB_SHA identifies the workflow host and can differ when this lane
+# validates a checked-out cross-ref. Prefer explicit validation metadata, or
+# derive the identity from the exact checkout that is running this wrapper.
+expected_sha="${VALIDATION_LAB_EXPECTED_SHA:-$(git rev-parse HEAD)}"
 archive_sha="$(sed -n 's/^validation_sha=//p' "${manifest}")"
 if [[ -z "${expected_sha}" || -z "${archive_sha}" || "${expected_sha}" != "${archive_sha}" ]]; then
   echo "nextest archive validation identity is missing or disagrees (expected=${expected_sha:-missing} archive=${archive_sha:-missing})" >&2
