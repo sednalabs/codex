@@ -517,15 +517,28 @@ async fn resume_switches_models_recomposes_model_instructions() -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let resumed_instructions = initial
-        .thread_manager
-        .get_models_manager()
-        .get_model_info("gpt-5.4", &initial.config.to_models_manager_config())
-        .await
-        .base_instructions;
+    let mut expected_builder = test_codex().with_config(|config| {
+        config.model = Some("gpt-5.4".to_string());
+    });
+    let expected = expected_builder.build(&server).await?;
+    let expected_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-expected"),
+            ev_assistant_message("msg-expected", "Expected model instructions"),
+            ev_completed("resp-expected"),
+        ]),
+    )
+    .await;
+    expected.submit_turn("Record resumed-model instructions").await?;
+    wait_for_event(&expected.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let resumed_instructions = expected_mock.single_request().instructions_text();
     assert_ne!(
         resumed_instructions, initial_instructions,
-        "test models must use distinct instructions to prove recomposition"
+        "test models must use distinct request instructions to prove recomposition"
     );
 
     let resumed_mock = mount_sse_sequence(
