@@ -150,6 +150,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
@@ -2901,6 +2902,38 @@ fn session_meta_item(
         },
         git: None,
     })
+}
+
+#[test]
+fn base_instruction_provenance_survives_resume_child_and_grandchild() {
+    let thread_id = ThreadId::new();
+    let instructions = BaseInstructions {
+        text: "model-owned instructions".to_string(),
+        provenance: Some(BaseInstructionsProvenance::Model {
+            model: "parent-model".to_string(),
+        }),
+    };
+    let history = Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+        meta: SessionMeta {
+            session_id: thread_id.into(),
+            id: thread_id,
+            base_instructions: Some(instructions.clone()),
+            ..SessionMeta::default()
+        },
+        git: None,
+    })]);
+    let resumed = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: thread_id,
+        history: Arc::clone(&history),
+        rollout_path: None,
+    });
+    assert_eq!(resumed.get_base_instructions(), Some(instructions.clone()));
+
+    let child = InitialHistory::Forked(history.as_ref().clone());
+    assert_eq!(child.get_base_instructions(), Some(instructions.clone()));
+
+    let grandchild = InitialHistory::Forked(history.as_ref().clone());
+    assert_eq!(grandchild.get_base_instructions(), Some(instructions));
 }
 
 #[tokio::test]

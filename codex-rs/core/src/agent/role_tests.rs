@@ -329,6 +329,50 @@ async fn apply_role_refreshes_model_instructions_only_when_personality_opt_out_c
 }
 
 #[tokio::test]
+async fn apply_role_refreshes_model_owned_instructions_when_model_changes() {
+    for (provenance, expected) in [
+        (
+            BaseInstructionsProvenance::Model {
+                model: "parent-model".to_string(),
+            },
+            (None, None),
+        ),
+        (
+            BaseInstructionsProvenance::Custom,
+            (
+                Some("operator instructions".to_string()),
+                Some(BaseInstructionsProvenance::Custom),
+            ),
+        ),
+    ] {
+        let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        let role_path = write_role_config(&home, "model-role.toml", "model = \"child-model\"").await;
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: None,
+                config_file: Some(role_path),
+                nickname_candidates: None,
+            },
+        );
+        config.base_instructions = Some("operator instructions".to_string());
+        config.base_instructions_provenance = Some(provenance);
+
+        apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect("custom role should apply");
+
+        assert_eq!(
+            (
+                config.base_instructions,
+                config.base_instructions_provenance,
+            ),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn apply_role_reports_explicit_service_tier() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let role_path = write_role_config(

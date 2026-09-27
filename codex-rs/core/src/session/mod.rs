@@ -748,11 +748,32 @@ impl Session {
         let history_mode = conversation_history.get_history_mode(
             requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
         );
-        let base_instructions = config
-            .base_instructions
-            .clone()
-            .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
-            .unwrap_or_else(|| render_model_instructions(&model_info));
+        // Model-owned instructions are a rendering of the selected model, rather
+        // than an operator override. Re-render them whenever the active model is
+        // selected so resumed and spawned sessions do not retain the parent
+        // model's provider instructions. Legacy rollouts without provenance stay
+        // conservative: keep their persisted text unless no instructions exist.
+        let inherited_base_instructions = conversation_history.get_base_instructions();
+        let base_instructions = match (
+            config.base_instructions.clone(),
+            config.base_instructions_provenance.as_ref(),
+            inherited_base_instructions,
+        ) {
+            (Some(_), Some(BaseInstructionsProvenance::Model { .. }), _) => {
+                render_model_instructions(&model_info)
+            }
+            (Some(instructions), _, _) => instructions,
+            (
+                None,
+                _,
+                Some(BaseInstructions {
+                    provenance: Some(BaseInstructionsProvenance::Model { .. }),
+                    ..
+                }),
+            ) => render_model_instructions(&model_info),
+            (None, _, Some(BaseInstructions { text, .. })) => text,
+            (None, _, None) => render_model_instructions(&model_info),
+        };
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
         let dynamic_tools = if dynamic_tools.is_empty() {

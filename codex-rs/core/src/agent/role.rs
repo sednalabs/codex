@@ -223,7 +223,9 @@ mod role_overrides {
         }
         let strips_baked_personality =
             |config: &Config| config.personality == Some(Personality::None);
-        if strips_baked_personality(config) != strips_baked_personality(&next_config)
+        let replaces_model = overrides.model.is_some();
+        if (replaces_model
+            || strips_baked_personality(config) != strips_baked_personality(&next_config))
             && matches!(
                 config.base_instructions_provenance,
                 Some(BaseInstructionsProvenance::Model { .. })

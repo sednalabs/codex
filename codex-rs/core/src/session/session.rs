@@ -779,21 +779,33 @@ impl Session {
             session_configuration.provider
         );
         let base_instructions_provenance = if config.base_instructions.is_some() {
-            Some(
-                config
-                    .base_instructions_provenance
-                    .clone()
-                    .unwrap_or(BaseInstructionsProvenance::Custom),
-            )
+            match config.base_instructions_provenance.as_ref() {
+                Some(BaseInstructionsProvenance::Model { .. }) => {
+                    Some(BaseInstructionsProvenance::Model {
+                        model: model_info.slug.clone(),
+                    })
+                }
+                Some(BaseInstructionsProvenance::Custom) | None => {
+                    Some(BaseInstructionsProvenance::Custom)
+                }
+            }
         } else if let Some(inherited_base_instructions) = initial_history.get_base_instructions() {
             let BaseInstructions { text, provenance } = inherited_base_instructions;
-            provenance.or_else(|| {
-                (text == render_model_instructions(&model_info)).then(|| {
+            match provenance {
+                Some(BaseInstructionsProvenance::Model { .. }) => {
+                    Some(BaseInstructionsProvenance::Model {
+                        model: model_info.slug.clone(),
+                    })
+                }
+                Some(BaseInstructionsProvenance::Custom) => {
+                    Some(BaseInstructionsProvenance::Custom)
+                }
+                None => (text == render_model_instructions(&model_info)).then(|| {
                     BaseInstructionsProvenance::Model {
                         model: model_info.slug.clone(),
                     }
-                })
-            })
+                }),
+            }
         } else {
             Some(BaseInstructionsProvenance::Model {
                 model: model_info.slug.clone(),
