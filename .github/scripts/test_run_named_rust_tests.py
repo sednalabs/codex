@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 from pathlib import Path
-from unittest import TestCase, mock
+from unittest import TestCase, main, mock
 
 
 SCRIPT = Path(__file__).with_name("run_named_rust_tests.py")
@@ -92,4 +92,4 @@ class NamedRustTests(TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()

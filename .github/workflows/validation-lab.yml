@@ -153,7 +153,8 @@ on:
         required: false
         type: string
       question_key:
-        description: Stable owned-question identity; target SHA is deliberately excluded
+        description: >-
+          Stable owned-question identity; target SHA is deliberately excluded
         required: false
         type: string
       test_request:
