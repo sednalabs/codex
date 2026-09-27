@@ -212,4 +212,4 @@ log *args:
 # Validation-only exact proof for w14250. This recipe is carried only on the
 # disposable validation ref and is not part of the product candidate.
 core-multi-agent-orchestration-targeted:
-    .github/scripts/validation-lanes/run-w14250-native-wait-exact.sh
+    {{ justfile_directory() }}/.github/scripts/validation-lanes/run-w14250-native-wait-exact.sh
