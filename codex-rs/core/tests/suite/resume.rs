@@ -474,7 +474,7 @@ async fn resume_includes_initial_messages_from_reasoning_events() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
+async fn resume_switches_models_recomposes_model_instructions() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -517,6 +517,16 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let resumed_instructions = initial
+        .thread_manager
+        .get_models_manager()
+        .get_model_info("gpt-5.4", &initial.config.to_models_manager_config())
+        .await
+        .base_instructions;
+    assert_ne!(
+        resumed_instructions, initial_instructions,
+        "test models must use distinct instructions to prove recomposition"
+    );
 
     let resumed_mock = mount_sse_sequence(
         &server,
@@ -579,7 +589,7 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
     assert_eq!(requests.len(), 2, "expected two resumed requests");
 
     let first_resumed = &requests[0];
-    assert_eq!(first_resumed.instructions_text(), initial_instructions);
+    assert_eq!(first_resumed.instructions_text(), resumed_instructions);
     let first_developer_texts = first_resumed.message_input_texts("developer");
     let first_model_switch_count = first_developer_texts
         .iter()
@@ -591,7 +601,7 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
     );
 
     let second_resumed = &requests[1];
-    assert_eq!(second_resumed.instructions_text(), initial_instructions);
+    assert_eq!(second_resumed.instructions_text(), resumed_instructions);
     let second_developer_texts = second_resumed.message_input_texts("developer");
     let second_model_switch_count = second_developer_texts
         .iter()
