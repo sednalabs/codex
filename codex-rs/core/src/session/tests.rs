@@ -122,6 +122,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ConversationAudioParams;
@@ -2477,6 +2478,50 @@ fn session_meta_item(
     })
 }
 
+fn history_with_base_instructions_provenance(
+    provenance: BaseInstructionsProvenance,
+) -> InitialHistory {
+    let thread_id = ThreadId::new();
+    InitialHistory::Resumed(ResumedHistory {
+        conversation_id: thread_id,
+        history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                session_id: thread_id.into(),
+                id: thread_id,
+                base_instructions: Some(BaseInstructions {
+                    text: "persisted authority".to_string(),
+                }),
+                base_instructions_provenance: provenance,
+                ..SessionMeta::default()
+            },
+            git: None,
+        })]),
+        rollout_path: None,
+    })
+}
+
+#[test]
+fn base_instruction_provenance_survives_resume_child_and_grandchild() {
+    for provenance in [
+        BaseInstructionsProvenance::Operator,
+        BaseInstructionsProvenance::Unknown,
+        BaseInstructionsProvenance::Model,
+    ] {
+        let resumed = history_with_base_instructions_provenance(provenance);
+        let child_provenance =
+            resolve_base_instructions_provenance(BaseInstructionsProvenance::Model, &resumed);
+        assert_eq!(child_provenance, provenance);
+
+        let child_history = InitialHistory::Forked(match resumed {
+            InitialHistory::Resumed(history) => history.history.as_ref().clone(),
+            _ => unreachable!("test fixture resumes a thread"),
+        });
+        let grandchild_provenance =
+            resolve_base_instructions_provenance(child_provenance, &child_history);
+        assert_eq!(grandchild_provenance, provenance);
+    }
+}
+
 #[tokio::test]
 async fn resumed_history_injects_initial_context_on_first_context_update_only() {
     let (session, turn_context) = make_session_and_context().await;
@@ -4511,6 +4556,7 @@ async fn open_thread_persistence(session: &mut Session) -> PathBuf {
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -7383,6 +7429,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -7462,6 +7509,7 @@ async fn submission_loop_channel_close_runs_full_thread_teardown() {
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -9924,6 +9972,7 @@ async fn attach_in_memory_thread_store(
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,

@@ -99,7 +99,7 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
             model_info.use_responses_lite = true;
         })
         .with_config(|config| {
-            config.base_instructions = Some("test instructions".to_string());
+            config.set_base_instructions_override(Some("test instructions".to_string()));
         });
     let test = builder.build(&server).await?;
 

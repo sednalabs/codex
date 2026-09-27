@@ -320,6 +320,7 @@ impl ExternalAgentSessionImporter {
                     .clone()
                     .unwrap_or_else(|| model_info.get_model_instructions(config.personality)),
             },
+            base_instructions_provenance: config.base_instructions_provenance,
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: Some(MultiAgentVersion::V1),

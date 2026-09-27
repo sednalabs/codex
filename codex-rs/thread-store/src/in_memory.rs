@@ -131,6 +131,7 @@ mod tests {
                     thread_source: None,
                     originator: "test_originator".to_string(),
                     base_instructions: BaseInstructions::default(),
+                    base_instructions_provenance: Default::default(),
                     dynamic_tools: Vec::new(),
                     selected_capability_roots: Vec::new(),
                     multi_agent_version: None,
@@ -368,6 +369,7 @@ mod tests {
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
@@ -485,6 +487,7 @@ impl InMemoryThreadStore {
             thread_source: params.thread_source.clone(),
             model_provider: Some(params.metadata.model_provider.clone()),
             base_instructions: Some(params.base_instructions.clone()),
+            base_instructions_provenance: params.base_instructions_provenance,
             dynamic_tools: (!params.dynamic_tools.is_empty()).then(|| params.dynamic_tools.clone()),
             selected_capability_roots: params.selected_capability_roots.clone(),
             memory_mode: matches!(params.metadata.memory_mode, ThreadMemoryMode::Disabled)

@@ -114,7 +114,7 @@ async fn base_instructions_override_disables_personality_template() {
         .enable(Feature::Personality)
         .expect("test config should allow feature update");
     config.personality = Some(Personality::Friendly);
-    config.base_instructions = Some("override instructions".to_string());
+    config.set_base_instructions_override(Some("override instructions".to_string()));
 
     let model_info = codex_core::test_support::construct_model_info_offline("gpt-5.4", &config);
 
@@ -312,7 +312,7 @@ async fn config_personality_none_preserves_explicit_base_instructions() -> anyho
             .enable(Feature::Personality)
             .expect("test config should allow feature update");
         config.personality = Some(Personality::None);
-        config.base_instructions = Some(CUSTOM_INSTRUCTIONS.to_string());
+        config.set_base_instructions_override(Some(CUSTOM_INSTRUCTIONS.to_string()));
     });
     let test = builder.build(&server).await?;
 

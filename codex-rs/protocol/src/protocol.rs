@@ -2762,6 +2762,31 @@ impl InitialHistory {
         }
     }
 
+    pub fn get_base_instructions_provenance(&self) -> BaseInstructionsProvenance {
+        match self {
+            InitialHistory::New | InitialHistory::Cleared => BaseInstructionsProvenance::Unknown,
+            InitialHistory::Resumed(resumed) => resumed
+                .history
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line) => {
+                        Some(meta_line.meta.base_instructions_provenance)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default(),
+            InitialHistory::Forked(items) => items
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line) => {
+                        Some(meta_line.meta.base_instructions_provenance)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default(),
+        }
+    }
+
     pub fn get_dynamic_tools(&self) -> Option<Vec<DynamicToolSpec>> {
         match self {
             InitialHistory::New | InitialHistory::Cleared => None,
@@ -3178,6 +3203,29 @@ pub struct HistoryPosition {
     pub end_byte_offset: u64,
 }
 
+/// Provenance for the base instructions persisted in session metadata.
+///
+/// `Unknown` is the conservative back-compat value for metadata written by
+/// older binaries: callers must preserve its historical text precedence
+/// rather than guessing whether it was model-owned or operator-owned.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum BaseInstructionsProvenance {
+    #[default]
+    Unknown,
+    Model,
+    Operator,
+}
+
+impl BaseInstructionsProvenance {
+    // `serde(skip_serializing_if)` predicates receive a reference to the field.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn is_unknown(value: &Self) -> bool {
+        matches!(value, Self::Unknown)
+    }
+}
+
 /// SessionMeta contains session-level data that doesn't correspond to a specific turn.
 ///
 /// NOTE: There used to be an `instructions` field here, which stored user_instructions, but we
@@ -3214,6 +3262,13 @@ pub struct SessionMeta {
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
     /// from ModelsManager.
     pub base_instructions: Option<BaseInstructions>,
+    /// Provenance for `base_instructions`; omitted by older sessions and then
+    /// conservatively treated as [`BaseInstructionsProvenance::Unknown`].
+    #[serde(
+        default,
+        skip_serializing_if = "BaseInstructionsProvenance::is_unknown"
+    )]
+    pub base_instructions_provenance: BaseInstructionsProvenance,
     #[serde(
         default,
         deserialize_with = "crate::dynamic_tools::deserialize_dynamic_tool_specs",
@@ -3262,6 +3317,7 @@ impl Default for SessionMeta {
             agent_path: None,
             model_provider: None,
             base_instructions: None,
+            base_instructions_provenance: BaseInstructionsProvenance::Unknown,
             dynamic_tools: None,
             selected_capability_roots: Vec::new(),
             memory_mode: None,
@@ -6888,5 +6944,44 @@ mod tests {
             format_token_usage_summary(/*token_usage*/ None),
             "Token usage: unavailable"
         );
+    }
+
+    #[test]
+    fn session_meta_instruction_provenance_is_explicit_and_backwards_compatible() -> Result<()> {
+        let legacy: SessionMeta = serde_json::from_value(json!({
+            "session_id": "00000000-0000-0000-0000-000000000001",
+            "id": "00000000-0000-0000-0000-000000000001",
+            "timestamp": "",
+            "cwd": "/tmp",
+            "originator": "test",
+            "cli_version": "test",
+        }))?;
+        assert_eq!(
+            legacy.base_instructions_provenance,
+            BaseInstructionsProvenance::Unknown
+        );
+
+        for provenance in [
+            BaseInstructionsProvenance::Unknown,
+            BaseInstructionsProvenance::Model,
+            BaseInstructionsProvenance::Operator,
+        ] {
+            let current = SessionMeta {
+                base_instructions_provenance: provenance,
+                ..Default::default()
+            };
+            let serialized = serde_json::to_value(&current)?;
+            if provenance == BaseInstructionsProvenance::Unknown {
+                assert!(serialized.get("base_instructions_provenance").is_none());
+            } else {
+                assert_eq!(
+                    serialized["base_instructions_provenance"],
+                    json!(provenance)
+                );
+            }
+            let round_trip: SessionMeta = serde_json::from_value(serialized)?;
+            assert_eq!(round_trip.base_instructions_provenance, provenance);
+        }
+        Ok(())
     }
 }

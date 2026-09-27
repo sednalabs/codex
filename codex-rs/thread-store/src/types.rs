@@ -12,6 +12,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -87,6 +88,9 @@ pub struct CreateThreadParams {
     pub originator: String,
     /// Base instructions persisted in session metadata.
     pub base_instructions: BaseInstructions,
+    /// Provenance for the persisted base instructions.
+    #[serde(default)]
+    pub base_instructions_provenance: BaseInstructionsProvenance,
     /// Dynamic tools available to the thread at startup.
     pub dynamic_tools: Vec<DynamicToolSpec>,
     /// Environment-qualified capability roots selected for this thread.

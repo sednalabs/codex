@@ -2635,7 +2635,7 @@ mod tests {
     async fn thread_fork_params_forward_instruction_overrides() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = build_config(&temp_dir).await;
-        config.base_instructions = Some("Base override.".to_string());
+        config.set_base_instructions_override(Some("Base override.".to_string()));
         config.developer_instructions = Some("Developer override.".to_string());
         let thread_id = ThreadId::new();
 

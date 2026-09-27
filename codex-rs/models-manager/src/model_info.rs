@@ -9,6 +9,7 @@ use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 
 use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -49,7 +50,12 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
         };
     }
 
-    if let Some(base_instructions) = &config.base_instructions {
+    if let Some(base_instructions) = &config.base_instructions
+        && !matches!(
+            config.base_instructions_provenance,
+            BaseInstructionsProvenance::Model
+        )
+    {
         model.base_instructions = base_instructions.clone();
         clear_instruction_messages(&mut model);
     } else {

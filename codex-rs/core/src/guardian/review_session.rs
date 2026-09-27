@@ -1023,9 +1023,8 @@ pub(crate) fn build_guardian_review_session_config(
     let policy_template = catalog_auto_review
         .and_then(|messages| messages.policy_template.as_deref())
         .unwrap_or(BUNDLED_GUARDIAN_POLICY_TEMPLATE);
-    guardian_config.base_instructions = Some(guardian_policy_prompt_with_config_and_template(
-        tenant_policy_config,
-        policy_template,
+    guardian_config.set_base_instructions_override(Some(
+        guardian_policy_prompt_with_config_and_template(tenant_policy_config, policy_template),
     ));
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;

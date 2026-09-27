@@ -110,6 +110,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
 pub use codex_thread_store::ExtraConfig;
@@ -699,6 +700,11 @@ pub struct Config {
 
     /// Base instructions override.
     pub base_instructions: Option<String>,
+
+    /// Source authority for base instructions. Model-owned instructions are
+    /// recomposed when a child selects a model; operator and legacy-unknown
+    /// instructions retain their persisted precedence.
+    pub base_instructions_provenance: BaseInstructionsProvenance,
 
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
@@ -1471,6 +1477,18 @@ impl Config {
         &self.sqlite
     }
 
+    /// Sets an operator-supplied base-instructions override.
+    ///
+    /// Clearing the override returns instruction ownership to the selected model.
+    pub fn set_base_instructions_override(&mut self, base_instructions: Option<String>) {
+        self.base_instructions = base_instructions;
+        self.base_instructions_provenance = if self.base_instructions.is_some() {
+            BaseInstructionsProvenance::Operator
+        } else {
+            BaseInstructionsProvenance::Model
+        };
+    }
+
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)
@@ -1547,6 +1565,7 @@ impl Config {
             model_auto_compact_token_limit: self.model_auto_compact_token_limit,
             tool_output_token_limit: self.tool_output_token_limit,
             base_instructions: self.base_instructions.clone(),
+            base_instructions_provenance: self.base_instructions_provenance,
             personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
@@ -4009,6 +4028,11 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
+        let base_instructions_provenance = if base_instructions.is_some() {
+            BaseInstructionsProvenance::Operator
+        } else {
+            BaseInstructionsProvenance::Model
+        };
         let config = Self {
             model,
             service_tier,
@@ -4041,6 +4065,7 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
+            base_instructions_provenance,
             personality,
             developer_instructions,
             compact_prompt,

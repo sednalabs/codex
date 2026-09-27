@@ -207,6 +207,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
             thread_source: None,
             originator: "test_originator".to_string(),
             base_instructions: BaseInstructions::default(),
+            base_instructions_provenance: Default::default(),
             dynamic_tools: Vec::new(),
             selected_capability_roots: Vec::new(),
             multi_agent_version: None,
