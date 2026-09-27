@@ -192,13 +192,13 @@ pub(crate) fn build_agent_spawn_config(
 ) -> Result<Config, FunctionCallError> {
     let mut config = build_agent_shared_config(turn)?;
     config.base_instructions = Some(base_instructions.text.clone());
-    // A child normally receives the parent's effective model instructions. If
-    // those bytes still equal the parent's selected model composition, they
-    // are not an operator override and must be recomposed after child model
-    // selection (including the fork-owned provider overlay). Preserve a true
-    // operator override verbatim.
-    config.base_instructions_are_inherited =
-        base_instructions.text == turn.model_info.get_model_instructions(turn.personality);
+    // A child normally receives the parent's effective model instructions.
+    // Preserve provenance instead of inferring it from instruction bytes: an
+    // operator override can intentionally equal a catalog value. Model-owned
+    // instructions are recomposed after child model selection (including the
+    // fork-owned provider overlay), while an explicit override remains final.
+    config.base_instructions_are_inherited = !turn.config.base_instructions_are_explicit;
+    config.base_instructions_are_explicit = turn.config.base_instructions_are_explicit;
     Ok(config)
 }
 
@@ -206,6 +206,8 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, Fu
     let mut config = build_agent_shared_config(turn)?;
     // For resume, keep base instructions sourced from rollout/session metadata.
     config.base_instructions = None;
+    config.base_instructions_are_inherited = false;
+    config.base_instructions_are_explicit = false;
     Ok(config)
 }
 

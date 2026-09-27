@@ -1027,6 +1027,8 @@ pub(crate) fn build_guardian_review_session_config(
         tenant_policy_config,
         policy_template,
     ));
+    guardian_config.base_instructions_are_inherited = false;
+    guardian_config.base_instructions_are_explicit = true;
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);

@@ -6742,6 +6742,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
     let mut expected = (*turn.config).clone();
     expected.base_instructions = Some(base_instructions.text);
+    expected.base_instructions_are_inherited = true;
     expected.model = Some(turn.model_info.slug.clone());
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort.clone();
@@ -6761,6 +6762,30 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         .set_permission_profile(permission_profile)
         .expect("permission profile set");
     assert_eq!(config, expected);
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
+    let (_session, mut turn) = make_session_and_context().await;
+    let mut parent_config = (*turn.config).clone();
+    parent_config.base_instructions = Some(
+        turn.model_info
+            .get_model_instructions(turn.personality)
+            .to_string(),
+    );
+    parent_config.base_instructions_are_explicit = true;
+    turn.config = Arc::new(parent_config);
+    let base_instructions = BaseInstructions {
+        text: turn
+            .model_info
+            .get_model_instructions(turn.personality)
+            .to_string(),
+    };
+
+    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+
+    assert!(!config.base_instructions_are_inherited);
+    assert!(config.base_instructions_are_explicit);
 }
 
 #[tokio::test]

@@ -700,6 +700,10 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
+    /// The base instructions came from an explicit operator/configuration
+    /// override and must remain authoritative across model selection.
+    pub base_instructions_are_explicit: bool,
+
     /// The base instructions were carried from a parent whose model
     /// instructions were already resolved.  They must be recomposed after a
     /// child model is selected instead of being mistaken for an operator
@@ -4016,6 +4020,7 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
+        let base_instructions_are_explicit = base_instructions.is_some();
         let config = Self {
             model,
             service_tier,
@@ -4049,6 +4054,7 @@ impl Config {
             user_instructions,
             base_instructions,
             base_instructions_are_inherited: false,
+            base_instructions_are_explicit,
             personality,
             developer_instructions,
             compact_prompt,

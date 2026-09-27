@@ -664,7 +664,7 @@ impl Session {
         let base_instructions = config
             .base_instructions
             .clone()
-            .filter(|_| !config.base_instructions_are_inherited)
+            .filter(|_| config.base_instructions_are_explicit)
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
 
