@@ -2,9 +2,10 @@
 
 > `status: current` · `authority: evidence` · `candidate: external exact-delivery receipt`
 
-The historical source-composition receipt is `77968332f63d31490d71ce462a868a7e224b75f1`
-with tree `867e02cec96c67e5afaf363f965204ab28c9cfb2`; the final candidate is
-bound only by the current Ops handoff and hosted proof so this document never
+The accepted native-wait composition source is
+`e5c9b3e870f861af898ac7a8f7c704743d551d89` with tree
+`83417286656d9a368ef0abfea32a125cfd5bb998`. The final cumulative candidate is
+bound only by the current Ops handoff and hosted proof, so this document never
 self-references a stale commit hash.
 
 This ledger records the accepted P1-P6 carry and the P7 composition boundary.
@@ -15,15 +16,14 @@ lineage. Generated counts and exact identities are recorded in
 ## Frozen train
 
 - Product repository: `sednalabs/codex`
-- Accepted P6 base/head: `repair/w14078-p6-tui-realtime` at
-  `0d0f73e7fd44ec0d5bc2dc0ba5625a8559ed8a9c`
-- Accepted P6 tree: `6be24ec81e116584c248c937302e0dacb0949c94`
+- Accepted cumulative composition source: `e5c9b3e870f861af898ac7a8f7c704743d551d89`
+- Accepted composition tree: `83417286656d9a368ef0abfea32a125cfd5bb998`
 - Frozen upstream cut: `openai/codex` at
   `392f56a611c412b9b2eb1d9d4e59a3b42bee483a`
 - Frozen upstream tree: `ac81df5b0332908409b60a0addc7e967eed868ea`
 - Current `origin/main` (unrelated sanitation lineage):
-  `c338b65e0a037eaa31e370d287805d757469a876`
-- Current `upstream/main` (`b19cebecc0169097bda7539af03c886e03bdeafe`) is
+  `8e4b1a7eb6a21417a444e0752f749bc0d5a1cb0a`
+- Current `upstream/main` (`67a709665ac7b50311b93e32612c9a8281684787`) is
   next-train information only and does not recut this train.
 
 The P7 candidate remains upstream-rooted through the frozen cut and accepted
@@ -37,15 +37,18 @@ The machine-readable registry in [`divergences/index.yaml`](divergences/index.ya
 records each family, its owner, guardrail lane, and retirement condition. The
 families are retained as one cumulative contract: terminal completion input,
 realtime continuity, usage provenance, phase-two memory attestation,
-configured-identity provenance, dynamic-tool persistence, and browser
-computer-use routing. P1-P6 are accepted evidence and are not reopened absent
-a concrete candidate defect.
+configured-identity provenance, dynamic-tool persistence, browser
+computer-use routing, native multi-agent wait continuity, RMCP caller
+cancellation, and the merge-queue CodeQL required gate. Accepted leaf evidence
+is not reopened absent a concrete candidate defect.
 
 ## P7-owned composition
 
-P7 may change only shared workflows, validation configuration, the permitted
-lockfiles, and the divergence/status evidence pages listed in the work-item
-contract. The bounded upstream harvest classified the following items:
+P7 composes the accepted downstream carry, the exact late-main deltas required
+by the work-item contract, shared workflows, validation configuration, the
+permitted lockfiles, and the divergence/status evidence pages. It does not
+merge or replay the unrelated old-main lineage. The bounded harvest and
+late-main reconciliation classified the following items:
 
 | Candidate                                  | Source                              | Decision | Rationale                                                                                                                                   |
 | ------------------------------------------ | ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -58,6 +61,14 @@ contract. The bounded upstream harvest classified the following items:
 | `1d87af5faa75c2c09785cd088353d3236333673f` | upstream commit `#47742`            | `ignore` | Its Cargo.lock delta is inseparable from out-of-scope source changes and does not prove the P7 acceptance boundary.                         |
 | `f5960fcc22b918e658bc486e53a80031d64fd41e` | upstream commit `#47713`            | `ignore` | Shared-crate source and lock changes are outside P7; retain as next-train material.                                                         |
 | `5babf441c179fa8f4f36ebabc5233d0630ce9658` | sednalabs PR #854                   | `track`  | Preserved exact head is based on old `main` and touches `.codex/**`, outside the P7 product scope.                                          |
+| `3f888b0380b99d7629315ddcaddc15bd39ebce92` | accepted cancellation final         | `retain` | Apply its exact final-tree delta from `93800c2b`; preserves RMCP caller cancellation, recovery, and coupled hosted validation.             |
+| `ee3d56ab613875319193852ce4be5159702d507a` | accepted usage final                | `retain` | Apply its exact final-tree delta from `93800c2b`; preserves usage migration compatibility and the current credit-rate rows.                |
+| `226f8076bf240ec72f659f4f310e6284e734a5c5` | protected main PR #907              | `adopt`  | Product behavior already uses the package version; retain the stronger regression assertion without importing old-main ancestry.          |
+| `c2e76173b1`                               | protected main PR #895              | `retain` | Port the reverse-ancestor native-wait guard onto the current wait architecture to prevent cyclic waits.                                    |
+| `a98b85f89a7d0d0afa516bc23d0c3994c0f0dee9` | protected main PR #902              | `equivalent` | The accepted native-wait source already carries authoritative turn-reopen and delayed-activity suppression semantics.                   |
+| `fe5cbe1e9ce7767336b1d24bb7511d7fbd407402` | protected main PR #903              | `equivalent` | The accepted native-wait source already carries exact-target mailbox wake causality.                                                     |
+| `8e4b1a7eb6a21417a444e0752f749bc0d5a1cb0a` | protected main PR #912              | `retain` | Carry GPT-6 Sol/Luna catalog and selection coverage; reserve the current-main instruction-overlay join for final root reconciliation.       |
+| `8e4b1a7eb6a21417a444e0752f749bc0d5a1cb0a` | current-main CodeQL producer        | `retain` | Carry the `merge_group`-capable `CodeQL required gate`, coupled scripts, query packs, and standard-hosted runner policy.                    |
 
 No upstream work is silently deleted. `track` means preserved for the next
 authorized train or a separately scoped successor.
@@ -75,6 +86,11 @@ the local repairs remain limited to the named acceptance contracts:
 | `codex-rs/code-mode/Cargo.toml` feature exception   | `deferred-no-equivalent` | Remove the stale verifier exception; retain the legitimate V8 POC exception.                                           |
 | Validation planner identity/runner/dispatch receipt | `downstream-governance`  | Enforce nested runner-group/label rejection, allowed labels, dispatch inputs, and exact hosted SHA/tree when supplied. |
 
+The agent-action-provenance and background agent-picker heads remain preserved
+outside this freeze unless they land before the final root cutoff. The current
+instruction-overlay repair is likewise a reserved exact landed reconciliation,
+not a duplicated implementation in this branch.
+
 ## Acceptance boundary
 
 Acceptance requires an exact final candidate SHA/tree and complete path
@@ -83,5 +99,7 @@ decision-complete managed Luna-high review, resolved applicable conversations,
 and an accepted Ops handoff to root. A source commit, branch, PR, workflow
 dispatch, partial green run, or review-in-progress is not terminal evidence.
 
-Windows material remains hosted-proof work only; this ledger makes no
-provisional P5 Windows acceptance claim.
+Windows expansion is outside this cutline. Existing Windows evidence remains
+preserved, but no new Windows repair or release work is admitted by this
+ledger. Any active protected rule that still requires Windows must be satisfied
+or changed under separate root authority; this document does not waive it.

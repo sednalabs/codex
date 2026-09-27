@@ -2,12 +2,12 @@
   "version": 1,
   "status": "current",
   "authority": "evidence",
-  "maintained_branch": "repair/w14079-p7-composition",
+  "maintained_branch": "compose/w14079-p7-e5c9-successor",
   "entries": [
     {
       "id": "background-terminal-completion-input",
       "title": "Opt-in background terminal completion input",
-      "status": "accepted-p1-p6",
+      "status": "p7-composed",
       "category": "agent-runtime",
       "surface": [
         "unified-exec completion watcher",
@@ -61,6 +61,45 @@
       "upstreamability_tier": "downstream-adapter",
       "guardrail_lane": "codex.state-usage-targeted",
       "retirement_condition": "Upstream persists provider-observed usage with equivalent success gating and migration compatibility."
+    },
+    {
+      "id": "native-multi-agent-wait-continuity",
+      "title": "Native multi-agent wait continuity and causal wake handling",
+      "status": "p7-composed",
+      "category": "agent-runtime",
+      "surface": ["native wait lifecycle", "mailbox wake causality", "reverse-wait guard"],
+      "files": [
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/tui/src/app/agent_navigation.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/thread_routing.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "upstream-pr",
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "retirement_condition": "Upstream provides equivalent event-driven native waits, exact-target wake causality, turn-reopen semantics, and cycle prevention."
+    },
+    {
+      "id": "rmcp-request-cancellation",
+      "title": "RMCP caller cancellation and streamable HTTP recovery",
+      "status": "p7-composed",
+      "category": "mcp-runtime",
+      "surface": ["RMCP request lifecycle", "caller cancellation", "streamable HTTP recovery"],
+      "files": [
+        "codex-rs/rmcp-client/src/request_cancellation_guard.rs",
+        "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_cancellation.rs",
+        "codex-rs/rmcp-client/tests/streamable_http_recovery.rs"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "upstream-pr",
+      "guardrail_lane": "codex.rmcp-client-transport-targeted",
+      "retirement_condition": "Upstream propagates caller cancellation and preserves equivalent recovery and cleanup semantics."
     },
     {
       "id": "memory-phase2-attestation",
@@ -185,6 +224,7 @@
       "files": [
         ".github/actions/setup-ci/action.yml",
         ".github/workflows/bazel.yml",
+        ".github/workflows/codeql.yml",
         ".github/workflows/rust-ci.yml",
         ".github/workflows/sdk.yml"
       ],
@@ -194,6 +234,59 @@
       "upstreamability_tier": "shared-workflow",
       "guardrail_lane": "github-hosted-standard-runners",
       "retirement_condition": "Upstream or a later downstream train supersedes the same retry and runner policy with exact hosted proof."
+    },
+    {
+      "id": "codeql-merge-queue-required-gate",
+      "title": "Merge-queue CodeQL required-gate producer",
+      "status": "p7-composed",
+      "category": "security-workflow",
+      "surface": ["pull_request", "merge_group", "CodeQL required gate"],
+      "files": [
+        ".github/workflows/codeql.yml",
+        ".github/codeql/",
+        ".github/scripts/classify_ci_paths.py",
+        ".github/scripts/prepare_codeql_diff_ranges.py"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-tooling",
+      "guardrail_lane": "CodeQL required gate",
+      "retirement_condition": "Upstream provides an equivalent merge_group-capable required gate and the downstream query contracts are retired or upstreamed."
+    },
+    {
+      "id": "gpt6-catalog-support",
+      "title": "GPT-6 Sol and Luna catalog support",
+      "status": "p7-composed-pending-overlay-reconciliation",
+      "category": "model-catalog",
+      "surface": ["bundled catalog", "client model selection", "TUI model picker"],
+      "files": [
+        "codex-rs/models-manager/models.json",
+        "codex-rs/codex-api/tests/clients.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/"
+      ],
+      "upstream_equivalent": false,
+      "disposition": "retain",
+      "owner": "downstream",
+      "upstreamability_tier": "downstream-adapter",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted",
+      "retirement_condition": "The provider catalog supplies the same model identities and downstream overlay behavior is no longer needed.",
+      "scope_note": "Final current-main instruction-overlay reconciliation remains reserved to the root before candidate freeze."
+    },
+    {
+      "id": "truthful-provider-user-agent-version",
+      "title": "Truthful package-version provider User-Agent",
+      "status": "p7-upstream-equivalent-with-regression",
+      "category": "provider-client",
+      "surface": ["provider User-Agent", "package version"],
+      "files": ["codex-rs/login/src/auth/default_client_tests.rs"],
+      "upstream_equivalent": true,
+      "disposition": "adopt",
+      "owner": "p7",
+      "upstreamability_tier": "neutral-seam",
+      "guardrail_lane": "provider-client-regression",
+      "retirement_condition": "The regression remains upstream-owned with equivalent truthful package-version behavior."
     },
     {
       "id": "pr854-workflow-diagnostic-reuse",
