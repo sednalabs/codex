@@ -3219,8 +3219,8 @@ pub enum BaseInstructionsProvenance {
 }
 
 impl BaseInstructionsProvenance {
-    fn is_unknown(&self) -> bool {
-        matches!(self, Self::Unknown)
+    fn is_unknown(value: &Self) -> bool {
+        matches!(value, Self::Unknown)
     }
 }
 

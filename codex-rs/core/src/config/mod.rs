@@ -4028,10 +4028,11 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
-        let base_instructions_provenance = base_instructions
-            .is_some()
-            .then_some(BaseInstructionsProvenance::Operator)
-            .unwrap_or(BaseInstructionsProvenance::Model);
+        let base_instructions_provenance = if base_instructions.is_some() {
+            BaseInstructionsProvenance::Operator
+        } else {
+            BaseInstructionsProvenance::Model
+        };
         let config = Self {
             model,
             service_tier,
