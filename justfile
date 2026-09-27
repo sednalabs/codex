@@ -473,12 +473,12 @@ core-persisted-subagent-descendants-targeted:
     cargo test -p codex-core agent::role::tests::apply_role_preserves_operator_instruction_override_provenance --lib -- --exact --test-threads=1
     cargo test -p codex-core agent::role::tests::apply_role_marks_identical_instruction_text_as_explicit --lib -- --exact --test-threads=1
     cargo test -p codex-core tools::handlers::multi_agents_tests::build_agent_spawn_config_preserves_explicit_override_provenance --lib -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::personality::base_instructions_override_disables_personality_template -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::base_instructions_override_disables_personality_template -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
 
 # Focused app-server collab-spawn requested/effective identity projection slice.
 app-server-collab-spawn-identity-targeted:
