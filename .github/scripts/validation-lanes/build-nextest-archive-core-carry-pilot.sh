@@ -51,8 +51,9 @@ tar --zstd -cf "${archive_file}.tmp" -C "${archive_extract_dir}" .
 mv "${archive_file}.tmp" "${archive_file}"
 
 for helper in manifest codex-code-mode-host test_stdio_server; do
-  if ! tar --zstd -tf "${archive_file}" | sed 's#^\./##' | grep -Fxq "validation-lab/helpers/${helper}"; then
-    echo "repacked nextest archive is missing validation-lab/helpers/${helper}" >&2
+  member="./validation-lab/helpers/${helper}"
+  if ! tar --zstd -tf "${archive_file}" | grep -Fxq "${member}"; then
+    echo "repacked nextest archive is missing ${member}" >&2
     exit 1
   fi
 done
