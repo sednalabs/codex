@@ -22,7 +22,6 @@ use codex_protocol::permissions::FileSystemSandboxPolicy;
 #[cfg(test)]
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -1024,11 +1023,9 @@ pub(crate) fn build_guardian_review_session_config(
     let policy_template = catalog_auto_review
         .and_then(|messages| messages.policy_template.as_deref())
         .unwrap_or(BUNDLED_GUARDIAN_POLICY_TEMPLATE);
-    guardian_config.base_instructions = Some(guardian_policy_prompt_with_config_and_template(
-        tenant_policy_config,
-        policy_template,
+    guardian_config.set_base_instructions_override(Some(
+        guardian_policy_prompt_with_config_and_template(tenant_policy_config, policy_template),
     ));
-    guardian_config.base_instructions_provenance = BaseInstructionsProvenance::Operator;
     guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);

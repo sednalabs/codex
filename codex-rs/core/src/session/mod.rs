@@ -689,7 +689,11 @@ impl Session {
             history_base_instructions_provenance,
             BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown
         )
-        .then(|| conversation_history.get_base_instructions().map(|instructions| instructions.text))
+        .then(|| {
+            conversation_history
+                .get_base_instructions()
+                .map(|instructions| instructions.text)
+        })
         .flatten();
         let base_instructions = matches!(
             config.base_instructions_provenance,

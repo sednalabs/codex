@@ -6769,12 +6769,11 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
 async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
     let (_session, mut turn) = make_session_and_context().await;
     let mut parent_config = (*turn.config).clone();
-    parent_config.base_instructions = Some(
+    parent_config.set_base_instructions_override(Some(
         turn.model_info
             .get_model_instructions(turn.personality)
             .to_string(),
-    );
-    parent_config.base_instructions_provenance = BaseInstructionsProvenance::Operator;
+    ));
     turn.config = Arc::new(parent_config);
     let base_instructions = BaseInstructions {
         text: turn
@@ -6821,7 +6820,7 @@ async fn build_agent_spawn_config_preserves_provenance_across_descendants() {
 async fn build_agent_resume_config_clears_base_instructions() {
     let (_session, mut turn) = make_session_and_context().await;
     let mut base_config = (*turn.config).clone();
-    base_config.base_instructions = Some("caller-base".to_string());
+    base_config.set_base_instructions_override(Some("caller-base".to_string()));
     turn.config = Arc::new(base_config);
     turn.approval_policy
         .set(AskForApproval::OnRequest)
@@ -6831,6 +6830,7 @@ async fn build_agent_resume_config_clears_base_instructions() {
 
     let mut expected = (*turn.config).clone();
     expected.base_instructions = None;
+    expected.base_instructions_provenance = BaseInstructionsProvenance::Model;
     expected.model = Some(turn.model_info.slug.clone());
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort.clone();

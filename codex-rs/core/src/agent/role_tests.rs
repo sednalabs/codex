@@ -217,8 +217,7 @@ async fn apply_role_preserves_unspecified_keys() {
 #[tokio::test]
 async fn apply_role_preserves_operator_instruction_override_provenance() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
-    config.base_instructions = Some("operator instructions".to_string());
-    config.base_instructions_provenance = BaseInstructionsProvenance::Operator;
+    config.set_base_instructions_override(Some("operator instructions".to_string()));
     let role_path = write_role_config(
         &home,
         "explorer-instructions.toml",

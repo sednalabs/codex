@@ -1477,6 +1477,18 @@ impl Config {
         &self.sqlite
     }
 
+    /// Sets an operator-supplied base-instructions override.
+    ///
+    /// Clearing the override returns instruction ownership to the selected model.
+    pub fn set_base_instructions_override(&mut self, base_instructions: Option<String>) {
+        self.base_instructions = base_instructions;
+        self.base_instructions_provenance = if self.base_instructions.is_some() {
+            BaseInstructionsProvenance::Operator
+        } else {
+            BaseInstructionsProvenance::Model
+        };
+    }
+
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)

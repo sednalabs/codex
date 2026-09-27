@@ -126,9 +126,11 @@ bench *args:
 bench-smoke:
     just bench -- --test
 
-# Compile-focused guardrail for high-churn core + sandbox seams.
+# Compile-focused guardrail for high-churn core, sandbox, and public API sample seams.
 core-compile-smoke:
     cargo check -p codex-linux-sandbox -p codex-core --tests
+    cargo check -p codex-thread-manager-sample --all-targets
+    cargo fmt -p codex-core -p codex-core-api -p codex-thread-manager-sample -- --check
 
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:
@@ -467,6 +469,16 @@ core-subagent-model-pinning-targeted:
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
     cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
+    cargo test -p codex-core session::tests::base_instruction_provenance_survives_resume_child_and_grandchild --lib -- --exact --test-threads=1
+    cargo test -p codex-core agent::role::tests::apply_role_preserves_operator_instruction_override_provenance --lib -- --exact --test-threads=1
+    cargo test -p codex-core agent::role::tests::apply_role_marks_identical_instruction_text_as_explicit --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::handlers::multi_agents_tests::build_agent_spawn_config_preserves_explicit_override_provenance --lib -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::personality::base_instructions_override_disables_personality_template -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
+    cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
 
 # Focused app-server collab-spawn requested/effective identity projection slice.
 app-server-collab-spawn-identity-targeted:
