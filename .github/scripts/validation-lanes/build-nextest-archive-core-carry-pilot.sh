@@ -50,9 +50,11 @@ cp --preserve=mode,timestamps "${helper_archive_dir}/"* "${archive_extract_dir}/
 tar --zstd -cf "${archive_file}.tmp" -C "${archive_extract_dir}" .
 mv "${archive_file}.tmp" "${archive_file}"
 
+member_list="${archive_extract_dir}/members"
+tar --zstd -tf "${archive_file}" > "${member_list}"
 for helper in manifest codex-code-mode-host test_stdio_server; do
   member="./validation-lab/helpers/${helper}"
-  if ! tar --zstd -tf "${archive_file}" | grep -Fxq "${member}"; then
+  if ! grep -Fxq "${member}" "${member_list}"; then
     echo "repacked nextest archive is missing ${member}" >&2
     exit 1
   fi
