@@ -801,9 +801,6 @@ fn responses_lite_prefix_ids_track_thread_and_payload() -> anyhow::Result<()> {
 #[test]
 fn bundled_gpt6_models_build_responses_lite_requests() {
     let client = test_model_client(SessionSource::Cli);
-    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
-        .to_api_provider(/*auth_mode*/ None)
-        .expect("test provider should resolve");
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         /*turn_id*/ None,
@@ -823,6 +820,7 @@ fn bundled_gpt6_models_build_responses_lite_requests() {
         }],
         base_instructions: BaseInstructions {
             text: "synthetic instructions".to_string(),
+            provenance: None,
         },
         parallel_tool_calls: true,
         ..Default::default()
@@ -839,7 +837,6 @@ fn bundled_gpt6_models_build_responses_lite_requests() {
 
         let request = client
             .build_responses_request(
-                &provider,
                 &prompt,
                 &model_info,
                 /*effort*/ None,
