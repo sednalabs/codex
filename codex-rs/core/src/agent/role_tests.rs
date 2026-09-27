@@ -8,6 +8,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
@@ -217,7 +218,7 @@ async fn apply_role_preserves_unspecified_keys() {
 async fn apply_role_preserves_operator_instruction_override_provenance() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     config.base_instructions = Some("operator instructions".to_string());
-    config.base_instructions_are_explicit = true;
+    config.base_instructions_provenance = BaseInstructionsProvenance::Operator;
     let role_path = write_role_config(
         &home,
         "explorer-instructions.toml",
@@ -241,8 +242,42 @@ async fn apply_role_preserves_operator_instruction_override_provenance() {
         config.base_instructions.as_deref(),
         Some("operator instructions")
     );
-    assert!(config.base_instructions_are_explicit);
-    assert!(!config.base_instructions_are_inherited);
+    assert_eq!(
+        config.base_instructions_provenance,
+        BaseInstructionsProvenance::Operator
+    );
+}
+
+#[tokio::test]
+async fn apply_role_marks_identical_instruction_text_as_explicit() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let catalog_text = "catalog-equivalent instructions";
+    config.base_instructions = Some(catalog_text.to_string());
+    config.base_instructions_provenance = BaseInstructionsProvenance::Model;
+    let role_path = write_role_config(
+        &home,
+        "explicit-instructions-role.toml",
+        &format!("instructions = {catalog_text:?}"),
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(config.base_instructions.as_deref(), Some(catalog_text));
+    assert_eq!(
+        config.base_instructions_provenance,
+        BaseInstructionsProvenance::Operator
+    );
 }
 
 #[tokio::test]

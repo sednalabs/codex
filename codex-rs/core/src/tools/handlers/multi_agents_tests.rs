@@ -58,6 +58,7 @@ use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileSystemAccessMode;
@@ -6742,7 +6743,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
     let mut expected = (*turn.config).clone();
     expected.base_instructions = Some(base_instructions.text);
-    expected.base_instructions_are_inherited = true;
+    expected.base_instructions_provenance = BaseInstructionsProvenance::Model;
     expected.model = Some(turn.model_info.slug.clone());
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort.clone();
@@ -6773,7 +6774,7 @@ async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
             .get_model_instructions(turn.personality)
             .to_string(),
     );
-    parent_config.base_instructions_are_explicit = true;
+    parent_config.base_instructions_provenance = BaseInstructionsProvenance::Operator;
     turn.config = Arc::new(parent_config);
     let base_instructions = BaseInstructions {
         text: turn
@@ -6784,8 +6785,36 @@ async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
 
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
 
-    assert!(!config.base_instructions_are_inherited);
-    assert!(config.base_instructions_are_explicit);
+    assert_eq!(
+        config.base_instructions_provenance,
+        BaseInstructionsProvenance::Operator
+    );
+}
+
+#[tokio::test]
+async fn build_agent_spawn_config_preserves_provenance_across_descendants() {
+    for provenance in [
+        BaseInstructionsProvenance::Operator,
+        BaseInstructionsProvenance::Unknown,
+        BaseInstructionsProvenance::Model,
+    ] {
+        let (_session, mut turn) = make_session_and_context().await;
+        let mut parent_config = (*turn.config).clone();
+        parent_config.base_instructions = Some("parent-effective instructions".to_string());
+        parent_config.base_instructions_provenance = provenance;
+        turn.config = Arc::new(parent_config);
+        let base_instructions = BaseInstructions {
+            text: "parent-effective instructions".to_string(),
+        };
+
+        let child = build_agent_spawn_config(&base_instructions, &turn).expect("child config");
+        assert_eq!(child.base_instructions_provenance, provenance);
+
+        turn.config = Arc::new(child);
+        let grandchild =
+            build_agent_spawn_config(&base_instructions, &turn).expect("grandchild config");
+        assert_eq!(grandchild.base_instructions_provenance, provenance);
+    }
 }
 
 #[tokio::test]

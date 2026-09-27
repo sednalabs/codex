@@ -1,4 +1,5 @@
 use codex_protocol::config_types::Personality;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
@@ -50,7 +51,10 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
     }
 
     if let Some(base_instructions) = &config.base_instructions
-        && !config.base_instructions_are_inherited
+        && !matches!(
+            config.base_instructions_provenance,
+            BaseInstructionsProvenance::Model
+        )
     {
         model.base_instructions = base_instructions.clone();
         clear_instruction_messages(&mut model);

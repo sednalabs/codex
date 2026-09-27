@@ -19,6 +19,7 @@ use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ConfigToml;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::LOCAL_FS;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -90,12 +91,15 @@ async fn apply_role_to_config_inner(
     }
     let preserve_current_provider = role_layer_toml.get("model_provider").is_none();
     let preserve_current_service_tier = role_layer_toml.get("service_tier").is_none();
+    let role_supplies_base_instructions = role_layer_toml.get("instructions").is_some()
+        || role_layer_toml.get("model_instructions_file").is_some();
 
     *config = reload::build_next_config(
         config,
         role_layer_toml,
         preserve_current_provider,
         preserve_current_service_tier,
+        role_supplies_base_instructions,
     )
     .await?;
     Ok(())
@@ -153,6 +157,7 @@ mod reload {
         role_layer_toml: TomlValue,
         preserve_current_provider: bool,
         preserve_current_service_tier: bool,
+        role_supplies_base_instructions: bool,
     ) -> anyhow::Result<Config> {
         let preserve_current_model = role_layer_toml.get("model").is_none();
         let preserve_current_reasoning_effort =
@@ -171,6 +176,7 @@ mod reload {
                 preserve_current_model,
                 preserve_current_provider,
                 preserve_current_service_tier,
+                !role_supplies_base_instructions,
             ),
             config.codex_home.clone(),
             config_layer_stack,
@@ -196,15 +202,14 @@ mod reload {
                 .model_verbosity
                 .clone_from(&config.model_verbosity);
         }
-        // Preserve the current instruction source when the role reload did
-        // not replace the operator's value. Inherited model instructions are
-        // deliberately retained as inherited so a later child selection can
-        // recompose them; a changed role/user layer becomes an explicit
-        // override through normal config loading.
-        if next_config.base_instructions == config.base_instructions {
-            next_config.base_instructions_are_inherited = config.base_instructions_are_inherited;
-            next_config.base_instructions_are_explicit = config.base_instructions_are_explicit;
-        }
+        // The role layer, rather than equality of instruction bytes, decides
+        // whether it replaced the current authority. An explicit role value
+        // may intentionally equal the catalog text and still be authoritative.
+        next_config.base_instructions_provenance = if role_supplies_base_instructions {
+            BaseInstructionsProvenance::Operator
+        } else {
+            config.base_instructions_provenance
+        };
         Ok(next_config)
     }
 
@@ -258,6 +263,7 @@ mod reload {
         preserve_current_model: bool,
         preserve_current_provider: bool,
         preserve_current_service_tier: bool,
+        preserve_current_base_instructions: bool,
     ) -> ConfigOverrides {
         ConfigOverrides {
             cwd: Some(config.cwd.to_path_buf()),
@@ -268,7 +274,9 @@ mod reload {
             service_tier: preserve_current_service_tier.then(|| config.service_tier.clone()),
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             main_execve_wrapper_exe: config.main_execve_wrapper_exe.clone(),
-            base_instructions: config.base_instructions.clone(),
+            base_instructions: preserve_current_base_instructions
+                .then(|| config.base_instructions.clone())
+                .flatten(),
             ..Default::default()
         }
     }

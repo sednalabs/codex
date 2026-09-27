@@ -110,6 +110,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
 pub use codex_thread_store::ExtraConfig;
@@ -700,15 +701,10 @@ pub struct Config {
     /// Base instructions override.
     pub base_instructions: Option<String>,
 
-    /// The base instructions came from an explicit operator/configuration
-    /// override and must remain authoritative across model selection.
-    pub base_instructions_are_explicit: bool,
-
-    /// The base instructions were carried from a parent whose model
-    /// instructions were already resolved.  They must be recomposed after a
-    /// child model is selected instead of being mistaken for an operator
-    /// override.
-    pub base_instructions_are_inherited: bool,
+    /// Source authority for base instructions. Model-owned instructions are
+    /// recomposed when a child selects a model; operator and legacy-unknown
+    /// instructions retain their persisted precedence.
+    pub base_instructions_provenance: BaseInstructionsProvenance,
 
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
@@ -1557,7 +1553,7 @@ impl Config {
             model_auto_compact_token_limit: self.model_auto_compact_token_limit,
             tool_output_token_limit: self.tool_output_token_limit,
             base_instructions: self.base_instructions.clone(),
-            base_instructions_are_inherited: self.base_instructions_are_inherited,
+            base_instructions_provenance: self.base_instructions_provenance,
             personality_enabled: self.features.enabled(Feature::Personality),
             personality: self.personality,
             model_catalog: self.model_catalog.clone(),
@@ -4020,7 +4016,10 @@ impl Config {
         )
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
-        let base_instructions_are_explicit = base_instructions.is_some();
+        let base_instructions_provenance = base_instructions
+            .is_some()
+            .then_some(BaseInstructionsProvenance::Operator)
+            .unwrap_or(BaseInstructionsProvenance::Model);
         let config = Self {
             model,
             service_tier,
@@ -4053,8 +4052,7 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
-            base_instructions_are_inherited: false,
-            base_instructions_are_explicit,
+            base_instructions_provenance,
             personality,
             developer_instructions,
             compact_prompt,

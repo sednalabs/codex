@@ -122,6 +122,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ConversationAudioParams;
@@ -2475,6 +2476,50 @@ fn session_meta_item(
         },
         git: None,
     })
+}
+
+fn history_with_base_instructions_provenance(
+    provenance: BaseInstructionsProvenance,
+) -> InitialHistory {
+    let thread_id = ThreadId::new();
+    InitialHistory::Resumed(ResumedHistory {
+        conversation_id: thread_id,
+        history: Arc::new(vec![RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                session_id: thread_id.into(),
+                id: thread_id,
+                base_instructions: Some(BaseInstructions {
+                    text: "persisted authority".to_string(),
+                }),
+                base_instructions_provenance: provenance,
+                ..SessionMeta::default()
+            },
+            git: None,
+        })]),
+        rollout_path: None,
+    })
+}
+
+#[test]
+fn base_instruction_provenance_survives_resume_child_and_grandchild() {
+    for provenance in [
+        BaseInstructionsProvenance::Operator,
+        BaseInstructionsProvenance::Unknown,
+        BaseInstructionsProvenance::Model,
+    ] {
+        let resumed = history_with_base_instructions_provenance(provenance);
+        let child_provenance =
+            resolve_base_instructions_provenance(BaseInstructionsProvenance::Model, &resumed);
+        assert_eq!(child_provenance, provenance);
+
+        let child_history = InitialHistory::Forked(match resumed {
+            InitialHistory::Resumed(history) => history.history.as_ref().clone(),
+            _ => unreachable!("test fixture resumes a thread"),
+        });
+        let grandchild_provenance =
+            resolve_base_instructions_provenance(child_provenance, &child_history);
+        assert_eq!(grandchild_provenance, provenance);
+    }
 }
 
 #[tokio::test]

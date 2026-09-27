@@ -13,6 +13,7 @@ use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -1352,7 +1353,7 @@ async fn inherited_model_instructions_are_recomposed_after_child_selection() {
             "gpt-6-luna",
             &ModelsManagerConfig {
                 base_instructions: Some("parent already resolved".to_string()),
-                base_instructions_are_inherited: true,
+                base_instructions_provenance: BaseInstructionsProvenance::Model,
                 ..ModelsManagerConfig::default()
             },
         )

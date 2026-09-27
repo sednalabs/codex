@@ -498,6 +498,23 @@ pub(crate) fn resolve_multi_agent_version(
         })
 }
 
+fn resolve_base_instructions_provenance(
+    config_provenance: BaseInstructionsProvenance,
+    conversation_history: &InitialHistory,
+) -> BaseInstructionsProvenance {
+    match config_provenance {
+        BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown => {
+            config_provenance
+        }
+        BaseInstructionsProvenance::Model => match conversation_history {
+            InitialHistory::New | InitialHistory::Cleared => BaseInstructionsProvenance::Model,
+            InitialHistory::Resumed(_) | InitialHistory::Forked(_) => {
+                conversation_history.get_base_instructions_provenance()
+            }
+        },
+    }
+}
+
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
 const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
@@ -613,7 +630,7 @@ impl Session {
             )
         };
 
-        let config = Arc::new(config);
+        let mut config = Arc::new(config);
         let refresh_strategy = if session_source.is_non_root_agent() {
             codex_models_manager::manager::RefreshStrategy::Offline
         } else {
@@ -662,19 +679,27 @@ impl Session {
         let history_mode = conversation_history.get_history_mode(
             requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
         );
-        let persisted_base_instructions =
-            match conversation_history.get_base_instructions_provenance() {
-                BaseInstructionsProvenance::Model => None,
-                BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown => {
-                    conversation_history.get_base_instructions().map(|s| s.text)
-                }
-            };
-        let base_instructions = config
-            .base_instructions
-            .clone()
-            .filter(|_| config.base_instructions_are_explicit)
-            .or(persisted_base_instructions)
-            .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
+        let history_base_instructions_provenance =
+            conversation_history.get_base_instructions_provenance();
+        let base_instructions_provenance = resolve_base_instructions_provenance(
+            config.base_instructions_provenance,
+            &conversation_history,
+        );
+        let persisted_base_instructions = matches!(
+            history_base_instructions_provenance,
+            BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown
+        )
+        .then(|| conversation_history.get_base_instructions().map(|instructions| instructions.text))
+        .flatten();
+        let base_instructions = matches!(
+            config.base_instructions_provenance,
+            BaseInstructionsProvenance::Operator | BaseInstructionsProvenance::Unknown
+        )
+        .then(|| config.base_instructions.clone())
+        .flatten()
+        .or(persisted_base_instructions)
+        .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
+        Arc::make_mut(&mut config).base_instructions_provenance = base_instructions_provenance;
 
         // Respect thread-start tools. For resumed/forked threads, read from the db first, then
         // fall back to rollout-file tools. Freshly-derived Browser tools must not suppress

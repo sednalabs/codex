@@ -6959,13 +6959,22 @@ mod tests {
             BaseInstructionsProvenance::Unknown
         );
 
-        let mut current = SessionMeta::default();
-        current.base_instructions_provenance = BaseInstructionsProvenance::Operator;
-        let round_trip: SessionMeta = serde_json::from_value(serde_json::to_value(current)?)?;
-        assert_eq!(
-            round_trip.base_instructions_provenance,
-            BaseInstructionsProvenance::Operator
-        );
+        for provenance in [
+            BaseInstructionsProvenance::Unknown,
+            BaseInstructionsProvenance::Model,
+            BaseInstructionsProvenance::Operator,
+        ] {
+            let mut current = SessionMeta::default();
+            current.base_instructions_provenance = provenance;
+            let serialized = serde_json::to_value(&current)?;
+            if provenance == BaseInstructionsProvenance::Unknown {
+                assert!(serialized.get("base_instructions_provenance").is_none());
+            } else {
+                assert_eq!(serialized["base_instructions_provenance"], json!(provenance));
+            }
+            let round_trip: SessionMeta = serde_json::from_value(serialized)?;
+            assert_eq!(round_trip.base_instructions_provenance, provenance);
+        }
         Ok(())
     }
 }

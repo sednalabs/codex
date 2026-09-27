@@ -20,6 +20,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::BaseInstructionsProvenance;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
@@ -192,13 +193,12 @@ pub(crate) fn build_agent_spawn_config(
 ) -> Result<Config, FunctionCallError> {
     let mut config = build_agent_shared_config(turn)?;
     config.base_instructions = Some(base_instructions.text.clone());
-    // A child normally receives the parent's effective model instructions.
-    // Preserve provenance instead of inferring it from instruction bytes: an
+    // Preserve authority instead of inferring it from instruction bytes: an
     // operator override can intentionally equal a catalog value. Model-owned
     // instructions are recomposed after child model selection (including the
-    // fork-owned provider overlay), while an explicit override remains final.
-    config.base_instructions_are_inherited = !turn.config.base_instructions_are_explicit;
-    config.base_instructions_are_explicit = turn.config.base_instructions_are_explicit;
+    // fork-owned provider overlay), while operator and legacy-unknown text
+    // remains authoritative across descendants.
+    config.base_instructions_provenance = turn.config.base_instructions_provenance;
     Ok(config)
 }
 
@@ -206,8 +206,7 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, Fu
     let mut config = build_agent_shared_config(turn)?;
     // For resume, keep base instructions sourced from rollout/session metadata.
     config.base_instructions = None;
-    config.base_instructions_are_inherited = false;
-    config.base_instructions_are_explicit = false;
+    config.base_instructions_provenance = BaseInstructionsProvenance::Model;
     Ok(config)
 }
 

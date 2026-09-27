@@ -663,11 +663,7 @@ impl Session {
                             base_instructions: BaseInstructions {
                                 text: session_configuration.base_instructions.clone(),
                             },
-                            base_instructions_provenance: if config.base_instructions_are_explicit {
-                                BaseInstructionsProvenance::Operator
-                            } else {
-                                BaseInstructionsProvenance::Model
-                            },
+                            base_instructions_provenance: config.base_instructions_provenance,
                             dynamic_tools: session_configuration.dynamic_tools.clone(),
                             selected_capability_roots: selected_capability_roots.clone(),
                             multi_agent_version: initial_multi_agent_version,
