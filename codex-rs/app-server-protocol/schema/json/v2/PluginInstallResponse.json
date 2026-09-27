@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "AppSummary": {
+      "description": "EXPERIMENTAL - app metadata summary for plugin responses.",
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "installUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "PluginAuthPolicy": {
+      "enum": [
+        "ON_INSTALL",
+        "ON_USE"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "appsNeedingAuth": {
+      "items": {
+        "$ref": "#/$defs/AppSummary"
+      },
+      "type": "array"
+    },
+    "authPolicy": {
+      "$ref": "#/$defs/PluginAuthPolicy"
+    }
+  },
+  "required": [
+    "authPolicy",
+    "appsNeedingAuth"
+  ],
+  "title": "PluginInstallResponse",
+  "type": "object"
+}

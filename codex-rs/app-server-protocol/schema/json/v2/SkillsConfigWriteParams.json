@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "enabled": {
+      "type": "boolean"
+    },
+    "name": {
+      "description": "Name-based selector.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Path-based selector."
+    }
+  },
+  "required": [
+    "enabled"
+  ],
+  "title": "SkillsConfigWriteParams",
+  "type": "object"
+}

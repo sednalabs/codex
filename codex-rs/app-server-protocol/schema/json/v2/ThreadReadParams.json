@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "includeTurns": {
+      "description": "When true, include turns and their items from rollout history.",
+      "type": "boolean"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadReadParams",
+  "type": "object"
+}

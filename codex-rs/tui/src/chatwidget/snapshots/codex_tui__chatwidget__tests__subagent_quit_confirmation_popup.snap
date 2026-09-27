@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+assertion_line: 1511
+expression: popup
+---
+  Return to parent thread?
+
+› 1. Yes, return to parent thread  Exit this subagent and switch back to the
+                                   main thread
+  2. Cancel                        Keep chatting in this subagent
+
+  Press enter to confirm or esc to go back

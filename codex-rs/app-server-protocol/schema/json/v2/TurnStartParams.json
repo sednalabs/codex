@@ -1,0 +1,647 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
+    "AdditionalContextEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AdditionalContextKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "AdditionalContextKind": {
+      "enum": [
+        "untrusted",
+        "application"
+      ],
+      "type": "string"
+    },
+    "ApprovalsReviewer": {
+      "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
+      "enum": [
+        "user",
+        "auto_review",
+        "guardian_subagent"
+      ],
+      "type": "string"
+    },
+    "AskForApproval": {
+      "oneOf": [
+        {
+          "enum": [
+            "untrusted",
+            "on-request",
+            "never"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "granular": {
+              "properties": {
+                "mcp_elicitations": {
+                  "type": "boolean"
+                },
+                "request_permissions": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "rules": {
+                  "type": "boolean"
+                },
+                "sandbox_approval": {
+                  "type": "boolean"
+                },
+                "skill_approval": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "sandbox_approval",
+                "rules",
+                "mcp_elicitations"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "granular"
+          ],
+          "title": "GranularAskForApproval",
+          "type": "object"
+        }
+      ]
+    },
+    "ByteRange": {
+      "properties": {
+        "end": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "CollaborationMode": {
+      "description": "Collaboration mode for a Codex session.",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ModeKind"
+        },
+        "settings": {
+          "$ref": "#/$defs/Settings"
+        }
+      },
+      "required": [
+        "mode",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "ImageDetail": {
+      "enum": [
+        "auto",
+        "low",
+        "high",
+        "original"
+      ],
+      "type": "string"
+    },
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "ModeKind": {
+      "description": "Initial collaboration mode to use when the TUI starts.",
+      "enum": [
+        "plan",
+        "default"
+      ],
+      "type": "string"
+    },
+    "MultiAgentMode": {
+      "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the\nconfigured mode hint defines the policy instead of a built-in policy.",
+      "oneOf": [
+        {
+          "enum": [
+            "explicitRequestOnly",
+            "proactive"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "custom"
+          ],
+          "title": "CustomMultiAgentMode",
+          "type": "object"
+        }
+      ]
+    },
+    "NetworkAccess": {
+      "enum": [
+        "restricted",
+        "enabled"
+      ],
+      "type": "string"
+    },
+    "Personality": {
+      "enum": [
+        "none",
+        "friendly",
+        "pragmatic"
+      ],
+      "type": "string"
+    },
+    "ReasoningEffort": {
+      "description": "A non-empty reasoning effort value advertised by the model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "ReasoningSummary": {
+      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "oneOf": [
+        {
+          "enum": [
+            "auto",
+            "concise",
+            "detailed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Option to disable reasoning summaries.",
+          "type": "string"
+        }
+      ]
+    },
+    "SandboxPolicy": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "dangerFullAccess",
+              "title": "DangerFullAccessSandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DangerFullAccessSandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "networkAccess": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "readOnly",
+              "title": "ReadOnlySandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ReadOnlySandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "networkAccess": {
+              "$ref": "#/$defs/NetworkAccess",
+              "default": "restricted"
+            },
+            "type": {
+              "const": "externalSandbox",
+              "title": "ExternalSandboxSandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ExternalSandboxSandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "excludeSlashTmp": {
+              "default": false,
+              "type": "boolean"
+            },
+            "excludeTmpdirEnvVar": {
+              "default": false,
+              "type": "boolean"
+            },
+            "networkAccess": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "const": "workspaceWrite",
+              "title": "WorkspaceWriteSandboxPolicyType",
+              "type": "string"
+            },
+            "writableRoots": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AbsolutePathBuf"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WorkspaceWriteSandboxPolicy",
+          "type": "object"
+        }
+      ]
+    },
+    "Settings": {
+      "description": "Settings for a collaboration mode.",
+      "properties": {
+        "developer_instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "TextElement": {
+      "properties": {
+        "byteRange": {
+          "$ref": "#/$defs/ByteRange",
+          "description": "Byte range in the parent `text` buffer that this element occupies."
+        },
+        "placeholder": {
+          "description": "Optional human-readable placeholder for the element, displayed in the UI.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "byteRange"
+      ],
+      "type": "object"
+    },
+    "TurnEnvironmentParams": {
+      "properties": {
+        "cwd": {
+          "$ref": "#/$defs/LegacyAppPathString"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "runtimeWorkspaceRoots": {
+          "description": "Environment-native runtime workspace roots. Omitted defaults to `cwd`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "environmentId",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "UserInput": {
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "text_elements": {
+              "default": [],
+              "description": "UI-defined spans within `text` used to render or persist special elements.",
+              "items": {
+                "$ref": "#/$defs/TextElement"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "text",
+              "title": "TextUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "title": "TextUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "type": {
+              "const": "image",
+              "title": "ImageUserInputType",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "ImageUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ImageDetail"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "localImage",
+              "title": "LocalImageUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "LocalImageUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "audio",
+              "title": "AudioUserInputType",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "AudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "localAudio",
+              "title": "LocalAudioUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "LocalAudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "skill",
+              "title": "SkillUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "path"
+          ],
+          "title": "SkillUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "mention",
+              "title": "MentionUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "path"
+          ],
+          "title": "MentionUserInput",
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "approvalPolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AskForApproval"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override the approval policy for this turn and subsequent turns."
+    },
+    "approvalsReviewer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalsReviewer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override where approval requests are routed for review on this turn and\nsubsequent turns."
+    },
+    "clientUserMessageId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cwd": {
+      "description": "Override the working directory for this turn and subsequent turns.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "effort": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReasoningEffort"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override the reasoning effort for this turn and subsequent turns."
+    },
+    "input": {
+      "items": {
+        "$ref": "#/$defs/UserInput"
+      },
+      "type": "array"
+    },
+    "model": {
+      "description": "Override the model for this turn and subsequent turns.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outputSchema": {
+      "description": "Optional JSON Schema used to constrain the final assistant message for\nthis turn."
+    },
+    "personality": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Personality"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override the personality for this turn and subsequent turns."
+    },
+    "sandboxPolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SandboxPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override the sandbox policy for this turn and subsequent turns."
+    },
+    "serviceTier": {
+      "description": "Override the service tier for this turn and subsequent turns.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReasoningSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Override the reasoning summary for this turn and subsequent turns."
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "input"
+  ],
+  "title": "TurnStartParams",
+  "type": "object"
+}

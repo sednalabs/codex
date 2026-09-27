@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "ReviewDelivery": {
+      "enum": [
+        "inline",
+        "detached"
+      ],
+      "type": "string"
+    },
+    "ReviewTarget": {
+      "oneOf": [
+        {
+          "description": "Review the working tree: staged, unstaged, and untracked files.",
+          "properties": {
+            "type": {
+              "const": "uncommittedChanges",
+              "title": "UncommittedChangesReviewTargetType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "UncommittedChangesReviewTarget",
+          "type": "object"
+        },
+        {
+          "description": "Review changes between the current branch and the given base branch.",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "type": {
+              "const": "baseBranch",
+              "title": "BaseBranchReviewTargetType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "branch"
+          ],
+          "title": "BaseBranchReviewTarget",
+          "type": "object"
+        },
+        {
+          "description": "Review the changes introduced by a specific commit.",
+          "properties": {
+            "sha": {
+              "type": "string"
+            },
+            "title": {
+              "description": "Optional human-readable label (e.g., commit subject) for UIs.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "commit",
+              "title": "CommitReviewTargetType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "sha"
+          ],
+          "title": "CommitReviewTarget",
+          "type": "object"
+        },
+        {
+          "description": "Arbitrary instructions, equivalent to the old free-form prompt.",
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "type": {
+              "const": "custom",
+              "title": "CustomReviewTargetType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "instructions"
+          ],
+          "title": "CustomReviewTarget",
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReviewDelivery"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Where to run the review: inline (default) on the current thread or\ndetached on a new thread (returned in `reviewThreadId`)."
+    },
+    "target": {
+      "$ref": "#/$defs/ReviewTarget"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "target"
+  ],
+  "title": "ReviewStartParams",
+  "type": "object"
+}

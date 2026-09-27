@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "TurnPlanStep": {
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/TurnPlanStepStatus"
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TurnPlanStepStatus": {
+      "enum": [
+        "pending",
+        "inProgress",
+        "completed"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "explanation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "plan": {
+      "items": {
+        "$ref": "#/$defs/TurnPlanStep"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "turnId",
+    "plan"
+  ],
+  "title": "TurnPlanUpdatedNotification",
+  "type": "object"
+}

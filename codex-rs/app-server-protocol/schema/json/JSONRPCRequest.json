@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    },
+    "W3cTraceContext": {
+      "properties": {
+        "traceparent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tracestate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A request that expects a response.",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "method": {
+      "type": "string"
+    },
+    "params": true,
+    "trace": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/W3cTraceContext"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional W3C Trace Context for distributed tracing."
+    }
+  },
+  "required": [
+    "id",
+    "method"
+  ],
+  "title": "JSONRPCRequest",
+  "type": "object"
+}

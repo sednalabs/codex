@@ -1,0 +1,891 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use codex_app_server_protocol::CollabAgentTool;
+use codex_app_server_protocol::CollabAgentToolCallStatus;
+use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ComputerUseCallOutputContentItem;
+use codex_app_server_protocol::ComputerUseCallStatus;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallStatus;
+use codex_app_server_protocol::McpToolCallStatus;
+use codex_app_server_protocol::PatchApplyStatus;
+use codex_app_server_protocol::PatchChangeKind;
+use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadTokenUsage;
+use codex_app_server_protocol::TurnStatus;
+use codex_core::config::Config;
+use codex_protocol::models::WebSearchAction;
+use codex_protocol::protocol::SessionConfiguredEvent;
+use serde_json::json;
+
+pub use crate::event_processor::CodexStatus;
+use crate::event_processor::EventProcessor;
+use crate::event_processor::handle_last_message;
+use crate::exec_events::AgentMessageItem;
+use crate::exec_events::CollabAgentState;
+use crate::exec_events::CollabAgentStatus;
+use crate::exec_events::CollabTool;
+use crate::exec_events::CollabToolCallItem;
+use crate::exec_events::CollabToolCallStatus;
+use crate::exec_events::CommandExecutionItem;
+use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+use crate::exec_events::ComputerUseCallItem;
+use crate::exec_events::ComputerUseCallStatus as ExecComputerUseCallStatus;
+use crate::exec_events::DynamicToolCallItem;
+use crate::exec_events::DynamicToolCallStatus as ExecDynamicToolCallStatus;
+use crate::exec_events::ErrorItem;
+use crate::exec_events::FileChangeItem;
+use crate::exec_events::FileUpdateChange;
+use crate::exec_events::ItemCompletedEvent;
+use crate::exec_events::ItemStartedEvent;
+use crate::exec_events::ItemUpdatedEvent;
+use crate::exec_events::McpToolCallItem;
+use crate::exec_events::McpToolCallItemError;
+use crate::exec_events::McpToolCallItemResult;
+use crate::exec_events::McpToolCallStatus as ExecMcpToolCallStatus;
+use crate::exec_events::PatchApplyStatus as ExecPatchApplyStatus;
+use crate::exec_events::PatchChangeKind as ExecPatchChangeKind;
+use crate::exec_events::ReasoningItem;
+use crate::exec_events::ThreadErrorEvent;
+use crate::exec_events::ThreadEvent;
+use crate::exec_events::ThreadItem as ExecThreadItem;
+use crate::exec_events::ThreadItemDetails;
+use crate::exec_events::ThreadStartedEvent;
+use crate::exec_events::TodoItem;
+use crate::exec_events::TodoListItem;
+use crate::exec_events::TurnCompletedEvent;
+use crate::exec_events::TurnFailedEvent;
+use crate::exec_events::TurnStartedEvent;
+use crate::exec_events::Usage;
+use crate::exec_events::WebSearchItem;
+
+pub struct EventProcessorWithJsonOutput {
+    last_message_path: Option<PathBuf>,
+    next_item_id: AtomicU64,
+    raw_to_exec_item_id: HashMap<String, String>,
+    running_todo_list: Option<RunningTodoList>,
+    last_total_token_usage: Option<ThreadTokenUsage>,
+    last_critical_error: Option<ThreadErrorEvent>,
+    final_message: Option<String>,
+    emit_final_message_on_shutdown: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RunningTodoList {
+    item_id: String,
+    items: Vec<TodoItem>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct CollectedThreadEvents {
+    pub events: Vec<ThreadEvent>,
+    pub status: CodexStatus,
+}
+
+impl EventProcessorWithJsonOutput {
+    pub fn new(last_message_path: Option<PathBuf>) -> Self {
+        Self {
+            last_message_path,
+            next_item_id: AtomicU64::new(0),
+            raw_to_exec_item_id: HashMap::new(),
+            running_todo_list: None,
+            last_total_token_usage: None,
+            last_critical_error: None,
+            final_message: None,
+            emit_final_message_on_shutdown: false,
+        }
+    }
+
+    pub fn final_message(&self) -> Option<&str> {
+        self.final_message.as_deref()
+    }
+
+    fn next_item_id(&self) -> String {
+        format!("item_{}", self.next_item_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn emit(&self, event: ThreadEvent) {
+        println!(
+            "{}",
+            serde_json::to_string(&event).unwrap_or_else(|err| {
+                json!({
+                    "type": "error",
+                    "message": format!("failed to serialize exec json event: {err}"),
+                })
+                .to_string()
+            })
+        );
+    }
+
+    fn usage_from_last_total(&self) -> Usage {
+        let Some(usage) = self.last_total_token_usage.as_ref() else {
+            return Usage::default();
+        };
+        Usage {
+            input_tokens: usage.total.input_tokens,
+            cached_input_tokens: usage.total.cached_input_tokens,
+            cache_write_input_tokens: usage.total.cache_write_input_tokens,
+            output_tokens: usage.total.output_tokens,
+            reasoning_output_tokens: usage.total.reasoning_output_tokens,
+        }
+    }
+
+    pub fn map_todo_items(plan: &[codex_app_server_protocol::TurnPlanStep]) -> Vec<TodoItem> {
+        plan.iter()
+            .map(|step| TodoItem {
+                text: step.step.clone(),
+                completed: matches!(
+                    step.status,
+                    codex_app_server_protocol::TurnPlanStepStatus::Completed
+                ),
+            })
+            .collect()
+    }
+
+    fn map_item_with_id(
+        item: ThreadItem,
+        make_id: impl FnOnce() -> String,
+    ) -> Option<ExecThreadItem> {
+        match item {
+            ThreadItem::AgentMessage { text, .. } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::AgentMessage(AgentMessageItem { text }),
+            }),
+            ThreadItem::Reasoning { summary, .. } => {
+                let text = summary.join("\n");
+                if text.trim().is_empty() {
+                    return None;
+                }
+                Some(ExecThreadItem {
+                    id: make_id(),
+                    details: ThreadItemDetails::Reasoning(ReasoningItem { text }),
+                })
+            }
+            ThreadItem::CommandExecution {
+                command,
+                aggregated_output,
+                exit_code,
+                status,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::CommandExecution(CommandExecutionItem {
+                    command,
+                    aggregated_output: aggregated_output.unwrap_or_default(),
+                    exit_code,
+                    status: match status {
+                        CommandExecutionStatus::InProgress => ExecCommandExecutionStatus::InProgress,
+                        CommandExecutionStatus::Completed => ExecCommandExecutionStatus::Completed,
+                        CommandExecutionStatus::Failed => ExecCommandExecutionStatus::Failed,
+                        CommandExecutionStatus::Declined => ExecCommandExecutionStatus::Declined,
+                    },
+                }),
+            }),
+            ThreadItem::FileChange {
+                changes, status, ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::FileChange(FileChangeItem {
+                    changes: changes
+                        .into_iter()
+                        .map(|change| FileUpdateChange {
+                            path: change.path,
+                            kind: match change.kind {
+                                PatchChangeKind::Add => ExecPatchChangeKind::Add,
+                                PatchChangeKind::Delete => ExecPatchChangeKind::Delete,
+                                PatchChangeKind::Update { .. } => ExecPatchChangeKind::Update,
+                            },
+                        })
+                        .collect(),
+                    status: match status {
+                        PatchApplyStatus::InProgress => ExecPatchApplyStatus::InProgress,
+                        PatchApplyStatus::Completed => ExecPatchApplyStatus::Completed,
+                        PatchApplyStatus::Failed | PatchApplyStatus::Declined => {
+                            ExecPatchApplyStatus::Failed
+                        }
+                    },
+                }),
+            }),
+            ThreadItem::McpToolCall {
+                server,
+                tool,
+                status,
+                arguments,
+                result,
+                error,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::McpToolCall(McpToolCallItem {
+                    server,
+                    tool,
+                    status: match status {
+                        McpToolCallStatus::InProgress => ExecMcpToolCallStatus::InProgress,
+                        McpToolCallStatus::Completed => ExecMcpToolCallStatus::Completed,
+                        McpToolCallStatus::Failed => ExecMcpToolCallStatus::Failed,
+                    },
+                    arguments,
+                    result: result.map(|result| McpToolCallItemResult {
+                        content: result.content,
+                        meta: result.meta,
+                        structured_content: result.structured_content,
+                    }),
+                    error: error.map(|error| McpToolCallItemError {
+                        message: error.message,
+                    }),
+                }),
+            }),
+            ThreadItem::DynamicToolCall {
+                tool,
+                status,
+                arguments,
+                content_items,
+                success,
+                duration_ms,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::DynamicToolCall(DynamicToolCallItem {
+                    tool,
+                    arguments,
+                    status: match status {
+                        DynamicToolCallStatus::InProgress => ExecDynamicToolCallStatus::InProgress,
+                        DynamicToolCallStatus::Completed => ExecDynamicToolCallStatus::Completed,
+                        DynamicToolCallStatus::Failed => ExecDynamicToolCallStatus::Failed,
+                    },
+                    preview: dynamic_tool_preview(content_items.as_deref().unwrap_or_default()),
+                    success,
+                    duration_ms,
+                }),
+            }),
+            ThreadItem::ComputerUseCall {
+                adapter,
+                tool,
+                status,
+                arguments,
+                content_items,
+                success,
+                error,
+                duration_ms,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
+                    adapter,
+                    tool,
+                    arguments,
+                    status: match status {
+                        ComputerUseCallStatus::InProgress => {
+                            ExecComputerUseCallStatus::InProgress
+                        }
+                        ComputerUseCallStatus::Completed => ExecComputerUseCallStatus::Completed,
+                        ComputerUseCallStatus::Failed => ExecComputerUseCallStatus::Failed,
+                    },
+                    preview: computer_use_preview(content_items.as_deref().unwrap_or_default()),
+                    success,
+                    error,
+                    duration_ms,
+                }),
+            }),
+            ThreadItem::CollabAgentToolCall {
+                tool,
+                sender_thread_id,
+                receiver_thread_ids,
+                prompt,
+                agents_states,
+                status,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
+                    tool: match tool {
+                        CollabAgentTool::SpawnAgent => CollabTool::SpawnAgent,
+                        CollabAgentTool::SendInput => CollabTool::SendInput,
+                        CollabAgentTool::ResumeAgent => CollabTool::Wait,
+                        CollabAgentTool::Wait => CollabTool::Wait,
+                        CollabAgentTool::CloseAgent => CollabTool::CloseAgent,
+                    },
+                    sender_thread_id,
+                    receiver_thread_ids,
+                    prompt,
+                    agents_states: agents_states
+                        .into_iter()
+                        .map(|(thread_id, state)| {
+                            (
+                                thread_id,
+                                CollabAgentState {
+                                    status: match state.status {
+                                        codex_app_server_protocol::CollabAgentStatus::PendingInit => {
+                                            CollabAgentStatus::PendingInit
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::Running => {
+                                            CollabAgentStatus::Running
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::Interrupted => {
+                                            CollabAgentStatus::Interrupted
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::Completed => {
+                                            CollabAgentStatus::Completed
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::Errored => {
+                                            CollabAgentStatus::Errored
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::Shutdown => {
+                                            CollabAgentStatus::Shutdown
+                                        }
+                                        codex_app_server_protocol::CollabAgentStatus::NotFound => {
+                                            CollabAgentStatus::NotFound
+                                        }
+                                    },
+                                    message: state.message,
+                                },
+                            )
+                        })
+                        .collect(),
+                    status: match status {
+                        CollabAgentToolCallStatus::InProgress => CollabToolCallStatus::InProgress,
+                        CollabAgentToolCallStatus::Completed => CollabToolCallStatus::Completed,
+                        CollabAgentToolCallStatus::Failed => CollabToolCallStatus::Failed,
+                    },
+                }),
+            }),
+            ThreadItem::WebSearch(item) => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::WebSearch(WebSearchItem {
+                    id: item.id,
+                    query: item.query,
+                    action: match item.action {
+                        Some(action) => serde_json::from_value(
+                            serde_json::to_value(action).unwrap_or_else(|_| json!("other")),
+                        )
+                        .unwrap_or(WebSearchAction::Other),
+                        None => WebSearchAction::Other,
+                    },
+                }),
+            }),
+            _ => None,
+        }
+    }
+
+    fn started_item_id(&mut self, raw_id: &str) -> String {
+        if let Some(existing) = self.raw_to_exec_item_id.get(raw_id) {
+            return existing.clone();
+        }
+        let exec_id = self.next_item_id();
+        self.raw_to_exec_item_id
+            .insert(raw_id.to_string(), exec_id.clone());
+        exec_id
+    }
+
+    fn completed_item_id(&mut self, raw_id: &str) -> String {
+        self.raw_to_exec_item_id
+            .remove(raw_id)
+            .unwrap_or_else(|| self.next_item_id())
+    }
+
+    fn map_started_item(&mut self, item: ThreadItem) -> Option<ExecThreadItem> {
+        match item {
+            ThreadItem::AgentMessage { .. } | ThreadItem::Reasoning { .. } => None,
+            other => {
+                let raw_id = other.id().to_string();
+                Self::map_item_with_id(other, || self.started_item_id(&raw_id))
+            }
+        }
+    }
+
+    fn map_completed_item_mut(&mut self, item: ThreadItem) -> Option<ExecThreadItem> {
+        if let ThreadItem::Reasoning { summary, .. } = &item
+            && summary.join("\n").trim().is_empty()
+        {
+            return None;
+        }
+        match &item {
+            ThreadItem::AgentMessage { .. } | ThreadItem::Reasoning { .. } => {
+                Self::map_item_with_id(item, || self.next_item_id())
+            }
+            other => {
+                let raw_id = other.id().to_string();
+                Self::map_item_with_id(item, || self.completed_item_id(&raw_id))
+            }
+        }
+    }
+
+    fn reconcile_unfinished_started_items(
+        &mut self,
+        turn_items: &[ThreadItem],
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Vec<ThreadEvent> {
+        turn_items
+            .iter()
+            .filter_map(|item| {
+                let raw_id = item.id().to_string();
+                if !self.raw_to_exec_item_id.contains_key(&raw_id) {
+                    return None;
+                }
+                self.map_completed_item_mut(item.clone()).map(|item| {
+                    ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(thread_id.to_string()),
+                        turn_id: Some(turn_id.to_string()),
+                        item,
+                    })
+                })
+            })
+            .collect()
+    }
+
+    fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
+        items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                items.iter().rev().find_map(|item| match item {
+                    ThreadItem::Plan { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+            })
+    }
+
+    pub fn thread_started_event(session_configured: &SessionConfiguredEvent) -> ThreadEvent {
+        ThreadEvent::ThreadStarted(ThreadStartedEvent {
+            thread_id: session_configured.thread_id.to_string(),
+        })
+    }
+
+    pub fn collect_warning(&mut self, message: String) -> CollectedThreadEvents {
+        CollectedThreadEvents {
+            events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                thread_id: None,
+                turn_id: None,
+                item: ExecThreadItem {
+                    id: self.next_item_id(),
+                    details: ThreadItemDetails::Error(ErrorItem { message }),
+                },
+            })],
+            status: CodexStatus::Running,
+        }
+    }
+
+    pub fn collect_thread_events(
+        &mut self,
+        notification: ServerNotification,
+    ) -> CollectedThreadEvents {
+        let mut events = Vec::new();
+        let status = match notification {
+            ServerNotification::ConfigWarning(notification) => {
+                let message = match notification.details {
+                    Some(details) if !details.is_empty() => {
+                        format!("{} ({details})", notification.summary)
+                    }
+                    _ => notification.summary,
+                };
+                events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: None,
+                    turn_id: None,
+                    item: ExecThreadItem {
+                        id: self.next_item_id(),
+                        details: ThreadItemDetails::Error(ErrorItem { message }),
+                    },
+                }));
+                CodexStatus::Running
+            }
+            ServerNotification::Warning(notification) => {
+                let warning = self.collect_warning(notification.message);
+                events.extend(warning.events);
+                warning.status
+            }
+            ServerNotification::Error(notification) => {
+                let message = match notification.error.additional_details {
+                    Some(details) if !details.is_empty() => {
+                        format!("{} ({details})", notification.error.message)
+                    }
+                    _ => notification.error.message,
+                };
+                let error = ThreadErrorEvent {
+                    message,
+                    thread_id: Some(notification.thread_id.clone()),
+                    turn_id: Some(notification.turn_id.clone()),
+                };
+                self.last_critical_error = Some(error.clone());
+                events.push(ThreadEvent::Error(error));
+                CodexStatus::Running
+            }
+            ServerNotification::DeprecationNotice(notification) => {
+                let message = match notification.details {
+                    Some(details) if !details.is_empty() => {
+                        format!("{} ({details})", notification.summary)
+                    }
+                    _ => notification.summary,
+                };
+                events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: None,
+                    turn_id: None,
+                    item: ExecThreadItem {
+                        id: self.next_item_id(),
+                        details: ThreadItemDetails::Error(ErrorItem { message }),
+                    },
+                }));
+                CodexStatus::Running
+            }
+            ServerNotification::HookStarted(_) | ServerNotification::HookCompleted(_) => {
+                CodexStatus::Running
+            }
+            ServerNotification::ItemStarted(notification) => {
+                if let Some(item) = self.map_started_item(notification.item) {
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
+                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
+                        item,
+                    }));
+                }
+                CodexStatus::Running
+            }
+            ServerNotification::ItemCompleted(notification) => {
+                if let Some(item) = self.map_completed_item_mut(notification.item) {
+                    if let ThreadItemDetails::AgentMessage(AgentMessageItem { text }) =
+                        &item.details
+                    {
+                        self.final_message = Some(text.clone());
+                    }
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
+                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
+                        item,
+                    }));
+                }
+                CodexStatus::Running
+            }
+            ServerNotification::ModelRerouted(notification) => {
+                let thread_id = notification.thread_id;
+                let turn_id = notification.turn_id;
+                events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    thread_id: Some(thread_id),
+                    turn_id: Some(turn_id),
+                    item: ExecThreadItem {
+                        id: self.next_item_id(),
+                        details: ThreadItemDetails::Error(ErrorItem {
+                            message: format!(
+                                "model rerouted: {} -> {} ({:?})",
+                                notification.from_model, notification.to_model, notification.reason
+                            ),
+                        }),
+                    },
+                }));
+                CodexStatus::Running
+            }
+            ServerNotification::ModelVerification(_) => CodexStatus::Running,
+            ServerNotification::ThreadTokenUsageUpdated(notification) => {
+                self.last_total_token_usage = Some(notification.token_usage);
+                CodexStatus::Running
+            }
+            ServerNotification::TurnCompleted(notification) => {
+                if let Some(running) = self.running_todo_list.take() {
+                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                        thread_id: Some(notification.thread_id.clone()),
+                        turn_id: Some(notification.turn.id.clone()),
+                        item: ExecThreadItem {
+                            id: running.item_id,
+                            details: ThreadItemDetails::TodoList(TodoListItem {
+                                items: running.items,
+                            }),
+                        },
+                    }));
+                }
+                events.extend(self.reconcile_unfinished_started_items(
+                    &notification.turn.items,
+                    &notification.thread_id,
+                    &notification.turn.id,
+                ));
+                match notification.turn.status {
+                    TurnStatus::Completed => {
+                        if let Some(final_message) =
+                            Self::final_message_from_turn_items(notification.turn.items.as_slice())
+                        {
+                            self.final_message = Some(final_message);
+                        }
+                        self.emit_final_message_on_shutdown = true;
+                        let thread_id = notification.thread_id;
+                        let turn_id = notification.turn.id;
+                        events.push(ThreadEvent::TurnCompleted(TurnCompletedEvent {
+                            thread_id,
+                            turn_id,
+                            usage: self.usage_from_last_total(),
+                        }));
+                        CodexStatus::InitiateShutdown
+                    }
+                    TurnStatus::Failed => {
+                        self.final_message = None;
+                        self.emit_final_message_on_shutdown = false;
+                        let error = notification
+                            .turn
+                            .error
+                            .map(|error| ThreadErrorEvent {
+                                message: match error.additional_details {
+                                    Some(details) if !details.is_empty() => {
+                                        format!("{} ({details})", error.message)
+                                    }
+                                    _ => error.message,
+                                },
+                                thread_id: Some(notification.thread_id.clone()),
+                                turn_id: Some(notification.turn.id.clone()),
+                            })
+                            .or_else(|| self.last_critical_error.clone())
+                            .unwrap_or_else(|| ThreadErrorEvent {
+                                message: "turn failed".to_string(),
+                                thread_id: Some(notification.thread_id.clone()),
+                                turn_id: Some(notification.turn.id.clone()),
+                            });
+                        events.push(ThreadEvent::TurnFailed(TurnFailedEvent {
+                            thread_id: notification.thread_id.clone(),
+                            turn_id: notification.turn.id.clone(),
+                            error,
+                        }));
+                        CodexStatus::InitiateShutdown
+                    }
+                    TurnStatus::Interrupted => {
+                        self.final_message = None;
+                        self.emit_final_message_on_shutdown = false;
+                        CodexStatus::InitiateShutdown
+                    }
+                    TurnStatus::InProgress => CodexStatus::Running,
+                }
+            }
+            ServerNotification::TurnDiffUpdated(_) => CodexStatus::Running,
+            ServerNotification::TurnPlanUpdated(notification) => {
+                let items = Self::map_todo_items(&notification.plan);
+                if let Some(running) = self.running_todo_list.as_mut() {
+                    running.items = items.clone();
+                    let item_id = running.item_id.clone();
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
+                    events.push(ThreadEvent::ItemUpdated(ItemUpdatedEvent {
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
+                        item: ExecThreadItem {
+                            id: item_id,
+                            details: ThreadItemDetails::TodoList(TodoListItem { items }),
+                        },
+                    }));
+                } else {
+                    let item_id = self.next_item_id();
+                    self.running_todo_list = Some(RunningTodoList {
+                        item_id: item_id.clone(),
+                        items: items.clone(),
+                    });
+                    let thread_id = notification.thread_id;
+                    let turn_id = notification.turn_id;
+                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
+                        thread_id: Some(thread_id),
+                        turn_id: Some(turn_id),
+                        item: ExecThreadItem {
+                            id: item_id,
+                            details: ThreadItemDetails::TodoList(TodoListItem { items }),
+                        },
+                    }));
+                }
+                CodexStatus::Running
+            }
+            ServerNotification::TurnStarted(notification) => {
+                let thread_id = notification.thread_id;
+                let turn_id = notification.turn.id;
+                events.push(ThreadEvent::TurnStarted(TurnStartedEvent {
+                    thread_id,
+                    turn_id,
+                }));
+                CodexStatus::Running
+            }
+            _ => CodexStatus::Running,
+        };
+
+        CollectedThreadEvents { events, status }
+    }
+}
+
+fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<String> {
+    let mut text_parts: Vec<&str> = Vec::new();
+    let mut image_count = 0usize;
+    let mut audio_count = 0usize;
+    for item in items {
+        match item {
+            DynamicToolCallOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    text_parts.push(text.as_str());
+                }
+            }
+            DynamicToolCallOutputContentItem::InputImage { .. } => {
+                image_count += 1;
+            }
+            DynamicToolCallOutputContentItem::InputAudio { .. } => {
+                audio_count += 1;
+            }
+        }
+    }
+
+    let mut preview = text_parts.join("\n");
+    if image_count > 0 {
+        let image_summary = if image_count == 1 {
+            "<1 image output>".to_string()
+        } else {
+            format!("<{image_count} image outputs>")
+        };
+        if preview.is_empty() {
+            preview = image_summary;
+        } else {
+            preview.push('\n');
+            preview.push_str(&image_summary);
+        }
+    }
+    if audio_count > 0 {
+        let audio_summary = if audio_count == 1 {
+            "<1 audio output>".to_string()
+        } else {
+            format!("<{audio_count} audio outputs>")
+        };
+        if preview.is_empty() {
+            preview = audio_summary;
+        } else {
+            preview.push('\n');
+            preview.push_str(&audio_summary);
+        }
+    }
+
+    (!preview.is_empty()).then_some(preview)
+}
+
+fn computer_use_preview(items: &[ComputerUseCallOutputContentItem]) -> Option<String> {
+    let mut parts = Vec::new();
+    for item in items {
+        match item {
+            ComputerUseCallOutputContentItem::InputText { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.trim().to_string());
+                }
+            }
+            ComputerUseCallOutputContentItem::InputImage { .. } => {
+                parts.push("<native screenshot>".to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+impl EventProcessor for EventProcessorWithJsonOutput {
+    fn print_config_summary(
+        &mut self,
+        _: &Config,
+        _: &str,
+        session_configured: &SessionConfiguredEvent,
+    ) {
+        self.emit(Self::thread_started_event(session_configured));
+    }
+
+    fn process_server_notification(&mut self, notification: ServerNotification) -> CodexStatus {
+        let collected = self.collect_thread_events(notification);
+        for event in collected.events {
+            self.emit(event);
+        }
+        collected.status
+    }
+
+    fn process_warning(&mut self, message: String) -> CodexStatus {
+        let collected = self.collect_warning(message);
+        for event in collected.events {
+            self.emit(event);
+        }
+        collected.status
+    }
+
+    fn print_final_output(&mut self) {
+        if self.emit_final_message_on_shutdown
+            && let Some(path) = self.last_message_path.as_deref()
+        {
+            handle_last_message(self.final_message.as_deref(), path);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "event_processor_with_jsonl_output_tests.rs"]
+mod event_processor_with_jsonl_output_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::tempdir;
+
+    #[test]
+    fn failed_turn_does_not_overwrite_output_last_message_file() {
+        let tempdir = tempdir().expect("create tempdir");
+        let output_path = tempdir.path().join("last-message.txt");
+        std::fs::write(&output_path, "keep existing contents").expect("seed output file");
+
+        let mut processor = EventProcessorWithJsonOutput::new(Some(output_path.clone()));
+
+        let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::AgentMessage {
+                    id: "msg-1".to_string(),
+                    text: "partial answer".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+            },
+        ));
+
+        assert_eq!(collected.status, CodexStatus::Running);
+        assert_eq!(processor.final_message(), Some("partial answer"));
+
+        let status = processor.process_server_notification(ServerNotification::TurnCompleted(
+            codex_app_server_protocol::TurnCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: codex_app_server_protocol::Turn {
+                    id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
+                    items: Vec::new(),
+                    status: TurnStatus::Failed,
+                    error: Some(codex_app_server_protocol::TurnError {
+                        message: "turn failed".to_string(),
+                        additional_details: None,
+                        codex_error_info: None,
+                    }),
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                },
+                final_model: None,
+                model_snapshot: None,
+            },
+        ));
+
+        assert_eq!(status, CodexStatus::InitiateShutdown);
+        assert_eq!(processor.final_message(), None);
+
+        EventProcessor::print_final_output(&mut processor);
+
+        assert_eq!(
+            std::fs::read_to_string(&output_path).expect("read output file"),
+            "keep existing contents"
+        );
+    }
+}

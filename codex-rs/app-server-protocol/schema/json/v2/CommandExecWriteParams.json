@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Write stdin bytes to a running `command/exec` session, close stdin, or\nboth.",
+  "properties": {
+    "closeStdin": {
+      "description": "Close stdin after writing `deltaBase64`, if present.",
+      "type": "boolean"
+    },
+    "deltaBase64": {
+      "description": "Optional base64-encoded stdin bytes to write.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "processId": {
+      "description": "Client-supplied, connection-scoped `processId` from the original\n`command/exec` request.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "processId"
+  ],
+  "title": "CommandExecWriteParams",
+  "type": "object"
+}

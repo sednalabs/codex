@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "contentIndex": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "delta": {
+      "type": "string"
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "turnId",
+    "itemId",
+    "delta",
+    "contentIndex"
+  ],
+  "title": "ReasoningTextDeltaNotification",
+  "type": "object"
+}

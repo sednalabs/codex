@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "JSONRPCErrorError": {
+      "properties": {
+        "code": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A response to a request that indicates an error occurred.",
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/JSONRPCErrorError"
+    },
+    "id": {
+      "$ref": "#/$defs/RequestId"
+    }
+  },
+  "required": [
+    "error",
+    "id"
+  ],
+  "title": "JSONRPCError",
+  "type": "object"
+}

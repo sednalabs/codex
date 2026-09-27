@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "properties": {
+        "method": {
+          "const": "initialized",
+          "title": "InitializedNotificationMethod",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "title": "InitializedNotification",
+      "type": "object"
+    }
+  ],
+  "title": "ClientNotification"
+}

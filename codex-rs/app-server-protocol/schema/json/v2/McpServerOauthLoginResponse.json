@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "authorizationUrl": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "authorizationUrl"
+  ],
+  "title": "McpServerOauthLoginResponse",
+  "type": "object"
+}

@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "ParsedCommand": {
+      "oneOf": [
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "description": "(Best effort) Path to the file being read by the command. When\npossible, this is an absolute path, though when relative, it should\nbe resolved against the `cwd`` that will be used to run the command\nto derive the absolute path.",
+              "type": "string"
+            },
+            "type": {
+              "const": "read",
+              "title": "ReadParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cmd",
+            "name",
+            "path"
+          ],
+          "title": "ReadParsedCommand",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "list_files",
+              "title": "ListFilesParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cmd"
+          ],
+          "title": "ListFilesParsedCommand",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "search",
+              "title": "SearchParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cmd"
+          ],
+          "title": "SearchParsedCommand",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cmd": {
+              "type": "string"
+            },
+            "type": {
+              "const": "unknown",
+              "title": "UnknownParsedCommandType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cmd"
+          ],
+          "title": "UnknownParsedCommand",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadId": {
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "approvalId": {
+      "description": "Identifier for this specific approval callback.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "callId": {
+      "description": "Use to correlate this with [codex_protocol::protocol::ExecCommandBeginEvent]\nand [codex_protocol::protocol::ExecCommandEndEvent].",
+      "type": "string"
+    },
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "conversationId": {
+      "$ref": "#/$defs/ThreadId"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "parsedCmd": {
+      "items": {
+        "$ref": "#/$defs/ParsedCommand"
+      },
+      "type": "array"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "conversationId",
+    "callId",
+    "command",
+    "cwd",
+    "parsedCmd"
+  ],
+  "title": "ExecCommandApprovalParams",
+  "type": "object"
+}

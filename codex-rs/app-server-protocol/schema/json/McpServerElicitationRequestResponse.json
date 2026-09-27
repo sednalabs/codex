@@ -1,0 +1,29 @@
+{
+  "$defs": {
+    "McpServerElicitationAction": {
+      "enum": [
+        "accept",
+        "decline",
+        "cancel"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "_meta": {
+      "description": "Optional client metadata for form-mode action handling."
+    },
+    "action": {
+      "$ref": "#/$defs/McpServerElicitationAction"
+    },
+    "content": {
+      "description": "Structured user input for accepted elicitations, mirroring RMCP `ElicitResult`.\n\nThis is nullable because decline/cancel responses have no content."
+    }
+  },
+  "required": [
+    "action"
+  ],
+  "title": "McpServerElicitationRequestResponse",
+  "type": "object"
+}

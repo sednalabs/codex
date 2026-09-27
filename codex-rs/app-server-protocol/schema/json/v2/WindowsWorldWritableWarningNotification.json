@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "extraCount": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "failedScan": {
+      "type": "boolean"
+    },
+    "samplePaths": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "samplePaths",
+    "extraCount",
+    "failedScan"
+  ],
+  "title": "WindowsWorldWritableWarningNotification",
+  "type": "object"
+}

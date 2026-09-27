@@ -1,0 +1,624 @@
+{
+  "$defs": {
+    "McpElicitationArrayType": {
+      "enum": [
+        "array"
+      ],
+      "type": "string"
+    },
+    "McpElicitationBooleanSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationBooleanType"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "McpElicitationBooleanType": {
+      "enum": [
+        "boolean"
+      ],
+      "type": "string"
+    },
+    "McpElicitationConstOption": {
+      "additionalProperties": false,
+      "properties": {
+        "const": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "const",
+        "title"
+      ],
+      "type": "object"
+    },
+    "McpElicitationEnumSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpElicitationSingleSelectEnumSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationMultiSelectEnumSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationLegacyTitledEnumSchema"
+        }
+      ]
+    },
+    "McpElicitationLegacyTitledEnumSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enumNames": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationStringType"
+        }
+      },
+      "required": [
+        "type",
+        "enum"
+      ],
+      "type": "object"
+    },
+    "McpElicitationMultiSelectEnumSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpElicitationUntitledMultiSelectEnumSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationTitledMultiSelectEnumSchema"
+        }
+      ]
+    },
+    "McpElicitationNumberSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maximum": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minimum": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationNumberType"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "McpElicitationNumberType": {
+      "enum": [
+        "number",
+        "integer"
+      ],
+      "type": "string"
+    },
+    "McpElicitationObjectType": {
+      "enum": [
+        "object"
+      ],
+      "type": "string"
+    },
+    "McpElicitationPrimitiveSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpElicitationEnumSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationStringSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationNumberSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationBooleanSchema"
+        }
+      ]
+    },
+    "McpElicitationSchema": {
+      "additionalProperties": false,
+      "description": "Typed form schema for MCP `elicitation/create` requests.\n\nThis matches the `requestedSchema` shape from the MCP 2025-11-25\n`ElicitRequestFormParams` schema.",
+      "properties": {
+        "$schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "properties": {
+          "additionalProperties": {
+            "$ref": "#/$defs/McpElicitationPrimitiveSchema"
+          },
+          "type": "object"
+        },
+        "required": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationObjectType"
+        }
+      },
+      "required": [
+        "type",
+        "properties"
+      ],
+      "type": "object"
+    },
+    "McpElicitationSingleSelectEnumSchema": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpElicitationUntitledSingleSelectEnumSchema"
+        },
+        {
+          "$ref": "#/$defs/McpElicitationTitledSingleSelectEnumSchema"
+        }
+      ]
+    },
+    "McpElicitationStringFormat": {
+      "enum": [
+        "email",
+        "uri",
+        "date",
+        "date-time"
+      ],
+      "type": "string"
+    },
+    "McpElicitationStringSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpElicitationStringFormat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxLength": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minLength": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationStringType"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "McpElicitationStringType": {
+      "enum": [
+        "string"
+      ],
+      "type": "string"
+    },
+    "McpElicitationTitledEnumItems": {
+      "additionalProperties": false,
+      "properties": {
+        "anyOf": {
+          "items": {
+            "$ref": "#/$defs/McpElicitationConstOption"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "anyOf"
+      ],
+      "type": "object"
+    },
+    "McpElicitationTitledMultiSelectEnumSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "$ref": "#/$defs/McpElicitationTitledEnumItems"
+        },
+        "maxItems": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minItems": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationArrayType"
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "type": "object"
+    },
+    "McpElicitationTitledSingleSelectEnumSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "oneOf": {
+          "items": {
+            "$ref": "#/$defs/McpElicitationConstOption"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationStringType"
+        }
+      },
+      "required": [
+        "type",
+        "oneOf"
+      ],
+      "type": "object"
+    },
+    "McpElicitationUntitledEnumItems": {
+      "additionalProperties": false,
+      "properties": {
+        "enum": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationStringType"
+        }
+      },
+      "required": [
+        "type",
+        "enum"
+      ],
+      "type": "object"
+    },
+    "McpElicitationUntitledMultiSelectEnumSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "$ref": "#/$defs/McpElicitationUntitledEnumItems"
+        },
+        "maxItems": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "minItems": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationArrayType"
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "type": "object"
+    },
+    "McpElicitationUntitledSingleSelectEnumSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enum": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/McpElicitationStringType"
+        }
+      },
+      "required": [
+        "type",
+        "enum"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "properties": {
+        "_meta": true,
+        "message": {
+          "type": "string"
+        },
+        "mode": {
+          "const": "form",
+          "type": "string"
+        },
+        "requestedSchema": {
+          "$ref": "#/$defs/McpElicitationSchema"
+        }
+      },
+      "required": [
+        "mode",
+        "message",
+        "requestedSchema"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "_meta": true,
+        "message": {
+          "type": "string"
+        },
+        "mode": {
+          "const": "openai/form",
+          "type": "string"
+        },
+        "requestedSchema": true
+      },
+      "required": [
+        "mode",
+        "message",
+        "requestedSchema"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "_meta": true,
+        "elicitationId": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "mode": {
+          "const": "url",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "message",
+        "url",
+        "elicitationId"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "serverName": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "description": "Active Codex turn when this elicitation was observed, if app-server could correlate one.\n\nThis is nullable because MCP models elicitation as a standalone server-to-client request\nidentified by the MCP server request id. It may be triggered during a turn, but turn\ncontext is app-server correlation rather than part of the protocol identity of the\nelicitation itself.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "threadId",
+    "serverName"
+  ],
+  "title": "McpServerElicitationRequestParams",
+  "type": "object"
+}

@@ -1,0 +1,71 @@
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#package-ecosystem-
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /.devcontainer/codex-install
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+  - package-ecosystem: cargo
+    directories:
+      - /codex-rs
+      - /tools/argument-comment-lint
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+    ignore:
+      - dependency-name: keyring
+      - dependency-name: aws-config
+      - dependency-name: aws-sigv4
+  - package-ecosystem: pip
+    directories:
+      - /scripts
+      - /sdk/python
+      - /sdk/python-runtime
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+    ignore:
+      - dependency-name: openai-codex-cli-bin
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
+  - package-ecosystem: devcontainers
+    directory: /
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+  - package-ecosystem: docker
+    directories:
+      - /.devcontainer
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
+      - dependency-name: EmbarkStudios/cargo-deny-action
+  - package-ecosystem: rust-toolchain
+    directories:
+      - /codex-rs
+      - /tools/argument-comment-lint
+    schedule:
+      interval: daily
+      time: "03:00"
+      timezone: Etc/UTC

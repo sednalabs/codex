@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timeoutSecs": {
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "McpServerOauthLoginParams",
+  "type": "object"
+}

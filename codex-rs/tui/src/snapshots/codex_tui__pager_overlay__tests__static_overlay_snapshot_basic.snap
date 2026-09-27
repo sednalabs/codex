@@ -1,0 +1,14 @@
+---
+source: tui/src/pager_overlay.rs
+expression: term.backend()
+---
+" S T A T I C · 100% ────────────────────"
+"one                                     "
+"two                                     "
+"three                                   "
+"~                                       "
+"~                                       "
+"────────────────────────────────────────"
+" ↑/↓   pgup/pgdn   home/end             "
+" q quit                                 "
+"                                        "

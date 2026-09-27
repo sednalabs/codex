@@ -1,0 +1,1 @@
+| codex-rs/core/src/session/mod.rs:6:28:6:40 | dynamic_tools | SessionConfiguration.dynamic_tools can be finalized without native Android computer-use acquisition. Call augment_with_acquired_native_android_tools before constructing the session configuration. |

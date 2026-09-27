@@ -1,0 +1,47 @@
+{
+  "$defs": {
+    "CommandExecOutputStream": {
+      "description": "Stream label for `command/exec/outputDelta` notifications.",
+      "oneOf": [
+        {
+          "const": "stdout",
+          "description": "stdout stream. PTY mode multiplexes terminal output here.",
+          "type": "string"
+        },
+        {
+          "const": "stderr",
+          "description": "stderr stream.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Base64-encoded output chunk emitted for a streaming `command/exec` request.\n\nThese notifications are connection-scoped. If the originating connection\ncloses, the server terminates the process.",
+  "properties": {
+    "capReached": {
+      "description": "`true` on the final streamed chunk for a stream when `outputBytesCap`\ntruncated later output on that stream.",
+      "type": "boolean"
+    },
+    "deltaBase64": {
+      "description": "Base64-encoded output bytes.",
+      "type": "string"
+    },
+    "processId": {
+      "description": "Client-supplied, connection-scoped `processId` from the original\n`command/exec` request.",
+      "type": "string"
+    },
+    "stream": {
+      "$ref": "#/$defs/CommandExecOutputStream",
+      "description": "Output stream for this chunk."
+    }
+  },
+  "required": [
+    "processId",
+    "stream",
+    "deltaBase64",
+    "capReached"
+  ],
+  "title": "CommandExecOutputDeltaNotification",
+  "type": "object"
+}

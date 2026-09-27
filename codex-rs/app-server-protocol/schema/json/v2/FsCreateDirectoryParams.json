@@ -1,0 +1,28 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Create a directory on the host filesystem.",
+  "properties": {
+    "path": {
+      "$ref": "#/$defs/AbsolutePathBuf",
+      "description": "Absolute directory path to create."
+    },
+    "recursive": {
+      "description": "Whether parent directories should also be created. Defaults to `true`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "title": "FsCreateDirectoryParams",
+  "type": "object"
+}

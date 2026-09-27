@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A notification which does not expect a response.",
+  "properties": {
+    "method": {
+      "type": "string"
+    },
+    "params": true
+  },
+  "required": [
+    "method"
+  ],
+  "title": "JSONRPCNotification",
+  "type": "object"
+}

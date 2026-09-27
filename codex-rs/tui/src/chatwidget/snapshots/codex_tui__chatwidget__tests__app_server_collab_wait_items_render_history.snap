@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: combined
+---
+• Waiting on · primitive: wait_agent · Robie [explorer], Ada [reviewer]
+  └ Robie [explorer]
+    Ada [reviewer]
+
+
+• Wake cause unavailable
+  └ Robie [explorer]: Completed - Done
+    Ada [reviewer]: Running
+    Still pending: Ada [reviewer]

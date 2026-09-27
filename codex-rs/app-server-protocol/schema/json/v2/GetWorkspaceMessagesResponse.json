@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "WorkspaceMessage": {
+      "properties": {
+        "archivedAt": {
+          "description": "Unix timestamp (in seconds) when the message was archived.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "description": "Unix timestamp (in seconds) when the message was created.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "messageBody": {
+          "type": "string"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "messageType": {
+          "$ref": "#/$defs/WorkspaceMessageType"
+        }
+      },
+      "required": [
+        "messageId",
+        "messageType",
+        "messageBody"
+      ],
+      "type": "object"
+    },
+    "WorkspaceMessageType": {
+      "enum": [
+        "headline",
+        "announcement",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "featureEnabled": {
+      "description": "Whether the workspace-message backend route is available for this client.",
+      "type": "boolean"
+    },
+    "messages": {
+      "description": "Active workspace messages returned by the backend.",
+      "items": {
+        "$ref": "#/$defs/WorkspaceMessage"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "featureEnabled",
+    "messages"
+  ],
+  "title": "GetWorkspaceMessagesResponse",
+  "type": "object"
+}

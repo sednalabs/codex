@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "TextPosition": {
+      "properties": {
+        "column": {
+          "description": "1-based column number (in Unicode scalar values).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "line": {
+          "description": "1-based line number.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "column"
+      ],
+      "type": "object"
+    },
+    "TextRange": {
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/TextPosition"
+        },
+        "start": {
+          "$ref": "#/$defs/TextPosition"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "details": {
+      "description": "Optional extra guidance or error details.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "path": {
+      "description": "Optional path to the config file that triggered the warning.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "range": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TextRange"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional range for the error location inside the config file."
+    },
+    "summary": {
+      "description": "Concise summary of the warning.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "summary"
+  ],
+  "title": "ConfigWarningNotification",
+  "type": "object"
+}

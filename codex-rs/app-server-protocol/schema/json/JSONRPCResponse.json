@@ -1,0 +1,29 @@
+{
+  "$defs": {
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A successful (non-error) response to a request.",
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "result": true
+  },
+  "required": [
+    "id",
+    "result"
+  ],
+  "title": "JSONRPCResponse",
+  "type": "object"
+}

@@ -1,0 +1,322 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileSystemSandboxEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "read": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalNetworkPermissions": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/LegacyAppPathString"
+            },
+            "type": {
+              "const": "path",
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "glob_pattern",
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "special",
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/$defs/FileSystemPath"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "minimal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_roots",
+              "type": "string"
+            },
+            "subpath": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tmpdir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "slash_tmp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "RequestPermissionProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "cwd": {
+      "$ref": "#/$defs/AbsolutePathBuf"
+    },
+    "environmentId": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "permissions": {
+      "$ref": "#/$defs/RequestPermissionProfile"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "turnId",
+    "itemId",
+    "startedAtMs",
+    "cwd",
+    "permissions"
+  ],
+  "title": "PermissionsRequestApprovalParams",
+  "type": "object"
+}

@@ -1,0 +1,8 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 8331
+expression: "[pacing_under, time_remaining, stale_time_remaining].join(\"\\n\")"
+---
+weekly pace under 4%
+weekly time 60%
+weekly time 60% (stale)

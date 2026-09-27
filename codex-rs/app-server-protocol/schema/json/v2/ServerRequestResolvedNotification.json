@@ -1,0 +1,30 @@
+{
+  "$defs": {
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "requestId": {
+      "$ref": "#/$defs/RequestId"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "requestId"
+  ],
+  "title": "ServerRequestResolvedNotification",
+  "type": "object"
+}

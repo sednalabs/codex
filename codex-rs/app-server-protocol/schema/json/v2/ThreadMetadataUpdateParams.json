@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ThreadMetadataGitInfoUpdateParams": {
+      "properties": {
+        "branch": {
+          "description": "Omit to leave the stored branch unchanged, set to `null` to clear it,\nor provide a non-empty string to replace it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "originUrl": {
+          "description": "Omit to leave the stored origin URL unchanged, set to `null` to clear it,\nor provide a non-empty string to replace it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha": {
+          "description": "Omit to leave the stored commit unchanged, set to `null` to clear it,\nor provide a non-empty string to replace it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "gitInfo": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadMetadataGitInfoUpdateParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Patch the stored Git metadata for this thread.\nOmit a field to leave it unchanged, set it to `null` to clear it, or\nprovide a string to replace the stored value."
+    },
+    "isPinned": {
+      "description": "Patch whether this thread is pinned. Omit to leave the stored value unchanged.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadMetadataUpdateParams",
+  "type": "object"
+}

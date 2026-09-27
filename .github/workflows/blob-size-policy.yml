@@ -1,0 +1,53 @@
+name: blob-size-policy
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    name: Blob size policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Determine comparison range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Pull requests inspect the proposed diff; merge groups inspect the
+          # queue's base-to-synthetic-commit diff; main pushes inspect only the
+          # commit range that just landed. All paths feed the same checker.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base='${{ github.event.pull_request.base.sha }}'
+            head='${{ github.event.pull_request.head.sha }}'
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            base='${{ github.event.merge_group.base_sha }}'
+            head='${{ github.sha }}'
+          else
+            base='${{ github.event.before }}'
+            head='${{ github.sha }}'
+          fi
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Check changed blob sizes
+        env:
+          BASE_SHA: ${{ steps.range.outputs.base }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+        run: |
+          python3 scripts/check_blob_size.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --max-bytes 512000 \
+            --allowlist .github/blob-size-allowlist.txt
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree

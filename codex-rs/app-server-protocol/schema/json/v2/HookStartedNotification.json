@@ -1,0 +1,194 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
+    "HookEventName": {
+      "enum": [
+        "preToolUse",
+        "permissionRequest",
+        "postToolUse",
+        "preCompact",
+        "postCompact",
+        "sessionStart",
+        "sessionEnd",
+        "userPromptSubmit",
+        "subagentStart",
+        "subagentStop",
+        "stop"
+      ],
+      "type": "string"
+    },
+    "HookExecutionMode": {
+      "enum": [
+        "sync",
+        "async"
+      ],
+      "type": "string"
+    },
+    "HookHandlerType": {
+      "enum": [
+        "command",
+        "prompt",
+        "agent"
+      ],
+      "type": "string"
+    },
+    "HookOutputEntry": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/HookOutputEntryKind"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "HookOutputEntryKind": {
+      "enum": [
+        "warning",
+        "stop",
+        "feedback",
+        "context",
+        "error"
+      ],
+      "type": "string"
+    },
+    "HookRunStatus": {
+      "enum": [
+        "running",
+        "completed",
+        "failed",
+        "blocked",
+        "stopped"
+      ],
+      "type": "string"
+    },
+    "HookRunSummary": {
+      "properties": {
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "displayOrder": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "durationMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/HookOutputEntry"
+          },
+          "type": "array"
+        },
+        "eventName": {
+          "$ref": "#/$defs/HookEventName"
+        },
+        "executionMode": {
+          "$ref": "#/$defs/HookExecutionMode"
+        },
+        "handlerType": {
+          "$ref": "#/$defs/HookHandlerType"
+        },
+        "id": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/HookScope"
+        },
+        "source": {
+          "$ref": "#/$defs/HookSource",
+          "default": "unknown"
+        },
+        "sourcePath": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/HookRunStatus"
+        },
+        "statusMessage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "eventName",
+        "handlerType",
+        "executionMode",
+        "scope",
+        "sourcePath",
+        "displayOrder",
+        "status",
+        "startedAt",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "HookScope": {
+      "enum": [
+        "thread",
+        "turn"
+      ],
+      "type": "string"
+    },
+    "HookSource": {
+      "enum": [
+        "system",
+        "user",
+        "project",
+        "mdm",
+        "sessionFlags",
+        "plugin",
+        "cloudRequirements",
+        "cloudManagedConfig",
+        "legacyManagedConfigFile",
+        "legacyManagedConfigMdm",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/HookRunSummary"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "threadId",
+    "run"
+  ],
+  "title": "HookStartedNotification",
+  "type": "object"
+}

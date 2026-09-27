@@ -1,0 +1,27 @@
+[package]
+name = "codex-browser-computer-use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_browser_computer_use"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-app-server-protocol = { workspace = true }
+codex-protocol = { workspace = true }
+codex-tools = { workspace = true }
+codex-utils-home-dir = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+shlex = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process", "time"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

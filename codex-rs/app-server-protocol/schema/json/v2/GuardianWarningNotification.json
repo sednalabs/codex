@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "message": {
+      "description": "Concise guardian warning message for the user.",
+      "type": "string"
+    },
+    "threadId": {
+      "description": "Thread target for the guardian warning.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "message"
+  ],
+  "title": "GuardianWarningNotification",
+  "type": "object"
+}

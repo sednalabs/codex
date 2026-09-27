@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "JSONRPCError": {
+      "description": "A response to a request that indicates an error occurred.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JSONRPCErrorError"
+        },
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "error",
+        "id"
+      ],
+      "type": "object"
+    },
+    "JSONRPCErrorError": {
+      "properties": {
+        "code": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "JSONRPCNotification": {
+      "description": "A notification which does not expect a response.",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "required": [
+        "method"
+      ],
+      "type": "object"
+    },
+    "JSONRPCRequest": {
+      "description": "A request that expects a response.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true,
+        "trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/W3cTraceContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional W3C Trace Context for distributed tracing."
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "type": "object"
+    },
+    "JSONRPCResponse": {
+      "description": "A successful (non-error) response to a request.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "result": true
+      },
+      "required": [
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    },
+    "W3cTraceContext": {
+      "properties": {
+        "traceparent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tracestate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/JSONRPCRequest"
+    },
+    {
+      "$ref": "#/$defs/JSONRPCNotification"
+    },
+    {
+      "$ref": "#/$defs/JSONRPCResponse"
+    },
+    {
+      "$ref": "#/$defs/JSONRPCError"
+    }
+  ],
+  "description": "Refers to any valid JSON-RPC object that can be decoded off the wire, or encoded to be sent.",
+  "title": "JSONRPCMessage"
+}

@@ -1,0 +1,10 @@
+name: sednalabs/actions-workflow-security
+version: 0.0.0
+groups:
+  - actions
+  - queries
+extractor: actions
+dependencies:
+  codeql/actions-all: "*"
+defaultSuiteFile: suites/actions-workflow-security.qls
+warnOnImplicitThis: true

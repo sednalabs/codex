@@ -1,0 +1,601 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
+    "AdditionalFileSystemPermissions": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/FileSystemSandboxEntry"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "globScanMaxDepth": {
+          "format": "uint",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "read": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "write": {
+          "description": "This will be removed in favor of `entries`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalNetworkPermissions": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AdditionalPermissionProfile": {
+      "properties": {
+        "fileSystem": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdditionalNetworkPermissions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Partial overlay used for per-command permission requests."
+        }
+      },
+      "type": "object"
+    },
+    "CommandAction": {
+      "oneOf": [
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            "type": {
+              "const": "read",
+              "title": "ReadCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command",
+            "name",
+            "path"
+          ],
+          "title": "ReadCommandAction",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "listFiles",
+              "title": "ListFilesCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "title": "ListFilesCommandAction",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "search",
+              "title": "SearchCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "title": "SearchCommandAction",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "type": {
+              "const": "unknown",
+              "title": "UnknownCommandActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "title": "UnknownCommandAction",
+          "type": "object"
+        }
+      ]
+    },
+    "CommandExecutionApprovalDecision": {
+      "oneOf": [
+        {
+          "const": "accept",
+          "description": "User approved the command.",
+          "type": "string"
+        },
+        {
+          "const": "acceptForSession",
+          "description": "User approved the command and future prompts in the same session-scoped\napproval cache should run without prompting.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User approved the command, and wants to apply the proposed execpolicy amendment so future\nmatching commands can run without prompting.",
+          "properties": {
+            "acceptWithExecpolicyAmendment": {
+              "properties": {
+                "execpolicy_amendment": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "execpolicy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "acceptWithExecpolicyAmendment"
+          ],
+          "title": "AcceptWithExecpolicyAmendmentCommandExecutionApprovalDecision",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User chose a persistent network policy rule (allow/deny) for this host.",
+          "properties": {
+            "applyNetworkPolicyAmendment": {
+              "properties": {
+                "network_policy_amendment": {
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                }
+              },
+              "required": [
+                "network_policy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "applyNetworkPolicyAmendment"
+          ],
+          "title": "ApplyNetworkPolicyAmendmentCommandExecutionApprovalDecision",
+          "type": "object"
+        },
+        {
+          "const": "decline",
+          "description": "User denied the command. The agent will continue the turn.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "User denied the command. The turn will also be immediately interrupted.",
+          "type": "string"
+        }
+      ]
+    },
+    "FileSystemAccessMode": {
+      "enum": [
+        "read",
+        "write",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "FileSystemPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/LegacyAppPathString"
+            },
+            "type": {
+              "const": "path",
+              "title": "PathFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "PathFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "const": "glob_pattern",
+              "title": "GlobPatternFileSystemPathType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pattern"
+          ],
+          "title": "GlobPatternFileSystemPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "special",
+              "title": "SpecialFileSystemPathType",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/FileSystemSpecialPath"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "title": "SpecialFileSystemPath",
+          "type": "object"
+        }
+      ]
+    },
+    "FileSystemSandboxEntry": {
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/FileSystemAccessMode"
+        },
+        "path": {
+          "$ref": "#/$defs/FileSystemPath"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
+    "FileSystemSpecialPath": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "RootFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "minimal",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "MinimalFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_roots",
+              "type": "string"
+            },
+            "subpath": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tmpdir",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "TmpdirFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "slash_tmp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SlashTmpFileSystemSpecialPath",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unknown",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "subpath": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "NetworkApprovalContext": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/$defs/NetworkApprovalProtocol"
+        }
+      },
+      "required": [
+        "host",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "NetworkApprovalProtocol": {
+      "enum": [
+        "http",
+        "https",
+        "socks5Tcp",
+        "socks5Udp"
+      ],
+      "type": "string"
+    },
+    "NetworkPolicyAmendment": {
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
+        },
+        "host": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "action"
+      ],
+      "type": "object"
+    },
+    "NetworkPolicyRuleAction": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "approvalId": {
+      "description": "Unique identifier for this specific approval callback.\n\nFor regular shell/unified_exec approvals, this is null.\n\nFor zsh-exec-bridge subcommand approvals, multiple callbacks can belong to\none parent `itemId`, so `approvalId` is a distinct opaque callback id\n(a UUID) used to disambiguate routing.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "command": {
+      "description": "The command to be executed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commandActions": {
+      "description": "Best-effort parsed command actions for friendly display.",
+      "items": {
+        "$ref": "#/$defs/CommandAction"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LegacyAppPathString"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The command's working directory."
+    },
+    "environmentId": {
+      "default": null,
+      "description": "Environment in which the command will run.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "networkApprovalContext": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NetworkApprovalContext"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional context for a managed-network approval prompt."
+    },
+    "proposedExecpolicyAmendment": {
+      "description": "Optional proposed execpolicy amendment to allow similar commands without prompting.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "proposedNetworkPolicyAmendments": {
+      "description": "Optional proposed network policy amendments (allow/deny host) for future requests.",
+      "items": {
+        "$ref": "#/$defs/NetworkPolicyAmendment"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "reason": {
+      "description": "Optional explanatory reason (e.g. request for network access).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "startedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when this approval request started.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId",
+    "turnId",
+    "itemId",
+    "startedAtMs"
+  ],
+  "title": "CommandExecutionRequestApprovalParams",
+  "type": "object"
+}

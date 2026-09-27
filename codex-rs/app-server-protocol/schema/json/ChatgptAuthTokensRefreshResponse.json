@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "accessToken": {
+      "type": "string"
+    },
+    "chatgptAccountId": {
+      "type": "string"
+    },
+    "chatgptPlanType": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "accessToken",
+    "chatgptAccountId"
+  ],
+  "title": "ChatgptAuthTokensRefreshResponse",
+  "type": "object"
+}

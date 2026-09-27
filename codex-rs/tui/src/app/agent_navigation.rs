@@ -1,0 +1,1350 @@
+//! Multi-agent picker navigation and labeling state for the TUI app.
+//!
+//! This module exists to keep the pure parts of multi-agent navigation out of [`crate::app::App`].
+//! It owns the stable spawn-order cache used by the `/agent` picker, keyboard next/previous
+//! navigation, and the contextual footer label for the thread currently being watched.
+//!
+//! Responsibilities here are intentionally narrow:
+//! - remember picker entries and their first-seen order
+//! - remember which V2 child threads are owned by their parent agent
+//! - answer traversal questions like "what is the next thread?"
+//! - derive user-facing picker/footer text from cached thread metadata
+//!
+//! Responsibilities that stay in `App`:
+//! - discovering threads from the backend
+//! - deciding which thread is currently displayed
+//! - mutating UI state such as switching threads or updating the footer widget
+//!
+//! The key invariant is that traversal follows first-seen spawn order rather than thread-id sort
+//! order. Once a thread id is observed it keeps its place in the cycle even if the entry is later
+//! updated or marked closed.
+
+use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::SubAgentActivityDisplay;
+use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::next_agent_shortcut;
+use crate::multi_agents::previous_agent_shortcut;
+use codex_protocol::ThreadId;
+use codex_state::MAX_THREAD_RELATION_DESCENDANTS;
+use ratatui::text::Span;
+use std::collections::HashMap;
+use std::collections::HashSet;
+
+/// Small state container for multi-agent picker ordering and labeling.
+///
+/// `App` owns thread lifecycle and UI side effects. This type keeps the pure rules for stable
+/// spawn-order traversal, picker copy, and active-agent labels together and separately testable.
+///
+/// The core invariant is that `order` records first-seen thread ids exactly once, while `threads`
+/// stores the latest metadata for those ids. Mutation is intentionally funneled through `upsert`,
+/// `mark_closed`, and `clear` so those two collections do not drift semantically even if they are
+/// temporarily out of sync during teardown races.
+#[derive(Debug, Default)]
+pub(crate) struct AgentNavigationState {
+    /// Latest picker metadata for each tracked thread id.
+    threads: HashMap<ThreadId, AgentPickerThreadEntry>,
+    /// Stable first-seen traversal order for picker rows and keyboard cycling.
+    order: Vec<ThreadId>,
+    /// Threads with observed terminal liveness that must not be revived by delayed activity.
+    stopped_threads: HashSet<ThreadId>,
+    /// Spawned child threads whose instructions are owned by their parent agent.
+    parent_owned_threads: HashSet<ThreadId>,
+    /// Start offset for the next bounded picker slice.
+    picker_window_start: usize,
+}
+
+/// Direction of keyboard traversal through the stable picker order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentNavigationDirection {
+    /// Move toward the entry that was seen earlier in spawn order, wrapping at the front.
+    Previous,
+    /// Move toward the entry that was seen later in spawn order, wrapping at the end.
+    Next,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentNavigationUpdate {
+    Accepted { evicted: Option<ThreadId> },
+    Rejected,
+}
+
+/// Metadata received together when retaining a picker thread across a lifecycle refresh.
+#[derive(Debug, Default)]
+pub(crate) struct AgentPickerThreadRetention {
+    pub(crate) agent_nickname: Option<String>,
+    pub(crate) agent_role: Option<String>,
+    pub(crate) is_closed: bool,
+    pub(crate) created_at: Option<i64>,
+    pub(crate) updated_at: Option<i64>,
+}
+
+impl AgentNavigationUpdate {
+    pub(crate) fn accepted(self) -> bool {
+        matches!(self, Self::Accepted { .. })
+    }
+
+    pub(crate) fn evicted(self) -> Option<ThreadId> {
+        match self {
+            Self::Accepted { evicted } => evicted,
+            Self::Rejected => None,
+        }
+    }
+}
+
+impl AgentNavigationState {
+    /// Returns the cached picker entry for a specific thread id.
+    ///
+    /// Callers use this when they already know which thread they care about and need the last
+    /// metadata captured for picker or footer rendering. If a caller assumes every tracked thread
+    /// must be present here, shutdown races can turn that assumption into a panic elsewhere, so
+    /// this stays optional.
+    pub(crate) fn get(&self, thread_id: &ThreadId) -> Option<&AgentPickerThreadEntry> {
+        self.threads.get(thread_id)
+    }
+
+    pub(crate) fn is_parent_owned(&self, thread_id: ThreadId) -> bool {
+        self.parent_owned_threads.contains(&thread_id)
+    }
+
+    /// Marks a spawned child thread as view-only for direct user instructions.
+    pub(crate) fn mark_parent_owned(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id) {
+            self.parent_owned_threads.insert(thread_id);
+        }
+    }
+
+    /// Returns whether the picker cache currently knows about any threads.
+    ///
+    /// This is the cheapest way for `App` to decide whether opening the picker should show "No
+    /// agents available yet." rather than constructing picker rows from an empty state.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.threads.is_empty()
+    }
+
+    /// Inserts or updates a picker entry while preserving first-seen traversal order.
+    ///
+    /// The key invariant of this module is enforced here: a thread id is appended to `order` only
+    /// the first time it is seen. Later updates may change nickname, role, or closed state, but
+    /// they must not move the thread in the cycle or keyboard navigation would feel unstable.
+    /// Returns `false` only when a new unique id would exceed the shared retained-lineage cap;
+    /// existing entries always remain updateable.
+    pub(crate) fn upsert(
+        &mut self,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        is_closed: bool,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
+    ) -> bool {
+        let previous_is_running = self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running);
+        self.upsert_with_path(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname,
+                agent_role,
+                agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
+                is_running: previous_is_running && !is_closed,
+                is_closed,
+                created_at,
+                updated_at,
+            },
+        )
+    }
+
+    pub(crate) fn upsert_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        entry: AgentPickerThreadEntry,
+    ) -> bool {
+        if !self.threads.contains_key(&thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            return false;
+        }
+        let existing = self.threads.get(&thread_id).cloned();
+        if !self.threads.contains_key(&thread_id) {
+            self.order.push(thread_id);
+        }
+        self.threads.insert(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_path: entry
+                    .agent_path
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.agent_path.clone())),
+                model: entry
+                    .model
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.model.clone())),
+                reasoning_effort: entry.reasoning_effort.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.reasoning_effort.clone())
+                }),
+                model_provider: entry.model_provider.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.model_provider.clone())
+                }),
+                task_name: entry
+                    .task_name
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.task_name.clone())),
+                created_at: entry
+                    .created_at
+                    .or(existing.as_ref().and_then(|entry| entry.created_at)),
+                updated_at: entry
+                    .updated_at
+                    .or(existing.as_ref().and_then(|entry| entry.updated_at)),
+                ..entry
+            },
+        );
+        true
+    }
+
+    pub(crate) fn upsert_retaining(
+        &mut self,
+        thread_id: ThreadId,
+        retention: AgentPickerThreadRetention,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let previous_is_running = self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running);
+        self.upsert_retaining_with_path(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: retention.agent_nickname,
+                agent_role: retention.agent_role,
+                agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
+                is_running: previous_is_running && !retention.is_closed,
+                is_closed: retention.is_closed,
+                created_at: retention.created_at,
+                updated_at: retention.updated_at,
+            },
+            protected_thread_ids,
+        )
+    }
+
+    pub(crate) fn upsert_retaining_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        entry: AgentPickerThreadEntry,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let evicted = if !self.threads.contains_key(&thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            let Some(evicted) = self.order.iter().copied().find(|candidate| {
+                *candidate != thread_id
+                    && !protected_thread_ids.contains(candidate)
+                    && !self.parent_owned_threads.contains(candidate)
+                    && self
+                        .threads
+                        .get(candidate)
+                        .is_some_and(|entry| !entry.is_running)
+            }) else {
+                return AgentNavigationUpdate::Rejected;
+            };
+            self.remove(evicted);
+            Some(evicted)
+        } else {
+            None
+        };
+        debug_assert!(self.upsert_with_path(thread_id, entry));
+        AgentNavigationUpdate::Accepted { evicted }
+    }
+
+    pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) -> bool {
+        if !self.threads.contains_key(&activity.thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            return false;
+        }
+        if !self.threads.contains_key(&activity.thread_id) {
+            self.order.push(activity.thread_id);
+        }
+        let entry =
+            self.threads
+                .entry(activity.thread_id)
+                .or_insert_with(|| AgentPickerThreadEntry {
+                    agent_nickname: None,
+                    agent_role: None,
+                    agent_path: None,
+                    model: None,
+                    reasoning_effort: None,
+                    model_provider: None,
+                    task_name: None,
+                    is_running: false,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                });
+        entry.agent_path = Some(activity.agent_path);
+        if activity.model.is_some() {
+            entry.model = activity.model;
+        }
+        if activity.reasoning_effort.is_some() {
+            entry.reasoning_effort = activity.reasoning_effort;
+        }
+        if activity.is_running_hint
+            && !entry.is_closed
+            && !self.stopped_threads.contains(&activity.thread_id)
+        {
+            entry.is_running = true;
+        } else {
+            entry.is_running = false;
+            self.stopped_threads.insert(activity.thread_id);
+        }
+        true
+    }
+
+    pub(crate) fn record_sub_agent_activity_retaining(
+        &mut self,
+        activity: SubAgentActivityDisplay,
+        protected_thread_ids: &[ThreadId],
+    ) -> AgentNavigationUpdate {
+        let evicted = if !self.threads.contains_key(&activity.thread_id)
+            && self.threads.len() >= MAX_THREAD_RELATION_DESCENDANTS
+        {
+            let Some(evicted) = self.order.iter().copied().find(|candidate| {
+                *candidate != activity.thread_id
+                    && !protected_thread_ids.contains(candidate)
+                    && !self.parent_owned_threads.contains(candidate)
+                    && self
+                        .threads
+                        .get(candidate)
+                        .is_some_and(|entry| !entry.is_running)
+            }) else {
+                return AgentNavigationUpdate::Rejected;
+            };
+            self.remove(evicted);
+            Some(evicted)
+        } else {
+            None
+        };
+        debug_assert!(self.record_sub_agent_activity(activity));
+        AgentNavigationUpdate::Accepted { evicted }
+    }
+
+    pub(crate) fn update_identity(
+        &mut self,
+        thread_id: ThreadId,
+        model: Option<String>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+        model_provider: Option<String>,
+        task_name: Option<String>,
+    ) {
+        let Some(entry) = self.threads.get_mut(&thread_id) else {
+            return;
+        };
+        if model.is_some() {
+            entry.model = model;
+        }
+        if reasoning_effort.is_some() {
+            entry.reasoning_effort = reasoning_effort;
+        }
+        if model_provider.is_some() {
+            entry.model_provider = model_provider;
+        }
+        if task_name.is_some() {
+            entry.task_name = task_name;
+        }
+    }
+
+    pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
+        // A terminal lifecycle observation wins over delayed activity or refresh responses.
+        // Thread ids are immutable, so a later running hint cannot represent a new incarnation.
+        if self.stopped_threads.contains(&thread_id) {
+            return;
+        }
+        if self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+        {
+            return;
+        }
+        self.set_running(thread_id, /*is_running*/ true);
+    }
+
+    /// Records an explicit start of a new turn for a retained thread.
+    ///
+    /// A turn completion suppresses delayed activity until the next lifecycle start is observed.
+    /// Unlike a generic running hint, a `TurnStarted` notification is authoritative evidence of
+    /// that next turn and therefore clears the prior turn's tombstone.
+    pub(crate) fn mark_turn_started(&mut self, thread_id: ThreadId) {
+        self.stopped_threads.remove(&thread_id);
+        self.mark_running(thread_id);
+    }
+
+    pub(crate) fn mark_stopped(&mut self, thread_id: ThreadId) {
+        if !self.threads.contains_key(&thread_id) {
+            return;
+        }
+        self.stopped_threads.insert(thread_id);
+        self.set_running(thread_id, /*is_running*/ false);
+    }
+
+    pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.is_running = is_running;
+        }
+    }
+
+    pub(crate) fn set_agent_path(&mut self, thread_id: ThreadId, agent_path: Option<String>) {
+        if let Some(agent_path) = agent_path
+            && let Some(entry) = self.threads.get_mut(&thread_id)
+        {
+            entry.agent_path = Some(agent_path);
+        }
+    }
+
+    pub(crate) fn set_timestamps(
+        &mut self,
+        thread_id: ThreadId,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.created_at = created_at.or(entry.created_at);
+            entry.updated_at = updated_at.or(entry.updated_at);
+        }
+    }
+
+    /// Marks a thread as closed without removing it from the traversal cache.
+    ///
+    /// Closed threads stay in the picker and in spawn order so users can still review them and so
+    /// next/previous navigation does not reshuffle around disappearing entries. If a caller "cleans
+    /// this up" by deleting the entry instead, wraparound navigation will silently change shape
+    /// mid-session.
+    pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.is_closed = true;
+            entry.is_running = false;
+        } else {
+            self.upsert(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ true, /*created_at*/ None, /*updated_at*/ None,
+            );
+        }
+    }
+
+    /// Drops all cached picker state.
+    ///
+    /// This is used when `App` tears down thread event state and needs the picker cache to return
+    /// to a pristine single-session state.
+    pub(crate) fn clear(&mut self) {
+        self.threads.clear();
+        self.order.clear();
+        self.stopped_threads.clear();
+        self.parent_owned_threads.clear();
+        self.picker_window_start = 0;
+    }
+
+    /// Removes a tracked thread entirely from picker metadata and traversal order.
+    ///
+    /// This is reserved for entries that were only discovered opportunistically and never became
+    /// replayable local threads. Keeping those around after the backend confirms they are gone
+    /// would leave ghost rows in `/agent`.
+    pub(crate) fn remove(&mut self, thread_id: ThreadId) {
+        self.threads.remove(&thread_id);
+        self.order.retain(|candidate| *candidate != thread_id);
+        self.stopped_threads.remove(&thread_id);
+        self.parent_owned_threads.remove(&thread_id);
+    }
+
+    /// Returns whether there is at least one tracked thread other than the primary one.
+    ///
+    /// `App` uses this to decide whether the picker should be available even when the collaboration
+    /// feature flag is currently disabled, because already-existing sub-agent threads should remain
+    /// inspectable.
+    pub(crate) fn has_non_primary_thread(&self, primary_thread_id: Option<ThreadId>) -> bool {
+        match primary_thread_id {
+            Some(primary_thread_id) => {
+                self.threads.len() > usize::from(self.threads.contains_key(&primary_thread_id))
+            }
+            None => !self.threads.is_empty(),
+        }
+    }
+
+    /// Returns live picker rows in the same order users cycle through them.
+    ///
+    /// The `order` vector is intentionally historical and may briefly contain thread ids that no
+    /// longer have cached metadata, so this filters through the map instead of assuming both
+    /// collections are perfectly synchronized.
+    pub(crate) fn ordered_threads(&self) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
+        self.order
+            .iter()
+            .filter_map(|thread_id| self.threads.get(thread_id).map(|entry| (*thread_id, entry)))
+            .collect()
+    }
+
+    /// Returns tracked thread ids in the same stable order used by the picker.
+    pub(crate) fn tracked_thread_ids(&self) -> Vec<ThreadId> {
+        self.ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect()
+    }
+
+    pub(crate) fn tracked_thread_ids_bounded(&self, limit: usize) -> Vec<ThreadId> {
+        self.order
+            .iter()
+            .filter(|thread_id| self.threads.contains_key(thread_id))
+            .take(limit)
+            .copied()
+            .collect()
+    }
+
+    /// Returns a bounded rotating slice for one picker open.
+    ///
+    /// The primary and currently displayed threads are kept visible when present. Remaining slots
+    /// rotate through spawn order, so synchronous row construction is bounded while repeated opens
+    /// eventually expose every retained descendant.
+    pub(crate) fn next_picker_thread_ids(
+        &mut self,
+        primary_thread_id: Option<ThreadId>,
+        active_thread_id: Option<ThreadId>,
+        limit: usize,
+    ) -> (Vec<ThreadId>, bool) {
+        if limit == 0 {
+            return (Vec::new(), !self.threads.is_empty());
+        }
+        if self.threads.len() <= limit {
+            self.picker_window_start = 0;
+            return (self.tracked_thread_ids(), false);
+        }
+
+        let mut visible = Vec::with_capacity(limit);
+        for thread_id in [primary_thread_id, active_thread_id].into_iter().flatten() {
+            if self.threads.contains_key(&thread_id) && !visible.contains(&thread_id) {
+                visible.push(thread_id);
+            }
+        }
+        visible.truncate(limit);
+
+        if self.order.is_empty() || visible.len() == limit {
+            return (visible, true);
+        }
+        let mut index = self.picker_window_start % self.order.len();
+        let mut inspected = 0;
+        while visible.len() < limit && inspected < self.order.len() {
+            let thread_id = self.order[index];
+            index = (index + 1) % self.order.len();
+            inspected += 1;
+            if self.threads.contains_key(&thread_id) && !visible.contains(&thread_id) {
+                visible.push(thread_id);
+            }
+        }
+        self.picker_window_start = index;
+        (visible, true)
+    }
+
+    /// Returns the adjacent thread id for keyboard navigation in stable spawn order.
+    ///
+    /// The caller must pass the thread whose transcript is actually being shown to the user, not
+    /// just whichever thread bookkeeping most recently marked active. If the wrong current thread
+    /// is supplied, next/previous navigation will jump in a way that feels nondeterministic even
+    /// though the cache itself is correct.
+    pub(crate) fn adjacent_thread_id(
+        &self,
+        current_displayed_thread_id: Option<ThreadId>,
+        direction: AgentNavigationDirection,
+    ) -> Option<ThreadId> {
+        let ordered_threads = self.ordered_threads();
+        if ordered_threads.len() < 2 {
+            return None;
+        }
+
+        let current_thread_id = current_displayed_thread_id?;
+        let current_idx = ordered_threads
+            .iter()
+            .position(|(thread_id, _)| *thread_id == current_thread_id)?;
+        let next_idx = match direction {
+            AgentNavigationDirection::Next => (current_idx + 1) % ordered_threads.len(),
+            AgentNavigationDirection::Previous => {
+                if current_idx == 0 {
+                    ordered_threads.len() - 1
+                } else {
+                    current_idx - 1
+                }
+            }
+        };
+        Some(ordered_threads[next_idx].0)
+    }
+
+    /// Derives the contextual footer label for the currently displayed thread.
+    ///
+    /// This intentionally returns `None` until there is more than one tracked thread so
+    /// single-thread sessions do not waste footer space restating the obvious. When metadata for
+    /// the displayed thread is missing, the label falls back to the same generic naming rules used
+    /// by the picker.
+    pub(crate) fn active_agent_label(
+        &self,
+        current_displayed_thread_id: Option<ThreadId>,
+        primary_thread_id: Option<ThreadId>,
+    ) -> Option<String> {
+        if self.threads.len() <= 1 {
+            return None;
+        }
+
+        let thread_id = current_displayed_thread_id?;
+        let is_primary = primary_thread_id == Some(thread_id);
+        Some(
+            self.threads
+                .get(&thread_id)
+                .map(|entry| {
+                    if !is_primary
+                        && let Some(agent_path) = entry
+                            .agent_path
+                            .as_deref()
+                            .filter(|agent_path| !agent_path.trim().is_empty())
+                    {
+                        return format!("`{agent_path}`");
+                    }
+                    format_agent_picker_item_name(
+                        entry.agent_nickname.as_deref(),
+                        entry.agent_role.as_deref(),
+                        is_primary,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format_agent_picker_item_name(
+                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
+                    )
+                }),
+        )
+    }
+
+    #[cfg(test)]
+    /// Returns visible picker prefixes for nested agent paths.
+    fn picker_tree_prefixes(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+    ) -> HashMap<ThreadId, String> {
+        self.picker_tree_layout(primary_thread_id).0
+    }
+
+    #[cfg(test)]
+    /// Returns visible picker thread ids in parent-first tree order, preserving existing spawn-order
+    /// within sibling sets.
+    fn picker_tree_thread_ids(&self, primary_thread_id: Option<ThreadId>) -> Vec<ThreadId> {
+        self.picker_tree_layout(primary_thread_id).1
+    }
+
+    #[cfg(test)]
+    fn picker_tree_layout(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+    ) -> (HashMap<ThreadId, String>, Vec<ThreadId>) {
+        let ordered_threads = self.ordered_threads();
+        if ordered_threads.is_empty() {
+            return (HashMap::new(), Vec::new());
+        }
+
+        let ordered_ids = ordered_threads
+            .iter()
+            .map(|(thread_id, _)| *thread_id)
+            .collect::<Vec<_>>();
+        let path_by_thread_id = ordered_threads
+            .into_iter()
+            .map(|(thread_id, entry)| {
+                let path = entry.agent_path.clone().or_else(|| {
+                    (Some(thread_id) == primary_thread_id).then_some("/root".to_string())
+                });
+                (thread_id, path)
+            })
+            .collect::<HashMap<_, _>>();
+
+        let path_owner = ordered_ids
+            .iter()
+            .filter_map(|thread_id| {
+                path_by_thread_id
+                    .get(thread_id)
+                    .and_then(|path| path.as_ref().map(|path| (path.clone(), *thread_id)))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        let mut roots = Vec::<ThreadId>::new();
+        for thread_id in ordered_ids {
+            let Some(path) = path_by_thread_id.get(&thread_id).and_then(Option::as_deref) else {
+                roots.push(thread_id);
+                continue;
+            };
+            let Some(parent_path) = parent_agent_path(path) else {
+                roots.push(thread_id);
+                continue;
+            };
+            if let Some(parent_thread_id) = path_owner.get(parent_path).copied() {
+                children_by_parent
+                    .entry(parent_thread_id)
+                    .or_default()
+                    .push(thread_id);
+            } else {
+                roots.push(thread_id);
+            }
+        }
+
+        fn visit(
+            thread_id: ThreadId,
+            continuation_columns: &[bool],
+            children_by_parent: &HashMap<ThreadId, Vec<ThreadId>>,
+            prefixes: &mut HashMap<ThreadId, String>,
+            ordered_thread_ids: &mut Vec<ThreadId>,
+        ) {
+            prefixes.insert(thread_id, format_tree_prefix(continuation_columns));
+            ordered_thread_ids.push(thread_id);
+            let Some(children) = children_by_parent.get(&thread_id) else {
+                return;
+            };
+            for (index, child_thread_id) in children.iter().enumerate() {
+                let mut child_columns = continuation_columns.to_vec();
+                child_columns.push(index + 1 < children.len());
+                visit(
+                    *child_thread_id,
+                    child_columns.as_slice(),
+                    children_by_parent,
+                    prefixes,
+                    ordered_thread_ids,
+                );
+            }
+        }
+
+        let mut prefixes = HashMap::new();
+        let mut ordered_thread_ids = Vec::new();
+        for root_thread_id in roots {
+            visit(
+                root_thread_id,
+                &[],
+                &children_by_parent,
+                &mut prefixes,
+                &mut ordered_thread_ids,
+            );
+        }
+        (prefixes, ordered_thread_ids)
+    }
+
+    /// Builds the `/agent` picker subtitle from the same canonical bindings used by key handling.
+    ///
+    /// Keeping this text derived from the actual shortcut helpers prevents the picker copy from
+    /// drifting if the bindings ever change on one platform.
+    pub(crate) fn picker_subtitle() -> String {
+        let previous: Span<'static> = previous_agent_shortcut().into();
+        let next: Span<'static> = next_agent_shortcut().into();
+        format!(
+            "Select an agent to watch. Type to filter; search 'closed' for stale sessions. {} previous, {} next.",
+            previous.content, next.content
+        )
+    }
+
+    #[cfg(test)]
+    /// Returns only the ordered thread ids for focused tests of traversal invariants.
+    ///
+    /// This helper exists so tests can assert on ordering without embedding the full picker entry
+    /// payload in every expectation.
+    pub(crate) fn ordered_thread_ids(&self) -> Vec<ThreadId> {
+        self.ordered_threads()
+            .into_iter()
+            .map(|(thread_id, _)| thread_id)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+fn parent_agent_path(path: &str) -> Option<&str> {
+    if path.is_empty() || !path.starts_with('/') {
+        return None;
+    }
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    let slash_index = path.rfind('/')?;
+    if slash_index == 0 {
+        return Some("/");
+    }
+    Some(&path[..slash_index])
+}
+
+#[cfg(test)]
+fn format_tree_prefix(continuation_columns: &[bool]) -> String {
+    if continuation_columns.is_empty() {
+        return String::new();
+    }
+    let mut prefix = String::new();
+    for has_more_siblings in &continuation_columns[..continuation_columns.len().saturating_sub(1)] {
+        if *has_more_siblings {
+            prefix.push_str("│  ");
+        } else {
+            prefix.push_str("   ");
+        }
+    }
+    if continuation_columns.last().copied().unwrap_or(false) {
+        prefix.push_str("├─ ");
+    } else {
+        prefix.push_str("└─ ");
+    }
+    prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    fn populated_state() -> (AgentNavigationState, ThreadId, ThreadId, ThreadId) {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+        let first_agent_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
+        let second_agent_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread");
+
+        state.upsert(
+            main_thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.upsert(
+            first_agent_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.upsert(
+            second_agent_id,
+            Some("Bob".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        (state, main_thread_id, first_agent_id, second_agent_id)
+    }
+
+    #[test]
+    fn upsert_preserves_first_seen_order() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+
+        state.upsert(
+            first_agent_id,
+            Some("Robie".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        assert_eq!(
+            state.ordered_thread_ids(),
+            vec![main_thread_id, first_agent_id, second_agent_id]
+        );
+    }
+
+    #[test]
+    fn upsert_preserves_running_state_until_closed() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Scout".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        state.mark_running(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Scout renamed".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(3),
+        );
+        assert_eq!(
+            state.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Scout renamed".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
+                is_running: true,
+                is_closed: false,
+                created_at: Some(1),
+                updated_at: Some(3),
+            })
+        );
+
+        state.upsert(
+            thread_id,
+            Some("Scout renamed".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(4),
+        );
+        assert_eq!(
+            state.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Scout renamed".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
+                is_running: false,
+                is_closed: true,
+                created_at: Some(1),
+                updated_at: Some(4),
+            })
+        );
+    }
+
+    #[test]
+    fn delayed_running_hint_cannot_revive_stopped_thread() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
+        assert!(state.upsert(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+        ));
+
+        state.mark_running(thread_id);
+        state.mark_stopped(thread_id);
+        state.mark_running(thread_id);
+
+        let entry = state.get(&thread_id).expect("thread remains retained");
+        assert!(
+            !entry.is_running,
+            "delayed activity must not revive a stopped row"
+        );
+    }
+
+    #[test]
+    fn explicit_turn_start_reopens_completed_thread() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+        assert!(state.upsert(
+            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+            /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+        ));
+
+        state.mark_stopped(thread_id);
+        state.mark_turn_started(thread_id);
+
+        let entry = state.get(&thread_id).expect("thread remains retained");
+        assert!(entry.is_running, "an explicit new turn must reopen the row");
+    }
+
+    #[test]
+    fn retaining_upsert_never_evicts_running_or_parent_owned_threads() {
+        let mut state = AgentNavigationState::default();
+        let thread_ids = (0..MAX_THREAD_RELATION_DESCENDANTS)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        for thread_id in &thread_ids {
+            assert!(state.upsert(
+                *thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            ));
+            state.mark_running(*thread_id);
+        }
+        let parent_owned_thread_id = thread_ids[0];
+        state.mark_parent_owned(parent_owned_thread_id);
+        state.set_running(parent_owned_thread_id, /*is_running*/ false);
+
+        let rejected_thread_id = ThreadId::new();
+        assert_eq!(
+            state.upsert_retaining(
+                rejected_thread_id,
+                AgentPickerThreadRetention {
+                    agent_nickname: None,
+                    agent_role: None,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                },
+                &[],
+            ),
+            AgentNavigationUpdate::Rejected
+        );
+        assert!(state.get(&rejected_thread_id).is_none());
+        assert!(state.get(&parent_owned_thread_id).is_some());
+        assert!(state.is_parent_owned(parent_owned_thread_id));
+
+        let closed_candidate = thread_ids[1];
+        state.mark_closed(closed_candidate);
+        let admitted_thread_id = ThreadId::new();
+        assert_eq!(
+            state.upsert_retaining(
+                admitted_thread_id,
+                AgentPickerThreadRetention {
+                    agent_nickname: None,
+                    agent_role: None,
+                    is_closed: false,
+                    created_at: None,
+                    updated_at: None,
+                },
+                &[],
+            ),
+            AgentNavigationUpdate::Accepted {
+                evicted: Some(closed_candidate),
+            }
+        );
+        assert!(state.get(&closed_candidate).is_none());
+        assert!(state.get(&admitted_thread_id).is_some());
+        assert!(state.get(&parent_owned_thread_id).is_some());
+        assert!(state.is_parent_owned(parent_owned_thread_id));
+        assert_eq!(
+            state.tracked_thread_ids().len(),
+            MAX_THREAD_RELATION_DESCENDANTS
+        );
+    }
+
+    #[test]
+    fn navigation_cap_rejects_new_ids_but_allows_existing_activity_updates() {
+        let mut state = AgentNavigationState::default();
+        let retained_ids = (0..MAX_THREAD_RELATION_DESCENDANTS)
+            .map(|_| ThreadId::new())
+            .collect::<Vec<_>>();
+        for thread_id in retained_ids.iter().copied() {
+            assert!(state.upsert(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            ));
+        }
+        let rejected_thread_id = ThreadId::new();
+
+        assert!(!state.upsert(
+            rejected_thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        ));
+        assert!(!state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: rejected_thread_id,
+            agent_path: "/root/rejected".to_string(),
+            model: None,
+            reasoning_effort: None,
+            is_running_hint: true,
+        }));
+        assert!(state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: retained_ids[0],
+            agent_path: "/root/updated".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+            is_running_hint: true,
+        }));
+
+        assert_eq!(
+            state.tracked_thread_ids().len(),
+            MAX_THREAD_RELATION_DESCENDANTS
+        );
+        assert_eq!(state.get(&rejected_thread_id), None);
+        assert_eq!(
+            state
+                .get(&retained_ids[0])
+                .and_then(|entry| entry.agent_path.as_deref()),
+            Some("/root/updated")
+        );
+        assert!(
+            state
+                .get(&retained_ids[0])
+                .is_some_and(|entry| entry.is_running)
+        );
+    }
+
+    #[test]
+    fn parent_owned_state_is_removed_with_thread_metadata() {
+        let (mut state, _main_thread_id, first_agent_id, second_agent_id) = populated_state();
+
+        state.mark_parent_owned(first_agent_id);
+        assert!(state.is_parent_owned(first_agent_id));
+        state.remove(first_agent_id);
+        assert!(!state.is_parent_owned(first_agent_id));
+
+        state.mark_parent_owned(second_agent_id);
+        state.clear();
+        assert!(!state.is_parent_owned(second_agent_id));
+    }
+
+    #[test]
+    fn adjacent_thread_id_wraps_in_spawn_order() {
+        let (state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+
+        assert_eq!(
+            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Next),
+            Some(main_thread_id)
+        );
+        assert_eq!(
+            state.adjacent_thread_id(Some(second_agent_id), AgentNavigationDirection::Previous),
+            Some(first_agent_id)
+        );
+        assert_eq!(
+            state.adjacent_thread_id(Some(main_thread_id), AgentNavigationDirection::Previous),
+            Some(second_agent_id)
+        );
+    }
+
+    #[test]
+    fn picker_subtitle_mentions_shortcuts() {
+        let previous: Span<'static> = previous_agent_shortcut().into();
+        let next: Span<'static> = next_agent_shortcut().into();
+        let subtitle = AgentNavigationState::picker_subtitle();
+
+        assert!(subtitle.contains(previous.content.as_ref()));
+        assert!(subtitle.contains(next.content.as_ref()));
+        assert!(subtitle.contains("closed"));
+    }
+
+    #[test]
+    fn active_agent_label_tracks_current_thread() {
+        let (state, main_thread_id, first_agent_id, _) = populated_state();
+
+        assert_eq!(
+            state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
+            Some("Subagent: Robie [explorer]".to_string())
+        );
+        assert_eq!(
+            state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
+            Some("Main [default]".to_string())
+        );
+    }
+
+    #[test]
+    fn picker_tree_prefixes_reflect_nested_agent_paths() {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000201").expect("valid thread");
+        let researcher_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+        let worker_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000203").expect("valid thread");
+        let reviewer_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000204").expect("valid thread");
+
+        state.upsert_with_path(
+            main_thread_id,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            researcher_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Scout".to_string()),
+                agent_role: Some("researcher".to_string()),
+                agent_path: Some("/root/researcher".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            worker_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Builder".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/researcher/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            reviewer_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+
+        let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
+        assert_eq!(prefixes.get(&main_thread_id), Some(&String::new()));
+        assert_eq!(
+            prefixes.get(&researcher_thread_id),
+            Some(&"├─ ".to_string())
+        );
+        assert_eq!(prefixes.get(&worker_thread_id), Some(&"│  └─ ".to_string()));
+        assert_eq!(prefixes.get(&reviewer_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn picker_tree_respects_parent_first_for_hierarchy_rows() {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
+        let worker_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
+        let critic_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000303").expect("valid thread");
+
+        state.upsert_with_path(
+            worker_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Worker".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: Some("/root/primary/worker".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            main_thread_id,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/primary".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            critic_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Critic".to_string()),
+                agent_role: Some("reviewer".to_string()),
+                agent_path: Some("/root/primary/reviewer".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+
+        let tree_order = state.picker_tree_thread_ids(Some(main_thread_id));
+        assert_eq!(
+            tree_order,
+            vec![main_thread_id, worker_thread_id, critic_thread_id]
+        );
+
+        let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
+        assert_eq!(prefixes.get(&main_thread_id), Some(&String::new()));
+        assert_eq!(prefixes.get(&worker_thread_id), Some(&"├─ ".to_string()));
+        assert_eq!(prefixes.get(&critic_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn picker_tree_preserves_primary_path_when_available() {
+        let mut state = AgentNavigationState::default();
+        let main_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000401").expect("valid thread");
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
+
+        state.upsert_with_path(
+            main_thread_id,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/main".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        state.upsert_with_path(
+            child_thread_id,
+            AgentPickerThreadEntry {
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("child".to_string()),
+                agent_path: Some("/root/main/child".to_string()),
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+
+        let prefixes = state.picker_tree_prefixes(Some(main_thread_id));
+        assert_eq!(prefixes.get(&main_thread_id), Some(&String::new()));
+        assert_eq!(prefixes.get(&child_thread_id), Some(&"└─ ".to_string()));
+    }
+
+    #[test]
+    fn parent_agent_path_honors_root_and_invalid_inputs() {
+        assert_eq!(parent_agent_path("/"), None);
+        assert_eq!(parent_agent_path("/root"), Some("/"));
+        assert_eq!(parent_agent_path("/root/"), Some("/"));
+        assert_eq!(parent_agent_path("/root/researcher/"), Some("/root"));
+        assert_eq!(parent_agent_path("root/child"), None);
+        assert_eq!(parent_agent_path(""), None);
+    }
+
+    #[test]
+    fn bounded_picker_windows_rotate_and_reset() {
+        let mut state = AgentNavigationState::default();
+        let primary_thread_id = ThreadId::new();
+        let descendant_thread_ids = (0..6).map(|_| ThreadId::new()).collect::<Vec<_>>();
+        for thread_id in
+            std::iter::once(primary_thread_id).chain(descendant_thread_ids.iter().copied())
+        {
+            state.upsert(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false, /*created_at*/ None, /*updated_at*/ None,
+            );
+        }
+
+        let (first, first_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
+        let (second, second_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
+        let (third, third_has_more) = state.next_picker_thread_ids(
+            Some(primary_thread_id),
+            /*active_thread_id*/ None,
+            /*limit*/ 3,
+        );
+        let visible_descendants = first
+            .iter()
+            .chain(&second)
+            .chain(&third)
+            .copied()
+            .filter(|thread_id| *thread_id != primary_thread_id)
+            .collect::<HashSet<_>>();
+        assert!(first_has_more);
+        assert!(second_has_more);
+        assert!(third_has_more);
+        assert_eq!(first.len(), 3);
+        assert_eq!(second.len(), 3);
+        assert_eq!(third.len(), 3);
+        assert_eq!(visible_descendants.len(), descendant_thread_ids.len());
+
+        state.clear();
+        state.upsert(
+            primary_thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert_eq!(
+            state.next_picker_thread_ids(
+                Some(primary_thread_id),
+                /*active_thread_id*/ None,
+                /*limit*/ 3,
+            ),
+            (vec![primary_thread_id], false)
+        );
+    }
+}

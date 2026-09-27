@@ -1,0 +1,17 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Verbose and debug modes can include command arguments, headers, paths, or
+      tool-specific credential diagnostics in GitHub Actions logs.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Disable verbose output while credentials are in scope, or register an
+      exact mask before enabling the tool's debug mode. Prefer summaries that
+      record status, hashes, or file names instead of credential-bearing
+      command output.
+    </p>
+  </recommendation>
+</qhelp>

@@ -1,0 +1,34 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "codexHome": {
+      "$ref": "#/$defs/AbsolutePathBuf",
+      "description": "Absolute path to the server's $CODEX_HOME directory."
+    },
+    "platformFamily": {
+      "description": "Platform family for the running app-server target, for example\n`\"unix\"` or `\"windows\"`.",
+      "type": "string"
+    },
+    "platformOs": {
+      "description": "Operating system for the running app-server target, for example\n`\"macos\"`, `\"linux\"`, or `\"windows\"`.",
+      "type": "string"
+    },
+    "userAgent": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "userAgent",
+    "codexHome",
+    "platformFamily",
+    "platformOs"
+  ],
+  "title": "InitializeResponse",
+  "type": "object"
+}

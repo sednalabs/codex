@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "ExecPolicyAmendment": {
+      "description": "Proposed execpolicy change to allow commands starting with this prefix.\n\nThe `command` tokens form the prefix that would be added as an execpolicy\n`prefix_rule(..., decision=\"allow\")`, letting the agent bypass approval for\ncommands that start with this token sequence.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "NetworkPolicyAmendment": {
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/NetworkPolicyRuleAction"
+        },
+        "host": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "action"
+      ],
+      "type": "object"
+    },
+    "NetworkPolicyRuleAction": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "ReviewDecision": {
+      "description": "User's decision in response to an ExecApprovalRequest.",
+      "oneOf": [
+        {
+          "const": "approved",
+          "description": "User has approved this command and the agent should execute it.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User has approved this command and wants to apply the proposed execpolicy\namendment so future matching commands are permitted.",
+          "properties": {
+            "approved_execpolicy_amendment": {
+              "properties": {
+                "proposed_execpolicy_amendment": {
+                  "$ref": "#/$defs/ExecPolicyAmendment"
+                }
+              },
+              "required": [
+                "proposed_execpolicy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "approved_execpolicy_amendment"
+          ],
+          "title": "ApprovedExecpolicyAmendmentReviewDecision",
+          "type": "object"
+        },
+        {
+          "const": "approved_for_session",
+          "description": "User has approved this request and wants future prompts in the same\nsession-scoped approval cache to be automatically approved for the\nremainder of the session.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User chose to persist a network policy rule (allow/deny) for future\nrequests to the same host.",
+          "properties": {
+            "network_policy_amendment": {
+              "properties": {
+                "network_policy_amendment": {
+                  "$ref": "#/$defs/NetworkPolicyAmendment"
+                }
+              },
+              "required": [
+                "network_policy_amendment"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "network_policy_amendment"
+          ],
+          "title": "NetworkPolicyAmendmentReviewDecision",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "User has denied this command and the agent should not execute it, but\nit should continue the session and try something else.",
+          "properties": {
+            "denied": {
+              "properties": {
+                "rejection": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "rejection"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "denied"
+          ],
+          "title": "DeniedReviewDecision",
+          "type": "object"
+        },
+        {
+          "const": "timed_out",
+          "description": "The approval flow timed out before the user or guardian completed a\ndecision. Downstream may surface this distinctly from an explicit\ndenial so agents can retry or explain the timeout accurately.",
+          "type": "string"
+        },
+        {
+          "const": "abort",
+          "description": "User has denied this command and the agent should not do anything until\nthe user's next command.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/ReviewDecision"
+    }
+  },
+  "required": [
+    "decision"
+  ],
+  "title": "ApplyPatchApprovalResponse",
+  "type": "object"
+}

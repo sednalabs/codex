@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ConfigEdit": {
+      "properties": {
+        "keyPath": {
+          "type": "string"
+        },
+        "mergeStrategy": {
+          "$ref": "#/$defs/MergeStrategy"
+        },
+        "value": true
+      },
+      "required": [
+        "keyPath",
+        "value",
+        "mergeStrategy"
+      ],
+      "type": "object"
+    },
+    "MergeStrategy": {
+      "enum": [
+        "replace",
+        "upsert"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "edits": {
+      "items": {
+        "$ref": "#/$defs/ConfigEdit"
+      },
+      "type": "array"
+    },
+    "expectedVersion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "filePath": {
+      "description": "Path to the config file to write; defaults to the user's `config.toml` when omitted.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reloadUserConfig": {
+      "description": "When true, hot-reload updated runtime settings into loaded threads after writing.\nSession-static model, reasoning-effort, Plan-mode reasoning-effort, service-tier, and\npersonality defaults are not reloaded.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "edits"
+  ],
+  "title": "ConfigBatchWriteParams",
+  "type": "object"
+}

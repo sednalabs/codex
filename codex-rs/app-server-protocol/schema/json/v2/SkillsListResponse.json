@@ -1,0 +1,241 @@
+{
+  "$defs": {
+    "AbsolutePathBuf": {
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "type": "string"
+    },
+    "SkillDependencies": {
+      "properties": {
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/SkillToolDependency"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
+    },
+    "SkillErrorInfo": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "message"
+      ],
+      "type": "object"
+    },
+    "SkillInterface": {
+      "properties": {
+        "brandColor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defaultPrompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iconLarge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "iconLargeUrl": {
+          "description": "Remote large icon URL from the plugin catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iconSmall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsolutePathBuf"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "iconSmallUrl": {
+          "description": "Remote small icon URL from the plugin catalog.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shortDescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SkillMetadata": {
+      "properties": {
+        "dependencies": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillDependencies"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "interface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillInterface"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/AbsolutePathBuf"
+        },
+        "scope": {
+          "$ref": "#/$defs/SkillScope"
+        },
+        "shortDescription": {
+          "description": "Legacy short_description from SKILL.md. Prefer SKILL.json interface.short_description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "path",
+        "scope",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "SkillScope": {
+      "enum": [
+        "user",
+        "repo",
+        "system",
+        "admin"
+      ],
+      "type": "string"
+    },
+    "SkillToolDependency": {
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transport": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "type": "object"
+    },
+    "SkillsListEntry": {
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/SkillErrorInfo"
+          },
+          "type": "array"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillMetadata"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cwd",
+        "skills",
+        "errors"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "data": {
+      "items": {
+        "$ref": "#/$defs/SkillsListEntry"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "SkillsListResponse",
+  "type": "object"
+}

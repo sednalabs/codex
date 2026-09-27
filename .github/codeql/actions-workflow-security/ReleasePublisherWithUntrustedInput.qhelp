@@ -1,0 +1,17 @@
+<!DOCTYPE qhelp SYSTEM "qhelp.dtd">
+<qhelp>
+  <overview>
+    <p>
+      Workflow-dispatch and event payload values are operator or event inputs,
+      not a trusted release target by themselves. Publishing based on those
+      values can move a release onto the wrong commit or tag.
+    </p>
+  </overview>
+  <recommendation>
+    <p>
+      Resolve the requested ref to a commit, validate it against the release
+      policy, and publish only that validated commit. Treat supplied tags as
+      assertions to check, not as the source of release truth.
+    </p>
+  </recommendation>
+</qhelp>

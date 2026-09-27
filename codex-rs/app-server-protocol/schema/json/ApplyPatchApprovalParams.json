@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "FileChange": {
+      "oneOf": [
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "add",
+              "title": "AddFileChangeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "title": "AddFileChange",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "const": "delete",
+              "title": "DeleteFileChangeType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "content"
+          ],
+          "title": "DeleteFileChange",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "move_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "update",
+              "title": "UpdateFileChangeType",
+              "type": "string"
+            },
+            "unified_diff": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "unified_diff"
+          ],
+          "title": "UpdateFileChange",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadId": {
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "callId": {
+      "description": "Use to correlate this with [codex_protocol::protocol::PatchApplyBeginEvent]\nand [codex_protocol::protocol::PatchApplyEndEvent].",
+      "type": "string"
+    },
+    "conversationId": {
+      "$ref": "#/$defs/ThreadId"
+    },
+    "fileChanges": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FileChange"
+      },
+      "type": "object"
+    },
+    "grantRoot": {
+      "description": "When set, the agent is asking the user to allow writes under this root\nfor the remainder of the session (unclear if this is honored today).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "description": "Optional explanatory reason (e.g. request for extra write access).",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "conversationId",
+    "callId",
+    "fileChanges"
+  ],
+  "title": "ApplyPatchApprovalParams",
+  "type": "object"
+}
