@@ -15,6 +15,7 @@ python3 -m py_compile \
   .github/scripts/summarize_rust_ci_full.py \
   .github/scripts/sync_upstream_mirror.py \
   .github/scripts/test_ci_planners.py \
+  .github/scripts/test_run_named_rust_tests.py \
   .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py \
   .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py \
   scripts/downstream-divergence-audit.py

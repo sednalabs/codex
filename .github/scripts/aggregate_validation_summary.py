@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--explicit-lanes", default="")
     parser.add_argument("--supersession-mode", default="auto")
     parser.add_argument("--supersession-key", default="")
+    parser.add_argument("--question-key", default="")
     parser.add_argument("--dedupe-should-skip", default="false")
     parser.add_argument("--dedupe-reason", default="")
     parser.add_argument("--dedupe-matched-run-id", default="")
@@ -904,6 +905,7 @@ def main() -> None:
                 "key": args.supersession_key or "",
                 "auto_supersedes": (args.supersession_mode or "auto") == "auto",
             },
+            "owned_question_key": args.question_key or args.supersession_key or "",
         },
         "run": {
             "run_id": args.run_id,
@@ -978,6 +980,7 @@ def main() -> None:
             "planner_fingerprint": args.planner_fingerprint or "",
             "head_sha": args.head_sha,
             "event_policy": args.event_policy,
+            "owned_question_key": args.question_key or args.supersession_key or "",
             "inputs_hash": args.planner_fingerprint or "",
             "conclusion": summary["overall_conclusion"],
             "run_id": args.run_id,

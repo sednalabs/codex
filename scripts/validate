@@ -123,7 +123,9 @@ def main() -> int:
     # Request values are schema-checked by the hosted workflow and are passed
     # as explicit gh argv values; no shell evaluation or arbitrary flags occur.
     # lgtm [py/command-line-injection]
-    return subprocess.run(gh_command(args, request_json), check=False).returncode
+    return subprocess.run(  # lgtm [py/command-line-injection]
+        gh_command(args, request_json), check=False
+    ).returncode
 
 
 if __name__ == "__main__":

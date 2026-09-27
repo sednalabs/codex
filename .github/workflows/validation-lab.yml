@@ -49,6 +49,11 @@ on:
       supersession_key:
         required: false
         type: string
+        default: ''
+      question_key:
+        required: false
+        type: string
+        default: ''
       test_request:
         required: false
         type: string
@@ -147,6 +152,10 @@ on:
         description: Optional retention label for compare/milestone/retain runs
         required: false
         type: string
+      question_key:
+        description: Stable owned-question identity; target SHA is deliberately excluded
+        required: false
+        type: string
       test_request:
         description: Optional rust-tests-v1 typed exact-test request
         required: false
@@ -165,8 +174,8 @@ concurrency:
     ${{
       inputs.supersession_mode == 'auto' &&
       format(
-        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}::{8}',
-        inputs.target_sha || inputs.ref || github.ref_name,
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}::{8}::{9}::{10}',
+        inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name,
         inputs.base_ref || 'main',
         inputs.profile,
         inputs.lane_set,
@@ -174,7 +183,9 @@ concurrency:
         inputs.fanout_tier || 'enterprise',
         inputs.rust_batching || 'auto',
         inputs.artifact_build && 'artifact' || 'no-artifact',
-        inputs.include_explicit_lanes && 'explicit' || 'default'
+        inputs.include_explicit_lanes && 'explicit' || 'default',
+        inputs.test_profile || 'rust_minimal',
+        inputs.test_request != '' && 'named-tests' || 'no-named-tests'
       ) ||
       format(
         'validation-lab::retained::{0}::{1}::{2}',
@@ -269,23 +280,48 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Check out validation target
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
-          persist-credentials: false
-          # Prefer target_sha for exact immutable proof; ref remains for legacy
-          # branch/tag callers and is checked against target_sha when supplied.
-          ref: ${{ inputs.target_sha || inputs.ref || github.sha }}
-          path: validation-target
-
-      - name: Check out comparison base
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-          ref: ${{ inputs.base_ref || 'main' }}
-          path: validation-base
+      - name: Materialize exact validation target and base
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          TARGET_REF: ${{ inputs.ref }}
+          BASE_REF: ${{ inputs.base_ref || 'main' }}
+          NEED_TAGS: ${{ inputs.profile == 'artifact' || inputs.artifact_build }}
+        run: |
+          set -euo pipefail
+          safe_ref() {
+            [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]]
+          }
+          target_ref="${TARGET_SHA:-${TARGET_REF:-${GITHUB_SHA}}}"
+          if [[ -n "${TARGET_SHA}" && ! "${TARGET_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "target_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ -z "${TARGET_SHA}" ]] && ! safe_ref "${target_ref}"; then
+            echo "target ref must be a safe repository ref" >&2
+            exit 1
+          fi
+          if ! safe_ref "${BASE_REF}"; then
+            echo "base_ref must be a safe repository ref" >&2
+            exit 1
+          fi
+          fetch_args=(--no-tags)
+          if [[ "${NEED_TAGS}" != "true" ]]; then
+            fetch_args+=(--depth=1)
+          fi
+          git fetch "${fetch_args[@]}" origin -- "${target_ref}"
+          target_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ -n "${TARGET_SHA}" && "${target_sha}" != "${TARGET_SHA}" ]]; then
+            echo "target fetch did not resolve to requested target SHA" >&2
+            exit 1
+          fi
+          if [[ "${NEED_TAGS}" == "true" ]]; then
+            git fetch --tags origin
+          fi
+          git fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          base_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          git worktree add --detach "${GITHUB_WORKSPACE}/validation-target" "${target_sha}"
+          git worktree add --detach "${GITHUB_WORKSPACE}/validation-base" "${base_sha}"
 
       - name: Compute validation-lab plan
         id: meta
@@ -306,6 +342,8 @@ jobs:
           LAB_RUST_BATCHING_OVERRIDE: ${{ vars.VALIDATION_LAB_RUST_BATCHING }}
           LAB_ARTIFACT_BUILD: ${{ inputs.artifact_build }}
           LAB_INCLUDE_EXPLICIT_LANES: ${{ inputs.include_explicit_lanes }}
+          LAB_TEST_REQUEST: ${{ inputs.test_request }}
+          LAB_TEST_PROFILE: ${{ inputs.test_profile || 'rust_minimal' }}
         run: |
           set -euo pipefail
 
@@ -442,6 +480,8 @@ jobs:
             --rust-batching "${LAB_RUST_BATCHING}" \
             --artifact-build "${LAB_ARTIFACT_BUILD}" \
             --include-explicit-lanes "${LAB_INCLUDE_EXPLICIT_LANES}" \
+            --test-request "${LAB_TEST_REQUEST}" \
+            --test-profile "${LAB_TEST_PROFILE}" \
             < "${selection_meta_path}")"
 
           {
@@ -573,6 +613,7 @@ jobs:
             echo "- Reused run: ${{ steps.dedupe.outputs.matched_run_url || 'none' }}"
             echo "- Supersession mode: \`${{ inputs.supersession_mode }}\`"
             echo "- Supersession key: \`${{ inputs.supersession_key || 'none' }}\`"
+            echo "- Owned question key: \`${{ inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name }}\`"
             echo "- Profile notes: ${{ steps.meta.outputs.profile_notes }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1506,6 +1547,7 @@ jobs:
             --explicit-lanes "${{ inputs.lanes }}" \
             --supersession-mode "${{ inputs.supersession_mode }}" \
             --supersession-key "${{ inputs.supersession_key }}" \
+            --question-key "${{ inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name }}" \
             --dedupe-should-skip "${{ needs.metadata.outputs.dedupe_should_skip }}" \
             --dedupe-reason "${{ needs.metadata.outputs.dedupe_reason }}" \
             --dedupe-matched-run-id "${{ needs.metadata.outputs.dedupe_matched_run_id }}" \

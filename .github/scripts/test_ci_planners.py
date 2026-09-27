@@ -938,7 +938,11 @@ class RouteSelectionTests(unittest.TestCase):
         recipe = "\n".join(
             just_recipe_bodies(REPO_ROOT / "justfile")["core-config-consumers-targeted"]
         )
-        self.assertIn("cargo clippy --locked -p codex-core-api", recipe)
+        self.assertIn(
+            "cargo fmt -p codex-core-api -p codex-thread-manager-sample -- --check",
+            recipe,
+        )
+        self.assertIn("run_targeted_clippy.sh", recipe)
 
     def test_composed_followup_plan_reports_complete_reverse_consumers(self) -> None:
         routes = [
@@ -1393,6 +1397,33 @@ class RouteSelectionTests(unittest.TestCase):
             "codex-rs/protocol/src/protocol.rs",
         ):
             with self.subTest(path=path):
+                self.assertEqual(
+                    RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
+                    route["lane_ids"],
+                )
+
+    def test_collab_spawn_identity_known_failure_lines_remain_routed(self) -> None:
+        """Keep the historical planner failures as exact route fixtures.
+
+        These locations are deliberately recorded as path/line evidence rather
+        than inferred from a test-name substring.  A future route edit must
+        continue to send each affected producer/consumer seam to the complete
+        collab-identity lane set before expensive behavior validation runs.
+        """
+
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        fixtures = (
+            ("codex-rs/protocol/src/protocol.rs", 3222),
+            ("codex-rs/core/src/tools/handlers/multi_agents_tests.rs", 6775),
+            ("codex-rs/protocol/src/protocol.rs", 6968),
+        )
+        for path, line in fixtures:
+            with self.subTest(path=path, line=line):
+                self.assertGreater(line, 0)
                 self.assertEqual(
                     RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
                     route["lane_ids"],
@@ -3428,6 +3459,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         artifact_build: bool = False,
         include_explicit_lanes: bool = False,
         base_sha: str = "base123",
+        test_request: str = "",
+        test_profile: str = "",
     ) -> str:
         selection = {
             "fanout_tier": "enterprise",
@@ -3481,6 +3514,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             rust_batching="auto",
             artifact_build=artifact_build,
             include_explicit_lanes=include_explicit_lanes,
+            test_request=test_request,
+            test_profile=test_profile,
         )
         return VALIDATION_PLAN_FINGERPRINT.fingerprint_payload(payload)
 
@@ -3526,6 +3561,58 @@ class ValidationPlanScriptTests(unittest.TestCase):
         changed = self.validation_lab_fingerprint(base_sha="otherbase")
 
         self.assertNotEqual(baseline, changed)
+
+    def test_validation_lab_plan_fingerprint_changes_for_named_test_request(self) -> None:
+        baseline = self.validation_lab_fingerprint(
+            test_request=json.dumps(
+                {
+                    "schema_version": "rust-tests-v1",
+                    "package": "codex-core",
+                    "target_kind": "lib",
+                    "profile": "rust_minimal",
+                    "tests": ["suite::first"],
+                }
+            ),
+            test_profile="rust_minimal",
+        )
+        changed = self.validation_lab_fingerprint(
+            test_request=json.dumps(
+                {
+                    "schema_version": "rust-tests-v1",
+                    "package": "codex-core",
+                    "target_kind": "lib",
+                    "profile": "rust_minimal",
+                    "tests": ["suite::second"],
+                }
+            ),
+            test_profile="rust_minimal",
+        )
+
+        self.assertNotEqual(baseline, changed)
+
+    def test_validation_lab_plan_fingerprint_normalizes_named_test_request(self) -> None:
+        payload = VALIDATION_PLAN_FINGERPRINT.plan_fingerprint_payload(
+            selection_meta={},
+            workflow="validation-lab.yml",
+            workflow_ref="refs/heads/main",
+            workflow_sha="feedface",
+            target_head_sha="abc123",
+            profile="targeted",
+            lane_set="docs",
+            fanout_tier="enterprise",
+            lanes="",
+            rust_batching="auto",
+            artifact_build=False,
+            include_explicit_lanes=False,
+            test_request=' {"tests": ["suite::first"], "package": "codex-core"} ',
+            test_profile="rust_minimal",
+        )
+
+        self.assertEqual(
+            payload["inputs"]["test_request"],
+            {"package": "codex-core", "tests": ["suite::first"]},
+        )
+        self.assertEqual(payload["inputs"]["test_profile"], "rust_minimal")
 
     def test_validation_lab_plan_fingerprint_reports_missing_selection_env(self) -> None:
         env = dict(os.environ)
@@ -4589,6 +4676,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "rust_integration_batches",
                 "release_lanes",
                 "artifact",
+                "named_tests",
             ],
         )
 
@@ -5083,11 +5171,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
         compute_run = compute_step.get("run") or ""
         self.assertEqual(compute_env.get("LAB_WORKFLOW_REF"), "${{ github.workflow_ref }}")
         self.assertEqual(compute_env.get("LAB_WORKFLOW_SHA"), "${{ github.sha }}")
+        self.assertEqual(compute_env.get("LAB_TEST_REQUEST"), "${{ inputs.test_request }}")
+        self.assertEqual(
+            compute_env.get("LAB_TEST_PROFILE"),
+            "${{ inputs.test_profile || 'rust_minimal' }}",
+        )
         self.assertIn("validation_plan_fingerprint.py", compute_run)
         self.assertIn("--selection-meta-stdin", compute_run)
         self.assertIn('< "${selection_meta_path}"', compute_run)
+        self.assertIn('--test-request "${LAB_TEST_REQUEST}"', compute_run)
+        self.assertIn('--test-profile "${LAB_TEST_PROFILE}"', compute_run)
         self.assertNotIn("--selection-meta-path", compute_run)
         self.assertIn("planner_fingerprint=${planner_fingerprint}", compute_run)
+
+        concurrency = payload.get("concurrency") or {}
+        concurrency_group = str(concurrency.get("group") or "")
+        self.assertIn("inputs.question_key", concurrency_group)
+        self.assertNotIn("inputs.target_sha || inputs.ref", concurrency_group)
 
         dedupe_step = next(
             step for step in steps if step.get("name") == "Check exact-plan evidence reuse"
@@ -5250,6 +5350,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             run_script,
         )
         self.assertIn('--workflow-file "validation-lab.yml"', run_script)
+        self.assertIn(
+            '--question-key "${{ inputs.question_key || inputs.supersession_key || inputs.ref || github.ref_name }}"',
+            run_script,
+        )
 
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
@@ -5471,6 +5575,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.app-server-protocol-test",
                 "codex.cli-surface-targeted",
                 "codex.thread-manager-sample-targeted",
+                "codex.core-config-consumers-targeted",
                 "codex.exec-native-computer-use-targeted",
                 "codex.external-agent-session-migration-targeted",
                 "codex.inference-observation-contract-targeted",
@@ -5509,7 +5614,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         recipes = just_recipe_bodies(REPO_ROOT / "justfile")
         self.assertEqual(
             recipes["thread-manager-sample-targeted"][0],
-            "    cargo check --locked -p codex-thread-manager-sample",
+            "    cargo fmt -p codex-thread-manager-sample -- --check",
+        )
+        recipe = "\n".join(recipes["thread-manager-sample-targeted"])
+        self.assertIn(
+            "TARGETED_CLIPPY_PACKAGES='[\"codex-thread-manager-sample\"]'",
+            recipe,
         )
 
     def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
@@ -7270,7 +7380,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertIn("codex.rmcp-client-transport", selected_lane_ids)
         self.assertIn("codex.rmcp-consumers-check", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 49)
+        self.assertEqual(payload["planned_job_count"], 50)
         self.assertEqual(payload["selected_workflow_lane_count"], 8)
         self.assertEqual(payload["selected_node_lane_count"], 3)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)

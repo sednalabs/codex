@@ -26,6 +26,43 @@ TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]+$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
 MAX_TESTS = 64
+MAX_DIAGNOSTIC_CHARS = 4096
+TEST_RESULT_RE = re.compile(
+    r"test result:\s+\w+\.\s+"
+    r"(?P<passed>\d+) passed;\s+"
+    r"(?P<failed>\d+) failed;\s+"
+    r"(?P<ignored>\d+) ignored;\s+"
+    r"(?P<measured>\d+) measured;\s+"
+    r"(?P<filtered>\d+) filtered out"
+)
+
+
+def bounded_diagnostic(value: str | None) -> str:
+    """Keep failure evidence actionable without duplicating unbounded logs."""
+
+    text = str(value or "").strip()
+    if len(text) <= MAX_DIAGNOSTIC_CHARS:
+        return text
+    return "...[truncated; see hosted job log]...\n" + text[-MAX_DIAGNOSTIC_CHARS:]
+
+
+def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "exit_code": completed.returncode,
+        "stdout_tail": bounded_diagnostic(completed.stdout),
+        "stderr_tail": bounded_diagnostic(completed.stderr),
+    }
+
+
+def test_result_counts(output: str) -> dict[str, int] | None:
+    matches = list(TEST_RESULT_RE.finditer(output))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    return {
+        name: int(match.group(name))
+        for name in ("passed", "failed", "ignored", "measured", "filtered")
+    }
 
 
 def fail(code: str, message: str) -> dict[str, Any]:
@@ -85,16 +122,18 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
 
 
 def cargo_args(request: dict[str, Any], *, list_only: bool, test_name: str = "") -> list[str]:
-    args = ["cargo", "test", "--locked", "-p", request["package"]]
+    # Package/target/test values are regex-validated by load_request before
+    # this argv-only construction; no shell evaluation occurs.
+    args = ["cargo", "test", "--locked", "-p", request["package"]]  # lgtm [py/command-line-injection]
     if request["target_kind"] == "lib":
         args.append("--lib")
     else:
-        args.extend(["--test", request["target"]])
+        args.extend(["--test", request["target"]])  # lgtm [py/command-line-injection]
     args.append("--")
     if list_only:
         args.append("--list")
     else:
-        args.extend([test_name, "--exact", "--test-threads=1"])
+        args.extend([test_name, "--exact", "--test-threads=1"])  # lgtm [py/command-line-injection]
     return args
 
 
@@ -118,7 +157,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # The request schema strictly validates package and target names. The
     # command remains intentionally argv-based (never shell-evaluated).
     # lgtm [py/command-line-injection]
-    inventory = subprocess.run(
+    inventory = subprocess.run(  # lgtm [py/command-line-injection]
         cargo_args(request, list_only=True),
         cwd=manifest_root,
         env=env,
@@ -128,7 +167,13 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     )
     names = listed_tests(inventory.stdout)
     if inventory.returncode != 0:
-        return fail("inventory_failed", "Cargo test inventory failed")
+        result = fail("inventory_failed", "Cargo test inventory failed")
+        result["inventory"] = {
+            "status": "failure",
+            "tests": [],
+            "diagnostics": command_diagnostics(inventory),
+        }
+        return result
     counts: dict[str, int] = {}
     for name in names:
         counts[name] = counts.get(name, 0) + 1
@@ -163,7 +208,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # Test names are restricted to the Rust fully-qualified-name grammar
         # before reaching this argv-only invocation.
         # lgtm [py/command-line-injection]
-        completed = subprocess.run(
+        completed = subprocess.run(  # lgtm [py/command-line-injection]
             cargo_args(request, list_only=False, test_name=name),
             cwd=manifest_root,
             env=env,
@@ -171,17 +216,45 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             capture_output=True,
             check=False,
         )
-        status = "success" if completed.returncode == 0 else "failure"
+        output = "\n".join(
+            value for value in (completed.stdout, completed.stderr) if value
+        )
+        counts = test_result_counts(output)
+        execution_reconciled = (
+            completed.returncode == 0
+            and counts is not None
+            and counts["passed"] == 1
+            and counts["failed"] == 0
+            and counts["ignored"] == 0
+            and counts["measured"] == 0
+        )
+        status = "success" if execution_reconciled else "failure"
+        failure_code = ""
+        if completed.returncode != 0:
+            failure_code = "named_test_failed"
+        elif counts is None:
+            failure_code = "execution_reconciliation_failed"
+        elif counts["ignored"]:
+            failure_code = "named_test_ignored"
+        elif counts["passed"] != 1 or counts["failed"] or counts["measured"]:
+            failure_code = "execution_reconciliation_failed"
         result["tests"].append(
             {
                 "name": name,
                 "status": status,
                 "exit_code": completed.returncode,
+                "execution_reconciled": execution_reconciled,
+                "result_counts": counts,
+                "diagnostics": command_diagnostics(completed),
             }
         )
         if status != "success":
             result["status"] = "failure"
-            result["failure_code"] = "named_test_failed"
+            result["failure_code"] = failure_code
+            result["message"] = (
+                "named test did not produce exactly one non-ignored passing result; "
+                "see bounded diagnostics and the hosted job log"
+            )
             break
     return result
 

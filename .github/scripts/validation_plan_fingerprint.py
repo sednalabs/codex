@@ -23,6 +23,26 @@ def parse_explicit_lanes(value: str | None) -> list[str]:
     return [lane.strip() for lane in str(value or "").split(",") if lane.strip()]
 
 
+def normalize_test_request(value: str | None) -> Any:
+    """Return the complete typed request in a stable, hashable shape.
+
+    Named-test requests are evidence identity, not display metadata.  Keeping
+    the decoded object in the plan payload means two requests that select
+    different tests cannot accidentally reuse the same plan merely because
+    they share a profile.  Invalid JSON is retained with an explicit marker;
+    request validation remains the responsibility of the named-test lane, but
+    the invalid request still gets a distinct evidence identity.
+    """
+
+    raw = str(value or "")
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"invalid_json": raw}
+
+
 def selection_value(selection_meta: dict[str, Any], key: str, fallback: Any) -> Any:
     value = selection_meta.get(key, fallback)
     return fallback if value is None else value
@@ -43,6 +63,8 @@ def plan_fingerprint_payload(
     artifact_build: str | bool,
     include_explicit_lanes: str | bool,
     base_sha: str = "",
+    test_request: str = "",
+    test_profile: str = "",
 ) -> dict[str, Any]:
     return {
         "schema": FINGERPRINT_SCHEMA_VERSION,
@@ -63,6 +85,8 @@ def plan_fingerprint_payload(
             "rust_batching": rust_batching,
             "artifact_build": parse_bool(artifact_build),
             "include_explicit_lanes": parse_bool(include_explicit_lanes),
+            "test_request": normalize_test_request(test_request),
+            "test_profile": test_profile,
         },
         "resolved": {
             "fanout_tier": selection_value(selection_meta, "fanout_tier", fanout_tier),
@@ -129,6 +153,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rust-batching", default="auto")
     parser.add_argument("--artifact-build", default="false")
     parser.add_argument("--include-explicit-lanes", default="false")
+    parser.add_argument("--test-request", default="")
+    parser.add_argument("--test-profile", default="")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
 
@@ -158,6 +184,8 @@ def main() -> None:
         rust_batching=args.rust_batching,
         artifact_build=args.artifact_build,
         include_explicit_lanes=args.include_explicit_lanes,
+        test_request=args.test_request,
+        test_profile=args.test_profile,
     )
     fingerprint = fingerprint_payload(payload)
     if args.json:

@@ -19,6 +19,7 @@ on:
         options:
           - all
           - codex.thread-manager-sample-targeted
+          - codex.core-config-consumers-targeted
           - core-compile-smoke
           - codex.model-catalog-compat-targeted
           - core-carry-core-smoke

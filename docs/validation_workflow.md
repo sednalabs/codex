@@ -98,8 +98,14 @@ Every run records three immutable identities in its proof artifact:
 - **T (target):** the exact validation commit, verified against `target_sha`.
 
 Do not treat a branch name, a green aggregate, or a prior run as proof for a
-different H/B/T tuple. The planner fingerprint includes H, B, T, and the
-resolved lane matrix, so evidence reuse is rejected when any of them changes.
+different H/B/T tuple. The planner fingerprint includes H, B, T, the resolved
+lane matrix, and the normalized complete `test_request` plus `test_profile`,
+so evidence reuse is rejected when any of them changes. The workflow's
+optional `question_key` is a stable owned-question identity for automatic
+supersession; it deliberately excludes T. T remains in the evidence
+fingerprint, so a newer candidate supersedes the same question without
+aliasing its proof to an older commit. Use a distinct question key when two
+independent questions otherwise share the same branch and lane selection.
 
 For a historical named-test reproduction, select the exact allowlisted lane
 ID rather than passing an arbitrary shell command. For example,
@@ -116,7 +122,10 @@ fails closed when a requested name is missing or ambiguous; it then records a
 separate result for each requested test. A passing Cargo invocation that ran
 zero tests therefore cannot become false coverage. The request and result
 artifact carry the exact harness/base/target identity and a request
-fingerprint.
+fingerprint. The runner also reconciles Cargo's result counts and fails when
+the named test is ignored, absent from the result, or does not produce exactly
+one passing non-ignored execution; bounded diagnostics point to the hosted
+job log for the complete output.
 
 The operator-facing `scripts/validate` helper previews this request by
 default. Add `--dispatch` to cross the write boundary, and `--watch` to use
