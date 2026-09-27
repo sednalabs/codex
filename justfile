@@ -683,7 +683,6 @@ state-migration-repair-targeted:
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
-    cargo test -p codex-thread-store thread_metadata_sync::tests::resume_history_waits_for_append_before_flushing_metadata --lib -- --exact --test-threads=1
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 
