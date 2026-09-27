@@ -23,7 +23,7 @@ cargo nextest archive \
   --test all \
   --archive-file "${archive_file}"
 
-helper_archive_dir="${helper_stage_dir}/validation-lab/helpers"
+helper_archive_dir="${helper_stage_dir}/target/validation-lab/helpers"
 mkdir -p "${helper_archive_dir}"
 for helper in codex-code-mode-host test_stdio_server; do
   source_path="${CARGO_TARGET_DIR:-target}/debug/${helper}"
@@ -45,15 +45,15 @@ EOF
 # metadata. Stage helpers separately and install them only after extracting the
 # original archive so an archive-owned path cannot overwrite the helpers.
 tar --zstd -xf "${archive_file}" -C "${archive_extract_dir}"
-mkdir -p "${archive_extract_dir}/validation-lab/helpers"
-cp --preserve=mode,timestamps "${helper_archive_dir}/"* "${archive_extract_dir}/validation-lab/helpers/"
-tar --zstd -cf "${archive_file}.tmp" -C "${archive_extract_dir}" .
+mkdir -p "${archive_extract_dir}/target/validation-lab/helpers"
+cp --preserve=mode,timestamps "${helper_archive_dir}/"* "${archive_extract_dir}/target/validation-lab/helpers/"
+tar --zstd -cf "${archive_file}.tmp" -C "${archive_extract_dir}" target
 mv "${archive_file}.tmp" "${archive_file}"
 
 member_list="${archive_extract_dir}/members"
 tar --zstd -tf "${archive_file}" > "${member_list}"
 for helper in manifest codex-code-mode-host test_stdio_server; do
-  member="./validation-lab/helpers/${helper}"
+  member="target/validation-lab/helpers/${helper}"
   if ! grep -Fxq "${member}" "${member_list}"; then
     echo "repacked nextest archive is missing ${member}" >&2
     exit 1

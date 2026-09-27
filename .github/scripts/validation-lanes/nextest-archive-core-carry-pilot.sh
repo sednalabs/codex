@@ -30,10 +30,10 @@ else
   du -h "${archive_file}"
 fi
 
-helper_archive_prefix="validation-lab/helpers"
-tar --zstd -xf "${archive_file}" -C "${helper_stage_dir}" "./${helper_archive_prefix}/manifest" \
-  "./${helper_archive_prefix}/codex-code-mode-host" \
-  "./${helper_archive_prefix}/test_stdio_server"
+helper_archive_prefix="target/validation-lab/helpers"
+tar --zstd -xf "${archive_file}" -C "${helper_stage_dir}" "${helper_archive_prefix}/manifest" \
+  "${helper_archive_prefix}/codex-code-mode-host" \
+  "${helper_archive_prefix}/test_stdio_server"
 manifest="${helper_stage_dir}/${helper_archive_prefix}/manifest"
 if [[ ! -f "${manifest}" ]]; then
   echo "nextest archive helper manifest is missing" >&2
