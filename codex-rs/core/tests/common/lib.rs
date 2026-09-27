@@ -23,6 +23,8 @@ pub use codex_utils_absolute_path::test_support::PathExt;
 use regex_lite::Regex;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Once;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
@@ -422,7 +424,48 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
 }
 
 pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+    match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
+        Ok(path) => Ok(path.to_string_lossy().to_string()),
+        Err(_) => {
+            maybe_build_stdio_server_for_tests();
+            codex_utils_cargo_bin::cargo_bin("test_stdio_server")
+                .map(|path| path.to_string_lossy().to_string())
+        }
+    }
+}
+
+fn maybe_build_stdio_server_for_tests() {
+    static BUILD_ONCE: Once = Once::new();
+
+    BUILD_ONCE.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let mut command = Command::new(cargo);
+        command
+            .arg("build")
+            .arg("-p")
+            .arg("codex-rmcp-client")
+            .arg("--bin")
+            .arg("test_stdio_server");
+
+        if let Some(target_dir) = current_test_target_dir() {
+            command.arg("--target-dir").arg(target_dir);
+        }
+
+        if let Ok(repo_root) = codex_utils_cargo_bin::repo_root() {
+            command.current_dir(repo_root.join("codex-rs"));
+        }
+
+        let _ = command.status();
+    });
+}
+
+fn current_test_target_dir() -> Option<PathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    let mut profile_dir = current_exe.parent()?.to_path_buf();
+    if profile_dir.ends_with("deps") {
+        profile_dir.pop();
+    }
+    profile_dir.parent().map(std::path::Path::to_path_buf)
 }
 
 pub mod fs_wait {
