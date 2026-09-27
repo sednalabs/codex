@@ -27,6 +27,12 @@ type StatusFuture = futures::future::BoxFuture<
 >;
 type StatusFutures = FuturesUnordered<StatusFuture>;
 
+// Native waits stay inside this helper across provider/runtime lease renewal.
+// Renewal is deliberately invisible to the model: it must never turn into a
+// new tool result or provider turn. This is an internal safety lease, not the
+// operator-requested wait timeout.
+const NATIVE_WAIT_LEASE: Duration = Duration::from_secs(60 * 60);
+
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
@@ -380,7 +386,7 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         return_when,
         statuses,
         status_futures,
-        deadline,
+        mut deadline,
         native_event_wait,
         pending_mailbox,
     } = context;
@@ -467,6 +473,10 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                 status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
             }
             _ = tokio::time::sleep_until(deadline) => {
+                if native_event_wait {
+                    deadline = Instant::now() + NATIVE_WAIT_LEASE;
+                    continue;
+                }
                 return (WaitReason::Timeout, true);
             }
         }
@@ -563,5 +573,10 @@ mod tests {
             &snapshot,
             /*mailbox_generation*/ 1,
         ));
+    }
+
+    #[test]
+    fn native_wait_lease_is_internal_and_longer_than_the_removed_rearm_cadence() {
+        assert!(NATIVE_WAIT_LEASE >= Duration::from_secs(60 * 60));
     }
 }
