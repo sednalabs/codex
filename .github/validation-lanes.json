@@ -70,7 +70,7 @@
       ],
       "needs_just": true,
       "needs_node": true,
-      "needs_nextest": true,
+      "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -97,7 +97,7 @@
       },
       "needs_just": false,
       "needs_node": true,
-      "needs_nextest": true,
+      "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -123,7 +123,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": true,
+      "needs_nextest": false,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -286,7 +286,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -398,7 +398,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true
@@ -424,7 +424,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true
@@ -600,7 +600,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true
@@ -673,7 +673,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true
@@ -698,7 +698,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true
@@ -726,7 +726,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": false,
       "needs_sccache": true

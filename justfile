@@ -223,25 +223,7 @@ tui-config-refresh-session-targeted:
 
 # Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
-    cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::enqueue_thread_event_does_not_block_when_channel_full --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_parent_status_tracks_parent_turn_lifecycle --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_parent_status_prioritizes_input_over_approval --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::handle_start_side_seeds_navigation_before_thread_started --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_fork_config_is_persistent_and_appends_developer_guardrails --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tui --no-fail-fast --no-tests=fail --lib -- app::tests::open_agent_picker_marks_loaded_threads_open app::tests::inactive_thread_started_notification_initializes_replay_session app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications app::tests::enqueue_thread_event_does_not_block_when_channel_full app::tests::side_parent_status_tracks_parent_turn_lifecycle app::tests::side_parent_status_prioritizes_input_over_approval app::tests::handle_start_side_seeds_navigation_before_thread_started app::tests::side_fork_config_is_ephemeral_and_appends_developer_guardrails app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --exact
 
 # Focused TUI replay and live collab-spawn requested-identity slice.
 tui-collab-spawn-identity-targeted:
@@ -255,14 +237,13 @@ tui-collab-spawn-identity-targeted:
 
 # visibility without widening to the TUI/app-server build graph.
 spawn-agent-tool-model-surface-targeted:
-    cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
-    cargo test -p codex-tools spawn_agent_tool_v2_lists_upgradeable_legacy_models --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tools --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --exact
 
 # Focused shared picker-model spawned-agent-description slice for upgradeable
 
 # legacy visibility without widening to the TUI/app-server build graph.
 spawn-agent-description-model-surface-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts --exact
 
 # Compatibility wrapper for the picker-model shared surface. The interactive
 # TUI consumer still shares the same protocol helper, but this exact lane
@@ -275,11 +256,7 @@ tui-agent-picker-model-surface-targeted:
 
 # Focused /agent picker hierarchy visibility slice.
 tui-agent-picker-tree-targeted:
-    cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::agent_navigation::tests::upsert_preserves_running_state_until_closed --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::agent_navigation::tests::picker_tree_prefixes_reflect_nested_agent_paths --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tui --no-fail-fast --no-tests=fail --lib -- app::tests::open_agent_picker_marks_loaded_threads_open app::tests::inactive_thread_started_notification_initializes_replay_session app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --exact
 
 # Focused /agent picker usage and remaining-context visibility slice.
 tui-agent-picker-usage-targeted:
