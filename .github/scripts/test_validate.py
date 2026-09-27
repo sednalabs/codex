@@ -7,14 +7,16 @@ could otherwise be interpreted as options or shell syntax.
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import importlib.util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import TestCase, main
 
 
 VALIDATE_PATH = Path(__file__).parents[2] / "scripts" / "validate"
-SPEC = importlib.util.spec_from_file_location("codex_validate", VALIDATE_PATH)
+LOADER = SourceFileLoader("codex_validate", str(VALIDATE_PATH))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 if SPEC is None or SPEC.loader is None:  # pragma: no cover - import failure
     raise RuntimeError(f"cannot load validation dispatcher: {VALIDATE_PATH}")
 VALIDATE = importlib.util.module_from_spec(SPEC)
@@ -58,7 +60,7 @@ class ValidateArgvTests(TestCase):
 
     def test_rejects_untrusted_command_inputs(self) -> None:
         for field, value in {
-            "repo": "sednalabs/codex;echo nope",
+            "repo": "other-owner/other-repo",
             "workflow_host_ref": "--evil",
             "base_ref": "main && echo nope",
             "target_sha": "a" * 39 + ";",
@@ -68,6 +70,11 @@ class ValidateArgvTests(TestCase):
                 setattr(args, field, value)
                 with self.assertRaises(SystemExit):
                     VALIDATE.gh_command(args, self.request())
+
+        args = self.args()
+        args.workflow_host_ref = "feature/alternate-workflow"
+        with self.assertRaises(SystemExit):
+            VALIDATE.gh_command(args, self.request())
 
     def test_rejects_unapproved_profile(self) -> None:
         args = self.args()

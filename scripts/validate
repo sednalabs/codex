@@ -17,7 +17,8 @@ import subprocess
 SCHEMA_VERSION = "rust-tests-v1"
 SAFE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$")
 SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-SAFE_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+TRUSTED_REPO = "sednalabs/codex"
+TRUSTED_WORKFLOW_HOST_REF = "main"
 PROFILES = {"rust_minimal", "rust_integration"}
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -93,14 +94,16 @@ def request_payload(args: argparse.Namespace) -> tuple[str, dict]:
 def validate_command_inputs(args: argparse.Namespace, *, require_target_sha: bool = True) -> None:
     """Fail closed before constructing a fixed-executable argv."""
 
-    if not SAFE_REPO.fullmatch(args.repo):
-        raise SystemExit("--repo must be in OWNER/REPOSITORY form")
+    if args.repo != TRUSTED_REPO:
+        raise SystemExit(f"--repo must be exactly {TRUSTED_REPO}")
     if args.profile not in PROFILES:
         raise SystemExit("--profile must be an allowed validation profile")
     if require_target_sha and (not args.target_sha or not SHA.fullmatch(args.target_sha)):
         raise SystemExit("--target-sha must be a full 40-character commit SHA")
-    if not SAFE_REF.fullmatch(args.workflow_host_ref) or not SAFE_REF.fullmatch(args.base_ref):
-        raise SystemExit("refs must be safe repository ref names")
+    if args.workflow_host_ref != TRUSTED_WORKFLOW_HOST_REF:
+        raise SystemExit(f"--workflow-host-ref must be exactly {TRUSTED_WORKFLOW_HOST_REF}")
+    if not SAFE_REF.fullmatch(args.base_ref):
+        raise SystemExit("--base-ref must be a safe repository ref name")
 
 
 def plan(args: argparse.Namespace, request_json: str) -> dict:
