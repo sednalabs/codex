@@ -1,5 +1,6 @@
 use super::sanitize_user_agent;
 use super::*;
+use codex_utils_version::RELEASE_VERSION;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::io;
@@ -44,6 +45,10 @@ fn test_get_codex_user_agent() {
     let originator = originator().value;
     let prefix = format!("{originator}/");
     assert!(user_agent.starts_with(&prefix));
+    assert!(user_agent.contains(concat!("/", env!("CARGO_PKG_VERSION"), " (")));
+    if RELEASE_VERSION != env!("CARGO_PKG_VERSION") {
+        assert!(!user_agent.contains(&format!("/{RELEASE_VERSION} (")));
+    }
 }
 
 #[test]
