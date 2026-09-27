@@ -3219,6 +3219,8 @@ pub enum BaseInstructionsProvenance {
 }
 
 impl BaseInstructionsProvenance {
+    // `serde(skip_serializing_if)` predicates receive a reference to the field.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn is_unknown(value: &Self) -> bool {
         matches!(value, Self::Unknown)
     }
@@ -6964,8 +6966,10 @@ mod tests {
             BaseInstructionsProvenance::Model,
             BaseInstructionsProvenance::Operator,
         ] {
-            let mut current = SessionMeta::default();
-            current.base_instructions_provenance = provenance;
+            let current = SessionMeta {
+                base_instructions_provenance: provenance,
+                ..Default::default()
+            };
             let serialized = serde_json::to_value(&current)?;
             if provenance == BaseInstructionsProvenance::Unknown {
                 assert!(serialized.get("base_instructions_provenance").is_none());

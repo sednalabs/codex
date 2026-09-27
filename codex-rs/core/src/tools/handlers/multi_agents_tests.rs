@@ -6768,18 +6768,13 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
 #[tokio::test]
 async fn build_agent_spawn_config_preserves_explicit_override_provenance() {
     let (_session, mut turn) = make_session_and_context().await;
-    let mut parent_config = (*turn.config).clone();
-    parent_config.set_base_instructions_override(Some(
-        turn.model_info
-            .get_model_instructions(turn.personality)
-            .to_string(),
-    ));
-    turn.config = Arc::new(parent_config);
+    let instructions = turn
+        .model_info
+        .get_model_instructions(turn.personality)
+        .to_string();
+    Arc::make_mut(&mut turn.config).set_base_instructions_override(Some(instructions.clone()));
     let base_instructions = BaseInstructions {
-        text: turn
-            .model_info
-            .get_model_instructions(turn.personality)
-            .to_string(),
+        text: instructions,
     };
 
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
