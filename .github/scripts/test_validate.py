@@ -56,7 +56,15 @@ class ValidateArgvTests(TestCase):
         self.assertEqual(command[4], "--repo")
         self.assertEqual(command[5], "sednalabs/codex")
         self.assertNotIn(";", "".join(command))
-        self.assertIn("request_json=", command[-1])
+        self.assertEqual(command[-1], "--json")
+        workflow_input = json.loads(
+            VALIDATE.gh_workflow_input(self.args(), self.request())
+        )
+        self.assertEqual(workflow_input["target_sha"], "a" * 40)
+        self.assertEqual(workflow_input["profile"], "rust_minimal")
+        self.assertIn(
+            '"schema_version":"rust-tests-v1"', workflow_input["request_json"]
+        )
 
     def test_rejects_untrusted_command_inputs(self) -> None:
         for field, value in {

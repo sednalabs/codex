@@ -122,28 +122,41 @@ def plan(args: argparse.Namespace, request_json: str) -> dict:
 
 def gh_command(args: argparse.Namespace, request_json: str) -> list[str]:
     validate_command_inputs(args)
-    request_json, _ = normalize_request(request_json, args.profile)
-    # The executable and every option are fixed literals.  User values have
-    # passed strict ref/SHA/schema validation above and remain one argv value
-    # after a fixed flag; there is no shell, eval, or option reinterpretation.
+    normalize_request(request_json, args.profile)
+    # Keep the complete command line constant.  Dispatch values are supplied
+    # as JSON on stdin below, so no operator-controlled value reaches an argv
+    # slot or can be reinterpreted as a command option.
     return [
         "gh",
         "workflow",
         "run",
         "validation-named-tests.yml",
         "--repo",
-        args.repo,
+        TRUSTED_REPO,
         "--ref",
-        args.workflow_host_ref,
-        "-f",
-        f"target_sha={args.target_sha.lower()}",
-        "-f",
-        f"base_ref={args.base_ref}",
-        "-f",
-        f"profile={args.profile}",
-        "-f",
-        f"request_json={request_json}",
+        TRUSTED_WORKFLOW_HOST_REF,
+        "--json",
     ]
+
+
+def gh_workflow_input(args: argparse.Namespace, request_json: str) -> str:
+    """Serialize validated workflow inputs for gh's JSON stdin contract."""
+
+    validate_command_inputs(args)
+    request_json, _ = normalize_request(request_json, args.profile)
+    return (
+        json.dumps(
+            {
+                "target_sha": args.target_sha.lower(),
+                "base_ref": args.base_ref,
+                "profile": args.profile,
+                "request_json": request_json,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
 
 
 def watch_run(args: argparse.Namespace) -> int:
@@ -176,14 +189,13 @@ def main() -> int:
     print(json.dumps(plan(args, request_json), indent=2, sort_keys=True))
     if not args.dispatch:
         return 0
-    # Security invariant: the executable and option names are fixed literals;
-    # repo/ref/SHA/profile/request values have strict allowlist or schema
-    # validation, each is one argv value after a fixed option, shell=False is
-    # explicit, and no shell evaluation or arbitrary flags can occur.
-    # lgtm [py/command-line-injection]
-    return subprocess.run(  # lgtm [py/command-line-injection]
-        # codeql[py/command-line-injection]
+    # Security invariant: the executable, repository, workflow ref, and all
+    # option names are fixed literals. Validated values travel only as JSON
+    # over stdin; shell=False is explicit and no arbitrary flags can occur.
+    return subprocess.run(
         gh_command(args, request_json),
+        input=gh_workflow_input(args, request_json),
+        text=True,
         check=False,
         shell=False,
     ).returncode

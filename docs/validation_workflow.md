@@ -142,7 +142,10 @@ The helper never accepts a shell command, arbitrary Cargo flags, or an implicit
 dirty-tree snapshot. Its dispatch target is pinned to the protected
 `sednalabs/codex` `main` workflow host; other repositories or workflow-host
 refs are rejected. Candidate and comparison refs remain typed data passed to
-that trusted workflow, not a way to select workflow code. Use the existing
+that trusted workflow, not a way to select workflow code. The dispatch helper
+keeps the executable, repository, workflow ref, and option names constant and
+passes validated request fields through `gh workflow run --json` on stdin;
+they are never interpolated into a command-line argument. Use the existing
 snapshot helper first when the candidate is not already on a remote ref.
 Dispatch first, then use the returned Actions run id for a separate blocking
 watch (`scripts/validate --watch --run-id <run-id>` or `gh run watch <run-id>
