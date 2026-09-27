@@ -17,6 +17,16 @@ use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
 
+type StatusFuture = futures::future::BoxFuture<
+    'static,
+    (
+        ThreadId,
+        tokio::sync::watch::Receiver<AgentStatus>,
+        Result<(), tokio::sync::watch::error::RecvError>,
+    ),
+>;
+type StatusFutures = FuturesUnordered<StatusFuture>;
+
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
@@ -173,19 +183,19 @@ impl Handler {
             .await;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-        let (reason, timed_out) = wait_for_event(
-            &session,
-            &mut activity_rx,
+        let (reason, timed_out) = wait_for_event(WaitEventContext {
+            session: &session,
+            activity_rx: &mut activity_rx,
             pending_activity,
             mailbox_generation,
-            &target_ids,
-            &target_paths,
-            args.return_when,
-            &mut statuses,
-            &mut status_futures,
+            target_ids: &target_ids,
+            target_paths: &target_paths,
+            return_when: args.return_when,
+            statuses: &mut statuses,
+            status_futures: &mut status_futures,
             deadline,
-            args.native_event_wait,
-        )
+            native_event_wait: args.native_event_wait,
+        })
         .await;
 
         let mut message = reason.message();
@@ -342,28 +352,36 @@ fn resolve_timeout(
     }
 }
 
-async fn wait_for_event(
-    session: &crate::session::session::Session,
-    activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
+struct WaitEventContext<'a> {
+    session: &'a crate::session::session::Session,
+    activity_rx: &'a mut tokio::sync::watch::Receiver<InputQueueActivity>,
     pending_activity: Option<InputQueueActivity>,
     mailbox_generation: u64,
-    target_ids: &[ThreadId],
-    target_paths: &[codex_protocol::AgentPath],
+    target_ids: &'a [ThreadId],
+    target_paths: &'a [codex_protocol::AgentPath],
     return_when: ReturnWhen,
-    statuses: &mut HashMap<ThreadId, AgentStatus>,
-    status_futures: &mut FuturesUnordered<
-        futures::future::BoxFuture<
-            'static,
-            (
-                ThreadId,
-                tokio::sync::watch::Receiver<AgentStatus>,
-                Result<(), tokio::sync::watch::error::RecvError>,
-            ),
-        >,
-    >,
-    mut deadline: Instant,
+    statuses: &'a mut HashMap<ThreadId, AgentStatus>,
+    status_futures: &'a mut StatusFutures,
+    deadline: Instant,
     native_event_wait: bool,
+}
+
+async fn wait_for_event(
+    context: WaitEventContext<'_>,
 ) -> (WaitReason, bool) {
+    let WaitEventContext {
+        session,
+        activity_rx,
+        pending_activity,
+        mailbox_generation,
+        target_ids,
+        target_paths,
+        return_when,
+        statuses,
+        status_futures,
+        mut deadline,
+        native_event_wait,
+    } = context;
     if terminal_rule_satisfied(target_ids, return_when, statuses) {
         return (WaitReason::TargetTerminal, false);
     }

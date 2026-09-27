@@ -145,26 +145,29 @@ impl InputQueue {
         u64,
         Vec<(codex_protocol::AgentPath, u64, bool)>,
     ) {
-        let mailbox = self.mailbox_pending_mails.lock().await;
+        let (mailbox_empty, entries) = {
+            let mailbox = self.mailbox_pending_mails.lock().await;
+            let entries = mailbox
+                .iter()
+                .map(|mail| {
+                    (
+                        mail.communication.author.clone(),
+                        mail.sequence,
+                        mail.communication.trigger_turn,
+                    )
+                })
+                .collect();
+            (mailbox.is_empty(), entries)
+        };
         let activity_rx = self.activity_tx.subscribe();
         let generation = self.mailbox_generation.load(Ordering::Acquire);
         let pending = if self.has_pending_terminal_completions().await {
             Some(InputQueueActivity::TerminalCompletion)
-        } else if !mailbox.is_empty() {
+        } else if !mailbox_empty {
             Some(InputQueueActivity::Mailbox)
         } else {
             None
         };
-        let entries = mailbox
-            .iter()
-            .map(|mail| {
-                (
-                    mail.communication.author.clone(),
-                    mail.sequence,
-                    mail.communication.trigger_turn,
-                )
-            })
-            .collect();
         (activity_rx, pending, generation, entries)
     }
 
