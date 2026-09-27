@@ -42,6 +42,7 @@ def plan_fingerprint_payload(
     rust_batching: str,
     artifact_build: str | bool,
     include_explicit_lanes: str | bool,
+    base_sha: str = "",
 ) -> dict[str, Any]:
     return {
         "schema": FINGERPRINT_SCHEMA_VERSION,
@@ -51,6 +52,7 @@ def plan_fingerprint_payload(
             "sha": workflow_sha,
         },
         "target": {
+            "base_sha": base_sha,
             "head_sha": target_head_sha,
         },
         "inputs": {
@@ -118,6 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--workflow-sha", required=True)
+    parser.add_argument("--base-sha", default="")
     parser.add_argument("--target-head-sha", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--lane-set", required=True)
@@ -146,6 +149,7 @@ def main() -> None:
         workflow=args.workflow,
         workflow_ref=args.workflow_ref,
         workflow_sha=args.workflow_sha,
+        base_sha=args.base_sha,
         target_head_sha=args.target_head_sha,
         profile=args.profile,
         lane_set=args.lane_set,

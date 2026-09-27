@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -906,6 +907,13 @@ class RouteSelectionTests(unittest.TestCase):
                 "codex.spawn-agent-tool-model-surface-targeted",
             ],
         )
+
+    def test_thread_manager_sample_changes_select_its_exact_compile_lane(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/thread-manager-sample/src/main.rs"],
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.thread-manager-sample-targeted"])
 
     def test_v2_residency_route_stays_on_multi_agent_orchestration_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -3356,6 +3364,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         selection_meta: dict | None = None,
         artifact_build: bool = False,
         include_explicit_lanes: bool = False,
+        base_sha: str = "base123",
     ) -> str:
         selection = {
             "fanout_tier": "enterprise",
@@ -3401,6 +3410,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             workflow_ref="sednalabs/codex/.github/workflows/validation-lab.yml@refs/heads/main",
             workflow_sha="feedface",
             target_head_sha="abc123",
+            base_sha=base_sha,
             profile="targeted",
             lane_set="docs",
             fanout_tier="enterprise",
@@ -3447,6 +3457,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         artifact = self.validation_lab_fingerprint(artifact_build=True)
 
         self.assertNotEqual(baseline, artifact)
+
+    def test_validation_lab_plan_fingerprint_changes_for_comparison_base(self) -> None:
+        baseline = self.validation_lab_fingerprint(base_sha="base123")
+        changed = self.validation_lab_fingerprint(base_sha="otherbase")
+
+        self.assertNotEqual(baseline, changed)
 
     def test_validation_lab_plan_fingerprint_reports_missing_selection_env(self) -> None:
         env = dict(os.environ)
@@ -4899,12 +4915,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         env = metadata_step.get("env") or {}
         self.assertEqual(env.get("LAB_HOST_REF"), "${{ github.ref_name }}")
-        self.assertEqual(env.get("LAB_CHECKOUT_REF"), "${{ inputs.ref || github.sha }}")
-        self.assertEqual(env.get("LAB_DISPLAY_REF"), "${{ inputs.ref || github.ref_name }}")
+        self.assertEqual(
+            env.get("LAB_CHECKOUT_REF"),
+            "${{ inputs.target_sha || inputs.ref || github.sha }}",
+        )
+        self.assertEqual(
+            env.get("LAB_DISPLAY_REF"),
+            "${{ inputs.target_sha || inputs.ref || github.ref_name }}",
+        )
         run_script = metadata_step.get("run") or ""
         self.assertIn('host_ref="${LAB_HOST_REF}"', run_script)
         self.assertIn('checkout_ref="${LAB_CHECKOUT_REF}"', run_script)
         self.assertIn('display_ref="${LAB_DISPLAY_REF}"', run_script)
+        self.assertIn('base_sha="$(git -C "${base_checkout}" rev-parse HEAD)"', run_script)
+        self.assertIn("LAB_TARGET_SHA", run_script)
+        self.assertIn("does not match requested target SHA", run_script)
         self.assertNotIn("checkout_ref='${{", run_script)
         self.assertNotIn("display_ref='${{", run_script)
 
@@ -4970,6 +4995,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('--fanout-tier "${LAB_FANOUT_TIER}"', run_script)
         self.assertIn('--rust-batching "${LAB_RUST_BATCHING}"', run_script)
         self.assertIn('--rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}"', run_script)
+        self.assertIn('--base-sha "${base_sha}"', run_script)
 
     def test_validation_lab_exposes_exact_plan_dedupe_metadata(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
@@ -5152,6 +5178,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '--latest-head-sha "${{ needs.metadata.outputs.head_sha }}"',
             run_script,
         )
+        self.assertIn(
+            '--workflow-sha "${{ needs.metadata.outputs.harness_sha }}"',
+            run_script,
+        )
+        self.assertIn(
+            '--base-sha "${{ needs.metadata.outputs.base_sha }}"',
+            run_script,
+        )
+        self.assertIn('--workflow-file "validation-lab.yml"', run_script)
 
     def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
         metadata_step = workflow_step_by_name(
@@ -5372,6 +5407,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 "codex.app-server-protocol-test",
                 "codex.cli-surface-targeted",
+                "codex.thread-manager-sample-targeted",
                 "codex.exec-native-computer-use-targeted",
                 "codex.external-agent-session-migration-targeted",
                 "codex.inference-observation-contract-targeted",
@@ -5395,6 +5431,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-transcript-viewport-targeted",
                 "codex.tui-weekly-pacing-status-line-targeted",
             },
+        )
+
+    def test_thread_manager_sample_lane_is_explicit_and_allowlisted(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        lane = next(
+            lane
+            for lane in catalog["lanes"]
+            if lane["lane_id"] == "codex.thread-manager-sample-targeted"
+        )
+        self.assertTrue(lane["explicit_only"])
+        self.assertEqual(lane["script_args"], ["thread-manager-sample-targeted"])
+        self.assertEqual(lane["setup_class"], "rust_minimal")
+        recipes = just_recipe_bodies(REPO_ROOT / "justfile")
+        self.assertEqual(
+            recipes["thread-manager-sample-targeted"],
+            ["    cargo check --locked -p codex-thread-manager-sample"],
         )
 
     def test_tui_weekly_pacing_lane_pins_live_status_line_contract(self) -> None:
@@ -11317,6 +11369,34 @@ jobs:
         self.assertEqual(results[0]["lane_id"], "lane.only.in.selection")
         self.assertEqual(results[0]["outcome"], "missing")
         self.assertEqual(results[0]["summary_family"], "lane.only.in.selection")
+
+    def test_combined_validation_result_accounts_for_all_job_results(self) -> None:
+        helper = REPO_ROOT / ".github/scripts/combined_validation_result.sh"
+        quoted_helper = shlex.quote(str(helper))
+        command = (
+            f"source {quoted_helper}; "
+            "combined_validation_result skipped skipped failure skipped"
+        )
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.stdout.strip(), "failure")
+
+        cancelled = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {quoted_helper}; "
+                "combined_validation_result skipped skipped cancelled skipped",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(cancelled.stdout.strip(), "cancelled")
 
     def test_aggregate_summary_treats_exact_plan_reuse_as_success(self) -> None:
         args = mock.Mock(

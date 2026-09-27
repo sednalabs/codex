@@ -130,6 +130,12 @@ bench-smoke:
 core-compile-smoke:
     cargo check -p codex-linux-sandbox -p codex-core --tests
 
+# Exact downstream compile reproduction for the standalone ThreadManager
+# sample. Keep this as an explicit validation-lab lane so targeted proof can
+# name the historical consumer without widening every smoke run.
+thread-manager-sample-targeted:
+    cargo check --locked -p codex-thread-manager-sample
+
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:
     cargo test -p codex-protocol --lib model_catalog_deserializer

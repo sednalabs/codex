@@ -253,6 +253,8 @@ gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \
+  -f target_sha=<exact-target-sha> \
+  -f base_ref=main \
   -f profile=targeted \
   -f lane_set=ui-protocol
 ```
@@ -265,6 +267,8 @@ gh workflow run validation-lab.yml \
   --repo sednalabs/codex \
   --ref main \
   -f ref=<branch-under-test> \
+  -f target_sha=<exact-target-sha> \
+  -f base_ref=main \
   -f profile=targeted \
   -f lanes=codex.blocking-waits-app-server-targeted,codex.app-server-protocol-test
 ```
@@ -294,16 +298,21 @@ Use the snapshot helper:
 ```bash
 scripts/dispatch-validation-lab-snapshot.sh \
   --profile targeted \
-  --lanes codex.app-server-protocol-test,codex.app-server-thread-cwd-targeted
+  --lanes codex.app-server-protocol-test,codex.app-server-thread-cwd-targeted \
+  --base-ref main \
+  --path codex-rs/app-server-protocol/src \
+  --path codex-rs/app-server-thread-cwd-targeted/src
 ```
 
 What it does:
 
-1. Builds a disposable commit from the current local worktree state without
-   rewriting the current branch.
+1. Builds a disposable commit from the explicitly named local paths without
+   rewriting the current branch. It refuses to sweep other dirty paths unless
+   `--include-all` is explicitly supplied.
 2. Pushes that commit to a disposable `validation/snapshot-*` ref on `origin`.
 3. Dispatches `validation-lab.yml` from downstream `main` against that pushed
-   snapshot ref.
+   snapshot ref, binding the snapshot commit as `target_sha` and `base_ref` as
+   the comparison base.
 
 This is the preferred low-friction path when the real question is "prove the
 exact local tree remotely" and the branch is not yet in public-PR shape.

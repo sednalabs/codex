@@ -18,9 +18,12 @@ Options:
   --repo <owner/name>          GitHub repo (default: sednalabs/codex)
   --remote <name>              Git remote to push to (default: origin)
   --dispatch-ref <ref>         Workflow-host ref for validation-lab (default: main)
+  --base-ref <ref>              Exact comparison base for H/B/T evidence (default: main)
   --profile <name>             validation-lab profile (default: targeted)
   --lane-set <name>            validation-lab lane set (default: all except targeted)
   --lanes <csv>                Optional explicit lane IDs
+  --path <path>                Include one explicit worktree path (repeatable)
+  --include-all                Explicitly include all dirty paths (never implicit)
   --supersession-mode <mode>   auto|compare|milestone|retain (default: auto)
   --supersession-key <key>     Optional supersession key
   --artifact-build             Request artifact_build=true
@@ -47,6 +50,9 @@ dispatch_ref="main"
 profile="targeted"
 lane_set=""
 lanes=""
+base_ref="main"
+paths=()
+include_all="false"
 supersession_mode="auto"
 supersession_key=""
 artifact_build="false"
@@ -80,6 +86,18 @@ while [[ $# -gt 0 ]]; do
     --lanes)
       lanes="$2"
       shift 2
+      ;;
+    --base-ref)
+      base_ref="$2"
+      shift 2
+      ;;
+    --path)
+      paths+=("$2")
+      shift 2
+      ;;
+    --include-all)
+      include_all="true"
+      shift
       ;;
     --notes)
       shift 2
@@ -136,6 +154,32 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 git_dir="$(git rev-parse --git-dir)"
 
+if [[ "${include_all}" == "true" && "${#paths[@]}" -gt 0 ]]; then
+  echo "--include-all cannot be combined with --path" >&2
+  exit 2
+fi
+
+if [[ "${#paths[@]}" -eq 0 && "${include_all}" != "true" ]]; then
+  dirty_paths="$(git -C "${repo_root}" status --porcelain=v1 --untracked-files=all)"
+  if [[ -n "${dirty_paths}" ]]; then
+    cat >&2 <<'EOF'
+refusing to sweep dirty paths implicitly; pass one or more --path values, or
+use --include-all only when the complete dirty tree is explicitly in scope
+EOF
+    printf '%s\n' "${dirty_paths}" >&2
+    exit 2
+  fi
+fi
+
+for path in "${paths[@]}"; do
+  case "${path}" in
+    ""|/*|.|..|../*|*/../*|*/..)
+      echo "invalid repository-relative --path: ${path}" >&2
+      exit 2
+      ;;
+  esac
+done
+
 current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 if [[ -z "$current_branch" ]]; then
   current_branch="detached"
@@ -157,14 +201,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ -f "${git_dir}/index" ]]; then
-  cp "${git_dir}/index" "$tmp_index"
-else
-  : > "$tmp_index"
-fi
-
 export GIT_INDEX_FILE="$tmp_index"
-git -C "$repo_root" add -A
+if [[ "${include_all}" == "true" ]]; then
+  if [[ -f "${git_dir}/index" ]]; then
+    cp "${git_dir}/index" "$tmp_index"
+  else
+    : > "$tmp_index"
+  fi
+  git -C "$repo_root" add -A
+else
+  if [[ -n "${head_commit}" ]]; then
+    git -C "$repo_root" read-tree "${head_commit}"
+  fi
+  if [[ "${#paths[@]}" -gt 0 ]]; then
+    git -C "$repo_root" add -- "${paths[@]}"
+  fi
+fi
 tree_id="$(git -C "$repo_root" write-tree)"
 
 if [[ -n "$head_commit" ]]; then
@@ -180,6 +232,8 @@ dispatch_cmd=(
   --repo "$repo"
   --ref "$dispatch_ref"
   -f "ref=${remote_ref}"
+  -f "target_sha=${snapshot_commit}"
+  -f "base_ref=${base_ref}"
   -f "profile=${profile}"
   -f "lane_set=${lane_set}"
   -f "artifact_build=${artifact_build}"

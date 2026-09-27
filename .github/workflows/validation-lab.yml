@@ -9,6 +9,14 @@ on:
       ref:
         required: false
         type: string
+      target_sha:
+        required: false
+        type: string
+        default: ''
+      base_ref:
+        required: false
+        type: string
+        default: main
       profile:
         required: true
         type: string
@@ -44,8 +52,17 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch or tag to validate; this value is passed directly to actions/checkout for the validation-target checkout, so SHA pinning belongs in the dispatch/watch layer instead
+        description: Branch or tag to validate when target_sha is not supplied
         required: false
+        type: string
+      target_sha:
+        description: Exact target commit SHA; the run fails if the target checkout resolves to another commit
+        required: false
+        type: string
+      base_ref:
+        description: Exact comparison-base branch, tag, or commit ref used for H/B/T evidence
+        required: false
+        default: main
         type: string
       profile:
         description: Validation depth/profile
@@ -128,8 +145,9 @@ concurrency:
     ${{
       inputs.supersession_mode == 'auto' &&
       format(
-        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}',
-        inputs.ref || github.ref_name,
+        'validation-lab::auto::{0}::{1}::{2}::{3}::{4}::{5}::{6}::{7}::{8}',
+        inputs.target_sha || inputs.ref || github.ref_name,
+        inputs.base_ref || 'main',
         inputs.profile,
         inputs.lane_set,
         inputs.lanes || 'default',
@@ -156,6 +174,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       host_ref: ${{ steps.meta.outputs.host_ref }}
+      harness_sha: ${{ steps.meta.outputs.harness_sha }}
+      base_ref: ${{ steps.meta.outputs.base_ref }}
+      base_sha: ${{ steps.meta.outputs.base_sha }}
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
       head_sha: ${{ steps.meta.outputs.head_sha }}
@@ -233,11 +254,18 @@ jobs:
         with:
           fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
           persist-credentials: false
-          # This input is consumed by actions/checkout as a branch-or-tag selector.
-          # If you need exact-SHA pinning for workflow_dispatch, pin the host run via
-          # the dispatcher/watcher layer and pass the branch name here so checkout resolves.
-          ref: ${{ inputs.ref || github.sha }}
+          # Prefer target_sha for exact immutable proof; ref remains for legacy
+          # branch/tag callers and is checked against target_sha when supplied.
+          ref: ${{ inputs.target_sha || inputs.ref || github.sha }}
           path: validation-target
+
+      - name: Check out comparison base
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ inputs.base_ref || 'main' }}
+          path: validation-base
 
       - name: Compute validation-lab plan
         id: meta
@@ -246,8 +274,10 @@ jobs:
           LAB_HOST_REF: ${{ github.ref_name }}
           LAB_WORKFLOW_REF: ${{ github.workflow_ref }}
           LAB_WORKFLOW_SHA: ${{ github.sha }}
-          LAB_CHECKOUT_REF: ${{ inputs.ref || github.sha }}
-          LAB_DISPLAY_REF: ${{ inputs.ref || github.ref_name }}
+          LAB_CHECKOUT_REF: ${{ inputs.target_sha || inputs.ref || github.sha }}
+          LAB_TARGET_SHA: ${{ inputs.target_sha }}
+          LAB_BASE_REF: ${{ inputs.base_ref || 'main' }}
+          LAB_DISPLAY_REF: ${{ inputs.target_sha || inputs.ref || github.ref_name }}
           LAB_PROFILE: ${{ inputs.profile }}
           LAB_LANE_SET: ${{ inputs.lane_set }}
           LAB_FANOUT_TIER: ${{ inputs.fanout_tier || 'enterprise' }}
@@ -263,12 +293,22 @@ jobs:
           checkout_ref="${LAB_CHECKOUT_REF}"
           display_ref="${LAB_DISPLAY_REF}"
           target_checkout="${GITHUB_WORKSPACE}/validation-target"
+          base_checkout="${GITHUB_WORKSPACE}/validation-base"
           catalog_path="${target_checkout}/.github/validation-lanes.json"
           catalog_args=()
           if [[ -f "${catalog_path}" ]]; then
             catalog_args+=(--catalog-path "${catalog_path}")
           fi
           head_sha="$(git -C "${target_checkout}" rev-parse HEAD)"
+          base_sha="$(git -C "${base_checkout}" rev-parse HEAD)"
+          if [[ -n "${LAB_TARGET_SHA}" && ! "${LAB_TARGET_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "target_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          if [[ -n "${LAB_TARGET_SHA}" && "${head_sha}" != "${LAB_TARGET_SHA}" ]]; then
+            echo "target checkout ${head_sha} does not match requested target SHA ${LAB_TARGET_SHA}" >&2
+            exit 1
+          fi
           short_sha="$(git -C "${target_checkout}" rev-parse --short=8 HEAD)"
           display_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
           if [[ "${LAB_PROFILE}" == "artifact" || "${LAB_ARTIFACT_BUILD}" == "true" ]]; then
@@ -373,6 +413,7 @@ jobs:
             --workflow validation-lab.yml \
             --workflow-ref "${LAB_WORKFLOW_REF}" \
             --workflow-sha "${LAB_WORKFLOW_SHA}" \
+            --base-sha "${base_sha}" \
             --target-head-sha "${head_sha}" \
             --profile "${LAB_PROFILE}" \
             --lane-set "${LAB_LANE_SET}" \
@@ -385,6 +426,9 @@ jobs:
 
           {
             echo "host_ref=${host_ref}"
+            echo "harness_sha=${LAB_WORKFLOW_SHA}"
+            echo "base_ref=${LAB_BASE_REF}"
+            echo "base_sha=${base_sha}"
             echo "checkout_ref=${checkout_ref}"
             echo "display_ref=${display_ref}"
             echo "head_sha=${head_sha}"
@@ -1349,24 +1393,20 @@ jobs:
               smoke_gate_result="success"
             fi
           fi
-          combined_result() {
-            local first="$1"
-            local second="$2"
-            if [[ "${first}" == "failure" || "${second}" == "failure" ]]; then
-              echo "failure"
-            elif [[ "${first}" == "cancelled" || "${second}" == "cancelled" ]]; then
-              echo "cancelled"
-            elif [[ "${first}" == "success" || "${second}" == "success" ]]; then
-              echo "success"
-            else
-              echo "skipped"
-            fi
-          }
+          # Keep this alias for callers in older workflow snapshots; the
+          # implementation is variadic so later archive/batch results are
+          # never silently ignored.
+          source .github/scripts/combined_validation_result.sh
+          combined_result() { combined_validation_result "$@"; }
           rust_minimal_result="$(combined_result "${RUST_MINIMAL_RESULT}" "${RUST_MINIMAL_BATCH_RESULT}")"
           rust_integration_result="$(combined_result "${NEXTEST_ARCHIVE_RESULT}" "${RUST_INTEGRATION_ARCHIVE_RESULT}" "${RUST_INTEGRATION_RESULT}" "${RUST_INTEGRATION_BATCH_RESULT}")"
           python3 .github/scripts/aggregate_validation_summary.py \
             --repo "${GITHUB_REPOSITORY}" \
             --host-ref "${{ needs.metadata.outputs.host_ref }}" \
+            --workflow-sha "${{ needs.metadata.outputs.harness_sha }}" \
+            --base-ref "${{ needs.metadata.outputs.base_ref }}" \
+            --base-sha "${{ needs.metadata.outputs.base_sha }}" \
+            --workflow-file "validation-lab.yml" \
             --display-ref "${{ needs.metadata.outputs.display_ref }}" \
             --checkout-ref "${{ needs.metadata.outputs.checkout_ref }}" \
             --head-sha "${{ needs.metadata.outputs.head_sha }}" \

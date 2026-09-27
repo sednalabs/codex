@@ -1,6 +1,29 @@
 {
   "lanes": [
     {
+      "lane_id": "codex.thread-manager-sample-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "all",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "thread-manager-sample-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "core-compile-smoke",
       "groups": [
         "core"
@@ -2003,6 +2026,24 @@
     }
   ],
   "followup_routes": [
+    {
+      "route_id": "thread-manager-sample-consumer",
+      "priority": 10,
+      "lane_ids": [
+        "codex.thread-manager-sample-targeted"
+      ],
+      "allowed_paths": [
+        "codex-rs/thread-manager-sample/**",
+        ".github/validation-lanes.json",
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        "docs/validation_workflow.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/thread-manager-sample/**"
+      ]
+    },
     {
       "route_id": "workflow-ci-planner",
       "lane_ids": [

@@ -20,6 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
     parser.add_argument("--host-ref", required=True)
+    parser.add_argument("--workflow-sha", default="")
+    parser.add_argument("--base-ref", default="")
+    parser.add_argument("--base-sha", default="")
     parser.add_argument("--display-ref", required=True)
     parser.add_argument("--checkout-ref", required=True)
     parser.add_argument("--head-sha", required=True)
@@ -858,6 +861,13 @@ def main() -> None:
             "run_attempt": args.run_attempt,
             "url": args.run_url,
         },
+        "identity": {
+            "harness_sha": args.workflow_sha,
+            "base_ref": args.base_ref,
+            "base_sha": args.base_sha,
+            "target_sha": args.head_sha,
+            "planner_fingerprint": args.planner_fingerprint or "",
+        },
         "jobs": {
             "smoke_gate": {
                 "planned": parse_bool(args.run_smoke_gate),
@@ -910,6 +920,9 @@ def main() -> None:
             "schema_version": "ci-proof-v1",
             "repository": args.repo,
             "workflow_file": args.workflow_file,
+            "harness_sha": args.workflow_sha,
+            "base_ref": args.base_ref,
+            "base_sha": args.base_sha,
             "lane": args.lane_set,
             "planner_fingerprint": args.planner_fingerprint or "",
             "head_sha": args.head_sha,
@@ -922,6 +935,8 @@ def main() -> None:
                 [
                     args.repo,
                     args.workflow_file,
+                    args.workflow_sha,
+                    args.base_sha,
                     args.head_sha,
                     args.lane_set,
                     args.planner_fingerprint or "",
