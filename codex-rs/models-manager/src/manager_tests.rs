@@ -812,6 +812,102 @@ async fn get_model_info_uses_custom_catalog() {
 }
 
 #[tokio::test]
+async fn openai_static_catalog_applies_overlay_but_other_static_catalogs_do_not() {
+    const SENTENCE: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 0);
+    candidate.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!("before {SENTENCE} after")),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+        permissions: None,
+    });
+    let catalog = ModelsResponse {
+        models: vec![candidate.clone()],
+    };
+
+    let openai = StaticModelsManager::new_with_provider_kind(
+        None,
+        catalog.clone(),
+        ModelProviderKind::OpenAiCompatible,
+    );
+    let openai_info = openai
+        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .await;
+    assert!(!openai_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_deref())
+        .expect("catalog template")
+        .contains(SENTENCE));
+
+    let other = StaticModelsManager::new(None, ModelsResponse { models: vec![candidate] });
+    let other_info = other
+        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .await;
+    assert!(other_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_deref())
+        .expect("catalog template")
+        .contains(SENTENCE));
+}
+
+#[tokio::test]
+async fn openai_overlay_runs_after_remote_composition_and_before_operator_override() {
+    const SENTENCE: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 0);
+    candidate.model_messages = Some(ModelMessages {
+        instructions_template: Some(format!("remote {SENTENCE}")),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+        permissions: None,
+    });
+    let endpoint = TestModelsEndpoint::new(vec![vec![candidate]]);
+    let home = tempfile::tempdir().expect("temp dir");
+    let manager = OpenAiModelsManager::new_with_provider_kind(
+        home.path().to_path_buf(),
+        endpoint,
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+        ModelProviderKind::OpenAiCompatible,
+    );
+    manager
+        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
+        .await
+        .expect("remote refresh succeeds");
+
+    let info = manager
+        .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
+        .await;
+    assert!(!info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_deref())
+        .expect("catalog template")
+        .contains(SENTENCE));
+
+    let overridden = manager
+        .get_model_info(
+            "codex-auto-review",
+            &ModelsManagerConfig {
+                base_instructions: Some("operator-owned instructions".to_string()),
+                ..ModelsManagerConfig::default()
+            },
+        )
+        .await;
+    assert_eq!(
+        overridden
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref()),
+        Some("operator-owned instructions")
+    );
+}
+
+#[tokio::test]
 async fn get_model_info_matches_namespaced_suffix() {
     let config = ModelsManagerConfig::default();
     let mut remote = remote_model("gpt-image", "Image", /*priority*/ 0);

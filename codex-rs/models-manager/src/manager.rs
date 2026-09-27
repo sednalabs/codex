@@ -3,6 +3,7 @@ use crate::cache::ModelsCache;
 use crate::cache::ModelsCacheEntry;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
+use crate::instruction_overlay;
 use crate::model_info;
 use chrono::Utc;
 use codex_http_client::HttpClientFactory;
@@ -80,6 +81,13 @@ pub struct ModelsEndpointResponse {
 
 pub type ModelsEndpointFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Identifies whether fork-owned OpenAI catalog adjustments are applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelProviderKind {
+    OpenAiCompatible,
+    Other,
+}
+
 /// Strategy for refreshing available models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshStrategy {
@@ -111,6 +119,9 @@ type SharedModelsEndpointClient = Arc<dyn ModelsEndpointClient>;
 
 /// Coordinates model discovery plus cached metadata on disk.
 pub trait ModelsManager: fmt::Debug + Send + Sync {
+    fn provider_kind(&self) -> ModelProviderKind {
+        ModelProviderKind::Other
+    }
     /// Supply startup API-key discovery policy; live changes require a new session.
     /// Static catalogs ignore this setting.
     fn set_api_key_model_discovery_enabled(&self, _enabled: bool) {}
@@ -234,7 +245,12 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
         Box::pin(
             async move {
                 let remote_models = self.get_remote_models().await;
-                construct_model_info_from_candidates(model, &remote_models, config)
+                construct_model_info_from_candidates(
+                    model,
+                    &remote_models,
+                    config,
+                    self.provider_kind(),
+                )
             }
             .instrument(tracing::info_span!("get_model_info", model = model)),
         )
@@ -263,6 +279,7 @@ pub struct OpenAiModelsManager {
     endpoint_client: SharedModelsEndpointClient,
     api_key_model_discovery_enabled: AtomicBool,
     auth_manager: Option<Arc<AuthManager>>,
+    provider_kind: ModelProviderKind,
 }
 
 /// Static model manager backed by an authoritative in-process catalog.
@@ -270,6 +287,7 @@ pub struct OpenAiModelsManager {
 pub struct StaticModelsManager {
     remote_models: Vec<ModelInfo>,
     auth_manager: Option<Arc<AuthManager>>,
+    provider_kind: ModelProviderKind,
 }
 
 impl OpenAiModelsManager {
@@ -279,6 +297,20 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
+        Self::new_with_provider_kind(
+            codex_home,
+            endpoint_client,
+            auth_manager,
+            ModelProviderKind::OpenAiCompatible,
+        )
+    }
+
+    pub fn new_with_provider_kind(
+        codex_home: PathBuf,
+        endpoint_client: Arc<dyn ModelsEndpointClient>,
+        auth_manager: Option<Arc<AuthManager>>,
+        provider_kind: ModelProviderKind,
+    ) -> Self {
         let cache_path = codex_home.join(MODEL_CACHE_FILE);
         Self::new_with_optional_cache(
             Some(Arc::new(FileModelsCache::new(
@@ -287,6 +319,7 @@ impl OpenAiModelsManager {
             ))),
             endpoint_client,
             auth_manager,
+            provider_kind,
         )
     }
 
@@ -295,7 +328,19 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
-        Self::new_with_optional_cache(/*cache*/ None, endpoint_client, auth_manager)
+        Self::new_without_cache_with_provider_kind(
+            endpoint_client,
+            auth_manager,
+            ModelProviderKind::OpenAiCompatible,
+        )
+    }
+
+    pub fn new_without_cache_with_provider_kind(
+        endpoint_client: Arc<dyn ModelsEndpointClient>,
+        auth_manager: Option<Arc<AuthManager>>,
+        provider_kind: ModelProviderKind,
+    ) -> Self {
+        Self::new_with_optional_cache(/*cache*/ None, endpoint_client, auth_manager, provider_kind)
     }
 
     /// Constructs an OpenAI-compatible model manager with a caller-provided cache.
@@ -307,13 +352,28 @@ impl OpenAiModelsManager {
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
     ) -> Self {
-        Self::new_with_optional_cache(Some(cache), endpoint_client, auth_manager)
+        Self::new_with_cache_with_provider_kind(
+            cache,
+            endpoint_client,
+            auth_manager,
+            ModelProviderKind::OpenAiCompatible,
+        )
+    }
+
+    pub fn new_with_cache_with_provider_kind(
+        cache: Arc<dyn ModelsCache>,
+        endpoint_client: Arc<dyn ModelsEndpointClient>,
+        auth_manager: Option<Arc<AuthManager>>,
+        provider_kind: ModelProviderKind,
+    ) -> Self {
+        Self::new_with_optional_cache(Some(cache), endpoint_client, auth_manager, provider_kind)
     }
 
     fn new_with_optional_cache(
         cache: Option<Arc<dyn ModelsCache>>,
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
+        provider_kind: ModelProviderKind,
     ) -> Self {
         let remote_models = load_remote_models_from_file().unwrap_or_default();
         Self {
@@ -328,6 +388,7 @@ impl OpenAiModelsManager {
             api_key_model_discovery_enabled: AtomicBool::new(false),
             endpoint_client,
             auth_manager,
+            provider_kind,
         }
     }
 }
@@ -335,14 +396,26 @@ impl OpenAiModelsManager {
 impl StaticModelsManager {
     /// Construct a static model manager from an authoritative catalog.
     pub fn new(auth_manager: Option<Arc<AuthManager>>, model_catalog: ModelsResponse) -> Self {
+        Self::new_with_provider_kind(auth_manager, model_catalog, ModelProviderKind::Other)
+    }
+
+    pub fn new_with_provider_kind(
+        auth_manager: Option<Arc<AuthManager>>,
+        model_catalog: ModelsResponse,
+        provider_kind: ModelProviderKind,
+    ) -> Self {
         Self {
             remote_models: model_catalog.models,
             auth_manager,
+            provider_kind,
         }
     }
 }
 
 impl ModelsManager for OpenAiModelsManager {
+    fn provider_kind(&self) -> ModelProviderKind {
+        self.provider_kind
+    }
     fn set_api_key_model_discovery_enabled(&self, enabled: bool) {
         self.api_key_model_discovery_enabled
             .store(enabled, Ordering::SeqCst);
@@ -645,6 +718,9 @@ impl OpenAiModelsManager {
 }
 
 impl ModelsManager for StaticModelsManager {
+    fn provider_kind(&self) -> ModelProviderKind {
+        self.provider_kind
+    }
     fn get_default_model<'a>(
         &'a self,
         model: &'a Option<String>,
@@ -783,6 +859,7 @@ pub(crate) fn construct_model_info_from_candidates(
     model: &str,
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
+    provider_kind: ModelProviderKind,
 ) -> ModelInfo {
     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
     // retry for namespaced slugs like `custom/gpt-5.3-codex`.
@@ -797,6 +874,10 @@ pub(crate) fn construct_model_info_from_candidates(
     } else {
         model_info::model_info_from_slug(model)
     };
+    let mut model_info = model_info;
+    if provider_kind == ModelProviderKind::OpenAiCompatible {
+        let _outcome = instruction_overlay::apply_openai_compatible(&mut model_info);
+    }
     model_info::with_config_overrides(model_info, config)
 }
 

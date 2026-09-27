@@ -17,6 +17,7 @@ use codex_login::default_client::ClientRedirectPolicy;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::cache::ModelsCache;
 use codex_models_manager::manager::OpenAiModelsManager;
+use codex_models_manager::manager::ModelProviderKind;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
@@ -400,6 +401,14 @@ impl ConfiguredModelProvider {
             gateway_auth_manager,
         }
     }
+
+    fn model_provider_kind(&self) -> ModelProviderKind {
+        if self.info.is_openai() {
+            ModelProviderKind::OpenAiCompatible
+        } else {
+            ModelProviderKind::Other
+        }
+    }
 }
 
 impl ModelProvider for ConfiguredModelProvider {
@@ -549,9 +558,10 @@ impl ModelProvider for ConfiguredModelProvider {
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
         match config_model_catalog {
-            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+            Some(model_catalog) => Arc::new(StaticModelsManager::new_with_provider_kind(
                 self.auth_manager.clone(),
                 model_catalog,
+                self.model_provider_kind(),
             )),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
@@ -559,10 +569,11 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.auth_manager.clone(),
                     self.gateway_auth_manager.clone(),
                 ));
-                Arc::new(OpenAiModelsManager::new(
+                Arc::new(OpenAiModelsManager::new_with_provider_kind(
                     codex_home,
                     endpoint,
                     self.auth_manager.clone(),
+                    self.model_provider_kind(),
                 ))
             }
         }
@@ -573,9 +584,10 @@ impl ModelProvider for ConfiguredModelProvider {
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
         match config_model_catalog {
-            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+            Some(model_catalog) => Arc::new(StaticModelsManager::new_with_provider_kind(
                 self.auth_manager.clone(),
                 model_catalog,
+                self.model_provider_kind(),
             )),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
@@ -583,9 +595,10 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.auth_manager.clone(),
                     self.gateway_auth_manager.clone(),
                 ));
-                Arc::new(OpenAiModelsManager::new_without_cache(
+                Arc::new(OpenAiModelsManager::new_without_cache_with_provider_kind(
                     endpoint,
                     self.auth_manager.clone(),
+                    self.model_provider_kind(),
                 ))
             }
         }
@@ -597,9 +610,10 @@ impl ModelProvider for ConfiguredModelProvider {
         cache: Arc<dyn ModelsCache>,
     ) -> SharedModelsManager {
         match config_model_catalog {
-            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+            Some(model_catalog) => Arc::new(StaticModelsManager::new_with_provider_kind(
                 self.auth_manager.clone(),
                 model_catalog,
+                self.model_provider_kind(),
             )),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(
@@ -607,10 +621,11 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.auth_manager.clone(),
                     self.gateway_auth_manager.clone(),
                 ));
-                Arc::new(OpenAiModelsManager::new_with_cache(
+                Arc::new(OpenAiModelsManager::new_with_cache_with_provider_kind(
                     cache,
                     endpoint,
                     self.auth_manager.clone(),
+                    self.model_provider_kind(),
                 ))
             }
         }
