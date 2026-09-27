@@ -19,6 +19,11 @@ SAFE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,199}$")
 SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 SAFE_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 PROFILES = {"rust_minimal", "rust_integration"}
+PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]+$")
+TARGET_KINDS = {"lib", "integration"}
+MAX_TESTS = 64
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,8 +40,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def request_payload(args: argparse.Namespace) -> tuple[str, dict]:
-    raw = str(args.request_json)
+def normalize_request(raw: str, profile: str) -> tuple[str, dict]:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -45,11 +49,51 @@ def request_payload(args: argparse.Namespace) -> tuple[str, dict]:
         raise SystemExit(f"request must be a {SCHEMA_VERSION} object")
     # The hosted runner owns the definitive schema validation.  These local
     # checks prevent an obvious malformed dispatch while keeping dry-run cheap.
-    if not isinstance(payload.get("tests"), list) or not payload["tests"]:
-        raise SystemExit("request.tests must be a non-empty array")
-    if payload.get("profile") != args.profile:
+    package = payload.get("package")
+    target_kind = payload.get("target_kind")
+    target = payload.get("target", "")
+    tests = payload.get("tests")
+    if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
+        raise SystemExit("request.package must be a safe Cargo package name")
+    if target_kind not in TARGET_KINDS:
+        raise SystemExit("request.target_kind must be lib or integration")
+    if target_kind == "integration":
+        if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
+            raise SystemExit("request.target must be a safe integration target name")
+    elif target not in ("", None, "lib"):
+        raise SystemExit("request.target must be empty for lib requests")
+    if not isinstance(tests, list) or not tests or len(tests) > MAX_TESTS:
+        raise SystemExit(f"request.tests must contain 1..{MAX_TESTS} names")
+    if any(not isinstance(name, str) or not TEST_RE.fullmatch(name) for name in tests):
+        raise SystemExit("request.tests must contain fully-qualified safe names")
+    if len(set(tests)) != len(tests):
+        raise SystemExit("request.tests must not contain duplicates")
+    if payload.get("profile") != profile:
         raise SystemExit("request profile must match --profile")
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")), payload
+    normalized = {
+        "schema_version": SCHEMA_VERSION,
+        "profile": profile,
+        "package": package,
+        "target_kind": target_kind,
+        "target": "" if target in (None, "lib") else target,
+        "tests": tests,
+    }
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":")), normalized
+
+
+def request_payload(args: argparse.Namespace) -> tuple[str, dict]:
+    return normalize_request(str(args.request_json), args.profile)
+
+
+def validate_command_inputs(args: argparse.Namespace, *, require_target_sha: bool = True) -> None:
+    """Fail closed before constructing a fixed-executable argv."""
+
+    if not SAFE_REPO.fullmatch(args.repo):
+        raise SystemExit("--repo must be in OWNER/REPOSITORY form")
+    if require_target_sha and (not args.target_sha or not SHA.fullmatch(args.target_sha)):
+        raise SystemExit("--target-sha must be a full 40-character commit SHA")
+    if not SAFE_REF.fullmatch(args.workflow_host_ref) or not SAFE_REF.fullmatch(args.base_ref):
+        raise SystemExit("refs must be safe repository ref names")
 
 
 def plan(args: argparse.Namespace, request_json: str) -> dict:
@@ -67,6 +111,11 @@ def plan(args: argparse.Namespace, request_json: str) -> dict:
 
 
 def gh_command(args: argparse.Namespace, request_json: str) -> list[str]:
+    validate_command_inputs(args)
+    request_json, _ = normalize_request(request_json, args.profile)
+    # The executable and every option are fixed literals.  User values have
+    # passed strict ref/SHA/schema validation above and remain one argv value
+    # after a fixed flag; there is no shell, eval, or option reinterpretation.
     return [
         "gh",
         "workflow",
@@ -101,8 +150,7 @@ def watch_run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
-    if not SAFE_REPO.fullmatch(args.repo):
-        raise SystemExit("--repo must be in OWNER/REPOSITORY form")
+    validate_command_inputs(args, require_target_sha=False) if args.watch else None
     if args.watch:
         if args.dispatch:
             raise SystemExit("--watch and --dispatch are separate operations")
@@ -110,12 +158,9 @@ def main() -> int:
             raise SystemExit("--watch requires a positive --run-id")
         print(json.dumps({"repo": args.repo, "run_id": args.run_id, "mutation": "blocking-watch"}))
         return watch_run(args)
-    if not args.target_sha or not SHA.fullmatch(args.target_sha):
-        raise SystemExit("--target-sha must be a full 40-character commit SHA")
     if not args.request_json:
         raise SystemExit("--request-json is required for preview or dispatch")
-    if not SAFE_REF.fullmatch(args.workflow_host_ref) or not SAFE_REF.fullmatch(args.base_ref):
-        raise SystemExit("refs must be safe repository ref names")
+    validate_command_inputs(args)
     request_json, _ = request_payload(args)
     print(json.dumps(plan(args, request_json), indent=2, sort_keys=True))
     if not args.dispatch:
