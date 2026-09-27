@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Run a typed, exact Rust test request on a hosted validation runner.
 
-The request is deliberately narrower than a shell command.  It names a Cargo
-package, one allowlisted target kind, and fully-qualified test names.  The
-runner inventories the target first and refuses to execute when a requested
-name is missing or ambiguous.  This prevents a successful ``cargo test`` with
-zero selected tests from being mistaken for coverage.
+The request is deliberately narrower than a shell command.  It selects a
+Cargo target from the committed command catalog and names fully-qualified
+tests to reconcile.  The runner inventories the target first, refuses to run
+when a requested name is missing or ambiguous, and executes only the
+catalog-owned target argv.  This prevents request data from reaching Cargo.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
+MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
+MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
 MAX_DIAGNOSTIC_CHARS = 4096
@@ -36,6 +38,7 @@ TEST_RESULT_RE = re.compile(
     r"(?P<measured>\d+) measured;\s+"
     r"(?P<filtered>\d+) filtered out"
 )
+TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -75,6 +78,122 @@ def fail(code: str, message: str) -> dict[str, Any]:
         "inventory": {"status": "not-run", "tests": []},
         "tests": [],
     }
+
+
+def manifest_path(repo_root: Path) -> Path:
+    """Return the candidate-owned closed command catalog."""
+
+    return repo_root / ".github" / MANIFEST_NAME
+
+
+def target_key(package: str, target_kind: str, target: str) -> tuple[str, str, str]:
+    return package, target_kind, target
+
+
+def expected_commands(
+    package: str, target_kind: str, target: str
+) -> tuple[list[str], list[str]]:
+    """Build the only two command shapes accepted by the catalog validator.
+
+    The package and target values here come from the committed catalog, not
+    the dispatch request.  The result is used only to validate that the
+    catalog contains complete, non-templated argv tuples.
+    """
+
+    command = ["cargo", "test", "--locked", "-p", package]
+    if target_kind == "lib":
+        command.append("--lib")
+    else:
+        command.extend(["--test", target])
+    inventory = [*command, "--", "--list"]
+    execution = [*command, "--", "--test-threads=1"]
+    return inventory, execution
+
+
+def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """Load and validate the closed target/argv manifest before any Cargo call."""
+
+    try:
+        payload = json.loads(manifest_path(repo_root).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"named-test command manifest is unavailable: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise ValueError("named-test command manifest schema is unsupported")
+    rows = payload.get("targets")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("named-test command manifest must contain targets")
+    manifest: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("named-test command manifest rows must be objects")
+        package = row.get("package")
+        target_kind = row.get("target_kind")
+        target = row.get("target", "")
+        profiles = row.get("profiles")
+        inventory_argv = row.get("inventory_argv")
+        execution_argv = row.get("execution_argv")
+        if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
+            raise ValueError("manifest package is not a safe Cargo package name")
+        if target_kind not in ALLOWED_TARGET_KINDS:
+            raise ValueError("manifest target kind is not supported")
+        if target_kind == "integration":
+            if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
+                raise ValueError("manifest integration target is not safe")
+        elif target != "":
+            raise ValueError("manifest lib targets must use an empty target")
+        if (
+            not isinstance(profiles, list)
+            or not profiles
+            or not all(isinstance(profile, str) for profile in profiles)
+            or not set(profiles) <= ALLOWED_PROFILES
+        ):
+            raise ValueError("manifest profiles are not in the hosted allowlist")
+        if len(set(profiles)) != len(profiles):
+            raise ValueError("manifest profiles must be unique")
+        if (
+            not isinstance(inventory_argv, list)
+            or not isinstance(execution_argv, list)
+            or not inventory_argv
+            or not execution_argv
+            or not all(isinstance(value, str) for value in [*inventory_argv, *execution_argv])
+        ):
+            raise ValueError("manifest commands must be complete argv string lists")
+        expected_inventory, expected_execution = expected_commands(
+            package, target_kind, target
+        )
+        if inventory_argv != expected_inventory or execution_argv != expected_execution:
+            raise ValueError(
+                "manifest command tuples must exactly match the fixed Cargo shapes"
+            )
+        key = target_key(package, target_kind, target)
+        if key in manifest:
+            raise ValueError("named-test command manifest contains a duplicate target")
+        manifest[key] = {
+            "package": package,
+            "target_kind": target_kind,
+            "target": target,
+            "profiles": tuple(profiles),
+            "inventory_argv": tuple(inventory_argv),
+            "execution_argv": tuple(execution_argv),
+        }
+    return manifest
+
+
+def select_target(
+    request: dict[str, Any], manifest: dict[tuple[str, str, str], dict[str, Any]]
+) -> dict[str, Any]:
+    package = request.get("package")
+    target_kind = request.get("target_kind")
+    target = request.get("target", "")
+    if not isinstance(package, str) or not isinstance(target_kind, str) or not isinstance(target, str):
+        raise ValueError("request target selector is incomplete")
+    record = manifest.get(target_key(package, target_kind, target))
+    if record is None:
+        raise ValueError("request target selector is not in the committed command catalog")
+    profile = request.get("profile")
+    if profile not in record["profiles"]:
+        raise ValueError("request profile is not enabled for the selected target")
+    return record
 
 
 def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -125,42 +244,32 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     return normalized, None
 
 
-def cargo_args(request: dict[str, Any], *, list_only: bool, test_name: str = "") -> list[str]:
-    # Revalidate at the command-construction boundary as well as at input
-    # loading. Every dynamic value is bounded by the typed Rust-name grammar.
-    package = request.get("package")
-    target_kind = request.get("target_kind")
-    target = request.get("target", "")
-    if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
-        raise ValueError("package is not a safe Cargo package name")
-    if target_kind not in ALLOWED_TARGET_KINDS:
-        raise ValueError("target kind is not in the hosted allowlist")
-    if target_kind == "integration":
-        if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-            raise ValueError("integration target is not a safe Cargo target name")
-    elif target not in ("", None, "lib"):
-        raise ValueError("lib requests must not name an integration target")
-    if list_only:
-        if test_name:
-            raise ValueError("inventory requests must not name a test")
-    elif not isinstance(test_name, str) or not TEST_RE.fullmatch(test_name):
-        raise ValueError("test name is not a safe fully-qualified Rust name")
-    # The executable and option names are fixed; validated values are each one
-    # argv element, with no shell/eval or option reinterpretation.
-    # lgtm [py/command-line-injection]
-    args = ["cargo", "test", "--locked", "-p", package]
-    if target_kind == "lib":
-        args.append("--lib")
-    else:
-        # lgtm [py/command-line-injection]
-        args.extend(["--test", target])
-    args.append("--")
-    if list_only:
-        args.append("--list")
-    else:
-        # lgtm [py/command-line-injection]
-        args.extend([test_name, "--exact", "--test-threads=1"])
-    return args
+def cargo_args(
+    request: dict[str, Any],
+    *,
+    list_only: bool,
+    test_name: str = "",
+    command_record: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return a complete argv tuple from the closed target command catalog.
+
+    A test name is a reconciliation selector, not an argv fragment.  The
+    runner executes the immutable target command once and matches requested
+    names against its exact per-test output.  Rejecting ``test_name`` here
+    prevents callers from accidentally reintroducing a request-derived sink.
+    """
+
+    if test_name:
+        raise ValueError("test selectors are not command arguments")
+    record = command_record
+    if record is None:
+        manifest_root = Path(__file__).resolve().parents[2]
+        record = select_target(request, load_manifest(manifest_root))
+    key = "inventory_argv" if list_only else "execution_argv"
+    command = record.get(key)
+    if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
+        raise ValueError("command catalog entry is not a complete argv tuple")
+    return list(command)
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -174,19 +283,33 @@ def listed_tests(stdout: str) -> list[str]:
     return names
 
 
+def test_outcomes(output: str) -> dict[str, list[str]]:
+    """Index each exact Cargo test result without trusting a summary count."""
+
+    outcomes: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        match = TEST_OUTCOME_RE.match(line.strip())
+        if match:
+            outcomes.setdefault(match.group("name"), []).append(match.group("status"))
+    return outcomes
+
+
 def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     manifest_root = repo_root / "codex-rs"
+    try:
+        command_record = select_target(request, load_manifest(repo_root))
+    except ValueError as exc:
+        return fail("target_selector_unknown", str(exc))
     env = os.environ.copy()
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
-    # The command remains intentionally argv-based (never shell-evaluated);
-    # cargo_args revalidates every request-derived value at the sink boundary.
-    # lgtm [py/command-line-injection]
-    inventory_command = cargo_args(request, list_only=True)
-    # lgtm [py/command-line-injection]
+    # Both subprocess commands are complete tuples from the closed catalog.
+    # Request fields select a catalog entry and never form an argv element.
+    inventory_command = cargo_args(
+        request, list_only=True, command_record=command_record
+    )
     inventory = subprocess.run(
-        # codeql[py/command-line-injection]
         inventory_command,
         cwd=manifest_root,
         env=env,
@@ -234,43 +357,43 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
+    # Run the complete immutable target command.  This keeps the command
+    # surface closed while the requested names remain exact post-run selectors.
+    test_command = cargo_args(
+        request, list_only=False, command_record=command_record
+    )
+    completed = subprocess.run(
+        test_command,
+        cwd=manifest_root,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        shell=False,
+    )
+    output = "\n".join(
+        value for value in (completed.stdout, completed.stderr) if value
+    )
+    counts = test_result_counts(output)
+    outcomes = test_outcomes(output)
     for name in request["tests"]:
-        # cargo_args revalidates the Rust fully-qualified name before this
-        # argv-only invocation; no shell or arbitrary flag can be introduced.
-        # lgtm [py/command-line-injection]
-        test_command = cargo_args(request, list_only=False, test_name=name)
-        # lgtm [py/command-line-injection]
-        completed = subprocess.run(
-            # codeql[py/command-line-injection]
-            test_command,
-            cwd=manifest_root,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            shell=False,
-        )
-        output = "\n".join(
-            value for value in (completed.stdout, completed.stderr) if value
-        )
-        counts = test_result_counts(output)
+        observed = outcomes.get(name, [])
+        outcome = observed[0] if len(observed) == 1 else ""
         execution_reconciled = (
             completed.returncode == 0
             and counts is not None
-            and counts["passed"] == 1
-            and counts["failed"] == 0
-            and counts["ignored"] == 0
-            and counts["measured"] == 0
+            and len(observed) == 1
+            and outcome == "ok"
         )
         status = "success" if execution_reconciled else "failure"
         failure_code = ""
-        if completed.returncode != 0:
+        if len(observed) != 1:
+            failure_code = "execution_reconciliation_failed"
+        elif outcome == "ignored":
+            failure_code = "named_test_ignored"
+        elif completed.returncode != 0 or outcome == "FAILED":
             failure_code = "named_test_failed"
         elif counts is None:
-            failure_code = "execution_reconciliation_failed"
-        elif counts["ignored"]:
-            failure_code = "named_test_ignored"
-        elif counts["passed"] != 1 or counts["failed"] or counts["measured"]:
             failure_code = "execution_reconciliation_failed"
         result["tests"].append(
             {
@@ -278,6 +401,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "status": status,
                 "exit_code": completed.returncode,
                 "execution_reconciled": execution_reconciled,
+                "observed_outcomes": observed,
                 "result_counts": counts,
                 "diagnostics": command_diagnostics(completed),
             }

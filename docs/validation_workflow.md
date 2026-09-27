@@ -115,13 +115,17 @@ targeted proof. The lane is explicit-only and therefore does not widen routine
 smoke or frontier runs.
 
 For a new exact test question, use the typed `rust-tests-v1` interface instead
-of adding a one-off command to a workflow. It accepts only a package, `lib` or
-named integration target, an allowlisted hosted profile, and fully-qualified
-test names. The hosted job inventories the selected Cargo target first and
-fails closed when a requested name is missing or ambiguous; it then records a
-separate result for each requested test. A passing Cargo invocation that ran
-zero tests therefore cannot become false coverage. The request and result
-artifact carry the exact harness/base/target identity and a request
+of adding a one-off command to a workflow. Its package/target selector must
+match an entry in the committed `.github/validation-named-tests.json` command
+catalog. Each entry contains complete, fixed inventory and execution argv
+tuples; arbitrary packages, targets, flags, and shell fragments are not an
+extension mechanism. Add a reviewed catalog entry when a new Cargo target is
+needed. Fully-qualified requested test names remain selectors only: the hosted
+job inventories the selected target, fails closed when a requested name is
+missing or ambiguous, then runs the immutable target command and reconciles
+each requested name against its exact result. A passing Cargo invocation that
+ran zero selected tests therefore cannot become false coverage. The request
+and result artifact carry the exact harness/base/target identity and a request
 fingerprint. The runner also reconciles Cargo's result counts and fails when
 the named test is ignored, absent from the result, or does not produce exactly
 one passing non-ignored execution; bounded diagnostics point to the hosted

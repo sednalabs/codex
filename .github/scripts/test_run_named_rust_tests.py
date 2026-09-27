@@ -24,6 +24,7 @@ REQUEST = {
     "target": "",
     "tests": ["suite::known"],
 }
+MANIFEST = MODULE.load_manifest(Path(__file__).resolve().parents[2])
 
 
 class NamedRustTests(TestCase):
@@ -41,6 +42,7 @@ class NamedRustTests(TestCase):
         with (
             mock.patch.object(MODULE.subprocess, "run", side_effect=[inventory, execution]),
             mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
             return MODULE.run_request(REQUEST, Path("/validation-target"))
 
@@ -77,7 +79,10 @@ class NamedRustTests(TestCase):
 
     def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
-        with mock.patch.object(MODULE.subprocess, "run", return_value=inventory):
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=inventory),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
             result = MODULE.run_request(REQUEST, Path("/validation-target"))
 
         self.assertEqual(result["status"], "failure")
@@ -100,6 +105,35 @@ class NamedRustTests(TestCase):
             )
         with self.assertRaises(ValueError):
             MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
+
+    def test_command_builder_returns_only_catalog_commands(self) -> None:
+        self.assertEqual(
+            MODULE.cargo_args(REQUEST, list_only=True),
+            ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"],
+        )
+        self.assertEqual(
+            MODULE.cargo_args(REQUEST, list_only=False),
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "codex-core",
+                "--lib",
+                "--",
+                "--test-threads=1",
+            ],
+        )
+
+    def test_unknown_target_fails_before_cargo(self) -> None:
+        request = {**REQUEST, "package": "not-in-catalog"}
+        with (
+            mock.patch.object(MODULE.subprocess, "run") as run,
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+        self.assertEqual(result["failure_code"], "target_selector_unknown")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

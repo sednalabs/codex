@@ -68,7 +68,7 @@ jobs:
               "actions": ("none", "./.codeql-runtime/codeql-actions.yml"),
               "c-cpp": ("none", "./.github/codeql/codeql-config.yml"),
               "javascript-typescript": ("none", "./.github/codeql/codeql-config.yml"),
-              "python": ("none", "./.github/codeql/codeql-python.yml"),
+              "python": ("none", "./.github/codeql/codeql-config.yml"),
           }
           include = []
           for language in languages:
@@ -439,25 +439,9 @@ jobs:
             > "${RUNNER_TEMP}/pr-diff-range.json"
 
       - name: Perform CodeQL Analysis
-        id: analyze
         uses: github/codeql-action/analyze@v4.37.9
         with:
           category: ${{ matrix.scope != '' && format('/language:{0}/{1}', matrix.language, matrix.scope) || format('/language:{0}', matrix.language) }}
-          output: sarif-results
-
-      # Keep explicit in-source suppressions reviewable and reversible. The
-      # action only dismisses results carrying a CodeQL suppression marker in
-      # the uploaded SARIF; all unsuppressed findings remain open and fail the
-      # required gate. Running this on PR/merge-group and protected-branch
-      # scans keeps the exact candidate and its protected result consistent.
-      - name: Apply explicit CodeQL suppressions
-        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main' }}
-        uses: advanced-security/dismiss-alerts@a18f986bdb40edba0dd7a74382c15d4a3d50a1c8 # v2.0.3
-        with:
-          sarif-id: ${{ steps.analyze.outputs.sarif-id }}
-          sarif-file: sarif-results
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Save Rust dependency cache for CodeQL
         if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}

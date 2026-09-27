@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import subprocess
+from pathlib import Path
 
 
 SCHEMA_VERSION = "rust-tests-v1"
@@ -26,6 +27,7 @@ TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 TARGET_KINDS = {"lib", "integration"}
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
+COMMAND_MANIFEST = Path(__file__).resolve().parents[1] / ".github" / "validation-named-tests.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,6 +86,20 @@ def normalize_request(raw: str, profile: str) -> tuple[str, dict]:
         "target": "" if target in (None, "lib") else target,
         "tests": tests,
     }
+    try:
+        catalog = json.loads(COMMAND_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"named-test command catalog is unavailable: {exc}") from exc
+    targets = catalog.get("targets") if isinstance(catalog, dict) else None
+    if not isinstance(targets, list) or not any(
+        isinstance(row, dict)
+        and row.get("package") == normalized["package"]
+        and row.get("target_kind") == normalized["target_kind"]
+        and row.get("target", "") == normalized["target"]
+        and profile in (row.get("profiles") or [])
+        for row in targets
+    ):
+        raise SystemExit("request target is not in the committed command catalog")
     return json.dumps(normalized, sort_keys=True, separators=(",", ":")), normalized
 
 
@@ -164,7 +180,6 @@ def watch_run(args: argparse.Namespace) -> int:
         raise SystemExit("--watch requires a positive --run-id")
     # The run id is an integer and the repository has a strict owner/name
     # shape; this argv-only invocation never evaluates user input as a shell.
-    # lgtm [py/command-line-injection]
     return subprocess.run(
         ["gh", "run", "watch", str(args.run_id), "--repo", args.repo, "--exit-status"],
         check=False,

@@ -72,8 +72,7 @@ contract today.
   code scanning receives the full configured category set for PR alert
   comparison.
 - The workflow uses `.github/codeql/codeql-config.yml` for shared CodeQL
-  settings, `.github/codeql/codeql-python.yml` for Python analysis and its
-  alert-suppression query, `.github/codeql/codeql-actions.yml` for Actions-only
+  settings, `.github/codeql/codeql-actions.yml` for Actions-only
   query additions, and `.github/codeql/codeql-rust.yml` for Rust-specific
   contract checks. The
   Actions lane prepares a runtime config so same-repository pull requests can
@@ -102,11 +101,10 @@ contract today.
   protected branch or scheduled runs. Do not cache Rust toolchain executables or
   pass normal Cargo `target/`, test binaries, or nextest archives into CodeQL;
   they are compiled outputs, not the source extraction data CodeQL needs.
-- Explicit, reviewed `codeql[rule-id]` source suppressions are applied through
-  the pinned `advanced-security/dismiss-alerts` action. It only dismisses
-  findings carrying a matching suppression in the uploaded SARIF; an
-  unsuppressed finding remains an open required-gate failure, and removing a
-  suppression reopens the finding on the next protected scan.
+- CodeQL findings are evaluated by GitHub code scanning itself. A successful
+  repository-owned analysis summary is not a dismissal or proof that the
+  separate code-scanning result is clean; the applicable ruleset must require
+  and report that result independently before protected landing.
 - When a pull request closes, `cancel-pr-runs.yml` cancels active PR-scoped
   workflow runs for that PR. Merged PRs still get the authoritative post-merge
   CodeQL scan from the `main` push; the canceller deliberately leaves protected
