@@ -663,6 +663,7 @@ core-attestation-targeted:
 
 # missing SQLx migration records.
 state-migration-repair-targeted:
+    cargo test -p codex-state runtime::migration_repair::tests::repairs_known_good_pre_migration_24_state_and_reopens_idempotently --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::state_migration_versions_are_unique --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::repairs_recency_migration_that_was_applied_as_version_38 --lib -- --exact --test-threads=1
