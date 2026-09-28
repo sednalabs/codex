@@ -57,6 +57,96 @@ const SHIFTED_STATE_MIGRATION_MOVES: &[MigrationHistoryMove] = &[
         source_description: "thread goals",
         target_version: 29,
     },
+    MigrationHistoryMove {
+        source_version: 33,
+        source_description: "threads thread source",
+        target_version: 30,
+    },
+    MigrationHistoryMove {
+        source_version: 34,
+        source_description: "drop device key bindings",
+        target_version: 31,
+    },
+    MigrationHistoryMove {
+        source_version: 35,
+        source_description: "threads preview",
+        target_version: 32,
+    },
+    MigrationHistoryMove {
+        source_version: 36,
+        source_description: "thread goal stopped statuses",
+        target_version: 33,
+    },
+    MigrationHistoryMove {
+        source_version: 37,
+        source_description: "drop thread goals",
+        target_version: 34,
+    },
+    MigrationHistoryMove {
+        source_version: 38,
+        source_description: "phase2 attested baselines",
+        target_version: 56,
+    },
+    MigrationHistoryMove {
+        source_version: 39,
+        source_description: "drop memory tables",
+        target_version: 35,
+    },
+    MigrationHistoryMove {
+        source_version: 40,
+        source_description: "threads history mode",
+        target_version: 40,
+    },
+    MigrationHistoryMove {
+        source_version: 41,
+        source_description: "threads name",
+        target_version: 41,
+    },
+    MigrationHistoryMove {
+        source_version: 42,
+        source_description: "drop agent jobs",
+        target_version: 42,
+    },
+    MigrationHistoryMove {
+        source_version: 43,
+        source_description: "threads recency at",
+        target_version: 39,
+    },
+    MigrationHistoryMove {
+        source_version: 44,
+        source_description: "threads visible sort indexes",
+        target_version: 36,
+    },
+    MigrationHistoryMove {
+        source_version: 45,
+        source_description: "threads configured identity provenance",
+        target_version: 57,
+    },
+    MigrationHistoryMove {
+        source_version: 46,
+        source_description: "remote control enrollments enabled",
+        target_version: 37,
+    },
+    MigrationHistoryMove {
+        source_version: 47,
+        source_description: "external agent config imports",
+        target_version: 38,
+    },
+    MigrationHistoryMove {
+        source_version: 48,
+        source_description: "threads is pinned",
+        target_version: 43,
+    },
+    MigrationHistoryMove {
+        source_version: 49,
+        source_description: "external agent config imports provider id",
+        target_version: 44,
+    },
+    MigrationHistoryMove {
+        source_version: 50,
+        source_description: "backfill thread spawn edges",
+        target_version: 9003,
+    },
 ];
 
 struct ColumnMigrationRepair {
@@ -209,7 +299,7 @@ async fn repair_shifted_state_migrations(
         r#"
         SELECT version, description, success, checksum
         FROM _sqlx_migrations
-        WHERE version BETWEEN 24 AND 32 OR version IN (9000, 9001, 9002)
+        WHERE version BETWEEN 24 AND 50 OR version IN (9000, 9001, 9002, 9003)
         ORDER BY version
         "#,
     )
@@ -278,19 +368,55 @@ async fn repair_shifted_state_migrations(
         return Ok(());
     }
 
+    // A repair is only safe when the observed legacy ledger is a complete
+    // prefix.  Validate the whole known cohort before opening the mutation
+    // transaction so a hole or altered historical identity cannot cause any
+    // source row to be moved or deleted.
+    validate_legacy_migration_cohort(&rows, migrator, &moves)?;
+
+    let mut verified_target_collisions = Vec::new();
     for migration_move in &moves {
-        if rows.iter().any(|row| {
+        let Some(target_row) = rows.iter().find(|row| {
             row.version == migration_move.target_version
                 && !moves.iter().any(|item| item.source_version == row.version)
-        }) {
+        }) else {
+            continue;
+        };
+        let target_migration = migration_by_version(migrator, migration_move.target_version)
+            .with_context(|| {
+                format!(
+                    "embedded state migration {} is missing",
+                    migration_move.target_version
+                )
+            })?;
+        validate_canonical_migration_row(
+            target_row,
+            target_migration,
+            migration_move.target_version,
+        )?;
+        if target_row.checksum
+            != rows
+                .iter()
+                .find(|row| row.version == migration_move.source_version)
+                .expect("source row was validated above")
+                .checksum
+        {
             anyhow::bail!(
-                "state DB migration repair would overwrite existing migration {}; refusing automatic repair",
-                migration_move.target_version
+                "state DB migration {} collision is not byte-equivalent to source {}; refusing automatic repair",
+                migration_move.target_version,
+                migration_move.source_version
             );
         }
+        verified_target_collisions.push(migration_move.target_version);
     }
 
     let mut tx = pool.begin().await?;
+    for target_version in verified_target_collisions {
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?")
+            .bind(target_version)
+            .execute(&mut *tx)
+            .await?;
+    }
     for migration_move in &moves {
         sqlx::query("UPDATE _sqlx_migrations SET version = ? WHERE version = ?")
             .bind(temporary_repair_version(migration_move.source_version))
@@ -317,6 +443,52 @@ async fn repair_shifted_state_migrations(
         .await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+fn validate_legacy_migration_cohort(
+    rows: &[AppliedMigrationRow],
+    migrator: &Migrator,
+    moves: &[&MigrationHistoryMove],
+) -> anyhow::Result<()> {
+    let highest_source_version = moves
+        .iter()
+        .map(|migration_move| migration_move.source_version)
+        .max()
+        .expect("moves is non-empty");
+
+    for migration_move in SHIFTED_STATE_MIGRATION_MOVES
+        .iter()
+        .filter(|migration_move| migration_move.source_version <= highest_source_version)
+    {
+        let source_is_exact = rows.iter().any(|row| {
+            row.version == migration_move.source_version
+                && row.success
+                && row.description == migration_move.source_description
+                && migration_checksum_matches(
+                    migrator,
+                    migration_move.target_version,
+                    &row.checksum,
+                )
+        });
+        let target_is_exact = rows
+            .iter()
+            .find(|row| row.version == migration_move.target_version && row.success);
+        let target_is_equivalent = target_is_exact.is_some_and(|row| {
+            migration_by_version(migrator, migration_move.target_version).is_some_and(|migration| {
+                row.description == migration.description.as_ref()
+                    && row.checksum == migration.checksum.as_ref()
+            })
+        });
+
+        if !source_is_exact && !target_is_equivalent {
+            anyhow::bail!(
+                "state DB legacy migration cohort is incomplete through version {}; migration {} is missing its exact historical row or canonical target; refusing automatic repair",
+                highest_source_version,
+                migration_move.source_version,
+            );
+        }
+    }
     Ok(())
 }
 
@@ -536,13 +708,365 @@ async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::repair_state_migrations;
+    use super::{SHIFTED_STATE_MIGRATION_MOVES, repair_state_migrations, temporary_repair_version};
     use crate::migrations::STATE_MIGRATOR;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
     use sqlx::Row;
     use sqlx::migrate::Migrator;
     use std::borrow::Cow;
+
+    async fn ledger_snapshot(pool: &sqlx::SqlitePool) -> Vec<(i64, String, bool, Vec<u8>, i64)> {
+        sqlx::query(
+            "SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("migration ledger should be readable")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get("version"),
+                row.get("description"),
+                row.get("success"),
+                row.get("checksum"),
+                row.get("execution_time"),
+            )
+        })
+        .collect()
+    }
+
+    fn known_good_legacy_migrator(include_backfill: bool) -> Migrator {
+        let mut migrations = STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 23)
+            .cloned()
+            .collect::<Vec<_>>();
+        for migration_move in SHIFTED_STATE_MIGRATION_MOVES {
+            if !include_backfill && migration_move.source_version == 50 {
+                continue;
+            }
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == migration_move.target_version)
+                .expect("mapped migration should be embedded");
+            migrations.push(sqlx::migrate::Migration::new(
+                migration_move.source_version,
+                migration.description.clone(),
+                migration.migration_type,
+                migration.sql.clone(),
+                migration.no_tx,
+            ));
+        }
+        migrations.sort_by_key(|migration| migration.version);
+        Migrator {
+            migrations: Cow::Owned(migrations),
+            ignore_missing: STATE_MIGRATOR.ignore_missing,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
+        }
+    }
+
+    async fn fresh_full_legacy_state() -> (std::path::PathBuf, sqlx::SqlitePool) {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.state_db_path())
+            .await
+            .expect("database should open");
+        known_good_legacy_migrator(true)
+            .run(&pool)
+            .await
+            .expect("legacy migrations should apply");
+        (sqlite_home, pool)
+    }
+
+    #[tokio::test]
+    async fn rejects_incomplete_legacy_cohort_without_mutation() {
+        let (sqlite_home, pool) = fresh_full_legacy_state().await;
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 30")
+            .execute(&pool)
+            .await
+            .expect("middle row should be removable");
+        let before = ledger_snapshot(&pool).await;
+        let error = repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect_err("hole must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("legacy migration cohort is incomplete")
+        );
+        assert_eq!(ledger_snapshot(&pool).await, before);
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    }
+
+    #[tokio::test]
+    async fn rejects_altered_legacy_identity_without_mutation() {
+        for (column, value, expected) in [
+            (
+                "description",
+                "altered historical description",
+                "unexpected description",
+            ),
+            ("checksum", "00", "unknown checksum"),
+        ] {
+            let (sqlite_home, pool) = fresh_full_legacy_state().await;
+            if column == "description" {
+                sqlx::query("UPDATE _sqlx_migrations SET description = ? WHERE version = 30")
+                    .bind(value)
+                    .execute(&pool)
+                    .await
+                    .expect("description should be altered");
+            } else {
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 30")
+                    .execute(&pool)
+                    .await
+                    .expect("checksum should be altered");
+            }
+            let before = ledger_snapshot(&pool).await;
+            let error = repair_state_migrations(&pool, &STATE_MIGRATOR)
+                .await
+                .expect_err("altered identity must fail closed");
+            assert!(error.to_string().contains(expected));
+            assert_eq!(ledger_snapshot(&pool).await, before);
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_noncanonical_target_collision_without_mutation() {
+        let (sqlite_home, pool) = fresh_full_legacy_state().await;
+        let target = STATE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 9000)
+            .expect("collision target migration should be embedded");
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, FALSE, ?, 0)",
+        )
+            .bind(target.version)
+            .bind(target.description.as_ref())
+            .bind(target.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .expect("unsuccessful target collision should be inserted");
+        let before = ledger_snapshot(&pool).await;
+        let error = repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect_err("noncanonical collision must fail closed");
+        assert!(error.to_string().contains("marked unsuccessful"));
+        assert_eq!(ledger_snapshot(&pool).await, before);
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    }
+
+    #[tokio::test]
+    async fn repairs_known_good_full_legacy_ledger_and_reopens_idempotently() {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |path| {
+            let _ = std::fs::remove_dir_all(path);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("database should open");
+        let legacy_without_backfill = known_good_legacy_migrator(false);
+        legacy_without_backfill
+            .run(&pool)
+            .await
+            .expect("legacy migrations through 49 should apply");
+        for (id, rollout_path, source) in [
+            ("parent", "/tmp/parent.jsonl", "{}"),
+            (
+                "child",
+                "/tmp/child.jsonl",
+                r#"{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}"#,
+            ),
+        ] {
+            sqlx::query(
+                r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+    title, sandbox_policy, approval_mode, first_user_message
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(id)
+            .bind(rollout_path)
+            .bind(1_700_000_000_i64)
+            .bind(1_700_000_001_i64)
+            .bind(source)
+            .bind("openai")
+            .bind("/tmp")
+            .bind(id)
+            .bind("read-only")
+            .bind("on-request")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("representative thread should insert");
+        }
+        let legacy = known_good_legacy_migrator(true);
+        legacy
+            .run(&pool)
+            .await
+            .expect("legacy migration 50 should apply");
+        // Reproduce the deployed partial repair that preceded product 46240:
+        // only the old24..32 prefix was remapped, while old33/34 remained in
+        // the ledger. Migration 30 is then recorded canonically because its
+        // column already exists from legacy migration 33. The unchanged
+        // migrator applies migration 31 normally before failing at 32.
+        for migration_move in SHIFTED_STATE_MIGRATION_MOVES
+            .iter()
+            .filter(|migration_move| migration_move.source_version <= 32)
+        {
+            sqlx::query("UPDATE _sqlx_migrations SET version = ? WHERE version = ?")
+                .bind(temporary_repair_version(migration_move.source_version))
+                .bind(migration_move.source_version)
+                .execute(&pool)
+                .await
+                .expect("partial repair should reserve source version");
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == migration_move.target_version)
+                .expect("partial repair target should be embedded");
+            sqlx::query(
+                "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = ?",
+            )
+            .bind(migration_move.target_version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .bind(temporary_repair_version(migration_move.source_version))
+            .execute(&pool)
+            .await
+            .expect("partial repair should canonicalize source version");
+        }
+        for version in [30_i64] {
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == version)
+                .expect("canonical migration should be embedded");
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, TRUE, ?, 0)",
+            )
+            .bind(version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(&pool)
+            .await
+            .expect("partial repair should record canonical migration");
+        }
+        // Keep the failed migrator's database: migration 32 encounters the
+        // preview column created by legacy migration 35.
+        let failure = STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect_err("migration 32 should fail on existing preview column");
+        assert!(failure.to_string().contains("preview"));
+        for version in [30_i64, 31, 33, 34] {
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ?",
+                )
+                .bind(version)
+                .fetch_one(&pool)
+                .await
+                .expect("post-failure ledger row should be queryable"),
+                1,
+                "post-46240 ledger row {version} should remain",
+            );
+        }
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("full legacy ledger should repair");
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("current migrations should apply");
+        for migration in STATE_MIGRATOR.iter() {
+            let row = sqlx::query(
+                "SELECT description, success, checksum FROM _sqlx_migrations WHERE version = ?",
+            )
+            .bind(migration.version)
+            .fetch_one(&pool)
+            .await
+            .expect("every embedded migration should be recorded");
+            assert_eq!(
+                row.get::<String, _>("description"),
+                migration.description.as_ref()
+            );
+            assert!(row.get::<bool, _>("success"));
+            assert_eq!(
+                row.get::<Vec<u8>, _>("checksum"),
+                migration.checksum.to_vec()
+            );
+        }
+        for index_name in [
+            "idx_threads_section_recency_at_ms",
+            "idx_threads_section_position",
+        ] {
+            let sql = sqlx::query_scalar::<_, String>(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            )
+            .bind(index_name)
+            .fetch_one(&pool)
+            .await
+            .expect("current section index should exist")
+            .to_ascii_lowercase();
+            assert!(!sql.contains("preview <> ''"));
+            assert!(sql.contains("thread_section_id is not null"));
+            if index_name.ends_with("recency_at_ms") {
+                assert!(sql.contains("recency_at_ms desc, id desc"));
+            } else {
+                assert!(sql.contains("section_position asc, id asc"));
+            }
+        }
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM thread_spawn_edges WHERE parent_thread_id = 'parent' AND child_thread_id = 'child'")
+                .fetch_one(&pool)
+                .await
+                .expect("spawn edge should exist"),
+            1
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 9003"
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("alias row should exist")
+                == 1
+        );
+        pool.close().await;
+        let reopened = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("database should reopen");
+        repair_state_migrations(&reopened, &STATE_MIGRATOR)
+            .await
+            .expect("reopen repair should be idempotent");
+        STATE_MIGRATOR
+            .run(&reopened)
+            .await
+            .expect("reopen migrations should be idempotent");
+        reopened.close().await;
+    }
 
     #[tokio::test]
     async fn repairs_deployed_thread_source_schema_with_embedded_migration_metadata() {
