@@ -8,7 +8,6 @@ use crate::types::AnalyticsConfigToml;
 use crate::types::ApprovalsReviewer;
 use crate::types::Personality;
 use crate::types::SessionPickerViewMode;
-use crate::types::TuiTranscriptDetailMode;
 use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_protocol::config_types::ReasoningSummary;
@@ -30,6 +29,7 @@ pub struct ConfigProfile {
     /// The key in the `model_providers` map identifying the
     /// [`ModelProviderInfo`] to use.
     pub model_provider: Option<String>,
+    #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
     pub approval_policy: Option<AskForApproval>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_mode: Option<SandboxMode>,
@@ -39,6 +39,7 @@ pub struct ConfigProfile {
     pub model_verbosity: Option<Verbosity>,
     /// Optional path to a JSON model catalog (applied on startup only).
     pub model_catalog_json: Option<AbsolutePathBuf>,
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
     pub chatgpt_base_url: Option<String>,
     /// Optional path to a file containing model instructions.
@@ -79,8 +80,4 @@ pub struct ProfileTui {
     /// Preferred layout for resume/fork session picker results.
     #[serde(default)]
     pub session_picker_view: Option<SessionPickerViewMode>,
-
-    /// Default detail mode for the `Ctrl+T` transcript overlay.
-    #[serde(default)]
-    pub transcript_default_detail_mode: Option<TuiTranscriptDetailMode>,
 }

@@ -1,6 +1,10 @@
+#[path = "memory_readiness.rs"]
+mod readiness;
+
 use super::threads::ThreadFilterOptions;
 use super::threads::push_thread_filters;
 use super::*;
+use crate::Phase2AttestedBaseline;
 use crate::SortDirection;
 use crate::model::Phase2JobClaimOutcome;
 use crate::model::Stage1JobClaim;
@@ -37,6 +41,109 @@ impl MemoryStore {
 
     pub(crate) async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// Records an attested phase-2 output baseline transactionally.
+    pub async fn record_phase2_attested_baseline(
+        &self,
+        baseline: &Phase2AttestedBaseline,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.state_pool.begin_with("BEGIN IMMEDIATE").await?;
+
+        sqlx::query(
+            r#"
+INSERT INTO phase2_attested_baselines (
+    memory_root_key,
+    output_tree_sha256,
+    schema_version,
+    selection_sha256,
+    prepared_inputs_sha256,
+    consolidator_sha256,
+    completion_watermark,
+    selected_count,
+    attested_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(memory_root_key, output_tree_sha256) DO UPDATE SET
+    schema_version = excluded.schema_version,
+    selection_sha256 = excluded.selection_sha256,
+    prepared_inputs_sha256 = excluded.prepared_inputs_sha256,
+    consolidator_sha256 = excluded.consolidator_sha256,
+    completion_watermark = excluded.completion_watermark,
+    selected_count = excluded.selected_count,
+    attested_at = excluded.attested_at
+            "#,
+        )
+        .bind(baseline.memory_root_key.as_str())
+        .bind(baseline.output_tree_sha256.as_str())
+        .bind(baseline.schema_version)
+        .bind(baseline.selection_sha256.as_str())
+        .bind(baseline.prepared_inputs_sha256.as_str())
+        .bind(baseline.consolidator_sha256.as_str())
+        .bind(baseline.completion_watermark)
+        .bind(baseline.selected_count)
+        .bind(baseline.attested_at)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn get_phase2_attested_baseline(
+        &self,
+        memory_root_key: &str,
+        output_tree_sha256: &str,
+    ) -> anyhow::Result<Option<Phase2AttestedBaseline>> {
+        let baseline = sqlx::query(
+            r#"
+SELECT
+    memory_root_key,
+    output_tree_sha256,
+    schema_version,
+    selection_sha256,
+    prepared_inputs_sha256,
+    consolidator_sha256,
+    completion_watermark,
+    selected_count,
+    attested_at
+FROM phase2_attested_baselines
+WHERE memory_root_key = ? AND output_tree_sha256 = ?
+            "#,
+        )
+        .bind(memory_root_key)
+        .bind(output_tree_sha256)
+        .fetch_optional(self.state_pool.as_ref())
+        .await?
+        .map(|row| {
+            Ok::<_, sqlx::Error>(Phase2AttestedBaseline {
+                memory_root_key: row.try_get("memory_root_key")?,
+                output_tree_sha256: row.try_get("output_tree_sha256")?,
+                schema_version: row.try_get("schema_version")?,
+                selection_sha256: row.try_get("selection_sha256")?,
+                prepared_inputs_sha256: row.try_get("prepared_inputs_sha256")?,
+                consolidator_sha256: row.try_get("consolidator_sha256")?,
+                completion_watermark: row.try_get("completion_watermark")?,
+                selected_count: row.try_get("selected_count")?,
+                attested_at: row.try_get("attested_at")?,
+            })
+        })
+        .transpose()?;
+
+        Ok(baseline)
+    }
+
+    pub async fn has_phase2_attested_baseline_for_root(
+        &self,
+        memory_root_key: &str,
+    ) -> anyhow::Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(SELECT 1 FROM phase2_attested_baselines WHERE memory_root_key = ?)"#,
+        )
+        .bind(memory_root_key)
+        .fetch_one(self.state_pool.as_ref())
+        .await?;
+
+        Ok(exists)
     }
 
     /// Deletes all persisted memory state in one transaction.
@@ -177,6 +284,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.originator,
     threads.history_mode,
     threads.thread_source,
     threads.agent_path,
@@ -195,7 +303,21 @@ SELECT
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
-    threads.is_pinned,
+    threads.thread_section_id AS section,
+    (
+        SELECT thread_sections.name
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_name,
+    (
+        SELECT thread_sections.appearance
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_appearance,
+    threads.section_position,
+    threads.section_entered_at_ms,
+    threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url
@@ -209,7 +331,8 @@ FROM threads
                 allowed_sources,
                 model_providers: None,
                 cwd_filters: None,
-                is_pinned: None,
+                section: None,
+                project_id: None,
                 anchor: None,
                 sort_key: SortKey::UpdatedAt,
                 sort_direction: SortDirection::Desc,
@@ -553,6 +676,7 @@ SELECT
     threads.updated_at_ms AS updated_at,
     threads.recency_at_ms AS recency_at,
     threads.source,
+    threads.originator,
     threads.history_mode,
     threads.thread_source,
     threads.agent_nickname,
@@ -571,7 +695,21 @@ SELECT
     threads.tokens_used,
     threads.first_user_message,
     threads.archived_at,
-    threads.is_pinned,
+    threads.thread_section_id AS section,
+    (
+        SELECT thread_sections.name
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_name,
+    (
+        SELECT thread_sections.appearance
+        FROM thread_sections
+        WHERE thread_sections.id = threads.thread_section_id
+    ) AS section_appearance,
+    threads.section_position,
+    threads.section_entered_at_ms,
+    threads.project_id,
+    threads.daybreak_enabled,
     threads.git_sha,
     threads.git_branch,
     threads.git_origin_url
@@ -1264,6 +1402,12 @@ WHERE thread_id = ? AND source_updated_at = ?
             .await?;
         }
 
+        sqlx::query(
+            "UPDATE consolidation_progress SET max_thread_count = MAX(max_thread_count, ?)",
+        )
+        .bind(i64::try_from(selected_outputs.len())?)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -1389,6 +1533,9 @@ WHERE kind = ? AND job_key = ?
 
 pub(super) async fn clear_memory_data_in_pool(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE consolidation_progress SET max_thread_count = 0")
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query(
         r#"
@@ -1674,6 +1821,7 @@ mod tests {
     use super::StateRuntime;
     use super::test_support::test_thread_metadata;
     use super::test_support::unique_temp_dir;
+    use crate::Phase2AttestedBaseline;
     use crate::model::Phase2JobClaimOutcome;
     use crate::model::Stage1JobClaimOutcome;
     use crate::model::Stage1StartupClaimParams;
@@ -1703,6 +1851,75 @@ mod tests {
             .execute(memory_pool(runtime))
             .await
             .expect("age phase2 success beyond cooldown");
+    }
+
+    #[tokio::test]
+    async fn phase2_attested_baseline_uses_migrated_schema_and_scopes_reads() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
+        .expect("initialize runtime");
+        let baseline = Phase2AttestedBaseline {
+            memory_root_key: "root-a".to_string(),
+            output_tree_sha256: "tree-a".to_string(),
+            schema_version: 1,
+            selection_sha256: "selection".to_string(),
+            prepared_inputs_sha256: "prepared".to_string(),
+            consolidator_sha256: "consolidator".to_string(),
+            completion_watermark: 42,
+            selected_count: 3,
+            attested_at: 123,
+        };
+
+        runtime
+            .memories()
+            .record_phase2_attested_baseline(&baseline)
+            .await
+            .expect("record phase2 attested baseline");
+
+        assert_eq!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-a", "tree-a")
+                .await
+                .expect("read phase2 attested baseline"),
+            Some(baseline)
+        );
+        assert!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-a", "tree-b")
+                .await
+                .expect("read mismatched output tree")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .memories()
+                .get_phase2_attested_baseline("root-b", "tree-a")
+                .await
+                .expect("read mismatched memory root")
+                .is_none()
+        );
+        assert!(
+            runtime
+                .memories()
+                .has_phase2_attested_baseline_for_root("root-a")
+                .await
+                .expect("check recorded root")
+        );
+        assert!(
+            !runtime
+                .memories()
+                .has_phase2_attested_baseline_for_root("root-b")
+                .await
+                .expect("check unrelated root")
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]

@@ -19,7 +19,7 @@ jobs:
       codex_output: ${{ steps.codex.outputs.final-message }}
     steps:
       - id: codex
-        uses: openai/codex-action@10cb888d2ed3b99867f7e7ccff174a861a75aeb6 # v1.9
+        uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02 # v1.7
         with:
           openai-api-key: ${{ secrets.CODEX_OPENAI_API_KEY }}
           allow-users: "*"

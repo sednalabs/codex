@@ -1,9 +1,19 @@
+mod child;
+pub use child::Child;
+mod child_command;
+pub use child_command::ChildStdin;
+pub use child_command::Command;
+pub use child_command::DescriptorPolicy;
+pub use child_command::ProcessMode;
+pub use child_command::SpawnFallback;
 pub mod pipe;
 mod process;
 pub mod process_group;
 pub mod pty;
 #[cfg(test)]
 mod tests;
+#[cfg(unix)]
+mod unix_io;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

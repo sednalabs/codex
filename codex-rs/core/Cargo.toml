@@ -8,10 +8,6 @@ version.workspace = true
 name = "codex_core"
 path = "src/lib.rs"
 
-[[bin]]
-name = "codex-write-config-schema"
-path = "src/bin/config_schema.rs"
-
 [lints]
 workspace = true
 
@@ -22,20 +18,21 @@ async-channel = { workspace = true }
 base64 = { workspace = true }
 bm25 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-clap = { workspace = true, features = ["derive"] }
 codex-analytics = { workspace = true }
 codex-agent-graph-store = { workspace = true }
+codex-agent-roles = { workspace = true }
 codex-api = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-apply-patch = { workspace = true }
 codex-async-utils = { workspace = true }
-codex-browser-computer-use = { workspace = true }
+codex-attachment-store = { workspace = true }
+codex-client = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-connectors = { workspace = true }
 codex-context-fragments = { workspace = true }
 codex-config = { workspace = true }
 codex-core-plugins = { workspace = true }
-codex-core-skills = { workspace = true }
+codex-diagnostics = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-extension-items = { workspace = true }
@@ -50,6 +47,9 @@ codex-models-manager = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-execpolicy = { workspace = true }
 codex-git-utils = { workspace = true }
+codex-guardian-context = { workspace = true }
+codex-guardian-reviewer = { workspace = true }
+codex-history = { workspace = true }
 codex-hooks = { workspace = true }
 codex-http-client = { workspace = true }
 codex-install-context = { workspace = true }
@@ -65,12 +65,15 @@ codex-rollout-trace = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-skills = { workspace = true }
+codex-skills-extension = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-thread-store = { workspace = true }
 codex-tools = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
+codex-utils-audio = { workspace = true }
 codex-utils-cache = { workspace = true }
+codex-utils-git-discovery = { workspace = true }
 codex-utils-image = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
@@ -79,7 +82,6 @@ codex-utils-path-uri = { workspace = true }
 codex-utils-plugins = { workspace = true }
 codex-utils-pty = { workspace = true }
 codex-utils-string = { workspace = true }
-codex-utils-version = { workspace = true }
 codex-utils-stream-parser = { workspace = true }
 codex-windows-sandbox = { package = "codex-windows-sandbox", path = "../windows-sandbox-rs" }
 dirs = { workspace = true }
@@ -94,20 +96,17 @@ libc = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
 regex-lite = { workspace = true }
-reqwest = { workspace = true, features = ["json", "stream"] }
 rmcp = { workspace = true, default-features = false, features = [
     "base64",
     "macros",
     "schemars",
     "server",
 ] }
-schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha1 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
-symphonia = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
@@ -145,9 +144,9 @@ codex-exec-server-test-support = { workspace = true }
 codex-image-generation-extension = { workspace = true }
 codex-home = { workspace = true }
 codex-otel = { workspace = true }
-codex-skills-extension = { workspace = true }
 codex-test-binary-support = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
 codex-web-search-extension = { workspace = true }
 core_test_support = { workspace = true }
 ctor = { workspace = true }
@@ -164,10 +163,10 @@ opentelemetry_sdk = { workspace = true, features = [
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
-walkdir = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
+walkdir = { workspace = true }
 wiremock = { workspace = true }
 zstd = { workspace = true }
 

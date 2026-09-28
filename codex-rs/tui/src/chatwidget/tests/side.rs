@@ -59,9 +59,7 @@ fn assert_side_rename_rejected(
         AppEvent::InsertHistoryCell(cell) => {
             let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
             assert!(
-                rendered.contains(
-                    "Active side conversations cannot be renamed while they are attached to a parent thread."
-                ),
+                rendered.contains("Side conversations are ephemeral and cannot be renamed."),
                 "expected side conversation rename error, got {rendered:?}"
             );
         }
@@ -75,8 +73,7 @@ fn assert_side_rename_rejected(
 async fn slash_rename_is_rejected_for_side_threads() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_thread_rename_block_message(
-        "Active side conversations cannot be renamed while they are attached to a parent thread."
-            .to_string(),
+        "Side conversations are ephemeral and cannot be renamed.".to_string(),
     );
 
     chat.dispatch_command(SlashCommand::Rename);
@@ -87,8 +84,7 @@ async fn slash_rename_is_rejected_for_side_threads() {
 async fn slash_rename_with_args_is_rejected_for_side_threads() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_thread_rename_block_message(
-        "Active side conversations cannot be renamed while they are attached to a parent thread."
-            .to_string(),
+        "Side conversations are ephemeral and cannot be renamed.".to_string(),
     );
 
     chat.dispatch_command_with_args(SlashCommand::Rename, "investigate".to_string(), Vec::new());
@@ -306,7 +302,7 @@ async fn slash_side_requests_forked_side_question_while_task_running() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let parent_thread_id = ThreadId::new();
     chat.thread_id = Some(parent_thread_id);
-    chat.config.tui_status_line = Some(vec!["model-with-reasoning".to_string()]);
+    chat.local_settings.tui.status_line = Some(vec!["model-with-reasoning".to_string()]);
     chat.refresh_status_line();
     chat.on_task_started();
     chat.show_welcome_banner = false;
@@ -389,11 +385,11 @@ async fn slash_btw_requests_forked_side_question_while_task_running() {
 async fn side_context_label_preserves_status_line_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_welcome_banner = false;
-    chat.config.tui_status_line = Some(vec!["model-name".to_string()]);
+    chat.local_settings.tui.status_line = Some(vec!["model-name".to_string()]);
     chat.refresh_status_line();
     chat.set_side_conversation_active(/*active*/ true);
     chat.set_side_conversation_context_label(Some(
-        "Side from main thread · ctrl + / to switch · ctrl + c to close".to_string(),
+        "Side from main thread · ctrl+/ to switch · ctrl+c to close".to_string(),
     ));
 
     let width = 80;
@@ -414,8 +410,7 @@ async fn side_context_label_shows_parent_status_snapshot() {
     chat.show_welcome_banner = false;
     chat.set_side_conversation_active(/*active*/ true);
     chat.set_side_conversation_context_label(Some(
-        "Side from main thread · main needs input · ctrl + / to switch · ctrl + c to close"
-            .to_string(),
+        "Side from main thread · main needs input · ctrl+/ to switch · ctrl+c to close".to_string(),
     ));
 
     let width = 80;
@@ -431,9 +426,9 @@ async fn side_context_label_shows_parent_status_snapshot() {
 async fn side_context_label_shows_hidden_side_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_welcome_banner = false;
-    chat.config.tui_status_line = Some(vec!["model-name".to_string()]);
+    chat.local_settings.tui.status_line = Some(vec!["model-name".to_string()]);
     chat.refresh_status_line();
-    chat.set_side_conversation_context_label(Some("ctrl + / for side".to_string()));
+    chat.set_side_conversation_context_label(Some("ctrl+/ for side".to_string()));
 
     let width = 80;
     let height = chat.desired_height(width);
@@ -441,12 +436,19 @@ async fn side_context_label_shows_hidden_side_snapshot() {
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw hidden side conversation footer");
-    let hint_start = width - "ctrl + / for side".len() as u16 - 2;
+    let hint_start = width - "ctrl+/ for side".len() as u16 - 2;
+    let key_style = crate::key_hint::ctrl(KeyCode::Char('/')).spans()[0].style;
+    let secondary_style = crate::style::secondary_text_style();
+    let styles = [hint_start, hint_start + 4, hint_start + 5, hint_start + 7].map(|x| {
+        let cell = &terminal.backend().buffer()[(x, height - 1)];
+        (cell.fg, cell.modifier)
+    });
     assert_eq!(
-        terminal.backend().buffer()[(hint_start, height - 1)]
-            .style()
-            .fg,
-        Some(ratatui::style::Color::Magenta)
+        styles,
+        [key_style, key_style, key_style, secondary_style].map(|style| (
+            style.fg.unwrap_or(ratatui::style::Color::Reset),
+            style.add_modifier,
+        )),
     );
     assert_chatwidget_snapshot!("side_context_label_shows_hidden_side", terminal.backend());
 }

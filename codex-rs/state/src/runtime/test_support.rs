@@ -45,6 +45,7 @@ pub(super) fn test_thread_metadata(
 ) -> ThreadMetadata {
     let now = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp");
     ThreadMetadata {
+        originator: None,
         id: thread_id,
         rollout_path: codex_home.join(format!("rollout-{thread_id}.jsonl")),
         created_at: now,
@@ -69,7 +70,11 @@ pub(super) fn test_thread_metadata(
         tokens_used: 0,
         first_user_message: Some("hello".to_string()),
         archived_at: None,
-        is_pinned: false,
+        section: None,
+        section_position: None,
+        section_entered_at: None,
+        project_id: None,
+        daybreak_enabled: None,
         git_sha: None,
         git_branch: None,
         git_origin_url: None,

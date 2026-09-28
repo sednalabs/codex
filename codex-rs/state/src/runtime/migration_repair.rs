@@ -3,8 +3,6 @@ use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
-use crate::migrations::repair_state_migration_version_collisions;
-
 struct ColumnMigrationRepair {
     version: i64,
     table_name: &'static str,
@@ -12,7 +10,7 @@ struct ColumnMigrationRepair {
 }
 
 const COLUMN_MIGRATION_REPAIRS: &[ColumnMigrationRepair] = &[ColumnMigrationRepair {
-    version: 33,
+    version: 30,
     table_name: "threads",
     column_name: "thread_source",
 }];
@@ -21,7 +19,6 @@ pub(crate) async fn repair_state_migrations(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
-    repair_state_migration_version_collisions(pool, migrator).await?;
     for repair in COLUMN_MIGRATION_REPAIRS {
         repair_column_migration(pool, migrator, repair).await?;
     }
@@ -148,4 +145,55 @@ async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repair_state_migrations;
+    use crate::migrations::STATE_MIGRATOR;
+    use crate::runtime::test_support::unique_temp_dir;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use sqlx::Row;
+
+    #[tokio::test]
+    async fn repairs_deployed_thread_source_schema_with_embedded_migration_metadata() {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.state_db_path())
+            .await
+            .expect("sqlite database should open");
+        sqlx::query("CREATE TABLE threads (thread_source TEXT)")
+            .execute(&pool)
+            .await
+            .expect("deployed thread schema should be created");
+
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("thread source migration should be repaired");
+
+        let row =
+            sqlx::query("SELECT description, checksum FROM _sqlx_migrations WHERE version = 30")
+                .fetch_one(&pool)
+                .await
+                .expect("repaired migration row should exist");
+        let embedded = STATE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 30)
+            .expect("thread source migration should be embedded");
+        assert_eq!(
+            row.get::<String, _>("description"),
+            embedded.description.as_ref()
+        );
+        assert_eq!(
+            row.get::<Vec<u8>, _>("checksum"),
+            embedded.checksum.to_vec()
+        );
+    }
 }

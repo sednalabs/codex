@@ -1,4 +1,5 @@
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -9,11 +10,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
+use codex_code_mode_protocol::host::Capability;
 use codex_code_mode_protocol::host::CapabilitySet;
 use codex_code_mode_protocol::host::ClientHello;
 use codex_code_mode_protocol::host::ClientToHost;
@@ -21,22 +24,20 @@ use codex_code_mode_protocol::host::EncodedFrame;
 use codex_code_mode_protocol::host::FramedReader;
 use codex_code_mode_protocol::host::FramedWriter;
 use codex_code_mode_protocol::host::HostToClient;
-use codex_code_mode_protocol::host::MAX_FRAME_BYTES;
 use codex_code_mode_protocol::host::ProtocolVersion;
 use codex_code_mode_protocol::host::RequestId;
+use codex_code_mode_protocol::host::SESSION_RESOURCE_LIMITS_CAPABILITY;
 use codex_code_mode_protocol::host::SupportedProtocolVersions;
-use codex_http_client::HttpClientFactory;
-use codex_websocket_client::WebSocketConnector;
-use futures::StreamExt;
+use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::warn;
@@ -48,16 +49,18 @@ use self::driver::DriverLifecycle;
 pub(super) use self::driver::RemoteSession;
 pub(super) use self::driver::SessionCleanup;
 use self::reader::drive_reader;
-use self::transport::ConnectionReader;
-use self::transport::ConnectionWriter;
 
 mod driver;
 mod reader;
-mod transport;
 
 const IPC_CHANNEL_CAPACITY: usize = 128;
-const HOST_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_WEBSOCKET_FRAME_BYTES: usize = MAX_FRAME_BYTES + std::mem::size_of::<u32>();
+const LOCAL_HOST_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+// TODO(anp) make this timeout configurable if 60 seconds is insufficient.
+const DEFAULT_HOST_WAIT_TRANSPORT_TIMEOUT: Duration = Duration::from_secs(60);
+// Host spawn errors become model-visible tool output. Bound configured paths
+// while preserving the executable-bearing suffix needed to diagnose failures.
+const MAX_DISPLAYED_HOST_PROGRAM_BYTES: usize = 512;
+const TRUNCATED_HOST_PROGRAM_PREFIX: &str = "...";
 
 pub(super) enum ConnectionError {
     Spawn {
@@ -67,26 +70,33 @@ pub(super) enum ConnectionError {
     Other(String),
 }
 
-impl ConnectionError {
-    pub(super) fn host_program_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::Spawn { error, .. } if error.kind() == io::ErrorKind::NotFound
-        )
-    }
-}
-
 impl fmt::Display for ConnectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Spawn {
                 host_program,
                 error,
-            } => write!(
-                formatter,
-                "failed to spawn code-mode host {}: {error}",
-                host_program.display()
-            ),
+            } => {
+                let host_program = host_program.to_string_lossy();
+                if host_program.len() <= MAX_DISPLAYED_HOST_PROGRAM_BYTES {
+                    return write!(
+                        formatter,
+                        "failed to spawn code-mode host {host_program}: {error}"
+                    );
+                }
+
+                let mut suffix_start = host_program.len()
+                    - (MAX_DISPLAYED_HOST_PROGRAM_BYTES - TRUNCATED_HOST_PROGRAM_PREFIX.len());
+                while !host_program.is_char_boundary(suffix_start) {
+                    suffix_start += 1;
+                }
+
+                write!(
+                    formatter,
+                    "failed to spawn code-mode host {TRUNCATED_HOST_PROGRAM_PREFIX}{}: {error}",
+                    &host_program[suffix_start..]
+                )
+            }
             Self::Other(message) => formatter.write_str(message),
         }
     }
@@ -98,6 +108,7 @@ pub(super) struct Connection {
     alive: Arc<AtomicBool>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
     cancellation: CancellationToken,
+    capabilities: CapabilitySet,
 }
 
 struct CallerCancellation {
@@ -106,7 +117,7 @@ struct CallerCancellation {
 }
 
 struct ConnectionSupervisor {
-    owner: ConnectionOwner,
+    child: Child,
     event_tx: mpsc::Sender<DriverEvent>,
     cancellation: CancellationToken,
     alive: Arc<AtomicBool>,
@@ -114,11 +125,6 @@ struct ConnectionSupervisor {
     driver_task: JoinHandle<()>,
     reader_task: JoinHandle<Result<(), String>>,
     writer_task: JoinHandle<Result<(), String>>,
-}
-
-enum ConnectionOwner {
-    Process(Box<Child>),
-    WebSocket,
 }
 
 impl CallerCancellation {
@@ -151,16 +157,16 @@ impl Connection {
         let mut command = Command::new(host_program);
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| ConnectionError::Spawn {
-                host_program: host_program.to_path_buf(),
-                error,
-            })?;
+            .kill_on_drop(true);
+        scrub_non_inheritable_env_vars(command.as_std_mut());
+        let mut child = command.spawn().map_err(|error| ConnectionError::Spawn {
+            host_program: host_program.to_path_buf(),
+            error,
+        })?;
 
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
@@ -187,65 +193,24 @@ impl Connection {
             .take()
             .ok_or_else(|| ConnectionError::Other("spawned code-mode host has no stdout".into()))?;
 
-        Self::establish(
-            ConnectionReader::Stdio(FramedReader::new(stdout)),
-            ConnectionWriter::Stdio(FramedWriter::new(stdin)),
-            ConnectionOwner::Process(Box::new(child)),
-        )
-        .await
-    }
-
-    pub(super) async fn connect_websocket(
-        websocket_url: &str,
-        http_client_factory: &HttpClientFactory,
-    ) -> Result<Self, ConnectionError> {
-        let request = websocket_url.into_client_request().map_err(|error| {
-            ConnectionError::Other(format!(
-                "failed to build code-mode host websocket request: {error}"
-            ))
-        })?;
-        let connector = WebSocketConnector::new(http_client_factory).map_err(|error| {
-            ConnectionError::Other(format!(
-                "failed to configure code-mode host websocket TLS: {error}"
-            ))
-        })?;
-        let websocket_config = WebSocketConfig::default()
-            .max_frame_size(Some(MAX_WEBSOCKET_FRAME_BYTES))
-            .max_message_size(Some(MAX_WEBSOCKET_FRAME_BYTES));
-        let (websocket, _) = tokio::time::timeout(
-            HOST_HANDSHAKE_TIMEOUT,
-            connector.connect(request, websocket_config),
-        )
-        .await
-        .map_err(|_| {
-            ConnectionError::Other("timed out connecting to the code-mode host websocket".into())
-        })?
-        .map_err(|error| {
-            ConnectionError::Other(format!(
-                "failed to connect to the code-mode host websocket: {error}"
-            ))
-        })?;
-        let (writer, reader) = websocket.split();
-
-        Self::establish(
-            ConnectionReader::WebSocket(reader),
-            ConnectionWriter::WebSocket(writer),
-            ConnectionOwner::WebSocket,
-        )
-        .await
+        Self::establish(FramedReader::new(stdout), FramedWriter::new(stdin), child).await
     }
 
     async fn establish(
-        mut reader: ConnectionReader,
-        mut writer: ConnectionWriter,
-        mut owner: ConnectionOwner,
+        mut reader: FramedReader<ChildStdout>,
+        mut writer: FramedWriter<ChildStdin>,
+        mut child: Child,
     ) -> Result<Self, ConnectionError> {
         let handshake = async {
+            let session_limits_capability = Capability::new(SESSION_RESOURCE_LIMITS_CAPABILITY)
+                .map_err(|error| error.to_string())?;
+            let optional_capabilities = CapabilitySet::try_new([session_limits_capability])
+                .map_err(|error| error.to_string())?;
             let hello = ClientHello::new(
                 SupportedProtocolVersions::try_new([ProtocolVersion::V1])
                     .map_err(|err| err.to_string())?,
                 CapabilitySet::empty(),
-                CapabilitySet::empty(),
+                optional_capabilities,
             )
             .map_err(|err| err.to_string())?;
             writer
@@ -260,7 +225,7 @@ impl Connection {
                 Some(HostToClient::HostHello(hello))
                     if hello.selected_version() == ProtocolVersion::V1 =>
                 {
-                    Ok(())
+                    Ok(hello.capabilities().clone())
                 }
                 Some(HostToClient::HandshakeRejected { reason }) => {
                     Err(format!("code-mode host rejected the handshake: {reason:?}"))
@@ -271,54 +236,35 @@ impl Connection {
                 None => Err("code-mode host exited during handshake".to_string()),
             }
         };
-        let handshake_result = match tokio::time::timeout(HOST_HANDSHAKE_TIMEOUT, handshake).await {
-            Ok(result) => result,
-            Err(_) => {
-                let _ = writer.close().await;
-                owner.close().await;
-                return Err(ConnectionError::Other(
-                    "timed out negotiating with the code-mode host".into(),
-                ));
+        let handshake_result =
+            match tokio::time::timeout(LOCAL_HOST_STARTUP_TIMEOUT, handshake).await {
+                Ok(result) => result,
+                Err(_) => {
+                    kill_and_reap(&mut child).await;
+                    return Err(ConnectionError::Other(
+                        "timed out negotiating with the code-mode host".into(),
+                    ));
+                }
+            };
+        let capabilities = match handshake_result {
+            Ok(negotiated) => negotiated,
+            Err(err) => {
+                kill_and_reap(&mut child).await;
+                return Err(ConnectionError::Other(err));
             }
         };
-        if let Err(err) = handshake_result {
-            let _ = writer.close().await;
-            owner.close().await;
-            return Err(ConnectionError::Other(err));
-        }
-
         let (command_tx, command_rx) = mpsc::channel(IPC_CHANNEL_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(IPC_CHANNEL_CAPACITY);
-        let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<EncodedFrame>(IPC_CHANNEL_CAPACITY);
+        let (outgoing_tx, outgoing_rx) = mpsc::channel::<EncodedFrame>(IPC_CHANNEL_CAPACITY);
         let cancellation = CancellationToken::new();
         let alive = Arc::new(AtomicBool::new(true));
         let failure = Arc::new(std::sync::Mutex::new(None));
 
         let writer_cancellation = cancellation.clone();
-        let writer_task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = writer_cancellation.cancelled() => {
-                        return writer
-                            .close()
-                            .await
-                            .map_err(|error| format!("failed to close code-mode host connection: {error}"));
-                    }
-                    frame = outgoing_rx.recv() => {
-                        let Some(frame) = frame else {
-                            return Err("code-mode host outgoing stream closed".to_string());
-                        };
-                        let result = tokio::select! {
-                            _ = writer_cancellation.cancelled() => return Ok(()),
-                            result = writer.write_frame(frame) => result,
-                        };
-                        if let Err(err) = result {
-                            return Err(format!("failed to write code-mode host message: {err}"));
-                        }
-                    }
-                }
-            }
-        });
+        let writer_task =
+            tokio::spawn(
+                async move { drive_writer(writer, outgoing_rx, writer_cancellation).await },
+            );
 
         let reader_events = event_tx.clone();
         let reader_cancellation = cancellation.clone();
@@ -341,7 +287,7 @@ impl Connection {
         let driver_task = tokio::spawn(driver.run());
         tokio::spawn(
             ConnectionSupervisor {
-                owner,
+                child,
                 event_tx,
                 cancellation: cancellation.clone(),
                 alive: Arc::clone(&alive),
@@ -359,6 +305,7 @@ impl Connection {
             alive,
             failure,
             cancellation,
+            capabilities,
         })
     }
 
@@ -376,14 +323,24 @@ impl Connection {
     pub(super) async fn open_session(
         &self,
         session: RemoteSession,
-        delegate: Arc<dyn CodeModeSessionDelegate>,
+        limits: CodeModeSessionCellExecutionLimits,
     ) -> Result<SessionCleanup, String> {
+        if limits != CodeModeSessionCellExecutionLimits::default()
+            && !self
+                .capabilities
+                .iter()
+                .any(|capability| capability.as_str() == SESSION_RESOURCE_LIMITS_CAPABILITY)
+        {
+            return Err(format!(
+                "code-mode host does not support session resource limits: missing `{SESSION_RESOURCE_LIMITS_CAPABILITY}` capability"
+            ));
+        }
         let cleanup = SessionCleanup::new();
         let cancellation = CallerCancellation::new();
         let (response_tx, response_rx) = oneshot::channel();
         self.send(DriverCommand::OpenSession {
             session,
-            delegate,
+            limits,
             cleanup: cleanup.clone(),
             caller_cancellation: cancellation.token(),
             response_tx,
@@ -399,12 +356,14 @@ impl Connection {
         &self,
         session: RemoteSession,
         request: ExecuteRequest,
+        delegate: Arc<dyn CodeModeSessionDelegate>,
     ) -> Result<StartedCell, String> {
         let cancellation = CallerCancellation::new();
         let (response_tx, response_rx) = oneshot::channel();
         self.send(DriverCommand::Execute {
             session,
             request,
+            delegate,
             caller_cancellation: cancellation.token(),
             response_tx,
         })
@@ -428,16 +387,23 @@ impl Connection {
         session: RemoteSession,
         request: WaitRequest,
     ) -> Result<WaitOutcome, String> {
+        // Account for the runtime's one-second yield grace separately from transport.
+        let runtime_timeout =
+            Duration::from_millis(request.yield_time_ms).saturating_add(Duration::from_secs(1));
         let cancellation = CallerCancellation::new();
         let (response_tx, response_rx) = oneshot::channel();
-        self.send(DriverCommand::Wait {
-            session,
-            request,
-            caller_cancellation: cancellation.token(),
-            response_tx,
-        })
-        .await?;
-        let result = self.receive(response_rx).await;
+        let result = self
+            .with_transport_deadline(runtime_timeout, "wait", async {
+                self.send(DriverCommand::Wait {
+                    session,
+                    request,
+                    caller_cancellation: cancellation.token(),
+                    response_tx,
+                })
+                .await?;
+                self.receive(response_rx).await
+            })
+            .await;
         cancellation.disarm();
         result
     }
@@ -448,13 +414,16 @@ impl Connection {
         cell_id: CellId,
     ) -> Result<WaitOutcome, String> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.send(DriverCommand::Terminate {
-            session,
-            cell_id,
-            response_tx,
+        self.with_transport_deadline(Duration::ZERO, "terminate", async {
+            self.send(DriverCommand::Terminate {
+                session,
+                cell_id,
+                response_tx,
+            })
+            .await?;
+            self.receive(response_rx).await
         })
-        .await?;
-        self.receive(response_rx).await
+        .await
     }
 
     pub(super) async fn shutdown_session(&self, session: RemoteSession) -> Result<(), String> {
@@ -465,6 +434,26 @@ impl Connection {
         })
         .await?;
         self.receive(response_rx).await
+    }
+
+    async fn with_transport_deadline<T>(
+        &self,
+        runtime_timeout: Duration,
+        request_type: &str,
+        request: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let deadline = runtime_timeout.saturating_add(DEFAULT_HOST_WAIT_TRANSPORT_TIMEOUT);
+        match tokio::time::timeout(deadline, request).await {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(request_type, "code-mode host request exceeded its deadline");
+                let reason =
+                    format!("code-mode host timed out waiting for {request_type} response");
+                mark_connection_dead(&self.alive, &self.failure, reason.clone());
+                self.cancellation.cancel();
+                Err(reason)
+            }
+        }
     }
 
     async fn send(&self, command: DriverCommand) -> Result<(), String> {
@@ -493,6 +482,31 @@ impl Connection {
     }
 }
 
+async fn drive_writer(
+    mut writer: FramedWriter<ChildStdin>,
+    mut outgoing: mpsc::Receiver<EncodedFrame>,
+    cancellation: CancellationToken,
+) -> Result<(), String> {
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            frame = outgoing.recv() => {
+                let Some(frame) = frame else {
+                    return Err("code-mode host outgoing stream closed".to_string());
+                };
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Ok(()),
+                    result = writer.write_frame(&frame) => {
+                        result.map_err(|error| {
+                            format!("failed to write code-mode host message: {error}")
+                        })?;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         mark_connection_dead(
@@ -506,7 +520,7 @@ impl Drop for Connection {
 
 impl ConnectionSupervisor {
     async fn run(mut self) {
-        let mut owner_exited = false;
+        let mut child_exited = false;
         let reason = tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => failure_message(&self.failure),
@@ -516,35 +530,19 @@ impl ConnectionSupervisor {
             },
             result = &mut self.reader_task => task_failure("reader", result),
             result = &mut self.writer_task => task_failure("writer", result),
-            reason = self.owner.wait() => {
-                owner_exited = true;
-                reason
+            result = self.child.wait() => {
+                child_exited = true;
+                match result {
+                    Ok(status) => format!("code-mode host exited with status {status}"),
+                    Err(error) => format!("failed waiting for code-mode host: {error}"),
+                }
             }
         };
         mark_connection_dead(&self.alive, &self.failure, reason.clone());
         let _ = self.event_tx.try_send(DriverEvent::Failed(reason));
         self.cancellation.cancel();
-        if !owner_exited {
-            self.owner.close().await;
-        }
-    }
-}
-
-impl ConnectionOwner {
-    async fn wait(&mut self) -> String {
-        match self {
-            Self::Process(child) => match child.wait().await {
-                Ok(status) => format!("code-mode host exited with status {status}"),
-                Err(error) => format!("failed waiting for code-mode host: {error}"),
-            },
-            Self::WebSocket => std::future::pending().await,
-        }
-    }
-
-    async fn close(&mut self) {
-        match self {
-            Self::Process(child) => kill_and_reap(child).await,
-            Self::WebSocket => {}
+        if !child_exited {
+            kill_and_reap(&mut self.child).await;
         }
     }
 }

@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -15,6 +16,10 @@ use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use tokio::sync::Semaphore;
 
+use http::HeaderValue;
+
+use crate::NetworkPolicy;
+use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
 use sha2::Digest;
@@ -99,6 +104,26 @@ pub enum OutboundProxyPolicy {
     RespectSystemProxy,
 }
 
+/// Privacy-safe macOS system proxy configuration for one outbound destination.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacosSystemProxyConfiguration {
+    /// A PAC script or automatic proxy-discovery route applies to the destination.
+    Automatic,
+    /// An explicitly configured HTTP or HTTPS proxy applies.
+    Manual,
+    /// macOS selected a direct connection for the destination.
+    Direct,
+    /// The destination or system proxy settings could not be inspected.
+    Unavailable,
+}
+
+/// Inspects macOS proxy configuration without executing PAC scripts or exposing proxy URLs.
+#[cfg(target_os = "macos")]
+pub fn macos_system_proxy_configuration(request_url: &str) -> MacosSystemProxyConfiguration {
+    macos::configuration(request_url)
+}
+
 /// Resolved proxy route for a concrete outbound destination.
 ///
 /// `TransportDefault` preserves the underlying transport behavior only when system-proxy support
@@ -138,9 +163,40 @@ impl fmt::Debug for OutboundProxyRoute {
 /// Construct this once from the effective application configuration and carry it with the
 /// session or component that owns outbound requests. Individual request paths should supply only
 /// their destination and route class rather than resolving feature state themselves.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct HttpClientFactory {
     outbound_proxy_policy: OutboundProxyPolicy,
+    system_proxy_fallback: bool,
+    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+    network_policy: NetworkPolicy,
+}
+
+impl PartialEq for HttpClientFactory {
+    fn eq(&self, other: &Self) -> bool {
+        self.outbound_proxy_policy == other.outbound_proxy_policy
+            && self.system_proxy_fallback == other.system_proxy_fallback
+            && self.network_policy == other.network_policy
+            && self
+                .chatgpt_cookie_store
+                .as_ref()
+                .map(|store| store.configured_cookies())
+                == other
+                    .chatgpt_cookie_store
+                    .as_ref()
+                    .map(|store| store.configured_cookies())
+    }
+}
+
+impl Eq for HttpClientFactory {}
+
+impl fmt::Debug for HttpClientFactory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClientFactory")
+            .field("outbound_proxy_policy", &self.outbound_proxy_policy)
+            .field("system_proxy_fallback", &self.system_proxy_fallback)
+            .field("network_policy", &self.network_policy)
+            .finish()
+    }
 }
 
 impl HttpClientFactory {
@@ -148,7 +204,55 @@ impl HttpClientFactory {
     pub const fn new(outbound_proxy_policy: OutboundProxyPolicy) -> Self {
         Self {
             outbound_proxy_policy,
+            system_proxy_fallback: false,
+            chatgpt_cookie_store: None,
+            network_policy: NetworkPolicy::unmanaged(),
         }
+    }
+
+    /// Carries the account/configuration owner's application policy into every transport.
+    pub fn with_network_policy(mut self, policy: NetworkPolicy) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn network_policy(&self) -> &NetworkPolicy {
+        &self.network_policy
+    }
+
+    /// Changes the route policy while retaining the configured cookies and network policy.
+    pub fn with_outbound_proxy_policy(mut self, policy: OutboundProxyPolicy) -> Self {
+        self.outbound_proxy_policy = policy;
+        self
+    }
+
+    /// Allows bootstrap callers to retry through the system proxy when their request is safe
+    /// to replay. This does not change routing or enable retries for ordinary HTTP requests.
+    pub fn with_system_proxy_fallback(mut self) -> Self {
+        self.system_proxy_fallback = true;
+        self
+    }
+
+    pub fn allows_system_proxy_fallback(&self) -> bool {
+        self.system_proxy_fallback
+            && self.outbound_proxy_policy == OutboundProxyPolicy::ReqwestDefault
+    }
+
+    /// Adds process-scoped cookies to requests made by ChatGPT cookie-store clients.
+    pub fn with_chatgpt_cookies(mut self, cookies: impl IntoIterator<Item = HeaderValue>) -> Self {
+        let cookies = cookies.into_iter().collect::<Vec<_>>();
+        self.chatgpt_cookie_store =
+            (!cookies.is_empty()).then(|| Arc::new(ChatGptCookieStore::new(cookies)));
+        self
+    }
+
+    /// Returns whether ChatGPT cookie-store clients have additional configured cookies.
+    pub fn has_chatgpt_cookies(&self) -> bool {
+        self.chatgpt_cookie_store.is_some()
+    }
+
+    pub(crate) fn chatgpt_cookie_store(&self) -> Option<Arc<ChatGptCookieStore>> {
+        self.chatgpt_cookie_store.clone()
     }
 
     /// Returns the outbound proxy policy used for clients built by this factory.
@@ -597,14 +701,7 @@ fn system_proxy_cache_key(request_url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"system-proxy-cache-v1\0");
     hasher.update(request_url.as_bytes());
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-
-        let _ = write!(&mut hex, "{byte:02x}");
-    }
-    hex
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(any(test, target_os = "windows"))]

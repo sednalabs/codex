@@ -5,15 +5,11 @@ use codex_app_server_protocol::ComputerUseCallOutputContentItem;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::DynamicToolSpec;
-use codex_protocol::dynamic_tools::DynamicToolCapability;
-use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
-use codex_tools::BROWSER_STEP_TOOL_NAME;
-use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
-use codex_tools::native_computer_use_provider_for_call;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
-use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
+use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -34,16 +30,13 @@ const ENV_PLAYWRIGHT_EXECUTABLE_PATH: &str = "CODEX_BROWSER_PLAYWRIGHT_EXECUTABL
 const ENV_PLAYWRIGHT_CHANNEL: &str = "CODEX_BROWSER_PLAYWRIGHT_CHANNEL";
 const ENV_PLAYWRIGHT_DISPLAY: &str = "CODEX_BROWSER_PLAYWRIGHT_DISPLAY";
 const ENV_PLAYWRIGHT_CAPTURE_MODE: &str = "CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE";
-const ENV_PLAYWRIGHT_ISOLATION: &str = "CODEX_BROWSER_PLAYWRIGHT_ISOLATION";
 const ENV_PLAYWRIGHT_VIEWPORT_WIDTH: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH";
 const ENV_PLAYWRIGHT_VIEWPORT_HEIGHT: &str = "CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT";
-const ENV_PLAYWRIGHT_ARTIFACT_DIR: &str = "CODEX_BROWSER_PLAYWRIGHT_ARTIFACT_DIR";
-const ENV_PLAYWRIGHT_ARTIFACT_POLICY: &str = "CODEX_BROWSER_PLAYWRIGHT_ARTIFACT_POLICY";
-const ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS: &str = "CODEX_BROWSER_PLAYWRIGHT_ALLOW_CALL_HEADERS";
-const ENV_PLAYWRIGHT_SERVICE_PROFILES: &str = "CODEX_BROWSER_PLAYWRIGHT_SERVICE_PROFILES_JSON";
 const PROVIDER_COMMAND: &str = "command";
 const PROVIDER_NONE: &str = "none";
 const PROVIDER_PLAYWRIGHT: &str = "playwright";
+const TOOL_BROWSER_OBSERVE: &str = "browser_observe";
+const TOOL_BROWSER_STEP: &str = "browser_step";
 const BACKEND_AUTO: &str = "auto";
 const BACKEND_BROWSER: &str = "browser";
 const BACKEND_CHROME: &str = "chrome";
@@ -51,10 +44,11 @@ const BACKEND_CHROMIUM: &str = "chromium";
 const BACKEND_WILDCARD: &str = "*";
 
 const PLAYWRIGHT_BRIDGE_SCRIPT: &str = include_str!("browser_playwright_provider.mjs");
-const PLAYWRIGHT_REVIEW_SCRIPT: &str = include_str!("browser_playwright_review.mjs");
-const PLAYWRIGHT_INSPECTION_SCRIPT: &str = include_str!("browser_playwright_inspection.mjs");
-const PLAYWRIGHT_SERVICE_HEADERS_SCRIPT: &str =
-    include_str!("browser_playwright_service_headers.mjs");
+
+/// Whether a dynamic tool name is one of the canonical browser tools.
+pub fn is_browser_dynamic_tool(tool: &str) -> bool {
+    matches!(tool, TOOL_BROWSER_OBSERVE | TOOL_BROWSER_STEP)
+}
 
 /// Return browser computer-use dynamic tools for the process default Codex home.
 pub fn configured_browser_dynamic_tools() -> Vec<DynamicToolSpec> {
@@ -73,21 +67,18 @@ pub fn configured_browser_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec
 
     vec![
         browser_dynamic_tool(
-            BROWSER_OBSERVE_TOOL_NAME,
+            TOOL_BROWSER_OBSERVE,
             "Capture the current browser viewport as a model-visible screenshot.",
-            "non_mutating",
         ),
         browser_dynamic_tool(
-            BROWSER_STEP_TOOL_NAME,
+            TOOL_BROWSER_STEP,
             "Perform bounded browser actions, then return a fresh browser screenshot.",
-            "mutating",
         ),
     ]
 }
 
-fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> DynamicToolSpec {
-    DynamicToolSpec {
-        namespace: None,
+fn browser_dynamic_tool(name: &str, description: &str) -> DynamicToolSpec {
+    DynamicToolSpec::Function(DynamicToolFunctionSpec {
         name: name.to_string(),
         description: description.to_string(),
         input_schema: json!({
@@ -95,14 +86,7 @@ fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> 
             "additionalProperties": true
         }),
         defer_loading: false,
-        persist_on_resume: false,
-        capability: Some(DynamicToolCapability {
-            family: Some(COMPUTER_USE_ADAPTER_BROWSER.to_string()),
-            capability_scope: Some("session".to_string()),
-            mutation_class: Some(mutation_class.to_string()),
-            lease_mode: None,
-        }),
-    }
+    })
 }
 
 /// Result of trying to route a browser computer-use request to a configured
@@ -132,9 +116,11 @@ pub async fn handle_browser_computer_use_for_codex_home(
     params: &ComputerUseCallParams,
     codex_home: &Path,
 ) -> BrowserComputerUseOutcome {
-    if params.adapter != COMPUTER_USE_ADAPTER_BROWSER
-        || native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_BROWSER, &params.tool)
-            .is_none()
+    if params.adapter != "browser"
+        || !matches!(
+            params.tool.as_str(),
+            TOOL_BROWSER_OBSERVE | TOOL_BROWSER_STEP
+        )
     {
         return BrowserComputerUseOutcome::Unavailable;
     }
@@ -145,20 +131,12 @@ pub async fn handle_browser_computer_use_for_codex_home(
 
     let requested_backend = requested_backend(&params.arguments);
     let Some(provider) = config.provider_for_backend(requested_backend).cloned() else {
-        return BrowserComputerUseOutcome::Handled(with_browser_metadata(
-            failed_response(format!(
-                "Browser backend `{requested_backend}` is not available from configured browser computer-use providers. Configure `{ENV_COMMAND}` or add a matching provider to ~/.codex/browser-computer-use.json."
-            )),
-            "none",
-            requested_backend,
-            "unavailable",
-        ));
+        return BrowserComputerUseOutcome::Handled(failed_response(format!(
+            "Browser backend `{requested_backend}` is not available from configured browser computer-use providers. Configure `{ENV_COMMAND}` or add a matching provider to ~/.codex/browser-computer-use.json."
+        )));
     };
 
     let request_timeout = provider.timeout;
-    let provider_id = provider.id.clone();
-    let provider_kind = provider.kind();
-    let profile = provider.profile_label().to_string();
     let response = match timeout(request_timeout, handle_with_provider(params, provider)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => failed_response(err),
@@ -167,18 +145,11 @@ pub async fn handle_browser_computer_use_for_codex_home(
             request_timeout.as_secs()
         )),
     };
-    BrowserComputerUseOutcome::Handled(with_browser_metadata(
-        response,
-        &provider_id,
-        requested_backend,
-        &format!("{provider_kind}:{profile}"),
-    ))
+    BrowserComputerUseOutcome::Handled(response)
 }
 
 fn default_codex_home() -> Option<PathBuf> {
-    codex_utils_home_dir::find_codex_home()
-        .ok()
-        .map(PathBuf::from)
+    codex_utils_home_dir::find_codex_home().ok().map(Into::into)
 }
 
 async fn handle_with_provider(
@@ -188,7 +159,7 @@ async fn handle_with_provider(
     let mut response = match provider.provider {
         BrowserProvider::Command(command) => run_command_provider(params, &command).await,
         BrowserProvider::Playwright(playwright) => {
-            run_playwright_provider(params, playwright.as_ref()).await
+            run_playwright_provider(params, &playwright).await
         }
     }?;
 
@@ -211,29 +182,17 @@ async fn run_playwright_provider(
     params: &ComputerUseCallParams,
     config: &PlaywrightProviderConfig,
 ) -> Result<ComputerUseCallResponse, String> {
-    let script_dir = tempfile::Builder::new()
+    let mut script_file = tempfile::Builder::new()
         .prefix("codex-browser-provider-")
-        .tempdir()
-        .map_err(|err| format!("failed to create browser provider script directory: {err}"))?;
-    let script_path = script_dir.path().join("browser_playwright_provider.mjs");
-    let review_script_path = script_dir.path().join("browser_playwright_review.mjs");
-    let inspection_script_path = script_dir.path().join("browser_playwright_inspection.mjs");
-    let service_headers_script_path = script_dir
-        .path()
-        .join("browser_playwright_service_headers.mjs");
-    std::fs::write(&script_path, PLAYWRIGHT_BRIDGE_SCRIPT)
+        .suffix(".mjs")
+        .tempfile()
+        .map_err(|err| format!("failed to create browser provider script: {err}"))?;
+    script_file
+        .as_file_mut()
+        .write_all(PLAYWRIGHT_BRIDGE_SCRIPT.as_bytes())
         .map_err(|err| format!("failed to write browser provider script: {err}"))?;
-    std::fs::write(&review_script_path, PLAYWRIGHT_REVIEW_SCRIPT)
-        .map_err(|err| format!("failed to write browser review script: {err}"))?;
-    std::fs::write(&inspection_script_path, PLAYWRIGHT_INSPECTION_SCRIPT)
-        .map_err(|err| format!("failed to write browser inspection script: {err}"))?;
-    std::fs::write(
-        &service_headers_script_path,
-        PLAYWRIGHT_SERVICE_HEADERS_SCRIPT,
-    )
-    .map_err(|err| format!("failed to write browser service header script: {err}"))?;
 
-    let script_path = script_path.to_string_lossy().to_string();
+    let script_path = script_file.path().to_string_lossy().to_string();
     let envs = playwright_provider_envs(config);
 
     let output = run_provider_process(&[config.node.clone(), script_path], params, &envs).await?;
@@ -272,11 +231,6 @@ fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, S
     );
     push_env(
         &mut envs,
-        ENV_PLAYWRIGHT_ISOLATION,
-        config.isolation.clone(),
-    );
-    push_env(
-        &mut envs,
         ENV_PLAYWRIGHT_VIEWPORT_WIDTH,
         config.viewport_width.map(|width| width.to_string()),
     );
@@ -285,28 +239,6 @@ fn playwright_provider_envs(config: &PlaywrightProviderConfig) -> Vec<(String, S
         ENV_PLAYWRIGHT_VIEWPORT_HEIGHT,
         config.viewport_height.map(|height| height.to_string()),
     );
-    push_env(
-        &mut envs,
-        ENV_PLAYWRIGHT_ARTIFACT_DIR,
-        config.artifact_dir.clone(),
-    );
-    push_env(
-        &mut envs,
-        ENV_PLAYWRIGHT_ARTIFACT_POLICY,
-        config.artifact_policy.clone(),
-    );
-    if config.allow_call_extra_http_headers.unwrap_or(false) {
-        push_env(
-            &mut envs,
-            ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS,
-            Some("1".to_string()),
-        );
-    }
-    if !config.service_profiles.is_empty()
-        && let Ok(value) = serde_json::to_string(&config.service_profiles)
-    {
-        push_env(&mut envs, ENV_PLAYWRIGHT_SERVICE_PROFILES, Some(value));
-    }
     if let Some(headless) = config.headless {
         push_env(
             &mut envs,
@@ -465,34 +397,12 @@ impl BrowserRuntimeConfig {
                         capture_mode: env.capture_mode.clone().or_else(|| {
                             file.as_ref().and_then(|config| config.capture_mode.clone())
                         }),
-                        isolation: env
-                            .isolation
-                            .clone()
-                            .or_else(|| file.as_ref().and_then(|config| config.isolation.clone())),
                         viewport_width: env
                             .viewport_width
                             .or_else(|| file.as_ref().and_then(|config| config.viewport_width)),
                         viewport_height: env
                             .viewport_height
                             .or_else(|| file.as_ref().and_then(|config| config.viewport_height)),
-                        artifact_dir: env.artifact_dir.clone().or_else(|| {
-                            file.as_ref().and_then(|config| config.artifact_dir.clone())
-                        }),
-                        artifact_policy: env.artifact_policy.clone().or_else(|| {
-                            file.as_ref()
-                                .and_then(|config| config.artifact_policy.clone())
-                        }),
-                        allow_call_extra_http_headers: env.allow_call_extra_http_headers.or_else(
-                            || {
-                                file.as_ref()
-                                    .and_then(|config| config.allow_call_extra_http_headers)
-                            },
-                        ),
-                        service_profiles: merge_service_profiles(
-                            file.as_ref()
-                                .and_then(|config| config.service_profiles.clone()),
-                            env.service_profiles,
-                        ),
                     },
                     default_playwright_backends(),
                     timeout,
@@ -547,49 +457,24 @@ impl ConfiguredBrowserProvider {
     ) -> Self {
         Self {
             id: id.into(),
-            provider: BrowserProvider::Playwright(Box::new(config)),
+            provider: BrowserProvider::Playwright(config),
             backends,
             timeout,
         }
     }
 
     fn supports_backend(&self, backend: &str) -> bool {
-        if matches!(&self.provider, BrowserProvider::Playwright(_)) {
-            return self
-                .backends
-                .iter()
-                .any(|configured| configured.eq_ignore_ascii_case(backend));
-        }
-
         self.backends.is_empty()
             || self.backends.iter().any(|configured| {
                 configured == BACKEND_WILDCARD || configured.eq_ignore_ascii_case(backend)
             })
-    }
-
-    fn kind(&self) -> &'static str {
-        match &self.provider {
-            BrowserProvider::Command(_) => PROVIDER_COMMAND,
-            BrowserProvider::Playwright(_) => PROVIDER_PLAYWRIGHT,
-        }
-    }
-
-    fn profile_label(&self) -> &str {
-        match &self.provider {
-            BrowserProvider::Command(_) => "external",
-            BrowserProvider::Playwright(config) => match config.isolation.as_deref() {
-                Some(iso @ ("thread" | "shared" | "environment" | "call")) => iso,
-                Some(_) => "configured",
-                None => "thread",
-            },
-        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BrowserProvider {
     Command(CommandProviderConfig),
-    Playwright(Box<PlaywrightProviderConfig>),
+    Playwright(PlaywrightProviderConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -607,13 +492,8 @@ struct PlaywrightProviderConfig {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
-    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
-    artifact_dir: Option<String>,
-    artifact_policy: Option<String>,
-    allow_call_extra_http_headers: Option<bool>,
-    service_profiles: Vec<ServiceProfileConfigFile>,
 }
 
 #[derive(Deserialize)]
@@ -629,13 +509,8 @@ struct BrowserRuntimeConfigFile {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
-    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
-    artifact_dir: Option<String>,
-    artifact_policy: Option<String>,
-    allow_call_extra_http_headers: Option<bool>,
-    service_profiles: Option<Vec<ServiceProfileConfigFile>>,
     providers: Option<Vec<BrowserProviderConfigFile>>,
     routing: Option<BrowserRoutingConfigFile>,
 }
@@ -703,13 +578,8 @@ struct BrowserProviderConfigFile {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
-    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
-    artifact_dir: Option<String>,
-    artifact_policy: Option<String>,
-    allow_call_extra_http_headers: Option<bool>,
-    service_profiles: Option<Vec<ServiceProfileConfigFile>>,
     backends: Option<Vec<String>>,
     platforms: Option<Vec<String>>,
 }
@@ -745,11 +615,6 @@ impl BrowserProviderConfigFile {
                 wildcard_backends()
             }
         });
-        let backends = if provider_name == PROVIDER_PLAYWRIGHT {
-            normalize_playwright_backends(backends)
-        } else {
-            backends
-        };
         let id = self.id.clone().unwrap_or_else(|| provider_name.to_string());
 
         match provider_name {
@@ -774,24 +639,8 @@ impl BrowserProviderConfigFile {
                         .capture_mode
                         .clone()
                         .or_else(|| env.capture_mode.clone()),
-                    isolation: self.isolation.clone().or_else(|| env.isolation.clone()),
                     viewport_width: self.viewport_width.or(env.viewport_width),
                     viewport_height: self.viewport_height.or(env.viewport_height),
-                    artifact_dir: self
-                        .artifact_dir
-                        .clone()
-                        .or_else(|| env.artifact_dir.clone()),
-                    artifact_policy: self
-                        .artifact_policy
-                        .clone()
-                        .or_else(|| env.artifact_policy.clone()),
-                    allow_call_extra_http_headers: self
-                        .allow_call_extra_http_headers
-                        .or(env.allow_call_extra_http_headers),
-                    service_profiles: merge_service_profiles(
-                        self.service_profiles.clone(),
-                        env.service_profiles.clone(),
-                    ),
                 },
                 backends,
                 timeout,
@@ -819,13 +668,8 @@ struct BrowserRuntimeEnv {
     channel: Option<String>,
     display: Option<String>,
     capture_mode: Option<String>,
-    isolation: Option<String>,
     viewport_width: Option<u64>,
     viewport_height: Option<u64>,
-    artifact_dir: Option<String>,
-    artifact_policy: Option<String>,
-    allow_call_extra_http_headers: Option<bool>,
-    service_profiles: Vec<ServiceProfileConfigFile>,
 }
 
 impl BrowserRuntimeEnv {
@@ -842,29 +686,12 @@ impl BrowserRuntimeEnv {
             channel: first_env(&[ENV_PLAYWRIGHT_CHANNEL]),
             display: first_env(&[ENV_PLAYWRIGHT_DISPLAY]),
             capture_mode: first_env(&[ENV_PLAYWRIGHT_CAPTURE_MODE]),
-            isolation: first_env(&[ENV_PLAYWRIGHT_ISOLATION]),
             viewport_width: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_WIDTH])
                 .and_then(|value| value.parse().ok()),
             viewport_height: first_env(&[ENV_PLAYWRIGHT_VIEWPORT_HEIGHT])
                 .and_then(|value| value.parse().ok()),
-            artifact_dir: first_env(&[ENV_PLAYWRIGHT_ARTIFACT_DIR]),
-            artifact_policy: first_env(&[ENV_PLAYWRIGHT_ARTIFACT_POLICY]),
-            allow_call_extra_http_headers: first_env(&[ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS])
-                .and_then(|value| parse_bool(&value)),
-            service_profiles: first_env(&[ENV_PLAYWRIGHT_SERVICE_PROFILES])
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ServiceProfileConfigFile {
-    id: String,
-    actor: Option<String>,
-    allowed_hosts: Vec<String>,
-    headers: Option<std::collections::BTreeMap<String, String>>,
-    env_headers: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -897,15 +724,6 @@ fn order_providers(
     ordered
 }
 
-fn merge_service_profiles(
-    file_profiles: Option<Vec<ServiceProfileConfigFile>>,
-    env_profiles: Vec<ServiceProfileConfigFile>,
-) -> Vec<ServiceProfileConfigFile> {
-    let mut profiles = file_profiles.unwrap_or_default();
-    profiles.extend(env_profiles);
-    profiles
-}
-
 fn wildcard_backends() -> Vec<String> {
     vec![BACKEND_WILDCARD.to_string()]
 }
@@ -914,54 +732,9 @@ fn default_playwright_backends() -> Vec<String> {
     vec![
         BACKEND_AUTO.to_string(),
         BACKEND_BROWSER.to_string(),
+        BACKEND_CHROME.to_string(),
         BACKEND_CHROMIUM.to_string(),
     ]
-}
-
-fn normalize_playwright_backends(backends: Vec<String>) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for backend in backends {
-        if backend == BACKEND_WILDCARD {
-            for default_backend in default_playwright_backends() {
-                if !normalized.contains(&default_backend) {
-                    normalized.push(default_backend);
-                }
-            }
-        } else if !backend.eq_ignore_ascii_case(BACKEND_CHROME) && !normalized.contains(&backend) {
-            normalized.push(backend);
-        }
-    }
-    normalized
-}
-
-fn with_browser_metadata(
-    mut response: ComputerUseCallResponse,
-    provider: &str,
-    backend: &str,
-    profile: &str,
-) -> ComputerUseCallResponse {
-    let provider = safe_metadata_value(provider);
-    let backend = safe_metadata_value(backend);
-    let profile = safe_metadata_value(profile);
-    append_text(
-        &mut response.content_items,
-        &format!("\n\nbrowser_metadata: provider={provider} backend={backend} profile={profile}"),
-    );
-    response
-}
-
-fn safe_metadata_value(value: &str) -> String {
-    let mut sanitized = value
-        .chars()
-        .filter(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
-        .take(64)
-        .collect::<String>();
-    if sanitized.is_empty() {
-        sanitized.push_str("unknown");
-    }
-    sanitized
 }
 
 fn platform_matches_current(platform: &str) -> bool {
@@ -1018,12 +791,6 @@ fn require_native_image_for_visual_response(
         ),
     );
     response.success = false;
-    response.error = Some(match response.error.take() {
-        Some(existing_error) if !existing_error.trim().is_empty() => {
-            format!("{missing_image_message} Previous provider error: {existing_error}")
-        }
-        _ => missing_image_message.to_string(),
-    });
 }
 
 fn append_text(items: &mut Vec<ComputerUseCallOutputContentItem>, extra: &str) {
@@ -1041,11 +808,8 @@ fn append_text(items: &mut Vec<ComputerUseCallOutputContentItem>, extra: &str) {
 
 fn failed_response(error: String) -> ComputerUseCallResponse {
     ComputerUseCallResponse {
-        content_items: vec![ComputerUseCallOutputContentItem::InputText {
-            text: error.clone(),
-        }],
+        content_items: vec![ComputerUseCallOutputContentItem::InputText { text: error }],
         success: false,
-        error: Some(error),
     }
 }
 
@@ -1065,7 +829,6 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use serde_json::json;
-    use std::io::Write as _;
 
     #[test]
     fn command_spec_accepts_shell_like_string_and_array() {
@@ -1104,13 +867,8 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
-                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
-                artifact_dir: None,
-                artifact_policy: None,
-                allow_call_extra_http_headers: None,
-                service_profiles: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("chrome-provider".to_string()),
@@ -1128,13 +886,8 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
-                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
-                        artifact_dir: None,
-                        artifact_policy: None,
-                        allow_call_extra_http_headers: None,
-                        service_profiles: None,
                         backends: Some(vec!["chrome".to_string()]),
                         platforms: None,
                     },
@@ -1151,13 +904,8 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
-                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
-                        artifact_dir: None,
-                        artifact_policy: None,
-                        allow_call_extra_http_headers: None,
-                        service_profiles: None,
                         backends: Some(vec![BACKEND_AUTO.to_string()]),
                         platforms: None,
                     },
@@ -1194,13 +942,8 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
-                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
-                artifact_dir: None,
-                artifact_policy: None,
-                allow_call_extra_http_headers: None,
-                service_profiles: None,
                 providers: Some(vec![
                     BrowserProviderConfigFile {
                         id: Some("first".to_string()),
@@ -1215,13 +958,8 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
-                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
-                        artifact_dir: None,
-                        artifact_policy: None,
-                        allow_call_extra_http_headers: None,
-                        service_profiles: None,
                         backends: None,
                         platforms: None,
                     },
@@ -1238,13 +976,8 @@ mod tests {
                         channel: None,
                         display: None,
                         capture_mode: None,
-                        isolation: None,
                         viewport_width: None,
                         viewport_height: None,
-                        artifact_dir: None,
-                        artifact_policy: None,
-                        allow_call_extra_http_headers: None,
-                        service_profiles: None,
                         backends: None,
                         platforms: None,
                     },
@@ -1264,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_playwright_provider_does_not_claim_chrome_backend() {
+    fn legacy_playwright_provider_claims_chrome_browser_backend_aliases() {
         let config = BrowserRuntimeConfig::from_sources(
             Some(BrowserRuntimeConfigFile {
                 provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
@@ -1278,13 +1011,8 @@ mod tests {
                 channel: None,
                 display: None,
                 capture_mode: None,
-                isolation: None,
                 viewport_width: None,
                 viewport_height: None,
-                artifact_dir: None,
-                artifact_policy: None,
-                allow_call_extra_http_headers: None,
-                service_profiles: None,
                 providers: None,
                 routing: None,
             }),
@@ -1294,137 +1022,9 @@ mod tests {
 
         assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
         assert!(config.provider_for_backend(BACKEND_BROWSER).is_some());
-        assert!(config.provider_for_backend(BACKEND_CHROME).is_none());
+        assert!(config.provider_for_backend(BACKEND_CHROME).is_some());
         assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
         assert!(config.provider_for_backend("iab").is_none());
-    }
-
-    #[test]
-    fn explicit_playwright_chrome_backend_is_rejected() {
-        let config = BrowserRuntimeConfig::from_sources(
-            Some(BrowserRuntimeConfigFile {
-                provider: None,
-                command: None,
-                node: None,
-                node_path: None,
-                timeout_secs: None,
-                state_dir: None,
-                headless: None,
-                executable_path: None,
-                channel: None,
-                display: None,
-                capture_mode: None,
-                isolation: None,
-                viewport_width: None,
-                viewport_height: None,
-                artifact_dir: None,
-                artifact_policy: None,
-                allow_call_extra_http_headers: None,
-                service_profiles: None,
-                providers: Some(vec![BrowserProviderConfigFile {
-                    id: Some("playwright".to_string()),
-                    provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
-                    command: None,
-                    node: None,
-                    node_path: None,
-                    timeout_secs: None,
-                    state_dir: None,
-                    headless: None,
-                    executable_path: None,
-                    channel: None,
-                    display: None,
-                    capture_mode: None,
-                    isolation: None,
-                    viewport_width: None,
-                    viewport_height: None,
-                    artifact_dir: None,
-                    artifact_policy: None,
-                    allow_call_extra_http_headers: None,
-                    service_profiles: None,
-                    backends: Some(vec![
-                        BACKEND_CHROME.to_string(),
-                        BACKEND_WILDCARD.to_string(),
-                    ]),
-                    platforms: None,
-                }]),
-                routing: None,
-            }),
-            BrowserRuntimeEnv::default(),
-        )
-        .expect("configured providers");
-
-        assert!(config.provider_for_backend(BACKEND_CHROME).is_none());
-        assert!(config.provider_for_backend(BACKEND_AUTO).is_some());
-        assert!(config.provider_for_backend(BACKEND_BROWSER).is_some());
-        assert!(config.provider_for_backend(BACKEND_CHROMIUM).is_some());
-    }
-
-    #[test]
-    fn playwright_provider_carries_artifact_and_service_profile_config() {
-        let config = BrowserRuntimeConfig::from_sources(
-            Some(BrowserRuntimeConfigFile {
-                provider: Some(PROVIDER_PLAYWRIGHT.to_string()),
-                command: None,
-                node: Some("node".to_string()),
-                node_path: None,
-                timeout_secs: None,
-                state_dir: None,
-                headless: None,
-                executable_path: None,
-                channel: None,
-                display: None,
-                capture_mode: None,
-                isolation: None,
-                viewport_width: None,
-                viewport_height: None,
-                artifact_dir: Some("/tmp/artifacts".to_string()),
-                artifact_policy: Some("failure".to_string()),
-                allow_call_extra_http_headers: Some(true),
-                service_profiles: Some(vec![ServiceProfileConfigFile {
-                    id: "cf-access".to_string(),
-                    actor: Some("service account".to_string()),
-                    allowed_hosts: vec!["example.test".to_string()],
-                    headers: Some(std::collections::BTreeMap::from([(
-                        "CF-Access-Client-Id".to_string(),
-                        "client-id".to_string(),
-                    )])),
-                    env_headers: Some(std::collections::BTreeMap::from([(
-                        "CF-Access-Client-Secret".to_string(),
-                        "CF_SECRET".to_string(),
-                    )])),
-                }]),
-                providers: None,
-                routing: None,
-            }),
-            BrowserRuntimeEnv::default(),
-        )
-        .expect("playwright provider");
-
-        let provider = config
-            .provider_for_backend(BACKEND_AUTO)
-            .expect("provider for auto");
-        let BrowserProvider::Playwright(playwright) = &provider.provider else {
-            panic!("expected playwright provider");
-        };
-        assert_eq!(playwright.artifact_dir.as_deref(), Some("/tmp/artifacts"));
-        assert_eq!(playwright.artifact_policy.as_deref(), Some("failure"));
-        assert_eq!(playwright.allow_call_extra_http_headers, Some(true));
-        assert_eq!(
-            playwright.service_profiles,
-            vec![ServiceProfileConfigFile {
-                id: "cf-access".to_string(),
-                actor: Some("service account".to_string()),
-                allowed_hosts: vec!["example.test".to_string()],
-                headers: Some(std::collections::BTreeMap::from([(
-                    "CF-Access-Client-Id".to_string(),
-                    "client-id".to_string(),
-                )])),
-                env_headers: Some(std::collections::BTreeMap::from([(
-                    "CF-Access-Client-Secret".to_string(),
-                    "CF_SECRET".to_string(),
-                )])),
-            }]
-        );
     }
 
     #[test]
@@ -1438,19 +1038,8 @@ mod tests {
             channel: None,
             display: Some(":99".to_string()),
             capture_mode: Some("viewport".to_string()),
-            isolation: Some("thread".to_string()),
             viewport_width: Some(1440),
             viewport_height: Some(1000),
-            artifact_dir: Some("/tmp/codex-browser-artifacts".to_string()),
-            artifact_policy: Some("failure".to_string()),
-            allow_call_extra_http_headers: Some(true),
-            service_profiles: vec![ServiceProfileConfigFile {
-                id: "cf-access".to_string(),
-                actor: Some("service account".to_string()),
-                allowed_hosts: vec!["example.test".to_string()],
-                headers: None,
-                env_headers: None,
-            }],
         };
 
         assert_eq!(
@@ -1475,7 +1064,6 @@ mod tests {
                     ENV_PLAYWRIGHT_CAPTURE_MODE.to_string(),
                     "viewport".to_string()
                 ),
-                (ENV_PLAYWRIGHT_ISOLATION.to_string(), "thread".to_string()),
                 (
                     ENV_PLAYWRIGHT_VIEWPORT_WIDTH.to_string(),
                     "1440".to_string()
@@ -1483,23 +1071,6 @@ mod tests {
                 (
                     ENV_PLAYWRIGHT_VIEWPORT_HEIGHT.to_string(),
                     "1000".to_string()
-                ),
-                (
-                    ENV_PLAYWRIGHT_ARTIFACT_DIR.to_string(),
-                    "/tmp/codex-browser-artifacts".to_string()
-                ),
-                (
-                    ENV_PLAYWRIGHT_ARTIFACT_POLICY.to_string(),
-                    "failure".to_string()
-                ),
-                (
-                    ENV_PLAYWRIGHT_ALLOW_CALL_HEADERS.to_string(),
-                    "1".to_string()
-                ),
-                (
-                    ENV_PLAYWRIGHT_SERVICE_PROFILES.to_string(),
-                    r#"[{"id":"cf-access","actor":"service account","allowed_hosts":["example.test"],"headers":null,"env_headers":null}]"#
-                        .to_string()
                 ),
                 (ENV_PLAYWRIGHT_HEADLESS.to_string(), "0".to_string()),
             ]
@@ -1509,21 +1080,18 @@ mod tests {
     #[test]
     fn configured_browser_tools_are_session_scoped_native_tools() {
         let tools = [
-            browser_dynamic_tool(BROWSER_OBSERVE_TOOL_NAME, "observe", "non_mutating"),
-            browser_dynamic_tool(BROWSER_STEP_TOOL_NAME, "step", "mutating"),
+            browser_dynamic_tool(TOOL_BROWSER_OBSERVE, "observe"),
+            browser_dynamic_tool(TOOL_BROWSER_STEP, "step"),
         ];
 
-        assert_eq!(tools[0].name, BROWSER_OBSERVE_TOOL_NAME);
-        assert_eq!(tools[1].name, BROWSER_STEP_TOOL_NAME);
-        assert!(tools.iter().all(|tool| tool.namespace.is_none()));
-        assert!(tools.iter().all(|tool| !tool.defer_loading));
-        assert!(tools.iter().all(|tool| !tool.persist_on_resume));
-        assert!(tools.iter().all(|tool| {
-            tool.capability
-                .as_ref()
-                .and_then(|capability| capability.family.as_deref())
-                == Some(COMPUTER_USE_ADAPTER_BROWSER)
-        }));
+        assert!(matches!(
+            &tools[0],
+            DynamicToolSpec::Function(spec) if spec.name == TOOL_BROWSER_OBSERVE && !spec.defer_loading
+        ));
+        assert!(matches!(
+            &tools[1],
+            DynamicToolSpec::Function(spec) if spec.name == TOOL_BROWSER_STEP && !spec.defer_loading
+        ));
     }
 
     #[test]
@@ -1540,9 +1108,12 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .map(|tool| tool.name.as_str())
+                .map(|tool| match tool {
+                    DynamicToolSpec::Function(spec) => spec.name.as_str(),
+                    DynamicToolSpec::Namespace(_) => panic!("unexpected browser namespace"),
+                })
                 .collect::<Vec<_>>(),
-            vec![BROWSER_OBSERVE_TOOL_NAME, BROWSER_STEP_TOOL_NAME]
+            vec![TOOL_BROWSER_OBSERVE, TOOL_BROWSER_STEP]
         );
     }
 
@@ -1559,7 +1130,6 @@ mod tests {
                 },
             ],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1568,7 +1138,6 @@ mod tests {
         );
 
         assert!(response.success);
-        assert_eq!(response.error, None);
     }
 
     #[test]
@@ -1578,7 +1147,6 @@ mod tests {
                 text: "Browser observation\nurl: https://example.test".to_string(),
             }],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1587,15 +1155,12 @@ mod tests {
         );
 
         assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Browser observation missing native image output.")
-        );
         let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text summary");
         };
         assert!(text.contains("url: https://example.test"));
+        assert!(text.contains("Browser observation missing native image output."));
         assert!(text.contains("must return screenshots as native image content items"));
     }
 
@@ -1604,7 +1169,6 @@ mod tests {
         let mut response = ComputerUseCallResponse {
             content_items: vec![],
             success: true,
-            error: None,
         };
 
         require_native_image_for_visual_response(
@@ -1613,15 +1177,12 @@ mod tests {
         );
 
         assert!(!response.success);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("Browser observation missing native image output.")
-        );
         assert_eq!(response.content_items.len(), 1);
         let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text diagnostic");
         };
+        assert!(text.contains("Browser observation missing native image output."));
         assert!(text.contains("must return screenshots as native image content items"));
     }
 
@@ -1671,8 +1232,8 @@ JSON
             turn_id: "turn-1".to_string(),
             call_id: "call-1".to_string(),
             environment_id: Some("env-1".to_string()),
-            adapter: COMPUTER_USE_ADAPTER_BROWSER.to_string(),
-            tool: BROWSER_OBSERVE_TOOL_NAME.to_string(),
+            adapter: "browser".to_string(),
+            tool: TOOL_BROWSER_OBSERVE.to_string(),
             arguments: json!({}),
         };
 

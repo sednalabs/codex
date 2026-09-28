@@ -1,7 +1,7 @@
 use super::*;
-use std::ffi::c_void;
 use windows_sys::Win32::Security::EqualSid;
 use windows_sys::Win32::Security::TokenRestrictedSids;
+use windows_sys::Win32::Security::WinRestrictedCodeSid;
 
 unsafe fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) -> Result<bool> {
     let mut needed = 0;
@@ -45,6 +45,26 @@ unsafe fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) ->
         .any(|entry| EqualSid(entry.Sid, expected_sid) != 0))
 }
 
+fn fake_ptr(value: usize) -> *mut c_void {
+    value as *mut c_void
+}
+
+#[test]
+fn restricted_sids_keep_everyone_for_loader_compatibility() {
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let extras = [fake_ptr(0x30)];
+    let logon = fake_ptr(0x40);
+    let everyone = fake_ptr(0x50);
+
+    let entries = build_restricted_sid_entries(&caps, &extras, logon, everyone);
+    let restricted = entries.iter().map(|entry| entry.Sid).collect::<Vec<_>>();
+
+    assert_eq!(
+        restricted,
+        vec![caps[0], caps[1], extras[0], logon, everyone]
+    );
+}
+
 #[test]
 fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
     let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
@@ -69,31 +89,29 @@ fn elevated_token_includes_network_proxy_restricting_sid() -> Result<()> {
     Ok(())
 }
 
-fn fake_ptr(value: usize) -> *mut c_void {
-    std::ptr::without_provenance_mut(value)
-}
-
 #[test]
-fn restricted_sids_exclude_everyone() {
-    let caps = [fake_ptr(/*value*/ 0x10), fake_ptr(/*value*/ 0x20)];
-    let extras = [fake_ptr(/*value*/ 0x30)];
-    let logon = fake_ptr(/*value*/ 0x40);
-    let everyone = fake_ptr(/*value*/ 0x50);
+fn write_restricted_token_uses_capabilities_and_everyone_restrictions() -> Result<()> {
+    let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
+    let base_token = unsafe { get_current_token_for_restriction()? };
+    let restricted_token = unsafe {
+        create_workspace_write_token_with_caps_from(base_token, &[capability_sid.as_ptr()])?
+    };
+    let everyone = unsafe { world_sid()? };
+    let capability_is_restricting =
+        unsafe { token_has_restricting_sid(restricted_token, capability_sid.as_ptr()) };
+    let has_restricted_code = unsafe {
+        let restricted_code = well_known_sid(WinRestrictedCodeSid)?;
+        token_has_restricting_sid(restricted_token, restricted_code.as_ptr() as *mut c_void)
+    };
+    let has_everyone =
+        unsafe { token_has_restricting_sid(restricted_token, everyone.as_ptr() as *mut c_void) };
+    unsafe {
+        CloseHandle(restricted_token);
+        CloseHandle(base_token);
+    }
 
-    let entries = build_restricted_sid_entries(&caps, &extras, logon);
-    let restricted = entries.iter().map(|entry| entry.Sid).collect::<Vec<_>>();
-
-    assert_eq!(restricted, vec![caps[0], caps[1], extras[0], logon]);
-    assert!(!restricted.contains(&everyone));
-}
-
-#[test]
-fn default_dacl_keeps_everyone_for_ipc_compatibility() {
-    let caps = [fake_ptr(/*value*/ 0x10), fake_ptr(/*value*/ 0x20)];
-    let logon = fake_ptr(/*value*/ 0x30);
-    let everyone = fake_ptr(/*value*/ 0x40);
-
-    let dacl_sids = build_default_dacl_sids(&caps, logon, everyone);
-
-    assert_eq!(dacl_sids, vec![logon, everyone, caps[0], caps[1]]);
+    assert!(capability_is_restricting?);
+    assert!(!has_restricted_code?);
+    assert!(has_everyone?);
+    Ok(())
 }

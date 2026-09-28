@@ -1,5 +1,19 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ResponseUsageMetadata": {
+      "description": "Usage metadata reported for one upstream response.",
+      "properties": {
+        "amount": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": true
+      },
+      "type": "object"
+    },
     "TokenUsageBreakdown": {
       "properties": {
         "cacheWriteInputTokens": {
@@ -29,17 +43,16 @@
         }
       },
       "required": [
-        "totalTokens",
-        "inputTokens",
         "cachedInputTokens",
+        "inputTokens",
         "outputTokens",
-        "reasoningOutputTokens"
+        "reasoningOutputTokens",
+        "totalTokens"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
+  "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
   "properties": {
     "responseId": {
       "type": "string"
@@ -53,7 +66,17 @@
     "usage": {
       "anyOf": [
         {
-          "$ref": "#/$defs/TokenUsageBreakdown"
+          "$ref": "#/definitions/TokenUsageBreakdown"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usageMetadata": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ResponseUsageMetadata"
         },
         {
           "type": "null"
@@ -62,9 +85,9 @@
     }
   },
   "required": [
+    "responseId",
     "threadId",
-    "turnId",
-    "responseId"
+    "turnId"
   ],
   "title": "RawResponseCompletedNotification",
   "type": "object"

@@ -1,10 +1,13 @@
 use super::*;
-use crate::agent::control::SpawnAgentForkMode;
-use crate::agent::control::SpawnAgentOptions;
+use crate::agent::child_config::SpawnConfigOptions;
+use crate::agent::child_config::SpawnConfigVersion;
+use crate::agent::child_config::prepare_agent_spawn_config;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::agent::types::SpawnAgentForkMode;
+use crate::agent::types::SpawnAgentOptions;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use codex_tools::ToolSpec;
@@ -36,7 +39,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
     }
 }
@@ -46,11 +52,12 @@ async fn handle_spawn_agent(
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
-        turn,
+        step_context,
         payload,
         call_id,
         ..
     } = invocation;
+    let turn = &step_context.turn;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let role_name = args
@@ -68,41 +75,9 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
-    let mut config =
-        build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-    if let Some(service_tier) = args.service_tier.as_ref() {
-        config.service_tier = Some(service_tier.clone());
-    }
-    if args.fork_context {
-        reject_full_fork_agent_type_override(role_name)?;
-    }
-    apply_requested_spawn_agent_model_overrides(
-        &session,
-        turn.as_ref(),
-        &mut config,
-        args.model.as_deref(),
-        args.reasoning_effort.clone(),
-        role_name,
-    )
-    .await?;
-    if !args.fork_context {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
-    }
-    apply_spawn_agent_service_tier(
-        &session,
-        &mut config,
-        turn.config.service_tier.as_deref(),
-        args.service_tier.as_deref(),
-    )
-    .await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-
-    // A spawn is an operation before it has a child identity. Emitting this before awaiting
-    // AgentControl preserves truthful in-progress visibility for slow creation without exposing
-    // a cancellation-owned provisional child through receiver fields.
     session
         .emit_turn_item_started(
-            &turn,
+            turn,
             &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id.clone(),
                 tool: CollabAgentTool::SpawnAgent,
@@ -111,22 +86,26 @@ async fn handle_spawn_agent(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
                 prompt: Some(prompt.clone()),
-                // Start records own requested provenance only. The established
-                // model/reasoning aliases describe an observed terminal selection;
-                // the legacy serializer supplies its required empty/default
-                // compatibility fields without polluting the canonical item.
-                model: None,
-                reasoning_effort: None,
-                requested_model: args.model.clone(),
-                requested_reasoning_effort: args.reasoning_effort.clone(),
+                model: Some(args.model.clone().unwrap_or_default()),
+                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
                 agents_states: Default::default(),
-                wake_notifications: None,
-                completion_reason: None,
-                wake_cause: None,
             }),
         )
         .await;
-
+    let prepared = prepare_agent_spawn_config(
+        &session,
+        step_context.as_ref(),
+        SpawnConfigOptions {
+            version: SpawnConfigVersion::V1,
+            full_history_fork: args.fork_context,
+            role_name,
+            model: args.model.as_deref(),
+            reasoning_effort: args.reasoning_effort.clone(),
+        },
+    )
+    .await
+    .map_err(FunctionCallError::RespondToModel)?;
+    let config = prepared.config;
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,
@@ -134,19 +113,23 @@ async fn handle_spawn_agent(
             session.thread_id,
             &turn.session_source,
             child_depth,
-            role_name,
+            prepared.role_name.as_deref(),
             /*task_name*/ None,
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
-            environments: Some(turn.environments.to_selections()),
-            spawn_call_id: Some(call_id.clone()),
+            parent_turn_id: Some(turn.sub_id.clone()),
+            root_turn_id: turn.turn_metadata_state.root_turn_id(),
+            turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+            environments: Some(step_context.environments.to_selections()),
+            multi_agent_v2_usage_hints: None,
+            cyber_access_program: turn.cyber_access_program,
         },
     ))
-    .await;
-    let result = result.map_err(collab_spawn_error);
+    .await
+    .map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),
@@ -181,10 +164,12 @@ async fn handle_spawn_agent(
         };
     let effective_model = agent_snapshot
         .as_ref()
-        .map(|snapshot| snapshot.model.clone());
+        .map(|snapshot| snapshot.model.clone())
+        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
-        .and_then(|snapshot| snapshot.reasoning_effort.clone());
+        .and_then(|snapshot| snapshot.reasoning_effort.clone())
+        .unwrap_or(args.reasoning_effort.unwrap_or_default());
     let nickname = new_agent_nickname.clone();
     let receiver_thread_ids = new_thread_id.into_iter().collect();
     let receiver_agents = new_thread_id
@@ -200,7 +185,7 @@ async fn handle_spawn_agent(
         .unwrap_or_default();
     session
         .emit_turn_item_completed(
-            &turn,
+            turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -209,14 +194,9 @@ async fn handle_spawn_agent(
                 receiver_thread_ids,
                 receiver_agents,
                 prompt: Some(prompt),
-                model: effective_model,
-                reasoning_effort: effective_reasoning_effort,
-                requested_model: args.model.clone(),
-                requested_reasoning_effort: args.reasoning_effort.clone(),
+                model: Some(effective_model),
+                reasoning_effort: Some(effective_reasoning_effort),
                 agents_states,
-                wake_notifications: None,
-                completion_reason: None,
-                wake_cause: None,
             }),
         )
         .await;
@@ -238,13 +218,6 @@ impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
-
-    fn waits_for_runtime_cancellation(&self) -> bool {
-        // The tool runtime must wait while AgentControl reconciles a cancellation-owned
-        // provisional child. Returning an aborted result before that cleanup could leave an
-        // unseen child running after the parent believes the spawn failed.
-        true
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,7 +227,6 @@ struct SpawnAgentArgs {
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
-    service_tier: Option<String>,
     #[serde(default)]
     fork_context: bool,
 }
@@ -266,7 +238,7 @@ pub(crate) struct SpawnAgentResult {
 }
 
 impl ToolOutput for SpawnAgentResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "spawn_agent")
     }
 

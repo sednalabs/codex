@@ -2,13 +2,13 @@
 source: tui/src/pager_overlay.rs
 expression: term.backend()
 ---
-" S T A T I C · 100% ────────────────────"
+"/ S T A T I C / / / / / / / / / / / / / "
 "one                                     "
 "two                                     "
 "three                                   "
 "~                                       "
 "~                                       "
-"────────────────────────────────────────"
-" ↑/↓   pgup/pgdn   home/end             "
-" q quit                                 "
+"───────────────────────────────── 100% ─"
+" ↑/↓ to scroll   pgup/pgdn to page   hom"
+" q close                                "
 "                                        "

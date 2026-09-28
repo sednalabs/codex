@@ -12,6 +12,7 @@ impl AppsRequestProcessor {
         let started_at = Instant::now();
         let AppsReadParams {
             app_ids,
+            thread_id,
             include_tools,
         } = params;
         if app_ids.len() > APP_READ_MAX_IDS {
@@ -25,14 +26,11 @@ impl AppsRequestProcessor {
             .into_iter()
             .filter(|app_id| seen_app_ids.insert(app_id.clone()))
             .collect::<Vec<_>>();
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let config = self.load_apps_config(thread_id.as_deref()).await?;
         let auth = self.auth_manager.auth().await;
         if !config
             .features
             .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
-            || !self
-                .workspace_codex_plugins_enabled(&config, auth.as_ref())
-                .await
         {
             let response = AppsReadResponse {
                 apps: Vec::new(),
@@ -51,9 +49,9 @@ impl AppsRequestProcessor {
         } = connectors::read_connector_metadata(&config, auth, &app_ids, include_tools)
             .await
             .map_err(|err| internal_error(format!("failed to read app metadata: {err}")))?;
-        let plugins_manager = self.thread_manager.plugins_manager();
-        plugins_manager.set_auth_mode(Some(auth.api_auth_mode()));
-        let loaded_plugins = plugins_manager
+        let loaded_plugins = self
+            .thread_manager
+            .plugins_manager()
             .plugins_for_config(&config.plugins_config_input())
             .await;
         let connector_snapshot =

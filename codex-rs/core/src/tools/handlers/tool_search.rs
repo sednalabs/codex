@@ -7,12 +7,12 @@ use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::registry::ToolRegistry;
 use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_tools::LoadableToolSpec;
-use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
@@ -22,11 +22,11 @@ use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use tracing::instrument;
 
 pub struct ToolSearchHandler {
     search_infos: Vec<ToolSearchInfo>,
-    entries: Vec<ToolSearchEntry>,
     source_listing: ToolSearchSourceListing,
     spec: ToolSpec,
     search_engine: SearchEngine<usize>,
@@ -34,40 +34,94 @@ pub struct ToolSearchHandler {
 
 #[derive(Default)]
 pub(crate) struct ToolSearchHandlerCache {
-    cached: Mutex<Option<Arc<ToolSearchHandler>>>,
+    cached: Mutex<Option<CachedToolSearchHandler>>,
+}
+
+struct CachedToolSearchHandler {
+    handler: Arc<ToolSearchHandler>,
+    sources: Vec<ToolSearchSource>,
+}
+
+enum ToolSearchSource {
+    Immutable(Weak<dyn CoreToolRuntime>),
+    Dynamic(Box<ToolSearchInfo>),
 }
 
 impl ToolSearchHandlerCache {
-    #[instrument(level = "trace", skip_all, fields(search_info_count = search_infos.len()))]
+    #[instrument(level = "trace", skip_all)]
     pub(crate) fn get_or_build(
         &self,
-        search_infos: Vec<ToolSearchInfo>,
+        registry: &ToolRegistry,
         source_listing: ToolSearchSourceListing,
     ) -> Arc<ToolSearchHandler> {
+        let sources = registry
+            .entries()
+            .filter(|tool| tool.exposure.is_deferred())
+            .filter_map(|tool| {
+                if tool.runtime.immutable_spec().is_some() {
+                    Some(ToolSearchSource::Immutable(Arc::downgrade(&tool.runtime)))
+                } else {
+                    tool.runtime
+                        .search_info()
+                        .map(Box::new)
+                        .map(ToolSearchSource::Dynamic)
+                }
+            })
+            .collect::<Vec<_>>();
+
         {
             let cached = self.cached();
             if let Some(cached) = cached.as_ref()
-                && cached.search_infos == search_infos
-                && cached.source_listing == source_listing
+                && cached.handler.source_listing == source_listing
+                && Self::sources_match(&cached.sources, &sources)
             {
-                return Arc::clone(cached);
+                return Arc::clone(&cached.handler);
             }
         }
+
+        let search_infos = sources
+            .iter()
+            .filter_map(|source| match source {
+                ToolSearchSource::Immutable(runtime) => {
+                    runtime.upgrade().and_then(|runtime| runtime.search_info())
+                }
+                ToolSearchSource::Dynamic(search_info) => Some(search_info.as_ref().clone()),
+            })
+            .collect();
 
         let handler = Arc::new(ToolSearchHandler::new(search_infos, source_listing));
         let mut cached = self.cached();
         if let Some(cached) = cached.as_ref()
-            && cached.search_infos == handler.search_infos
-            && cached.source_listing == handler.source_listing
+            && cached.handler.source_listing == source_listing
+            && Self::sources_match(&cached.sources, &sources)
         {
-            return Arc::clone(cached);
+            return Arc::clone(&cached.handler);
         }
-
-        *cached = Some(Arc::clone(&handler));
+        *cached = Some(CachedToolSearchHandler {
+            handler: Arc::clone(&handler),
+            sources,
+        });
         handler
     }
 
-    fn cached(&self) -> std::sync::MutexGuard<'_, Option<Arc<ToolSearchHandler>>> {
+    fn sources_match(cached_sources: &[ToolSearchSource], sources: &[ToolSearchSource]) -> bool {
+        cached_sources.len() == sources.len()
+            && cached_sources
+                .iter()
+                .zip(sources)
+                .all(|(cached, current)| match (cached, current) {
+                    (ToolSearchSource::Immutable(cached), ToolSearchSource::Immutable(current)) => {
+                        Weak::ptr_eq(cached, current)
+                    }
+                    (ToolSearchSource::Dynamic(cached), ToolSearchSource::Dynamic(current)) => {
+                        cached == current
+                    }
+                    (ToolSearchSource::Immutable(_), ToolSearchSource::Dynamic(_))
+                    | (ToolSearchSource::Dynamic(_), ToolSearchSource::Immutable(_)) => false,
+                })
+    }
+
+    fn cached(&self) -> std::sync::MutexGuard<'_, Option<CachedToolSearchHandler>> {
         match self.cached.lock() {
             Ok(cached) => cached,
             Err(poisoned) => poisoned.into_inner(),
@@ -85,10 +139,6 @@ impl ToolSearchHandler {
         search_infos: Vec<ToolSearchInfo>,
         source_listing: ToolSearchSourceListing,
     ) -> Self {
-        let entries = search_infos
-            .iter()
-            .map(|search_info| search_info.entry.clone())
-            .collect::<Vec<_>>();
         let search_source_infos = search_infos
             .iter()
             .filter_map(|search_info| search_info.source_info.clone())
@@ -98,9 +148,9 @@ impl ToolSearchHandler {
             TOOL_SEARCH_DEFAULT_LIMIT,
             source_listing,
         );
-        let documents: Vec<Document<usize>> = entries
+        let documents: Vec<Document<usize>> = search_infos
             .iter()
-            .map(|entry| entry.search_text.clone())
+            .map(|search_info| search_info.entry.search_text.clone())
             .enumerate()
             .map(|(idx, search_text)| Document::new(idx, search_text))
             .collect();
@@ -109,7 +159,6 @@ impl ToolSearchHandler {
 
         Self {
             search_infos,
-            entries,
             source_listing,
             spec,
             search_engine,
@@ -130,7 +179,10 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -165,7 +217,7 @@ impl ToolSearchHandler {
             ));
         }
 
-        if self.entries.is_empty() {
+        if self.search_infos.is_empty() {
             return Ok(boxed_tool_output(ToolSearchOutput { tools: Vec::new() }));
         }
 
@@ -183,55 +235,14 @@ impl ToolSearchHandler {
         query: &str,
         limit: usize,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
-        let exact_result_ids = self.exact_identifier_match_ids(query, limit);
-        if exact_result_ids.len() >= limit {
-            let results = exact_result_ids
-                .iter()
-                .filter_map(|id| self.entries.get(*id));
-            return self.search_output_tools(results);
-        }
-
-        if exact_result_ids.is_empty() {
-            let results = self
-                .search_engine
-                .search(query, limit)
-                .into_iter()
-                .map(|result| result.document.id)
-                .filter_map(|id| self.entries.get(id));
-            return self.search_output_tools(results);
-        }
-
-        let exact_result_id_set = exact_result_ids
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let results = exact_result_ids
-            .iter()
-            .filter_map(|id| self.entries.get(*id))
-            .chain(
-                self.search_engine
-                    .search(query, limit)
-                    .into_iter()
-                    .map(|result| result.document.id)
-                    .filter(|id| !exact_result_id_set.contains(id))
-                    .filter_map(|id| self.entries.get(id)),
-            );
-        self.search_output_tools(results.take(limit))
-    }
-
-    fn exact_identifier_match_ids(&self, query: &str, limit: usize) -> Vec<usize> {
-        let terms = exact_identifier_terms(query);
-        if terms.is_empty() || limit == 0 {
-            return Vec::new();
-        }
-
-        self.entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry_matches_exact_identifier(entry, &terms))
-            .map(|(idx, _)| idx)
-            .take(limit)
-            .collect()
+        let results = self
+            .search_engine
+            .search(query, limit)
+            .into_iter()
+            .map(|result| result.document.id)
+            .filter_map(|id| self.search_infos.get(id))
+            .map(|search_info| &search_info.entry);
+        self.search_output_tools(results)
     }
 
     fn search_output_tools<'a>(
@@ -239,74 +250,9 @@ impl ToolSearchHandler {
         results: impl IntoIterator<Item = &'a ToolSearchEntry>,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
         Ok(coalesce_loadable_tool_specs(
-            results.into_iter().map(|entry| entry.output.clone()),
+            results.into_iter().map(ToolSearchEntry::to_loadable_spec),
         ))
     }
-}
-
-fn exact_identifier_terms(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|term| {
-            term.trim_matches(|ch: char| {
-                !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == ':' || ch == '/')
-            })
-        })
-        .filter(|term| is_exact_identifier_term(term))
-        .map(str::to_ascii_lowercase)
-        .collect()
-}
-
-fn is_exact_identifier_term(term: &str) -> bool {
-    term.len() >= 3
-        && (term.chars().any(|ch| matches!(ch, '_' | ':' | '/')) || term.matches('-').count() >= 2)
-}
-
-fn entry_matches_exact_identifier(entry: &ToolSearchEntry, terms: &[String]) -> bool {
-    match &entry.output {
-        LoadableToolSpec::Function(tool) => terms
-            .iter()
-            .any(|term| tool.name.eq_ignore_ascii_case(term)),
-        LoadableToolSpec::Namespace(namespace) => namespace.tools.iter().any(|tool| {
-            let ResponsesApiNamespaceTool::Function(tool) = tool;
-            terms
-                .iter()
-                .any(|term| matches_namespaced_tool_identifier(term, &namespace.name, &tool.name))
-        }),
-    }
-}
-
-fn matches_namespaced_tool_identifier(term: &str, namespace: &str, tool_name: &str) -> bool {
-    if tool_name.eq_ignore_ascii_case(term) {
-        return true;
-    }
-
-    let namespace_prefix = namespace.trim_end_matches('_');
-    if namespace_prefix.is_empty() {
-        return false;
-    }
-
-    let namespace_len = namespace_prefix.len();
-    let delimiter_len = "__".len();
-    if term.len() <= namespace_len + delimiter_len {
-        return false;
-    }
-
-    if !term.is_char_boundary(namespace_len)
-        || !term.is_char_boundary(namespace_len + delimiter_len)
-    {
-        return false;
-    }
-
-    if !term[..namespace_len].eq_ignore_ascii_case(namespace_prefix) {
-        return false;
-    }
-
-    if !term[namespace_len..].starts_with("__") {
-        return false;
-    }
-
-    term[namespace_len + delimiter_len..].eq_ignore_ascii_case(tool_name.trim_start_matches('_'))
 }
 
 #[cfg(test)]
@@ -314,8 +260,10 @@ mod tests {
     use super::*;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::McpHandler;
+    use crate::tools::registry::ToolExposure;
     use codex_mcp::ToolInfo;
-    use codex_protocol::dynamic_tools::DynamicToolSpec;
+    use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+    use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::ResponsesApiTool;
@@ -324,36 +272,96 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn cache_reuses_handler_for_identical_search_infos_and_rebuilds_for_changes() {
+    fn cache_reuses_immutable_handlers_and_rebuilds_for_current_registry_changes() {
         let cache = ToolSearchHandlerCache::default();
-        let search_infos = vec![
+        let runtime: Arc<dyn CoreToolRuntime> = Arc::new(
             McpHandler::new(tool_info("calendar", "create_event", "Create events"))
-                .expect("MCP tool should convert")
-                .search_info()
-                .expect("MCP handler should return search info"),
-        ];
+                .expect("MCP tool should convert"),
+        );
+        let mut registry = ToolRegistry::default();
+        registry.register_trusted_with_exposure(Arc::clone(&runtime), ToolExposure::Deferred);
 
-        let first = cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Include);
-        let second = cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Include);
+        let first = cache.get_or_build(&registry, ToolSearchSourceListing::Include);
+        let second = cache.get_or_build(&registry, ToolSearchSourceListing::Include);
         assert!(Arc::ptr_eq(&first, &second));
 
-        let without_sources =
-            cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Omit);
+        let without_sources = cache.get_or_build(&registry, ToolSearchSourceListing::Omit);
         assert!(!Arc::ptr_eq(&first, &without_sources));
 
-        let mut changed_search_infos = search_infos;
-        changed_search_infos[0]
-            .entry
-            .search_text
-            .push_str(" changed");
-        let changed = cache.get_or_build(changed_search_infos, ToolSearchSourceListing::Omit);
-        assert!(!Arc::ptr_eq(&first, &changed));
+        let mut replacement_registry = ToolRegistry::default();
+        let replacement = Arc::new(
+            McpHandler::new(tool_info("calendar", "create_event", "Create events"))
+                .expect("replacement MCP tool should convert"),
+        );
+        replacement_registry.register_trusted_with_exposure(replacement, ToolExposure::Deferred);
+        let replacement = cache.get_or_build(&replacement_registry, ToolSearchSourceListing::Omit);
+        assert!(!Arc::ptr_eq(&without_sources, &replacement));
+
+        let mut disabled_registry = ToolRegistry::default();
+        disabled_registry.register_trusted_with_exposure(runtime, ToolExposure::Direct);
+        let disabled = cache.get_or_build(&disabled_registry, ToolSearchSourceListing::Omit);
+        assert!(!Arc::ptr_eq(&replacement, &disabled));
+        assert!(disabled.search_infos.is_empty());
+    }
+
+    #[test]
+    fn cache_rechecks_dynamic_tool_metadata_while_reusing_immutable_mcp_handlers() {
+        let cache = ToolSearchHandlerCache::default();
+        let mcp_runtime: Arc<dyn CoreToolRuntime> = Arc::new(
+            McpHandler::new(tool_info("calendar", "create_event", "Create events"))
+                .expect("MCP tool should convert"),
+        );
+        let mut dynamic_tool = DynamicToolFunctionSpec {
+            name: "lookup".to_string(),
+            description: "Search current records".to_string(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            defer_loading: true,
+        };
+
+        let mut first_registry = ToolRegistry::default();
+        first_registry
+            .register_trusted_with_exposure(Arc::clone(&mcp_runtime), ToolExposure::Deferred);
+        first_registry.register_external_with_exposure(
+            Arc::new(DynamicToolHandler::new(&dynamic_tool).expect("dynamic tool should convert")),
+            ToolExposure::Deferred,
+        );
+        let first = cache.get_or_build(&first_registry, ToolSearchSourceListing::Include);
+
+        let mut equivalent_registry = ToolRegistry::default();
+        equivalent_registry
+            .register_trusted_with_exposure(Arc::clone(&mcp_runtime), ToolExposure::Deferred);
+        equivalent_registry.register_external_with_exposure(
+            Arc::new(DynamicToolHandler::new(&dynamic_tool).expect("dynamic tool should convert")),
+            ToolExposure::Deferred,
+        );
+        let equivalent = cache.get_or_build(&equivalent_registry, ToolSearchSourceListing::Include);
+        assert!(Arc::ptr_eq(&first, &equivalent));
+
+        dynamic_tool.description = "Search refreshed records".to_string();
+        let mut refreshed_registry = ToolRegistry::default();
+        refreshed_registry.register_trusted_with_exposure(mcp_runtime, ToolExposure::Deferred);
+        refreshed_registry.register_external_with_exposure(
+            Arc::new(DynamicToolHandler::new(&dynamic_tool).expect("dynamic tool should convert")),
+            ToolExposure::Deferred,
+        );
+        let refreshed = cache.get_or_build(&refreshed_registry, ToolSearchSourceListing::Include);
+        assert!(!Arc::ptr_eq(&first, &refreshed));
+        assert!(
+            refreshed.search_infos[1]
+                .entry
+                .search_text
+                .contains("refreshed")
+        );
     }
 
     #[test]
     fn mixed_search_results_coalesce_mcp_namespaces() {
-        let dynamic_tools = [DynamicToolSpec {
-            namespace: Some("codex_app".to_string()),
+        let dynamic_namespace = DynamicToolNamespaceSpec {
+            name: "codex_app".to_string(),
+            description: "Tools in the codex_app namespace.".to_string(),
+            tools: Vec::new(),
+        };
+        let dynamic_tools = [DynamicToolFunctionSpec {
             name: "automation_update".to_string(),
             description: "Create, update, view, or delete recurring automations.".to_string(),
             input_schema: serde_json::json!({
@@ -365,8 +373,6 @@ mod tests {
                 "additionalProperties": false,
             }),
             defer_loading: true,
-            persist_on_resume: true,
-            capability: None,
         }];
         let mcp_tools = [
             tool_info("calendar", "create_event", "Create events"),
@@ -382,16 +388,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
         search_infos.extend(dynamic_tools.iter().map(|tool| {
-            DynamicToolHandler::new(tool)
+            DynamicToolHandler::new_in_namespace(&dynamic_namespace, tool)
                 .expect("dynamic tool should convert")
                 .search_info()
                 .expect("dynamic handler should return search info")
         }));
         let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
         let results = [
-            &handler.entries[0],
-            &handler.entries[2],
-            &handler.entries[1],
+            &handler.search_infos[0].entry,
+            &handler.search_infos[2].entry,
+            &handler.search_infos[1].entry,
         ];
 
         let tools = handler
@@ -453,283 +459,6 @@ mod tests {
                 }),
             ],
         );
-    }
-
-    #[test]
-    fn mcp_search_prefers_read_only_d1_query_for_natural_phrasing() {
-        let search_infos = cloudflare_like_tools()
-            .into_iter()
-            .map(|tool| {
-                McpHandler::new(tool)
-                    .expect("MCP tool should convert")
-                    .search_info()
-                    .expect("MCP handler should return search info")
-            })
-            .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
-
-        for query in [
-            "cloudflare d1 execute query",
-            "Cloudflare D1 read only query execute SQL database",
-        ] {
-            let tools = handler
-                .search(query, /*limit*/ 1)
-                .expect("search should succeed");
-            assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
-        }
-    }
-
-    #[test]
-    fn mcp_search_surfaces_ops_queue_tools_for_exact_identifier_query() {
-        let search_infos = [
-            tool_info(
-                "ops",
-                "work_item_queue_add",
-                "Add a work item to an Ops runner queue",
-            ),
-            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
-            tool_info(
-                "ops",
-                "work_item_queue_remove",
-                "Remove a work item from an Ops runner queue",
-            ),
-            tool_info(
-                "ops",
-                "work_item_queue_upsert",
-                "Upsert an Ops runner queue",
-            ),
-            tool_info(
-                "ops",
-                "runner_checkpoint_append",
-                "Append a runner checkpoint",
-            ),
-        ]
-        .into_iter()
-        .map(|tool| {
-            McpHandler::new(tool)
-                .expect("MCP tool should convert")
-                .search_info()
-                .expect("MCP handler should return search info")
-        })
-        .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
-
-        let tools = handler
-            .search(
-                concat!(
-                    "work_item_queue_add ",
-                    "work_item_queue_read ",
-                    "work_item_queue_upsert ",
-                    "work_item_queue_remove",
-                ),
-                /*limit*/ 8,
-            )
-            .expect("search should succeed");
-
-        assert_eq!(
-            namespace_tool_names(&tools),
-            vec![
-                "work_item_queue_add",
-                "work_item_queue_read",
-                "work_item_queue_remove",
-                "work_item_queue_upsert",
-            ]
-        );
-    }
-
-    #[test]
-    fn mcp_search_surfaces_flattened_namespace_identifier_query() {
-        let search_infos = [
-            tool_info(
-                "ops",
-                "work_item_queue_add",
-                "Add a work item to an Ops runner queue",
-            ),
-            tool_info("ops", "work_item_queue_read", "Read an Ops runner queue"),
-        ]
-        .into_iter()
-        .map(|tool| {
-            McpHandler::new(tool)
-                .expect("MCP tool should convert")
-                .search_info()
-                .expect("MCP handler should return search info")
-        })
-        .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
-
-        let tools = handler
-            .search("mcp__ops__work_item_queue_read", /*limit*/ 1)
-            .expect("search should succeed");
-
-        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_read"]);
-    }
-
-    #[test]
-    fn exact_identifier_match_requires_callable_identifier_equality() {
-        let search_infos = [
-            tool_info(
-                "ops",
-                "work_item_queue_remove_all",
-                "Remove all items from an Ops runner queue",
-            ),
-            tool_info(
-                "ops",
-                "work_item_queue_remove",
-                "Remove one item from an Ops runner queue",
-            ),
-        ]
-        .into_iter()
-        .map(|tool| {
-            McpHandler::new(tool)
-                .expect("MCP tool should convert")
-                .search_info()
-                .expect("MCP handler should return search info")
-        })
-        .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
-
-        let tools = handler
-            .search("work_item_queue_remove", /*limit*/ 1)
-            .expect("search should succeed");
-
-        assert_eq!(namespace_tool_names(&tools), vec!["work_item_queue_remove"]);
-    }
-
-    #[test]
-    fn exact_identifier_match_does_not_promote_schema_identifiers() {
-        let search_infos = cloudflare_like_tools()
-            .into_iter()
-            .map(|tool| {
-                McpHandler::new(tool)
-                    .expect("MCP tool should convert")
-                    .search_info()
-                    .expect("MCP handler should return search info")
-            })
-            .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
-
-        assert!(
-            handler
-                .exact_identifier_match_ids("database_id", /*limit*/ 8)
-                .is_empty()
-        );
-
-        let tools = handler
-            .search(
-                "Cloudflare database_id read only query execute SQL database",
-                /*limit*/ 1,
-            )
-            .expect("search should succeed");
-
-        assert_eq!(namespace_tool_names(&tools), vec!["d1_query_read_only"]);
-    }
-
-    #[test]
-    fn exact_identifier_terms_ignores_natural_language_words() {
-        assert_eq!(
-            exact_identifier_terms(concat!(
-                "Find `work_item_queue_add`, ",
-                "mcp__ops__work_item_queue_read and queue tools",
-            )),
-            vec![
-                "work_item_queue_add".to_string(),
-                "mcp__ops__work_item_queue_read".to_string(),
-            ]
-        );
-    }
-
-    fn namespace_tool_names(tools: &[LoadableToolSpec]) -> Vec<&str> {
-        tools
-            .iter()
-            .flat_map(|tool| match tool {
-                LoadableToolSpec::Namespace(namespace) => namespace
-                    .tools
-                    .iter()
-                    .map(|tool| match tool {
-                        ResponsesApiNamespaceTool::Function(tool) => tool.name.as_str(),
-                    })
-                    .collect::<Vec<_>>(),
-                _ => Vec::new(),
-            })
-            .collect()
-    }
-
-    fn cloudflare_like_tools() -> Vec<ToolInfo> {
-        vec![
-            cloudflare_tool_info(
-                "api_read",
-                "Execute a read-only Cloudflare REST API GET operation.",
-                &["operation_id", "query"],
-                /*read_only*/ true,
-            ),
-            cloudflare_tool_info(
-                "api_mutate",
-                "Execute a mutating Cloudflare REST API operation.",
-                &["operation_id", "body"],
-                /*read_only*/ false,
-            ),
-            cloudflare_tool_info(
-                "d1_validate_query",
-                "Validate one read-only D1 SQL statement without executing it.",
-                &["database_id", "sql"],
-                /*read_only*/ true,
-            ),
-            cloudflare_tool_info(
-                "d1_execute_write",
-                "Execute one audited D1 row-write SQL statement.",
-                &["database_id", "sql"],
-                /*read_only*/ false,
-            ),
-            cloudflare_tool_info(
-                "d1_query_read_only",
-                "Run or execute one read-only D1 SQL SELECT query against a database and return rows.",
-                &["database_id", "sql", "max_rows"],
-                /*read_only*/ true,
-            ),
-        ]
-    }
-
-    fn cloudflare_tool_info(
-        tool_name: &str,
-        description: &str,
-        properties: &[&str],
-        read_only: bool,
-    ) -> ToolInfo {
-        let properties = properties
-            .iter()
-            .map(|property| {
-                (
-                    (*property).to_string(),
-                    serde_json::json!({ "type": "string" }),
-                )
-            })
-            .collect::<serde_json::Map<String, serde_json::Value>>();
-
-        let mut annotations = rmcp::model::ToolAnnotations::default();
-        annotations.read_only_hint = Some(read_only);
-
-        ToolInfo {
-            server_name: "cloudflare".to_string(),
-            supports_parallel_tool_calls: false,
-            server_origin: None,
-            callable_name: tool_name.to_string(),
-            callable_namespace: "mcp__cloudflare__".to_string(),
-            namespace_description: Some("Cloudflare account and data tools.".to_string()),
-            tool: Tool::new(
-                tool_name.to_string(),
-                description.to_string(),
-                Arc::new(rmcp::model::object(serde_json::json!({
-                    "type": "object",
-                    "properties": properties,
-                    "additionalProperties": false,
-                }))),
-            )
-            .with_annotations(annotations),
-            openai_file_input_optional_fields: Default::default(),
-            connector_id: None,
-            connector_name: Some("Cloudflare".to_string()),
-            plugin_display_names: Vec::new(),
-        }
     }
 
     fn tool_info(server_name: &str, tool_name: &str, description_prefix: &str) -> ToolInfo {

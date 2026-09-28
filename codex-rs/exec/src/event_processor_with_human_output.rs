@@ -2,7 +2,6 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
-use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
@@ -13,6 +12,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -80,14 +80,6 @@ impl EventProcessorWithHumanOutput {
                     "mcp:".style(self.bold),
                     format!("{server}/{tool}").style(self.cyan),
                     "started".style(self.dimmed)
-                );
-            }
-            ThreadItem::ComputerUseCall { adapter, tool, .. } => {
-                eprintln!(
-                    "{} {}",
-                    computer_use_human_label(adapter, ComputerUseCallStatus::InProgress)
-                        .style(self.bold),
-                    tool.style(self.dimmed)
                 );
             }
             ThreadItem::WebSearch(item) => {
@@ -205,27 +197,6 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
-            ThreadItem::ComputerUseCall {
-                adapter,
-                tool,
-                status,
-                error,
-                ..
-            } => {
-                let status_style = match status {
-                    ComputerUseCallStatus::Completed => self.green,
-                    ComputerUseCallStatus::Failed => self.red,
-                    ComputerUseCallStatus::InProgress => self.dimmed,
-                };
-                eprintln!(
-                    "{} {}",
-                    computer_use_human_label(&adapter, status).style(status_style),
-                    tool.style(self.dimmed)
-                );
-                if let Some(error) = error {
-                    eprintln!("{}", error.style(self.red));
-                }
-            }
             ThreadItem::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
@@ -234,20 +205,6 @@ impl EventProcessorWithHumanOutput {
             }
             _ => {}
         }
-    }
-}
-
-fn computer_use_human_label(adapter: &str, status: ComputerUseCallStatus) -> String {
-    let surface = match adapter {
-        "android" | "android_emulator" | "android-emulator" => "Android emulator".to_string(),
-        "browser" => "browser".to_string(),
-        "desktop" | "computer" => "computer".to_string(),
-        other => other.replace(['_', '-'], " "),
-    };
-    match status {
-        ComputerUseCallStatus::InProgress => format!("Using {surface}"),
-        ComputerUseCallStatus::Completed => format!("Used {surface}"),
-        ComputerUseCallStatus::Failed => format!("Failed using {surface}"),
     }
 }
 
@@ -283,6 +240,14 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 CodexStatus::Running
             }
             ServerNotification::Warning(notification) => self.process_warning(notification.message),
+            ServerNotification::AuthRecoveryStarted(notification) => {
+                eprintln!("{}", notification.message);
+                CodexStatus::Running
+            }
+            ServerNotification::AuthRecoveryCompleted(notification) => {
+                eprintln!("{}", notification.message.style(self.green));
+                CodexStatus::Running
+            }
             ServerNotification::Error(notification) => {
                 eprintln!(
                     "{} {}",
@@ -480,8 +445,8 @@ fn config_summary_entries(
             "sandbox",
             summarize_permission_profile(
                 &permission_profile,
-                &config.cwd,
-                config.effective_workspace_roots().as_slice(),
+                &PathUri::from_abs_path(&config.cwd),
+                &config.effective_workspace_roots(),
             ),
         ),
     ];

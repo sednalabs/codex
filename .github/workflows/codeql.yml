@@ -42,7 +42,7 @@ jobs:
     steps:
       - name: Checkout PR head for path classification
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
@@ -181,7 +181,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -224,7 +224,7 @@ jobs:
       - name: Restore Rust dependency cache for CodeQL
         if: ${{ matrix.language == 'rust' }}
         id: cache_codeql_rust_cargo_home_restore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -383,13 +383,14 @@ jobs:
             trusted_pack="./.codeql-runtime/trusted-base/.github/codeql/actions-workflow-security"
             mkdir -p "${trusted_root}"
 
-            if git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' &&
-              git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
-                tar -x -C "${trusted_root}"; then
-              pack_path="${trusted_pack}"
-            else
-              echo "::warning title=CodeQL Actions query pack bootstrap::Trusted base query pack was unavailable; using the checked-out pack for this run."
+            if ! git fetch --no-tags --depth=1 origin '${{ github.event.pull_request.base.sha }}' ||
+              ! git archive '${{ github.event.pull_request.base.sha }}' .github/codeql/actions-workflow-security |
+                tar -x -C "${trusted_root}" ||
+              [[ ! -f "${trusted_pack}/qlpack.yml" ]]; then
+              echo "::error title=CodeQL Actions query pack bootstrap::Trusted base query pack is unavailable; refusing fork-controlled query logic for this external pull request." >&2
+              exit 1
             fi
+            pack_path="${trusted_pack}"
           fi
 
           {
@@ -416,7 +417,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.37.9
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -439,14 +440,14 @@ jobs:
             > "${RUNNER_TEMP}/pr-diff-range.json"
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4.37.9
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: ${{ matrix.scope != '' && format('/language:{0}/{1}', matrix.language, matrix.scope) || format('/language:{0}', matrix.language) }}
 
       - name: Save Rust dependency cache for CodeQL
         if: ${{ always() && !cancelled() && matrix.language == 'rust' && steps.cache_codeql_rust_cargo_home_restore.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
         continue-on-error: true
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry/index/

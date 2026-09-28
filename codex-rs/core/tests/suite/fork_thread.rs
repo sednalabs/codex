@@ -2,22 +2,25 @@ use std::sync::Arc;
 
 use codex_core::ForkSnapshot;
 use codex_core::NewThread;
-use codex_core::ThreadConfigSnapshot;
+use codex_core::TurnInputRequest;
 use codex_core::parse_turn_item;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
+use codex_history::RolloutItem;
+use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
-use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ResumedHistory;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
 use core_test_support::skip_if_no_network;
+use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use wiremock::Mock;
@@ -54,16 +57,10 @@ async fn fork_thread_twice_drops_to_first_message() {
     // Send three user messages; wait for three completed turns.
     for text in ["first", "second", "third"] {
         codex
-            .submit(Op::UserInput {
-                items: vec![UserInput::Text {
-                    text: text.to_string(),
-                    text_elements: Vec::new(),
-                }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
-            })
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }]))
             .await
             .unwrap();
         let _ = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -100,22 +97,22 @@ async fn fork_thread_twice_drops_to_first_message() {
 
     // Fork once with n=1 → drops the last user input and everything after.
     let NewThread {
+        thread_id: fork1_thread_id,
         thread: codex_fork1,
         ..
     } = thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(1),
-            config_for_fork.clone(),
+            codex_core::StartThreadOptions::new(config_for_fork.clone()),
             base_path.clone(),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork 1");
 
     let fork1_path = codex_fork1.rollout_path().expect("rollout path");
     expected_after_first.push(thread_settings_applied_item(
-        codex_fork1.config_snapshot().await,
+        fork1_thread_id,
+        codex_fork1.thread_settings_snapshot().await,
     ));
 
     // GetHistory on fork1 flushed; the file is ready.
@@ -127,15 +124,14 @@ async fn fork_thread_twice_drops_to_first_message() {
 
     // Fork again with n=0 → drops the (new) last user message, leaving only the first.
     let NewThread {
+        thread_id: fork2_thread_id,
         thread: codex_fork2,
         ..
     } = thread_manager
         .fork_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(0),
-            config_for_fork.clone(),
+            codex_core::StartThreadOptions::new(config_for_fork.clone()),
             fork1_path.clone(),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork 2");
@@ -150,7 +146,8 @@ async fn fork_thread_twice_drops_to_first_message() {
         .unwrap_or(0);
     let mut expected_after_second: Vec<RolloutItem> = fork1_items[..cut_last_on_fork1].to_vec();
     expected_after_second.push(thread_settings_applied_item(
-        codex_fork2.config_snapshot().await,
+        fork2_thread_id,
+        codex_fork2.thread_settings_snapshot().await,
     ));
     let fork2_items = read_rollout_items(&fork2_path);
     pretty_assertions::assert_eq!(
@@ -159,12 +156,89 @@ async fn fork_thread_twice_drops_to_first_message() {
     );
 }
 
-fn thread_settings_applied_item(snapshot: ThreadConfigSnapshot) -> RolloutItem {
+fn thread_settings_applied_item(
+    thread_id: ThreadId,
+    snapshot: ThreadSettingsSnapshot,
+) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
         ThreadSettingsAppliedEvent {
-            thread_settings: snapshot.into_thread_settings_snapshot(),
+            thread_id: Some(thread_id),
+            thread_settings: snapshot,
         },
     ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_thread_restores_history_selection_and_preserves_explicit_clear() -> anyhow::Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let mut builder = test_codex();
+    let test = builder.build_with_auto_env(&server).await?;
+    let selected = vec!["slack@openai".to_string()];
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            disabled_plugin_ids: Some(selected.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let history = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: test.session_configured.thread_id,
+        history: Arc::new(vec![thread_settings_applied_item(
+            test.session_configured.thread_id,
+            test.codex.thread_settings_snapshot().await,
+        )]),
+        rollout_path: None,
+    });
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            disabled_plugin_ids: Some(Vec::new()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let inherited = test
+        .thread_manager
+        .fork_thread_from_history(
+            ForkSnapshot::Interrupted,
+            codex_core::StartThreadOptions::new(test.config.clone()),
+            history.clone(),
+        )
+        .await?;
+    pretty_assertions::assert_eq!(
+        inherited
+            .thread
+            .thread_settings_snapshot()
+            .await
+            .disabled_plugin_ids,
+        selected
+    );
+
+    let explicit = test
+        .thread_manager
+        .fork_thread_from_history(
+            ForkSnapshot::Interrupted,
+            codex_core::StartThreadOptions {
+                disabled_plugin_ids: Some(Vec::new()),
+                ..codex_core::StartThreadOptions::new(test.config.clone())
+            },
+            history,
+        )
+        .await?;
+    pretty_assertions::assert_eq!(
+        explicit
+            .thread
+            .thread_settings_snapshot()
+            .await
+            .disabled_plugin_ids,
+        Vec::<String>::new()
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -203,16 +277,10 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
     let thread_manager = test.thread_manager.clone();
 
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "fork me from stored history".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "fork me from stored history".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await
         .expect("submit initial user turn");
     let _ = wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -230,15 +298,12 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
     } = thread_manager
         .fork_thread_from_history(
             ForkSnapshot::Interrupted,
-            test.config.clone(),
+            codex_core::StartThreadOptions::new(test.config.clone()),
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: test.session_configured.thread_id,
                 history: Arc::new(supplied_history),
                 rollout_path: None,
             }),
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
         )
         .await
         .expect("fork from stored history");
@@ -274,22 +339,16 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
                     codex_login::CodexAuth::from_api_key("dummy"),
                 ),
                 /*parent_trace*/ None,
-                /*supports_openai_form_elicitation*/ false,
+                ClientMcpExtensions::default(),
             )
             .await
             .expect("resume copied paginated fork")
             .thread;
         resumed
-            .submit(Op::UserInput {
-                items: vec![UserInput::Text {
-                    text: "continue after cold resume".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                final_output_json_schema: None,
-                responsesapi_client_metadata: None,
-                additional_context: Default::default(),
-                thread_settings: Default::default(),
-            })
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "continue after cold resume".to_string(),
+                text_elements: Vec::new(),
+            }]))
             .await
             .expect("start resumed turn");
         wait_for_event(&resumed, |event| matches!(event, EventMsg::TurnComplete(_))).await;
@@ -318,7 +377,7 @@ fn read_rollout_items(path: &std::path::Path) -> Vec<RolloutItem> {
         let parse_json_message = format!("failed to parse rollout JSON line `{line}`");
         let v: serde_json::Value = serde_json::from_str(line).expect(&parse_json_message);
         let parse_line_message = format!("failed to parse rollout line `{line}`");
-        let rl: RolloutLine = serde_json::from_value(v).expect(&parse_line_message);
+        let rl = codex_rollout::decode_rollout_line(v).expect(&parse_line_message);
         match rl.item {
             RolloutItem::SessionMeta(_) => {}
             other => items.push(other),

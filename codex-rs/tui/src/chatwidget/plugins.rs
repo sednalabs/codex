@@ -303,7 +303,7 @@ impl ChatWidget {
                 });
             }),
         );
-        self.bottom_pane.show_view(Box::new(view));
+        self.bottom_pane.show_text_prompt(view);
     }
 
     pub(crate) fn open_marketplace_add_loading_popup(&mut self, _source: &str) {
@@ -865,14 +865,26 @@ impl ChatWidget {
             "Install the required Apps in ChatGPT to continue:"
         };
         let mut header = ColumnRenderable::new();
-        header.push(Line::from("Plugins".bold()));
-        header.push(Line::from(
-            format!("{} plugin installed.", flow.plugin_display_name).bold(),
-        ));
-        header.push(Line::from(
-            format!("App setup {current}/{total}: {}", app.name).dim(),
-        ));
-        header.push(Line::from(status_label.dim()));
+        header.push(
+            ratatui::widgets::Paragraph::new(Line::from("Plugins".bold()))
+                .wrap(ratatui::widgets::Wrap { trim: false }),
+        );
+        header.push(
+            ratatui::widgets::Paragraph::new(Line::from(
+                format!("{} plugin installed.", flow.plugin_display_name).bold(),
+            ))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        );
+        header.push(
+            ratatui::widgets::Paragraph::new(Line::from(
+                format!("App setup {current}/{total}: {}", app.name).dim(),
+            ))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        );
+        header.push(
+            ratatui::widgets::Paragraph::new(Line::from(status_label.dim()))
+                .wrap(ratatui::widgets::Wrap { trim: false }),
+        );
 
         let mut items = Vec::new();
 
@@ -948,16 +960,26 @@ impl ChatWidget {
             footer_hint: Some(plugin_detail_hint_line()),
             items,
             col_width_mode: ColumnWidthMode::AutoAllRows,
-            ..Default::default()
+            ..SelectionViewParams::picker()
         })
     }
 
     fn plugin_install_auth_app_is_installed(&self, app_id: &str) -> bool {
-        self.connectors_for_mentions().is_some_and(|connectors| {
-            connectors
+        if !self.connectors_enabled() {
+            return false;
+        }
+
+        let connectors = &self.connectors;
+        connectors.installed_app_ids.contains(app_id)
+            || connectors
+                .partial_snapshot
                 .iter()
+                .chain(match &connectors.cache {
+                    super::connectors::ConnectorsCacheState::Ready(snapshot) => Some(snapshot),
+                    _ => None,
+                })
+                .flat_map(|snapshot| &snapshot.connectors)
                 .any(|connector| connector.id == app_id && connector.is_accessible)
-        })
     }
 
     fn finish_plugin_install_auth_flow(&mut self, abandoned: bool) {
@@ -1009,24 +1031,10 @@ impl ChatWidget {
         let selected_idx = self
             .bottom_pane
             .selected_index_for_active_view(PLUGINS_SELECTION_VIEW_ID);
-        let search_query = self
-            .selection_view_search_query(PLUGINS_SELECTION_VIEW_ID)
-            .filter(|query| !query.is_empty());
         self.plugins_active_tab_id = active_tab_id.clone();
-        let mut params = self.plugins_popup_params(response, active_tab_id, selected_idx);
-        // Only carry the filter when the refreshed response retained the
-        // active tab. If it disappeared, the picker falls back to another tab
-        // and the old tab's query must not hide unrelated rows.
-        let active_tab_was_retained = self
-            .bottom_pane
-            .active_tab_id_for_active_view(PLUGINS_SELECTION_VIEW_ID)
-            .zip(params.initial_tab_id.as_deref())
-            .is_some_and(|(active_tab_id, restored_tab_id)| active_tab_id == restored_tab_id);
-        if active_tab_was_retained {
-            params.initial_search_query = search_query;
-        }
-        let _ = self
-            .bottom_pane
-            .replace_selection_view_if_active(PLUGINS_SELECTION_VIEW_ID, params);
+        let _ = self.bottom_pane.replace_selection_view_if_active(
+            PLUGINS_SELECTION_VIEW_ID,
+            self.plugins_popup_params(response, active_tab_id, selected_idx),
+        );
     }
 }

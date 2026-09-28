@@ -1,6 +1,8 @@
 set working-directory := "codex-rs"
 set positional-arguments
 
+export CODEX_REPO_ROOT := justfile_directory()
+
 export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
 
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
@@ -51,6 +53,11 @@ file-search *args:
 # Run the standalone code-mode host from source.
 code-mode-host *args:
     cargo run --bin codex-code-mode-host -- {args}
+
+# Assemble a local Codex package.
+[no-cd]
+assemble-codex-package *args:
+    {{ python }} {{ justfile_directory() }}/scripts/build_codex_package.py {args}
 
 # Build the CLI and run the app-server test client
 app-server-test-client *args:
@@ -118,6 +125,11 @@ test *args:
 test-github-scripts:
     {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
 
+# Verify the exact-head and hosted-runner validation contract.
+[no-cd]
+check-validation-lanes:
+    {{ python }} -m unittest {{ justfile_directory() }}/test_ci_planners.py
+
 # Run explicit workspace benchmark targets.
 bench *args:
     cargo bench --workspace --bench '*' {args}
@@ -147,7 +159,7 @@ thread-manager-sample-targeted:
 core-config-consumers-targeted:
     cargo fmt -p codex-core-api -p codex-thread-manager-sample -- --check
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo check --locked -p codex-core-api -p codex-thread-manager-sample
-    TARGETED_CLIPPY_PACKAGES='["codex-core-api","codex-thread-manager-sample"]' .github/scripts/run_targeted_clippy.sh
+    TARGETED_CLIPPY_PACKAGES='["codex-core-api","codex-thread-manager-sample"]' {{ justfile_directory() }}/.github/scripts/run_targeted_clippy.sh
 
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:
@@ -160,6 +172,7 @@ model-catalog-compat-targeted:
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
+    cargo test --locked -p codex-core client::tests::bundled_gpt6_models_build_responses_lite_requests --lib -- --exact --test-threads=1
     RUST_MIN_STACK={{ rust_min_stack }} CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_nested_limit_truncates_result_variable_when_exceeded suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_configured_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_configured_history_truncation suite::compact_remote::remote_request_with_v3_initial_items_uses_custom_experimental_realtime_start_instructions suite::compact_resume_fork::snapshot_rollback_past_compaction_replays_append_only_history suite::compact_resume_fork::snapshot_rollback_followup_turn_trims_context_updates suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
@@ -228,25 +241,7 @@ tui-config-refresh-session-targeted:
 
 # Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
-    cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::enqueue_thread_event_does_not_block_when_channel_full --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_parent_status_tracks_parent_turn_lifecycle --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_parent_status_prioritizes_input_over_approval --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::handle_start_side_seeds_navigation_before_thread_started --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::side_fork_config_is_persistent_and_appends_developer_guardrails --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
-    cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tui --no-fail-fast --no-tests=fail --lib -- app::tests::open_agent_picker_marks_loaded_threads_open app::tests::inactive_thread_started_notification_initializes_replay_session app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications app::tests::enqueue_thread_event_does_not_block_when_channel_full app::tests::side_parent_status_tracks_parent_turn_lifecycle app::tests::side_parent_status_prioritizes_input_over_approval app::tests::handle_start_side_seeds_navigation_before_thread_started app::tests::side_fork_config_is_ephemeral_and_appends_developer_guardrails app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --exact
 
 # Focused TUI replay and live collab-spawn requested-identity slice.
 tui-collab-spawn-identity-targeted:
@@ -260,14 +255,13 @@ tui-collab-spawn-identity-targeted:
 
 # visibility without widening to the TUI/app-server build graph.
 spawn-agent-tool-model-surface-targeted:
-    cargo test -p codex-tools spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
-    cargo test -p codex-tools spawn_agent_tool_v2_lists_upgradeable_legacy_models --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tools --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --exact
 
 # Focused shared picker-model spawned-agent-description slice for upgradeable
 
 # legacy visibility without widening to the TUI/app-server build graph.
 spawn-agent-description-model-surface-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts --exact
 
 # Compatibility wrapper for the picker-model shared surface. The interactive
 # TUI consumer still shares the same protocol helper, but this exact lane
@@ -280,11 +274,7 @@ tui-agent-picker-model-surface-targeted:
 
 # Focused /agent picker hierarchy visibility slice.
 tui-agent-picker-tree-targeted:
-    cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::agent_navigation::tests::upsert_preserves_running_state_until_closed --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::agent_navigation::tests::picker_tree_prefixes_reflect_nested_agent_paths --lib -- --exact --test-threads=1
-    cargo test -p codex-tui app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-tui --no-fail-fast --no-tests=fail --lib -- app::tests::open_agent_picker_marks_loaded_threads_open app::tests::inactive_thread_started_notification_initializes_replay_session app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --exact
 
 # Focused /agent picker usage and remaining-context visibility slice.
 tui-agent-picker-usage-targeted:
@@ -485,17 +475,16 @@ core-subagent-model-pinning-targeted:
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
-    cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::threads::tests::thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::base_instruction_provenance_survives_resume_child_and_grandchild --lib -- --exact --test-threads=1
-    cargo test -p codex-core agent::role::tests::apply_role_preserves_operator_instruction_override_provenance --lib -- --exact --test-threads=1
-    cargo test -p codex-core agent::role::tests::apply_role_marks_identical_instruction_text_as_explicit --lib -- --exact --test-threads=1
-    cargo test -p codex-core tools::handlers::multi_agents::tests::build_agent_spawn_config_preserves_explicit_override_provenance --lib -- --exact --test-threads=1
+    cargo test -p codex-core agent::role::tests::apply_role_refreshes_model_owned_instructions_when_model_changes --lib -- --exact --test-threads=1
+    cargo test -p codex-core agent::role::tests::apply_role_refreshes_model_instructions_only_when_personality_opt_out_changes --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::handlers::multi_agents::tests::build_agent_spawn_config_uses_captured_step_settings_and_turn_context_values --lib -- --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::resume::resume_switches_models_recomposes_model_instructions -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::base_instructions_override_disables_personality_template -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::remote_compact_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::trimming::remote_compact_v2_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
 
 # Focused app-server collab-spawn requested/effective identity projection slice.
@@ -686,11 +675,9 @@ state-migration-repair-targeted:
     cargo test -p codex-state migrations::tests::repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
-# Codex authoritative usage.sqlite logging contracts.
+# Codex usage-ledger migration and credit-rate compatibility contracts.
 core-ledger-smoke:
-    cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
-    cargo test -p codex-thread-store live_thread_tests::concurrent_appends_keep_sqlite_metadata_in_canonical_history_order --lib -- --exact --test-threads=1
-    cargo test -p codex-thread-store live_thread_tests::persist_waits_for_append_observation_before_flushing_pending_metadata --lib -- --exact --test-threads=1
+    cargo nextest run -p codex-state --no-fail-fast -- runtime::usage_migration_compat::tests::usage_migrator_covers_supported_credit_models runtime::usage_migration_compat::tests::usage_migrator_has_current_standard_credit_rates runtime::usage_migration_compat::tests::preserves_known_old_main_checksums_in_memory runtime::usage_migration_compat::tests::respects_custom_migration_table_name runtime::usage_migration_compat::tests::leaves_unknown_checksums_for_sqlx_to_reject runtime::usage_migration_compat::tests::upgrades_old_main_views_without_rewriting_history --exact
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 
