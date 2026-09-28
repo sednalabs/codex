@@ -148,7 +148,10 @@ function isVitePlusOwnedCodexInstall(packagesDir) {
     // Vite+ records the active global installation in packages/@openai/codex.json.
     // Older installs have no ID or append a #-prefixed ID to the package name;
     // newer installs put the ID in a subdirectory of the package prefix.
-    const installId = metadata.installId || "";
+    const installId = safeInstallId(metadata.installId);
+    if (installId === null) {
+      return false;
+    }
     const installDir = installId.startsWith("#")
       ? path.join(packagesDir, `@openai/codex${installId}`)
       : path.join(packagesDir, "@openai/codex", installId);
@@ -168,6 +171,16 @@ function isVitePlusOwnedCodexInstall(packagesDir) {
     // Missing or unreadable ownership metadata must not prevent Codex starting.
   }
   return false;
+}
+
+function safeInstallId(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value !== "string" || !/^[A-Za-z0-9._#-]+$/.test(value)) {
+    return null;
+  }
+  return value;
 }
 
 /**
