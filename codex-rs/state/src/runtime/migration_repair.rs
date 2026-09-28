@@ -14,47 +14,47 @@ struct MigrationHistoryMove {
 const SHIFTED_STATE_MIGRATION_MOVES: &[MigrationHistoryMove] = &[
     MigrationHistoryMove {
         source_version: 24,
-        source_description: "phase2_attestation_roots",
+        source_description: "phase2 attestation roots",
         target_version: 9000,
     },
     MigrationHistoryMove {
         source_version: 25,
-        source_description: "remote_control_enrollments",
+        source_description: "remote control enrollments",
         target_version: 24,
     },
     MigrationHistoryMove {
         source_version: 26,
-        source_description: "thread_timestamps_millis",
+        source_description: "thread timestamps millis",
         target_version: 25,
     },
     MigrationHistoryMove {
         source_version: 27,
-        source_description: "thread_dynamic_tools_persist_on_resume",
+        source_description: "thread dynamic tools persist on resume",
         target_version: 9001,
     },
     MigrationHistoryMove {
         source_version: 28,
-        source_description: "thread_dynamic_tools_capability_json",
+        source_description: "thread dynamic tools capability json",
         target_version: 9002,
     },
     MigrationHistoryMove {
         source_version: 29,
-        source_description: "thread_dynamic_tools_namespace",
+        source_description: "thread dynamic tools namespace",
         target_version: 26,
     },
     MigrationHistoryMove {
         source_version: 30,
-        source_description: "threads_cwd_sort_indexes",
+        source_description: "threads cwd sort indexes",
         target_version: 27,
     },
     MigrationHistoryMove {
         source_version: 31,
-        source_description: "device_key_bindings",
+        source_description: "device key bindings",
         target_version: 28,
     },
     MigrationHistoryMove {
         source_version: 32,
-        source_description: "thread_goals",
+        source_description: "thread goals",
         target_version: 29,
     },
 ];
@@ -122,6 +122,20 @@ async fn repair_shifted_state_migrations(
     let mut moves = Vec::new();
     for row in &rows {
         if migration_checksum_matches(migrator, row.version, &row.checksum) {
+            if !row.success {
+                anyhow::bail!(
+                    "state DB migration {} is marked unsuccessful; refusing automatic repair",
+                    row.version
+                );
+            }
+            let migration = migration_by_version(migrator, row.version)
+                .with_context(|| format!("embedded state migration {} is missing", row.version))?;
+            if row.description != migration.description.as_ref() {
+                anyhow::bail!(
+                    "state DB migration {} has unexpected description; refusing automatic repair",
+                    row.version
+                );
+            }
             continue;
         }
         let Some(migration_move) = SHIFTED_STATE_MIGRATION_MOVES
