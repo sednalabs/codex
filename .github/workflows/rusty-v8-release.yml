@@ -430,6 +430,9 @@ jobs:
     permissions:
       contents: write
       actions: read
+      id-token: write
+    environment:
+      name: release
 
     steps:
       - name: Check whether release already exists
