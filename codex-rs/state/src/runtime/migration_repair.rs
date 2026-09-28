@@ -1,6 +1,6 @@
 use anyhow::Context;
-use sqlx::SqlitePool;
 use sqlx::Row;
+use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
@@ -94,7 +94,8 @@ async fn repair_dynamic_tool_state_overlap(
     let migration_9002 = migration_by_version(migrator, 9002)
         .with_context(|| "embedded state migration 9002 is missing")?;
     let migration_58_row = migration_record(pool, 58).await?;
-    let persist_on_resume = column_exists(pool, "thread_dynamic_tools", "persist_on_resume").await?;
+    let persist_on_resume =
+        column_exists(pool, "thread_dynamic_tools", "persist_on_resume").await?;
     let capability_json = column_exists(pool, "thread_dynamic_tools", "capability_json").await?;
     let namespace_description =
         column_exists(pool, "thread_dynamic_tools", "namespace_description").await?;
@@ -157,11 +158,9 @@ async fn repair_dynamic_tool_state_overlap(
 
     let mut tx = pool.begin().await?;
     if !namespace_description {
-        sqlx::query(
-            "ALTER TABLE thread_dynamic_tools ADD COLUMN namespace_description TEXT",
-        )
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("ALTER TABLE thread_dynamic_tools ADD COLUMN namespace_description TEXT")
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query(
         r#"
@@ -301,7 +300,12 @@ async fn repair_shifted_state_migrations(
     }
     for migration_move in moves {
         let migration = migration_by_version(migrator, migration_move.target_version)
-            .with_context(|| format!("embedded state migration {} is missing", migration_move.target_version))?;
+            .with_context(|| {
+                format!(
+                    "embedded state migration {} is missing",
+                    migration_move.target_version
+                )
+            })?;
         sqlx::query(
             "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = ?",
         )
@@ -678,19 +682,27 @@ mod tests {
             .await
             .expect("fresh state migration aliases should be recorded");
         for version in [9001_i64, 9002] {
-            let row = sqlx::query("SELECT success, description, checksum FROM _sqlx_migrations WHERE version = ?")
-                .bind(version)
-                .fetch_one(&pool)
-                .await
-                .expect("fresh alias migration row should exist");
+            let row = sqlx::query(
+                "SELECT success, description, checksum FROM _sqlx_migrations WHERE version = ?",
+            )
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("fresh alias migration row should exist");
             let migration = STATE_MIGRATOR
                 .migrations
                 .iter()
                 .find(|migration| migration.version == version)
                 .expect("alias migration should be embedded");
             assert!(row.get::<bool, _>("success"));
-            assert_eq!(row.get::<String, _>("description"), migration.description.as_ref());
-            assert_eq!(row.get::<Vec<u8>, _>("checksum"), migration.checksum.to_vec());
+            assert_eq!(
+                row.get::<String, _>("description"),
+                migration.description.as_ref()
+            );
+            assert_eq!(
+                row.get::<Vec<u8>, _>("checksum"),
+                migration.checksum.to_vec()
+            );
         }
         STATE_MIGRATOR
             .run(&pool)
@@ -863,8 +875,14 @@ INSERT INTO _sqlx_migrations (
                 .find(|migration| migration.version == version)
                 .expect("canonical migration should be embedded");
             assert!(row.get::<bool, _>("success"));
-            assert_eq!(row.get::<String, _>("description"), migration.description.as_ref());
-            assert_eq!(row.get::<Vec<u8>, _>("checksum"), migration.checksum.to_vec());
+            assert_eq!(
+                row.get::<String, _>("description"),
+                migration.description.as_ref()
+            );
+            assert_eq!(
+                row.get::<Vec<u8>, _>("checksum"),
+                migration.checksum.to_vec()
+            );
         }
         let thread = sqlx::query(
             "SELECT title, first_user_message, created_at_ms, updated_at_ms, preview, thread_source FROM threads WHERE id = ?",
@@ -874,7 +892,10 @@ INSERT INTO _sqlx_migrations (
         .await
         .expect("representative thread should survive forward migration");
         assert_eq!(thread.get::<String, _>("title"), "legacy title");
-        assert_eq!(thread.get::<String, _>("first_user_message"), "legacy first message");
+        assert_eq!(
+            thread.get::<String, _>("first_user_message"),
+            "legacy first message"
+        );
         assert_eq!(thread.get::<i64, _>("created_at_ms"), 1_700_000_000_000);
         assert_eq!(thread.get::<i64, _>("updated_at_ms"), 1_700_000_001_000);
         assert_eq!(thread.get::<String, _>("preview"), "legacy first message");
@@ -892,7 +913,10 @@ INSERT INTO _sqlx_migrations (
             None
         );
         assert_eq!(dynamic_tool.get::<i64, _>("persist_on_resume"), 1);
-        assert_eq!(dynamic_tool.get::<Option<String>, _>("capability_json"), None);
+        assert_eq!(
+            dynamic_tool.get::<Option<String>, _>("capability_json"),
+            None
+        );
         pool.close().await;
 
         let reopened = sqlite
