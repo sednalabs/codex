@@ -79,13 +79,40 @@ async function readStdin() {
 }
 
 async function browserStateDir() {
-  const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const dir =
-    configured && configured.trim()
-      ? configured
-      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
+  if (process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR !== undefined) {
+    throw new Error(
+      "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR is not supported; browser state uses the fixed default path",
+    );
+  }
+  const dir = path.join(
+    os.homedir(),
+    ".codex",
+    "browser-computer-use-playwright",
+  );
+  await validateFixedStateDir(dir);
   await fs.mkdir(dir, { recursive: true });
   return dir;
+}
+
+async function validateFixedStateDir(stateDir) {
+  const codexDir = path.join(os.homedir(), ".codex");
+  for (const component of [codexDir, stateDir]) {
+    try {
+      const stat = await fs.lstat(component);
+      if (stat.isSymbolicLink()) {
+        throw new Error(
+          `Browser state path component must not be a symlink: ${component}`,
+        );
+      }
+      if ((await fs.realpath(component)) !== component) {
+        throw new Error(`Browser state path component must be canonical: ${component}`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
 }
 
 async function withProfileLock(stateDir, body) {
