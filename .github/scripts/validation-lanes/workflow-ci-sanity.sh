@@ -14,13 +14,13 @@ python3 -m py_compile \
   .github/scripts/skip_duplicate_workflow_run.py \
   .github/scripts/summarize_rust_ci_full.py \
   .github/scripts/sync_upstream_mirror.py \
-  .github/scripts/test_ci_planners.py \
+  test_ci_planners.py \
   .github/scripts/test_run_named_rust_tests.py \
   .github/scripts/test_validate.py \
   .codex/skills/babysit-gh-workflow-run/scripts/gh_dispatch_and_watch.py \
   .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch.py \
   scripts/downstream-divergence-audit.py
-python3 -m unittest discover -s .github/scripts -p 'test_ci_planners.py'
+python3 -m unittest test_ci_planners.py
 python3 -m unittest discover -s .github/scripts -p 'test_validate.py'
 python3 -m unittest discover -s .github/scripts -p 'test_run_named_rust_tests.py'
 python3 .codex/skills/babysit-gh-workflow-run/tests/test_gh_workflow_run_watch.py
