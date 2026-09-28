@@ -1554,6 +1554,19 @@ class RouteSelectionTests(unittest.TestCase):
             {"python-tools", "python-sdk", "typescript-sdk"},
         )
 
+    def test_retained_ci_workflows_are_read_only_and_actions_are_immutable(self) -> None:
+        coverage = (REPO_ROOT / ".github/workflows/code-coverage.yml").read_text(encoding="utf-8")
+        shell_ci_path = REPO_ROOT / ".github/workflows/shell-tool-mcp-ci.yml"
+        shell_ci = shell_ci_path.read_text(encoding="utf-8")
+        self.assertIn("runs-on: ubuntu-24.04", coverage)
+        self.assertIn("persist-credentials: false", coverage)
+        self.assertIn("permissions:\n  contents: read", shell_ci)
+        self.assertIn("persist-credentials: false", shell_ci)
+        for workflow in (coverage, shell_ci, (REPO_ROOT / ".github/workflows/cancel-pr-runs.yml").read_text(encoding="utf-8")):
+            for line in workflow.splitlines():
+                if "uses:" in line:
+                    self.assertRegex(line, r"uses:\s+[^@]+@[0-9a-f]{40}(?:\s+#.*)?$")
+
     def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
             lane
@@ -6509,7 +6522,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         cancel_step = next(
             step for step in steps if step.get("name") == "Cancel stale runs for the closed PR"
         )
-        self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9.0.0")
+        self.assertEqual(
+            cancel_step.get("uses"),
+            "actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd",
+        )
         script = (cancel_step.get("with") or {}).get("script") or ""
 
         self.assertIn("github.rest.actions.listWorkflowRunsForRepo", script)
