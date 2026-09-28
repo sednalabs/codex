@@ -3865,6 +3865,7 @@ dependencies = [
  "codex-secrets",
  "codex-terminal-detection",
  "codex-utils-template",
+ "codex-utils-version",
  "codex-workload-identity",
  "core_test_support",
  "http 1.4.0",
@@ -5208,6 +5209,10 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
 ]
+
+[[package]]
+name = "codex-utils-version"
+version = "0.0.0"
 
 [[package]]
 name = "codex-v8-poc"
