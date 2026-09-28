@@ -8420,7 +8420,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "false",
         )
 
-
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []
         for workflow_path in sorted((REPO_ROOT / ".github/workflows").glob("*.y*ml")):
