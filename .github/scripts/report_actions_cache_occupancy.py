@@ -53,7 +53,9 @@ def summarize_caches(caches: list[dict[str, Any]]) -> dict[str, Any]:
                 "size_bytes": sizes[name],
             }
             for name, _count in sorted(
-                counter.items(), key=lambda item: (sizes[item[0]], item[1]), reverse=True
+                counter.items(),
+                key=lambda item: (sizes[item[0]], item[1]),
+                reverse=True,
             )
         ]
 
@@ -112,7 +114,9 @@ def markdown_table(title: str, rows: list[dict[str, Any]]) -> list[str]:
 def write_markdown(summary: dict[str, Any], output: Path) -> None:
     lines = ["### Actions cache occupancy", ""]
     if not summary.get("available", False):
-        lines.append(f"- Cache occupancy unavailable: {summary.get('error', 'unknown error')}")
+        lines.append(
+            f"- Cache occupancy unavailable: {summary.get('error', 'unknown error')}"
+        )
     else:
         lines.append(f"- Total entries: `{summary['total_entries']}`")
         lines.append(f"- Total size: `{human_size(int(summary['total_size_bytes']))}`")
@@ -132,10 +136,14 @@ def main() -> int:
 
     try:
         summary = summarize_caches(collect_caches(args.repo))
-    except Exception as exc:  # pragma: no cover - workflow telemetry must not gate validation
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - workflow telemetry must not gate validation
         summary = {"available": False, "error": str(exc)}
 
-    output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     write_markdown(summary, markdown_output)
     return 0
 

@@ -3,7 +3,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch.py"
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch.py"
+)
 SPEC = importlib.util.spec_from_file_location("gh_workflow_run_watch_rest", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -43,11 +45,16 @@ def job_payload(job_id=501, run_id=RUN_ID):
         "html_url": f"https://github.com/{REPO}/actions/runs/{RUN_ID}/job/{job_id}",
         "started_at": "2026-09-13T00:00:01Z",
         "completed_at": "2026-09-13T00:00:30Z",
-        "steps": [{
-            "name": "Run checks", "number": 1, "status": "completed",
-            "conclusion": "success", "started_at": "2026-09-13T00:00:02Z",
-            "completed_at": "2026-09-13T00:00:29Z",
-        }],
+        "steps": [
+            {
+                "name": "Run checks",
+                "number": 1,
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-09-13T00:00:02Z",
+                "completed_at": "2026-09-13T00:00:29Z",
+            }
+        ],
     }
 
 
@@ -70,7 +77,11 @@ def test_rest_view_requires_complete_paginated_jobs():
     with patch.object(
         MODULE,
         "gh_json",
-        side_effect=[MODULE.GhCommandError("virtual workflow"), run_payload(), {"total_count": 2, "jobs": []}],
+        side_effect=[
+            MODULE.GhCommandError("virtual workflow"),
+            run_payload(),
+            {"total_count": 2, "jobs": []},
+        ],
     ):
         try:
             MODULE.view_run(REPO, RUN_ID)
@@ -84,7 +95,11 @@ def test_rest_view_rejects_job_from_different_run():
     with patch.object(
         MODULE,
         "gh_json",
-        side_effect=[MODULE.GhCommandError("virtual workflow"), run_payload(), {"total_count": 1, "jobs": [job_payload(run_id=999)]}],
+        side_effect=[
+            MODULE.GhCommandError("virtual workflow"),
+            run_payload(),
+            {"total_count": 1, "jobs": [job_payload(run_id=999)]},
+        ],
     ):
         try:
             MODULE.view_run(REPO, RUN_ID)

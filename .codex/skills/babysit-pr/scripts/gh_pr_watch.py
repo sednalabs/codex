@@ -14,7 +14,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from github_watch_auth import AuthState, is_auth_failure, is_rate_limited, is_retry_safe, rate_resource, redact, wait_for_reset
+from github_watch_auth import (
+    AuthState,
+    is_auth_failure,
+    is_rate_limited,
+    is_retry_safe,
+    rate_resource,
+    redact,
+    wait_for_reset,
+)
 
 FAILED_RUN_CONCLUSIONS = {
     "failure",
@@ -224,16 +232,25 @@ def parse_args():
             "observer; do not query the unavailable /user endpoint"
         ),
     )
-    parser.add_argument("--poll-seconds", type=int, default=30, help="Watch poll interval")
+    parser.add_argument(
+        "--poll-seconds", type=int, default=30, help="Watch poll interval"
+    )
     parser.add_argument(
         "--max-flaky-retries",
         type=int,
         default=3,
         help="Max rerun cycles per head SHA before stop recommendation",
     )
-    parser.add_argument("--state-file", help="State JSON filename in the system temporary directory (no directory paths)")
-    parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
-    parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
+    parser.add_argument(
+        "--state-file",
+        help="State JSON filename in the system temporary directory (no directory paths)",
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Emit one snapshot and exit"
+    )
+    parser.add_argument(
+        "--watch", action="store_true", help="Continuously emit JSONL snapshots"
+    )
     parser.add_argument(
         "--watch-until-action",
         action="store_true",
@@ -336,7 +353,12 @@ def parse_args():
     watch_mode_enabled = args.watch_until_action or args.watch_until_terminal
     selected_modes = sum(
         1
-        for enabled in (args.once, args.watch, watch_mode_enabled, args.retry_failed_now)
+        for enabled in (
+            args.once,
+            args.watch,
+            watch_mode_enabled,
+            args.retry_failed_now,
+        )
         if enabled
     )
     if selected_modes > 1:
@@ -348,7 +370,12 @@ def parse_args():
         args.watch_until_action = True
         if args.watch_until_terminal:
             args.require_terminal_checks = True
-    if not args.once and not args.watch and not args.watch_until_action and not args.retry_failed_now:
+    if (
+        not args.once
+        and not args.watch
+        and not args.watch_until_action
+        and not args.retry_failed_now
+    ):
         args.once = True
     return args
 
@@ -356,7 +383,9 @@ def parse_args():
 def _format_gh_error(cmd, err):
     stdout = (err.stdout or "").strip()
     stderr = (err.stderr or "").strip()
-    parts = [f"GitHub CLI command failed: {' '.join(cmd)} (auth_source={_GH_AUTH.source})"]
+    parts = [
+        f"GitHub CLI command failed: {' '.join(cmd)} (auth_source={_GH_AUTH.source})"
+    ]
     if stdout:
         parts.append(f"stdout: {redact(stdout, (_GH_AUTH._token,))}")
     if stderr:
@@ -384,12 +413,15 @@ def gh_text(args, repo=None):
     broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
     if broker_socket:
         from github_app_broker_proxy import request
+
         broker_args = list(args)
         if repo and (not broker_args or broker_args[0] != "api"):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError(f"brokered GitHub CLI command failed: {result.get('stderr', '')}")
+            raise GhCommandError(
+                f"brokered GitHub CLI command failed: {result.get('stderr', '')}"
+            )
         return str(result.get("stdout", ""))
     cmd = ["gh"]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's
@@ -401,19 +433,26 @@ def gh_text(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     retry_safe = is_retry_safe(args)
     for attempt in range(3):
-      try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
-        return proc.stdout
-      except FileNotFoundError as err:
-        raise GhCommandError("`gh` command not found") from err
-      except subprocess.CalledProcessError as err:
-        message = _format_gh_error(cmd, err)
-        if retry_safe and attempt == 0 and is_auth_failure(message):
-            if _GH_AUTH.refresh(env, repo=repo):
+        try:
+            proc = subprocess.run(
+                cmd, check=True, capture_output=True, text=True, env=env
+            )
+            return proc.stdout
+        except FileNotFoundError as err:
+            raise GhCommandError("`gh` command not found") from err
+        except subprocess.CalledProcessError as err:
+            message = _format_gh_error(cmd, err)
+            if retry_safe and attempt == 0 and is_auth_failure(message):
+                if _GH_AUTH.refresh(env, repo=repo):
+                    continue
+            if (
+                retry_safe
+                and attempt == 0
+                and is_rate_limited(message)
+                and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args))
+            ):
                 continue
-        if retry_safe and attempt == 0 and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
-            continue
-        raise GhCommandError(message) from err
+            raise GhCommandError(message) from err
 
 
 def gh_json(args, repo=None):
@@ -423,7 +462,9 @@ def gh_json(args, repo=None):
     try:
         return json.loads(raw)
     except json.JSONDecodeError as err:
-        raise GhCommandError(f"Failed to parse JSON from gh output for {' '.join(args)}") from err
+        raise GhCommandError(
+            f"Failed to parse JSON from gh output for {' '.join(args)}"
+        ) from err
 
 
 def parse_pr_spec(pr_spec):
@@ -528,7 +569,9 @@ def normalize_merge_queue_entry(raw_entry, field_present=True):
         "id": str(raw_entry.get("id") or ""),
         "state": state,
         "position": raw_entry.get("position"),
-        "head_sha": str(head_commit.get("oid") or "") if isinstance(head_commit, dict) else "",
+        "head_sha": str(head_commit.get("oid") or "")
+        if isinstance(head_commit, dict)
+        else "",
         "source": "github",
         "details": "GitHub returned merge-queue evidence.",
     }
@@ -563,9 +606,13 @@ def get_merge_queue_entry(repo, pr_number):
         owner, name = split_repo_owner_and_name(repo)
         number = int(pr_number)
     except (TypeError, ValueError, GhCommandError) as err:
-        return merge_queue_read_error(f"Unable to form merge-queue GraphQL request: {err}")
+        return merge_queue_read_error(
+            f"Unable to form merge-queue GraphQL request: {err}"
+        )
     if number <= 0:
-        return merge_queue_read_error("PR number must be positive for merge-queue GraphQL request.")
+        return merge_queue_read_error(
+            "PR number must be positive for merge-queue GraphQL request."
+        )
 
     try:
         payload = gh_json(
@@ -586,20 +633,25 @@ def get_merge_queue_entry(repo, pr_number):
         return merge_queue_read_error(f"GitHub merge-queue GraphQL read failed: {err}")
 
     if not isinstance(payload, dict):
-        return merge_queue_read_error("GitHub merge-queue GraphQL response was not an object.")
+        return merge_queue_read_error(
+            "GitHub merge-queue GraphQL response was not an object."
+        )
     if payload.get("errors"):
         return merge_queue_read_error(
             "GitHub merge-queue GraphQL response contained errors; partial data is not trusted."
         )
     data = payload.get("data")
     repository = data.get("repository") if isinstance(data, dict) else None
-    pull_request = repository.get("pullRequest") if isinstance(repository, dict) else None
+    pull_request = (
+        repository.get("pullRequest") if isinstance(repository, dict) else None
+    )
     if not isinstance(pull_request, dict):
         return merge_queue_read_error(
             "GitHub merge-queue GraphQL response did not contain repository.pullRequest."
         )
     return normalize_merge_queue_entry(
-        pull_request.get("mergeQueueEntry"), field_present="mergeQueueEntry" in pull_request
+        pull_request.get("mergeQueueEntry"),
+        field_present="mergeQueueEntry" in pull_request,
     )
 
 
@@ -642,7 +694,9 @@ def reconcile_merge_queue_entry(pr, state):
     distinct nonempty entry ID. Same-ID active evidence remains tombstoned: it may be
     stale or contradictory, and must not create a false-ready path.
     """
-    queue = pr.get("merge_queue") or normalize_merge_queue_entry(None, field_present=False)
+    queue = pr.get("merge_queue") or normalize_merge_queue_entry(
+        None, field_present=False
+    )
     pr_head_sha = str(pr.get("head_sha") or "")
     if pr.get("merged") or pr.get("closed"):
         # A confirmed PR lifecycle transition invalidates all queue continuity.
@@ -717,7 +771,11 @@ def reconcile_merge_queue_entry(pr, state):
 
 
 def apply_no_checks_policy(pr, checks):
-    if len(checks or []) == 1 and is_no_checks_reported_item(checks[0]) and is_clean_mergeable_pr(pr):
+    if (
+        len(checks or []) == 1
+        and is_no_checks_reported_item(checks[0])
+        and is_clean_mergeable_pr(pr)
+    ):
         return [], {
             "state": "clean_mergeable_no_checks",
             "message": "No GitHub checks are attached and the PR is CLEAN/MERGEABLE; treating checks as terminal by explicit watcher policy.",
@@ -735,7 +793,9 @@ def resolve_pr(pr_spec, repo_override=None):
         data = gh_json(cmd, repo=repo_override)
     except GhCommandError as err:
         if "baseRefOid" in str(err) and "baseRefOid" in cmd[-1]:
-            cmd[-1] = ",".join(field for field in cmd[-1].split(",") if field != "baseRefOid")
+            cmd[-1] = ",".join(
+                field for field in cmd[-1].split(",") if field != "baseRefOid"
+            )
             data = gh_json(cmd, repo=repo_override)
         elif parsed["mode"] in {"auto", "number"} and not repo_override:
             raise GhCommandError(
@@ -758,11 +818,7 @@ def resolve_pr(pr_spec, repo_override=None):
             f"Resolved PR base repo {base_repo} does not match requested repo "
             f"{repo_override}."
         )
-    repo = (
-        repo_override
-        or base_repo
-        or head_repo
-    )
+    repo = repo_override or base_repo or head_repo
     if not repo:
         raise GhCommandError("Unable to determine OWNER/REPO for the PR")
 
@@ -821,7 +877,9 @@ def extract_repo_slug(repo_data, owner_data=None):
 
 
 def extract_repo_from_pr_view(data):
-    return extract_repo_slug(data.get("headRepository"), data.get("headRepositoryOwner"))
+    return extract_repo_slug(
+        data.get("headRepository"), data.get("headRepositoryOwner")
+    )
 
 
 def extract_repo_from_pr_url(pr_url):
@@ -891,8 +949,10 @@ def validate_pr_resolution(pr_spec, repo_override, pr, local_git_context):
         )
     expected_repo = repo_override or url_repo
     resolved_base_repo = str(pr.get("base_repo") or "")
-    if expected_repo and resolved_base_repo and not repos_match(
-        resolved_base_repo, expected_repo
+    if (
+        expected_repo
+        and resolved_base_repo
+        and not repos_match(resolved_base_repo, expected_repo)
     ):
         raise GhCommandError(
             f"Resolved PR base repo {resolved_base_repo} does not match requested "
@@ -927,7 +987,9 @@ def build_watch_context(args, pr, local_git_context):
         "pr_input_mode": parsed["mode"],
         "repo_override": str(args.repo or ""),
         "resolved_repo": pr["repo"],
-        "resolved_repo_matches_origin": repos_match(pr["repo"], local_git_context.get("origin_repo")),
+        "resolved_repo_matches_origin": repos_match(
+            pr["repo"], local_git_context.get("origin_repo")
+        ),
         "resolution_note": (
             "Auto resolution depends on the current git/gh repository context; explicit targets should use a full PR URL or --repo."
             if parsed["mode"] == "auto" and not args.repo
@@ -1020,7 +1082,6 @@ def maybe_reset_seen_feedback(args, state):
     args._seen_feedback_reset_done = True
 
 
-
 def _normalize_status_rollup_check(item):
     if not isinstance(item, dict):
         raise GhCommandError("Malformed status-check rollup entry")
@@ -1038,28 +1099,56 @@ def _normalize_status_rollup_check(item):
         conclusion_value = item.get("conclusion")
         conclusion = str(conclusion_value or "").upper()
         if not name or status not in {
-            "REQUESTED", "QUEUED", "IN_PROGRESS", "COMPLETED", "WAITING", "PENDING",
+            "REQUESTED",
+            "QUEUED",
+            "IN_PROGRESS",
+            "COMPLETED",
+            "WAITING",
+            "PENDING",
         }:
             raise GhCommandError("Malformed CheckRun status-check rollup entry")
         if status == "COMPLETED" and conclusion not in {
-            "ACTION_REQUIRED", "TIMED_OUT", "CANCELLED", "FAILURE", "SUCCESS",
-            "NEUTRAL", "SKIPPED", "STARTUP_FAILURE", "STALE",
+            "ACTION_REQUIRED",
+            "TIMED_OUT",
+            "CANCELLED",
+            "FAILURE",
+            "SUCCESS",
+            "NEUTRAL",
+            "SKIPPED",
+            "STARTUP_FAILURE",
+            "STALE",
         }:
-            raise GhCommandError("Malformed completed CheckRun status-check rollup entry")
+            raise GhCommandError(
+                "Malformed completed CheckRun status-check rollup entry"
+            )
         if status != "COMPLETED" and conclusion_value is not None:
             raise GhCommandError("Malformed pending CheckRun status-check rollup entry")
         state = conclusion or status
-        bucket = "pending" if status != "COMPLETED" else (
-            "pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} else "fail"
+        bucket = (
+            "pending"
+            if status != "COMPLETED"
+            else ("pass" if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} else "fail")
         )
     else:
         name = str(item.get("context") or "").strip()
         state = str(item.get("state") or "").upper()
-        if not name or state not in {"EXPECTED", "ERROR", "FAILURE", "PENDING", "SUCCESS"}:
+        if not name or state not in {
+            "EXPECTED",
+            "ERROR",
+            "FAILURE",
+            "PENDING",
+            "SUCCESS",
+        }:
             raise GhCommandError("Malformed StatusContext status-check rollup entry")
         if item.get("conclusion") not in (None, ""):
             raise GhCommandError("Malformed StatusContext status-check rollup entry")
-        bucket = "pending" if state in {"EXPECTED", "PENDING"} else "pass" if state == "SUCCESS" else "fail"
+        bucket = (
+            "pending"
+            if state in {"EXPECTED", "PENDING"}
+            else "pass"
+            if state == "SUCCESS"
+            else "fail"
+        )
     return {
         "name": name,
         "state": state,
@@ -1070,6 +1159,7 @@ def _normalize_status_rollup_check(item):
         "startedAt": str(item.get("startedAt") or ""),
         "completedAt": str(item.get("completedAt") or ""),
     }
+
 
 def get_pr_checks(pr_spec, repo):
     parsed = parse_pr_spec(pr_spec)
@@ -1082,16 +1172,23 @@ def get_pr_checks(pr_spec, repo):
     except GhCommandError as err:
         if is_no_checks_reported_error(err):
             return [pending_checks_not_reported_item()]
-        if "unknown flag: --json" not in str(err).lower() and "unknown json field" not in str(err).lower():
+        if (
+            "unknown flag: --json" not in str(err).lower()
+            and "unknown json field" not in str(err).lower()
+        ):
             raise
         rollup_cmd = ["pr", "view"]
         if parsed["value"] is not None:
             rollup_cmd.append(parsed["value"])
         rollup_cmd.extend(["--json", "statusCheckRollup"])
         rollup = gh_json(rollup_cmd, repo=repo)
-        if not isinstance(rollup, dict) or not isinstance(rollup.get("statusCheckRollup"), list):
+        if not isinstance(rollup, dict) or not isinstance(
+            rollup.get("statusCheckRollup"), list
+        ):
             raise GhCommandError("Unexpected statusCheckRollup payload from gh pr view")
-        data = [_normalize_status_rollup_check(item) for item in rollup["statusCheckRollup"]]
+        data = [
+            _normalize_status_rollup_check(item) for item in rollup["statusCheckRollup"]
+        ]
     if data is None:
         return []
     if not isinstance(data, list):
@@ -1115,7 +1212,11 @@ def summarize_checks(checks):
         state = str(check.get("state") or check.get("status") or "").upper()
         if is_pending_check(check):
             pending_count += 1
-        if bucket == "fail" or conclusion in FAILED_RUN_CONCLUSIONS or state in FAILED_CHECK_STATES:
+        if (
+            bucket == "fail"
+            or conclusion in FAILED_RUN_CONCLUSIONS
+            or state in FAILED_CHECK_STATES
+        ):
             failed_count += 1
         if bucket == "pass" or conclusion == "success":
             passed_count += 1
@@ -1136,7 +1237,16 @@ def summarize_check_runs(check_runs):
 def get_workflow_runs_for_sha(repo, head_sha):
     endpoint = f"repos/{repo}/actions/runs"
     data = gh_json(
-        ["api", endpoint, "-X", "GET", "-f", f"head_sha={head_sha}", "-f", "per_page=100"],
+        [
+            "api",
+            endpoint,
+            "-X",
+            "GET",
+            "-f",
+            f"head_sha={head_sha}",
+            "-f",
+            "per_page=100",
+        ],
         repo=repo,
     )
     if not isinstance(data, dict):
@@ -1212,7 +1322,9 @@ def failed_jobs_for_run(run_id, repo):
                 "conclusion": conclusion,
                 "html_url": str(job.get("html_url") or ""),
                 "startup_failure": startup_failure,
-                "logs_endpoint": f"repos/{repo}/actions/jobs/{job['id']}/logs" if job.get("id") else None,
+                "logs_endpoint": f"repos/{repo}/actions/jobs/{job['id']}/logs"
+                if job.get("id")
+                else None,
             }
         )
     return failed_jobs
@@ -1232,11 +1344,17 @@ def failed_runs_from_workflow_runs(runs, head_sha, repo=None, cache=None):
             continue
         attempt = run.get("run_attempt")
         cache_key = (repo, str(run.get("id")), head_sha, attempt)
-        reusable = completed and isinstance(attempt, int) and not isinstance(attempt, bool)
+        reusable = (
+            completed and isinstance(attempt, int) and not isinstance(attempt, bool)
+        )
         if reusable and cache_key in jobs_cache:
             failed_jobs = jobs_cache[cache_key]
         else:
-            failed_jobs = failed_jobs_for_run(run.get("id"), repo) if repo and run.get("id") else []
+            failed_jobs = (
+                failed_jobs_for_run(run.get("id"), repo)
+                if repo and run.get("id")
+                else []
+            )
             if reusable:
                 jobs_cache[cache_key] = failed_jobs
         if conclusion not in FAILED_RUN_CONCLUSIONS and not failed_jobs:
@@ -1252,7 +1370,12 @@ def failed_runs_from_workflow_runs(runs, head_sha, repo=None, cache=None):
                 "first_failed_job": failed_jobs[0] if failed_jobs else None,
             }
         )
-    failed_runs.sort(key=lambda item: (str(item.get("workflow_name") or ""), str(item.get("run_id") or "")))
+    failed_runs.sort(
+        key=lambda item: (
+            str(item.get("workflow_name") or ""),
+            str(item.get("run_id") or ""),
+        )
+    )
     return failed_runs
 
 
@@ -1279,7 +1402,9 @@ def startup_blockers_from_failed_runs(failed_runs):
 def get_authenticated_login():
     data = gh_json(["api", "user"])
     if not isinstance(data, dict) or not data.get("login"):
-        raise GhCommandError("Unable to determine authenticated GitHub login from `gh api user`")
+        raise GhCommandError(
+            "Unable to determine authenticated GitHub login from `gh api user`"
+        )
     return str(data["login"])
 
 
@@ -1336,7 +1461,10 @@ def normalize_review_comments(items, review_states=None):
     for item in items:
         if not isinstance(item, dict):
             continue
-        if review_states.get(str(item.get("pull_request_review_id") or "")) == "PENDING":
+        if (
+            review_states.get(str(item.get("pull_request_review_id") or ""))
+            == "PENDING"
+        ):
             continue
         line = item.get("line")
         if line is None:
@@ -1370,7 +1498,9 @@ def normalize_reviews(items):
                 "id": str(item.get("id") or ""),
                 "author": extract_login(item.get("user")),
                 "author_association": str(item.get("author_association") or ""),
-                "created_at": str(item.get("submitted_at") or item.get("created_at") or ""),
+                "created_at": str(
+                    item.get("submitted_at") or item.get("created_at") or ""
+                ),
                 "body": str(item.get("body") or ""),
                 "state": str(item.get("state") or ""),
                 "commit_id": str(item.get("commit_id") or ""),
@@ -1409,13 +1539,17 @@ def is_trusted_human_review_author(item, authenticated_login):
     return association in TRUSTED_AUTHOR_ASSOCIATIONS
 
 
-def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, include_review_items=False):
+def fetch_new_review_items(
+    pr, state, fresh_state, authenticated_login=None, include_review_items=False
+):
     repo = pr["repo"]
     pr_number = pr["number"]
     endpoints = comment_endpoints(repo, pr_number)
 
     issue_payload = gh_api_list_paginated(endpoints["issue_comment"], repo=repo)
-    review_comment_payload = gh_api_list_paginated(endpoints["review_comment"], repo=repo)
+    review_comment_payload = gh_api_list_paginated(
+        endpoints["review_comment"], repo=repo
+    )
     review_payload = gh_api_list_paginated(endpoints["review"], repo=repo)
 
     issue_items = normalize_issue_comments(issue_payload)
@@ -1425,7 +1559,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, inc
         if isinstance(item, dict) and item.get("id") not in (None, "")
     }
     pending_review_ids = {
-        review_id for review_id, review_state in review_states.items() if review_state == "PENDING"
+        review_id
+        for review_id, review_state in review_states.items()
+        if review_state == "PENDING"
     }
     pending_review_comment_ids = {
         str(item.get("id"))
@@ -1434,7 +1570,9 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, inc
         and item.get("id") not in (None, "")
         and str(item.get("pull_request_review_id") or "") in pending_review_ids
     }
-    review_comment_items = normalize_review_comments(review_comment_payload, review_states)
+    review_comment_items = normalize_review_comments(
+        review_comment_payload, review_states
+    )
     review_items = normalize_reviews(review_payload)
     all_items = issue_items + review_comment_items + review_items
 
@@ -1480,7 +1618,13 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None, inc
         elif kind == "review":
             seen_review.add(item_id)
 
-    new_items.sort(key=lambda item: (item.get("created_at") or "", item.get("kind") or "", item.get("id") or ""))
+    new_items.sort(
+        key=lambda item: (
+            item.get("created_at") or "",
+            item.get("kind") or "",
+            item.get("id") or "",
+        )
+    )
     state["seen_issue_comment_ids"] = sorted(seen_issue)
     state["seen_review_comment_ids"] = sorted(seen_review_comment)
     state["seen_review_ids"] = sorted(seen_review)
@@ -1514,8 +1658,12 @@ def summarize_review_submissions(review_items, current_head_sha="", max_items=3)
         if is_review_submission_blocking(item.get("state")):
             blocking_reviews.append(normalized)
 
-    all_reviews.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
-    blocking_reviews.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
+    all_reviews.sort(
+        key=lambda item: (item.get("created_at") or "", item.get("id") or "")
+    )
+    blocking_reviews.sort(
+        key=lambda item: (item.get("created_at") or "", item.get("id") or "")
+    )
 
     return {
         "meaningful_review_count": len(all_reviews),
@@ -1657,7 +1805,12 @@ def normalize_review_threads(items):
                 }
             )
 
-        comments.sort(key=lambda comment: (comment.get("created_at") or "", comment.get("id") or ""))
+        comments.sort(
+            key=lambda comment: (
+                comment.get("created_at") or "",
+                comment.get("id") or "",
+            )
+        )
         latest_comment = comments[-1] if comments else {}
         out.append(
             {
@@ -1674,10 +1827,22 @@ def normalize_review_threads(items):
                 "line": item.get("line"),
                 "url": str(latest_comment.get("url") or ""),
                 "latest_comment_id": str(latest_comment.get("id") or ""),
-                "comment_ids": [comment["id"] for comment in comments if comment.get("id")],
-                "comment_urls": [comment["url"] for comment in comments if comment.get("url")],
-                "review_ids": [comment["review_id"] for comment in comments if comment.get("review_id")],
-                "review_urls": [comment["review_url"] for comment in comments if comment.get("review_url")],
+                "comment_ids": [
+                    comment["id"] for comment in comments if comment.get("id")
+                ],
+                "comment_urls": [
+                    comment["url"] for comment in comments if comment.get("url")
+                ],
+                "review_ids": [
+                    comment["review_id"]
+                    for comment in comments
+                    if comment.get("review_id")
+                ],
+                "review_urls": [
+                    comment["review_url"]
+                    for comment in comments
+                    if comment.get("review_url")
+                ],
             }
         )
     return out
@@ -1689,7 +1854,9 @@ def normalize_ignore_review_thread(value):
 
 def thread_matches_ignore_value(thread, ignore_values):
     normalized_values = {
-        normalize_ignore_review_thread(value) for value in ignore_values if normalize_ignore_review_thread(value)
+        normalize_ignore_review_thread(value)
+        for value in ignore_values
+        if normalize_ignore_review_thread(value)
     }
     if not normalized_values:
         return False
@@ -1700,10 +1867,22 @@ def thread_matches_ignore_value(thread, ignore_values):
         normalize_ignore_review_thread(thread.get("url") or ""),
         normalize_ignore_review_thread(thread.get("latest_comment_id") or ""),
     }
-    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("comment_ids") or [])
-    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("comment_urls") or [])
-    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("review_ids") or [])
-    candidates.update(normalize_ignore_review_thread(value) for value in thread.get("review_urls") or [])
+    candidates.update(
+        normalize_ignore_review_thread(value)
+        for value in thread.get("comment_ids") or []
+    )
+    candidates.update(
+        normalize_ignore_review_thread(value)
+        for value in thread.get("comment_urls") or []
+    )
+    candidates.update(
+        normalize_ignore_review_thread(value)
+        for value in thread.get("review_ids") or []
+    )
+    candidates.update(
+        normalize_ignore_review_thread(value)
+        for value in thread.get("review_urls") or []
+    )
     candidates.discard("")
     return bool(candidates & normalized_values)
 
@@ -1778,13 +1957,17 @@ def build_merge_blockers(pr, checks_summary, check_details, review_state):
                 "kind": "merge_queue_read_error",
                 "entry_id": str(merge_queue.get("id") or ""),
                 "head_sha": str(merge_queue.get("head_sha") or ""),
-                "details": str(merge_queue.get("details") or "Merge-queue state is unknown."),
+                "details": str(
+                    merge_queue.get("details") or "Merge-queue state is unknown."
+                ),
             }
         )
 
     pending_count = int(checks_summary.get("pending_count") or 0)
     if pending_count > 0:
-        pending_checks = [item.get("name") for item in (check_details.get("pending", []) or [])]
+        pending_checks = [
+            item.get("name") for item in (check_details.get("pending", []) or [])
+        ]
         blockers.append(
             {
                 "kind": "pending_checks",
@@ -1795,7 +1978,9 @@ def build_merge_blockers(pr, checks_summary, check_details, review_state):
 
     failed_count = int(checks_summary.get("failed_count") or 0)
     if failed_count > 0:
-        failing_checks = [item.get("name") for item in (check_details.get("failing", []) or [])]
+        failing_checks = [
+            item.get("name") for item in (check_details.get("failing", []) or [])
+        ]
         blockers.append(
             {
                 "kind": "failing_checks",
@@ -1804,7 +1989,9 @@ def build_merge_blockers(pr, checks_summary, check_details, review_state):
             }
         )
 
-    active_unresolved_count = int(review_state.get("active_unresolved_thread_count") or 0)
+    active_unresolved_count = int(
+        review_state.get("active_unresolved_thread_count") or 0
+    )
     if active_unresolved_count > 0:
         blockers.append(
             {
@@ -1818,7 +2005,9 @@ def build_merge_blockers(pr, checks_summary, check_details, review_state):
     if review_gate is not None:
         blockers.append(review_gate)
 
-    blocking_review_submissions = int(review_state.get("blocking_top_level_review_submission_count") or 0)
+    blocking_review_submissions = int(
+        review_state.get("blocking_top_level_review_submission_count") or 0
+    )
     if blocking_review_submissions > 0:
         blockers.append(
             {
@@ -1900,7 +2089,9 @@ def build_watch_decision(snapshot, recorded_at=None):
         "repo": str(pr.get("repo") or ""),
         "number": pr.get("number"),
         "head_sha": str(pr.get("head_sha") or ""),
-        "decision": "action_required" if any(action != "idle" for action in actions) else "idle",
+        "decision": "action_required"
+        if any(action != "idle" for action in actions)
+        else "idle",
         "primary_action": actions[0] if actions else "idle",
         "actions": actions,
         "checks_source": str(snapshot.get("checks_source") or ""),
@@ -1911,8 +2102,12 @@ def build_watch_decision(snapshot, recorded_at=None):
             "pending": int(checks.get("pending_count") or 0),
         },
         "review_counts": {
-            "active_unresolved": int(review_state.get("active_unresolved_thread_count") or 0),
-            "ignored_unresolved": int(review_state.get("ignored_unresolved_thread_count") or 0),
+            "active_unresolved": int(
+                review_state.get("active_unresolved_thread_count") or 0
+            ),
+            "ignored_unresolved": int(
+                review_state.get("ignored_unresolved_thread_count") or 0
+            ),
             "blocking_submissions": int(
                 review_state.get("blocking_top_level_review_submission_count") or 0
             ),
@@ -1923,7 +2118,9 @@ def build_watch_decision(snapshot, recorded_at=None):
     }
 
 
-def persist_watch_schedule(state_path, snapshot, mode, next_poll_seconds, scheduled_at=None):
+def persist_watch_schedule(
+    state_path, snapshot, mode, next_poll_seconds, scheduled_at=None
+):
     """Persist the next exact-head wake without retaining raw provider output."""
     state, _ = load_state(state_path)
     pr = snapshot.get("pr") or {}
@@ -2010,8 +2207,14 @@ def review_comment_in_active_unresolved_thread(item, active_unresolved_threads):
             normalize_ignore_review_thread(thread.get("latest_comment_id") or ""),
             normalize_ignore_review_thread(thread.get("url") or ""),
         }
-        thread_refs.update(normalize_ignore_review_thread(value) for value in thread.get("comment_ids") or [])
-        thread_refs.update(normalize_ignore_review_thread(value) for value in thread.get("comment_urls") or [])
+        thread_refs.update(
+            normalize_ignore_review_thread(value)
+            for value in thread.get("comment_ids") or []
+        )
+        thread_refs.update(
+            normalize_ignore_review_thread(value)
+            for value in thread.get("comment_urls") or []
+        )
         thread_refs.discard("")
         if item_refs & thread_refs:
             return True
@@ -2038,9 +2241,9 @@ def build_actionable_review_items(pr, new_review_items, active_unresolved_thread
 
     actionable_items.extend(active_unresolved_threads)
 
-    if (
-        pr.get("review_decision") == "CHANGES_REQUESTED"
-        and not any(item.get("kind") in {"review", "review_thread", "review_decision"} for item in actionable_items)
+    if pr.get("review_decision") == "CHANGES_REQUESTED" and not any(
+        item.get("kind") in {"review", "review_thread", "review_decision"}
+        for item in actionable_items
     ):
         actionable_items.append(
             {
@@ -2079,11 +2282,17 @@ def build_effective_ci_state(current_head_sha, checks_summary, ci_context):
     source = "current_head"
     message = ""
 
-    if stale_fallback and not ci_context.get("current_head_checks_signal") and stale_failed_runs:
+    if (
+        stale_fallback
+        and not ci_context.get("current_head_checks_signal")
+        and stale_failed_runs
+    ):
         effective["failed_count"] = len(stale_failed_runs)
         effective["pending_count"] = 0
         effective["all_terminal"] = True
-        effective["total_count"] = max(int(effective.get("total_count") or 0), len(stale_failed_runs))
+        effective["total_count"] = max(
+            int(effective.get("total_count") or 0), len(stale_failed_runs)
+        )
         source = "stale_fallback"
         stale_head_sha = str(ci_context.get("stale_head_sha") or "")
         message = (
@@ -2119,7 +2328,12 @@ def build_stale_check_details(stale_failed_runs):
             continue
         details["failing"].append(
             {
-                "name": str(run.get("workflow_name") or run.get("name") or run.get("run_id") or "stale failed run"),
+                "name": str(
+                    run.get("workflow_name")
+                    or run.get("name")
+                    or run.get("run_id")
+                    or "stale failed run"
+                ),
                 "state": str(run.get("conclusion") or ""),
                 "bucket": "stale_fallback",
                 "workflow": str(run.get("workflow_name") or ""),
@@ -2151,7 +2365,9 @@ def build_ci_head_context(pr, state, checks, checks_summary, failed_runs, now=No
     stale_failed_runs = []
     if stale_fallback_active:
         stale_runs = get_workflow_runs_for_sha(pr["repo"], previous_head_sha)
-        stale_failed_runs = failed_runs_from_workflow_runs(stale_runs, previous_head_sha, repo=pr["repo"])
+        stale_failed_runs = failed_runs_from_workflow_runs(
+            stale_runs, previous_head_sha, repo=pr["repo"]
+        )
 
     return {
         "current_head_sha": current_head_sha,
@@ -2275,7 +2491,9 @@ def validate_retry_pr(pr, current_pr, expected_head_sha):
     return None
 
 
-def validate_retry_run(run, selected_run_id, expected_head_sha, expected_pr_number=None):
+def validate_retry_run(
+    run, selected_run_id, expected_head_sha, expected_pr_number=None
+):
     """Return a typed mismatch reason for an authoritative run re-read."""
     if not isinstance(run, dict):
         return "run_read_invalid"
@@ -2331,7 +2549,9 @@ def readback_rerun_attempt(repo, run_id, previous_run):
     attempt_identity = None
     if observed_id and isinstance(run_attempt, int) and run_attempt > 0:
         attempt_identity = f"{observed_id}:{run_attempt}"
-    previous_attempt = previous_run.get("run_attempt") if isinstance(previous_run, dict) else None
+    previous_attempt = (
+        previous_run.get("run_attempt") if isinstance(previous_run, dict) else None
+    )
     is_new_attempt = (
         isinstance(run_attempt, int)
         and isinstance(previous_attempt, int)
@@ -2340,7 +2560,9 @@ def readback_rerun_attempt(repo, run_id, previous_run):
     readback_state = "observed"
     if observed_id != normalize_run_id(run_id):
         readback_state = "mismatch"
-    if str(current_run.get("head_sha") or "") != str(previous_run.get("head_sha") or ""):
+    if str(current_run.get("head_sha") or "") != str(
+        previous_run.get("head_sha") or ""
+    ):
         readback_state = "mismatch"
     if readback_state == "observed" and (
         not isinstance(previous_attempt, int)
@@ -2374,7 +2596,9 @@ def unique_actions(actions):
     return out
 
 
-def is_pr_ready_to_merge(pr, checks_summary, actionable_review_items, review_state, merge_blockers):
+def is_pr_ready_to_merge(
+    pr, checks_summary, actionable_review_items, review_state, merge_blockers
+):
     if pr["closed"] or pr["merged"]:
         return False
     # Keep the queue invariant local to the readiness predicate as well as in
@@ -2433,7 +2657,10 @@ def recommend_actions_with_source(
     source="current_head",
     ci_startup_blockers=None,
 ):
-    merge_blockers = merge_blockers or {"is_blocked_for_merge": False, "reason_kinds": []}
+    merge_blockers = merge_blockers or {
+        "is_blocked_for_merge": False,
+        "reason_kinds": [],
+    }
     actions = []
     if pr["closed"] or pr["merged"]:
         if actionable_review_items:
@@ -2441,7 +2668,9 @@ def recommend_actions_with_source(
         actions.append("stop_pr_closed")
         return unique_actions(actions)
 
-    if is_pr_ready_to_merge(pr, checks_summary, actionable_review_items, review_state, merge_blockers):
+    if is_pr_ready_to_merge(
+        pr, checks_summary, actionable_review_items, review_state, merge_blockers
+    ):
         actions.append("stop_ready_to_merge")
         return unique_actions(actions)
 
@@ -2459,7 +2688,11 @@ def recommend_actions_with_source(
         actions.append(ACTION_REQUIRED_MERGE_POLICY_BLOCKED)
     if actionable_review_items or any(
         reason in review_blocking_reasons
-        for reason in {"unresolved_review_threads", "review_gate_not_satisfied", "blocking_review_submissions"}
+        for reason in {
+            "unresolved_review_threads",
+            "review_gate_not_satisfied",
+            "blocking_review_submissions",
+        }
     ):
         actions.append("process_review_comment")
 
@@ -2469,7 +2702,9 @@ def recommend_actions_with_source(
     # non-required check failed before a merge-group candidate exists.  A real
     # admission failure remains actionable through merge_queue_failed/removed.
     merge_queue_waiting = "merge_queue_waiting" in review_blocking_reasons
-    has_failed_pr_checks = checks_summary["failed_count"] > 0 and not merge_queue_waiting
+    has_failed_pr_checks = (
+        checks_summary["failed_count"] > 0 and not merge_queue_waiting
+    )
     if has_failed_pr_checks:
         actions.append("diagnose_ci_failure")
         if source == "stale_fallback":
@@ -2479,7 +2714,11 @@ def recommend_actions_with_source(
             return unique_actions(actions)
         if checks_summary["all_terminal"] and retries_used >= max_retries:
             actions.append("stop_exhausted_retries")
-        elif checks_summary["all_terminal"] and failed_runs and retries_used < max_retries:
+        elif (
+            checks_summary["all_terminal"]
+            and failed_runs
+            and retries_used < max_retries
+        ):
             actions.append("retry_failed_checks")
 
     if not actions:
@@ -2513,9 +2752,11 @@ def collect_snapshot(args):
         include_review_items=True,
     )
     review_threads = get_review_threads(pr)
-    active_unresolved_threads, ignored_unresolved_threads = partition_unresolved_review_threads(
-        review_threads,
-        args.ignore_review_thread,
+    active_unresolved_threads, ignored_unresolved_threads = (
+        partition_unresolved_review_threads(
+            review_threads,
+            args.ignore_review_thread,
+        )
     )
     actionable_review_items = build_actionable_review_items(
         pr,
@@ -2525,16 +2766,24 @@ def collect_snapshot(args):
     top_level_reviews = summarize_review_submissions(review_items, pr.get("head_sha"))
     review_state = {
         "total_thread_count": len(review_threads),
-        "unresolved_thread_count": sum(1 for thread in review_threads if not thread.get("is_resolved")),
+        "unresolved_thread_count": sum(
+            1 for thread in review_threads if not thread.get("is_resolved")
+        ),
         "active_unresolved_thread_count": len(active_unresolved_threads),
         "ignored_unresolved_thread_count": len(ignored_unresolved_threads),
         "unresolved_threads": active_unresolved_threads,
         "ignored_unresolved_threads": ignored_unresolved_threads,
         "top_level_review_submissions": top_level_reviews["latest_reviews"],
-        "top_level_review_submission_count": top_level_reviews["meaningful_review_count"],
+        "top_level_review_submission_count": top_level_reviews[
+            "meaningful_review_count"
+        ],
         "blocking_top_level_review_submissions": top_level_reviews["blocking_reviews"],
-        "blocking_top_level_review_submission_count": top_level_reviews["blocking_review_count"],
-        "ignored_thread_selectors": [str(value) for value in args.ignore_review_thread or []],
+        "blocking_top_level_review_submission_count": top_level_reviews[
+            "blocking_review_count"
+        ],
+        "ignored_thread_selectors": [
+            str(value) for value in args.ignore_review_thread or []
+        ],
     }
     # `gh pr checks -R <repo>` requires an explicit PR/branch/url argument.
     # After resolving `--pr auto`, reuse the concrete PR number.
@@ -2548,7 +2797,9 @@ def collect_snapshot(args):
     failed_runs = failed_runs_from_workflow_runs(
         workflow_runs, pr["head_sha"], repo=pr["repo"], cache=args._workflow_jobs_cache
     )
-    ci_head_context = build_ci_head_context(pr, state, checks, checks_summary, failed_runs)
+    ci_head_context = build_ci_head_context(
+        pr, state, checks, checks_summary, failed_runs
+    )
     (
         effective_checks_summary,
         checks_source,
@@ -2556,10 +2807,14 @@ def collect_snapshot(args):
         ci_head_message,
         stale_failed_runs,
     ) = build_effective_ci_state(pr["head_sha"], checks_summary, ci_head_context)
-    effective_failed_runs = stale_failed_runs if checks_source == "stale_fallback" else failed_runs
+    effective_failed_runs = (
+        stale_failed_runs if checks_source == "stale_fallback" else failed_runs
+    )
     ci_startup_blockers = startup_blockers_from_failed_runs(effective_failed_runs)
     effective_check_details = (
-        build_stale_check_details(stale_failed_runs) if checks_source == "stale_fallback" else check_details
+        build_stale_check_details(stale_failed_runs)
+        if checks_source == "stale_fallback"
+        else check_details
     )
     merge_blockers = build_merge_blockers(
         pr,
@@ -3014,8 +3269,7 @@ def compact_wait_snapshot(snapshot):
         "checks_source": snapshot.get("checks_source"),
         "check_details": snapshot.get("check_details"),
         "failed_runs": [
-            _compact_failed_run(item)
-            for item in (snapshot.get("failed_runs") or [])
+            _compact_failed_run(item) for item in (snapshot.get("failed_runs") or [])
         ],
         "ci_startup_blockers": _compact_startup_blockers(
             snapshot.get("ci_startup_blockers")
@@ -3041,11 +3295,19 @@ def should_wait_for_terminal_checks(args, snapshot):
     if checks.get("all_terminal"):
         return False
     actions = set(snapshot.get("actions") or [])
-    ci_failure_actions = {"diagnose_ci_failure", "retry_failed_checks", "stop_exhausted_retries"}
-    return bool(actions & ci_failure_actions) and not bool(actions - ci_failure_actions - {"idle"})
+    ci_failure_actions = {
+        "diagnose_ci_failure",
+        "retry_failed_checks",
+        "stop_exhausted_retries",
+    }
+    return bool(actions & ci_failure_actions) and not bool(
+        actions - ci_failure_actions - {"idle"}
+    )
 
 
-def next_watch_poll_seconds(args, snapshot, last_change_key, poll_seconds, max_poll_seconds):
+def next_watch_poll_seconds(
+    args, snapshot, last_change_key, poll_seconds, max_poll_seconds
+):
     current_change_key = snapshot_change_key(snapshot)
     changed = current_change_key != last_change_key
     green = is_ci_green(snapshot)
@@ -3088,7 +3350,9 @@ def run_watch(args):
         actions = set(snapshot.get("actions") or [])
         if actions & STOP_ACTIONS:
             persist_watch_schedule(state_path, snapshot, "watch", 0)
-            print_event("stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")})
+            print_event(
+                "stop", {"actions": snapshot.get("actions"), "pr": snapshot.get("pr")}
+            )
             return 0
 
         persist_watch_schedule(state_path, snapshot, "watch", poll_seconds)
@@ -3162,8 +3426,12 @@ def main():
         print_json(snapshot)
         return 0
     except (GhCommandError, RuntimeError, ValueError) as err:
-        classification = classify_gh_error(err) if isinstance(err, GhCommandError) else "runtime"
-        sys.stderr.write(f"gh_pr_watch.py error classification={classification}: {err}\n")
+        classification = (
+            classify_gh_error(err) if isinstance(err, GhCommandError) else "runtime"
+        )
+        sys.stderr.write(
+            f"gh_pr_watch.py error classification={classification}: {err}\n"
+        )
         return 1
     except KeyboardInterrupt:
         sys.stderr.write("gh_pr_watch.py interrupted\n")

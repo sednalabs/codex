@@ -834,23 +834,32 @@ async fn openai_static_catalog_applies_overlay_but_other_static_catalogs_do_not(
     let openai_info = openai
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
         .await;
-    assert!(!openai_info
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.instructions_template.as_deref())
-        .expect("catalog template")
-        .contains(SENTENCE));
+    assert!(
+        !openai_info
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .expect("catalog template")
+            .contains(SENTENCE)
+    );
 
-    let other = StaticModelsManager::new(None, ModelsResponse { models: vec![candidate] });
+    let other = StaticModelsManager::new(
+        None,
+        ModelsResponse {
+            models: vec![candidate],
+        },
+    );
     let other_info = other
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
         .await;
-    assert!(other_info
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.instructions_template.as_deref())
-        .expect("catalog template")
-        .contains(SENTENCE));
+    assert!(
+        other_info
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .expect("catalog template")
+            .contains(SENTENCE)
+    );
 }
 
 #[tokio::test]
@@ -882,12 +891,14 @@ async fn openai_overlay_runs_after_remote_composition_and_before_operator_overri
     let info = manager
         .get_model_info("codex-auto-review", &ModelsManagerConfig::default())
         .await;
-    assert!(!info
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.instructions_template.as_deref())
-        .expect("catalog template")
-        .contains(SENTENCE));
+    assert!(
+        !info
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .expect("catalog template")
+            .contains(SENTENCE)
+    );
 
     let overridden = manager
         .get_model_info(

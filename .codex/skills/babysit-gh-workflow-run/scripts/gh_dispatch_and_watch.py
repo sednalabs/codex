@@ -16,7 +16,9 @@ WATCHER_LAUNCHER_PATH = Path(__file__).resolve().with_name("gh_workflow_run_watc
 
 
 def _load_watcher():
-    spec = importlib.util.spec_from_file_location("gh_workflow_run_watch", WATCHER_PYTHON_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "gh_workflow_run_watch", WATCHER_PYTHON_PATH
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError("Unable to load gh_workflow_run_watch.py")
     module = importlib.util.module_from_spec(spec)
@@ -182,7 +184,9 @@ def _emit_error(message):
     return 1
 
 
-def _emit_stale_head_timeout(*, workflow, ref, expected_sha, attempts_used, retries_allowed, stale_runs):
+def _emit_stale_head_timeout(
+    *, workflow, ref, expected_sha, attempts_used, retries_allowed, stale_runs
+):
     latest = stale_runs[-1] if stale_runs else {}
     payload = {
         "actions": ["stop_stale_head_dispatch_detected"],
@@ -255,7 +259,11 @@ def _emit_dispatch_appearance_timeout(
 
 
 def _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
-    if max_wait_seconds and max_wait_seconds > 0 and (time.monotonic() - start_time) >= max_wait_seconds:
+    if (
+        max_wait_seconds
+        and max_wait_seconds > 0
+        and (time.monotonic() - start_time) >= max_wait_seconds
+    ):
         return True
     if max_retries and max_retries > 0 and attempts > max_retries:
         return True
@@ -289,9 +297,22 @@ def _resolve_remote_ref_sha(watcher, repo, ref):
         return None
 
 
-def _wait_for_ref_to_match_expected(watcher, repo, ref, expected_sha, *, start_time, attempts, max_wait_seconds, max_retries, poll_seconds):
+def _wait_for_ref_to_match_expected(
+    watcher,
+    repo,
+    ref,
+    expected_sha,
+    *,
+    start_time,
+    attempts,
+    max_wait_seconds,
+    max_retries,
+    poll_seconds,
+):
     if hasattr(watcher, "_GH_AUTH"):
-        watcher._GH_AUTH.deadline = start_time + max_wait_seconds if max_wait_seconds else None
+        watcher._GH_AUTH.deadline = (
+            start_time + max_wait_seconds if max_wait_seconds else None
+        )
     while True:
         remote_head_sha = _query_remote_ref_sha(watcher, repo, ref)
         if _head_sha_matches_prefix(remote_head_sha, expected_sha):
@@ -322,8 +343,16 @@ def _select_newest_matching_run(
 ):
     if hasattr(watcher, "_GH_AUTH"):
         total_deadline = start_time + max_wait_seconds if max_wait_seconds else None
-        appearance_deadline = dispatch_start_time + appearance_timeout_seconds if appearance_timeout_seconds else None
-        deadlines = [value for value in (total_deadline, appearance_deadline) if value is not None]
+        appearance_deadline = (
+            dispatch_start_time + appearance_timeout_seconds
+            if appearance_timeout_seconds
+            else None
+        )
+        deadlines = [
+            value
+            for value in (total_deadline, appearance_deadline)
+            if value is not None
+        ]
         watcher._GH_AUTH.deadline = min(deadlines) if deadlines else None
     while True:
         runs = watcher.list_workflow_runs(
@@ -346,8 +375,10 @@ def _select_newest_matching_run(
         if stale_runs:
             newest = stale_runs[0]
             stale_head_sha = str(newest.get("headSha") or "").strip()
-            if expected_head_sha and stale_head_sha and not _head_sha_matches_prefix(
-                stale_head_sha, expected_head_sha
+            if (
+                expected_head_sha
+                and stale_head_sha
+                and not _head_sha_matches_prefix(stale_head_sha, expected_head_sha)
             ):
                 return {
                     "kind": "stale_head",
@@ -415,12 +446,8 @@ def _parse_dispatch_inputs(raw_inputs):
 
 def _is_unexpected_supersession_input_error(err):
     message = str(err)
-    return (
-        "Unexpected inputs provided" in message
-        and (
-            "supersession_mode" in message
-            or "supersession_key" in message
-        )
+    return "Unexpected inputs provided" in message and (
+        "supersession_mode" in message or "supersession_key" in message
     )
 
 
@@ -483,7 +510,13 @@ def _run_watcher(
     if validation_target_sha:
         command.extend(["--validation-target-sha", str(validation_target_sha)])
 
-    result = subprocess.run([str(WATCHER_LAUNCHER_PATH), *command[1:]], shell=False, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [str(WATCHER_LAUNCHER_PATH), *command[1:]],
+        shell=False,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.stdout:
         sys.stdout.write(result.stdout)
         if not result.stdout.endswith("\n"):
@@ -492,7 +525,9 @@ def _run_watcher(
 
     if result.returncode != 0:
         if result.stderr:
-            sys.stderr.write(result.stderr + ("\n" if not result.stderr.endswith("\n") else ""))
+            sys.stderr.write(
+                result.stderr + ("\n" if not result.stderr.endswith("\n") else "")
+            )
         return 1
 
     if not result.stdout:
@@ -543,13 +578,18 @@ def main():
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
     if not expected_sha:
-        expected_sha = _resolve_remote_ref_sha(watcher, repo, ref) or (
-            watcher.command_text(["git", "rev-parse", "HEAD"]) or ""
-        ).strip()
+        expected_sha = (
+            _resolve_remote_ref_sha(watcher, repo, ref)
+            or (watcher.command_text(["git", "rev-parse", "HEAD"]) or "").strip()
+        )
     if not expected_sha:
-        return _emit_error("Expected head SHA is missing and `git rev-parse HEAD` returned nothing.")
+        return _emit_error(
+            "Expected head SHA is missing and `git rev-parse HEAD` returned nothing."
+        )
     if not _is_head_sha_prefix(expected_sha):
-        return _emit_error(f"Expected head SHA '{expected_sha}' is not a valid commit sha.")
+        return _emit_error(
+            f"Expected head SHA '{expected_sha}' is not a valid commit sha."
+        )
     validation_target_sha = str(args.validation_target_sha or "").strip()
     if validation_target_sha and not _is_head_sha_prefix(validation_target_sha):
         return _emit_error(

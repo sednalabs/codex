@@ -40,7 +40,9 @@ class FakeClock:
 
 
 class FakeGitHub:
-    def __init__(self, *, token="opaque-installation-token", expiry="2030-01-01T00:00:00Z"):
+    def __init__(
+        self, *, token="opaque-installation-token", expiry="2030-01-01T00:00:00Z"
+    ):
         self.calls = []
         self.token = token
         self.expiry = expiry
@@ -74,7 +76,12 @@ class FakeGitHub:
                 url,
             )
         if method == "GET":
-            return HttpResult(200, {"X-RateLimit-Limit": "5000"}, json.dumps(self.installation).encode(), url)
+            return HttpResult(
+                200,
+                {"X-RateLimit-Limit": "5000"},
+                json.dumps(self.installation).encode(),
+                url,
+            )
         if method == "POST":
             return HttpResult(
                 201,
@@ -100,7 +107,10 @@ def make_broker(fake, clock=None):
     key = Path(directory.name) / "github-app-private-key.pem"
     key.write_bytes(b"test fixture key material")
     key.chmod(0o600)
-    with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
+    with mock.patch(
+        "github_app_installation_broker._production_credentials_directory",
+        return_value=Path(directory.name),
+    ):
         broker = GitHubAppBroker(
             app_id=7,
             app_slug="sedna-codex-delivery-coordinator",
@@ -121,10 +131,18 @@ class BrokerTests(unittest.TestCase):
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
         record = broker.get_installation_token()
-        self.assertEqual({"metadata": "read", "contents": "read"}, dict(record.permissions))
+        self.assertEqual(
+            {"metadata": "read", "contents": "read"}, dict(record.permissions)
+        )
         post = next(call for call in fake.calls if call[0] == "POST")
         request_payload = json.loads(post[3].decode("utf-8"))
-        self.assertEqual({"repositories": ["codex"], "permissions": {"contents": "read", "metadata": "read"}}, request_payload)
+        self.assertEqual(
+            {
+                "repositories": ["codex"],
+                "permissions": {"contents": "read", "metadata": "read"},
+            },
+            request_payload,
+        )
         self.assertNotIn("write", json.dumps(request_payload))
 
     def test_app_and_installation_identity_and_read_only_ceiling_are_verified(self):
@@ -132,9 +150,16 @@ class BrokerTests(unittest.TestCase):
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
         broker.get_installation_token()
-        self.assertEqual({name: "read" for name in ALLOWED_PERMISSIONS}, fake.installation["permissions"])
-        self.assertEqual("sedna-codex-delivery-coordinator", fake.installation["app_slug"])
-        self.assertTrue(all(call[2]["X-GitHub-Api-Version"] == "2022-11-28" for call in fake.calls))
+        self.assertEqual(
+            {name: "read" for name in ALLOWED_PERMISSIONS},
+            fake.installation["permissions"],
+        )
+        self.assertEqual(
+            "sedna-codex-delivery-coordinator", fake.installation["app_slug"]
+        )
+        self.assertTrue(
+            all(call[2]["X-GitHub-Api-Version"] == "2022-11-28" for call in fake.calls)
+        )
 
     def test_identity_or_grant_drift_fails_closed(self):
         fake = FakeGitHub()
@@ -163,7 +188,9 @@ class BrokerTests(unittest.TestCase):
         decoded_header = json.loads(base64.urlsafe_b64decode(header + "=="))
         decoded_claims = json.loads(base64.urlsafe_b64decode(claims + "=="))
         self.assertEqual({"alg": "RS256", "typ": "JWT"}, decoded_header)
-        self.assertEqual({"iss": 7, "iat": 1_699_999_940, "exp": 1_700_000_540}, decoded_claims)
+        self.assertEqual(
+            {"iss": 7, "iat": 1_699_999_940, "exp": 1_700_000_540}, decoded_claims
+        )
         self.assertNotIn("token", header + claims)
 
     def test_cache_reuse_and_near_expiry_refresh(self):
@@ -214,7 +241,9 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(BrokerError):
             broker.get_installation_token()
         command = [str(Path("/bin/echo").resolve(strict=True)), "x"]
-        fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+        fingerprint = fingerprint_command(
+            broker.repository, broker.permissions, command
+        )
         with self.assertRaises(BrokerError):
             broker.execute(command, fingerprint)
         self.assertEqual(1, len([call for call in fake.calls if call[0] == "POST"]))
@@ -236,7 +265,12 @@ class BrokerTests(unittest.TestCase):
             if method == "POST":
                 payload = json.loads(response.body)
                 payload["repository_selection"] = "all"
-                return HttpResult(response.status, response.headers, json.dumps(payload).encode(), response.url)
+                return HttpResult(
+                    response.status,
+                    response.headers,
+                    json.dumps(payload).encode(),
+                    response.url,
+                )
             return response
 
         broker._requester = invalid_post_cleanup_fails
@@ -245,7 +279,9 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(BrokerError):
             broker.get_installation_token()
         command = [str(Path("/bin/echo").resolve(strict=True)), "x"]
-        fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+        fingerprint = fingerprint_command(
+            broker.repository, broker.permissions, command
+        )
         with self.assertRaises(BrokerError):
             broker.execute(command, fingerprint)
         self.assertEqual(1, len([call for call in fake.calls if call[0] == "POST"]))
@@ -264,7 +300,12 @@ class BrokerTests(unittest.TestCase):
             if method == "POST":
                 payload = json.loads(response.body)
                 payload["repository_selection"] = "all"
-                response = HttpResult(response.status, response.headers, json.dumps(payload).encode(), response.url)
+                response = HttpResult(
+                    response.status,
+                    response.headers,
+                    json.dumps(payload).encode(),
+                    response.url,
+                )
             return response
 
         broker._requester = invalid_response
@@ -276,22 +317,37 @@ class BrokerTests(unittest.TestCase):
         fake = FakeGitHub(token="opaque-installation-token")
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
-        command = [str(Path("/bin/echo").resolve(strict=True)), "opaque-installation-token"]
-        fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+        command = [
+            str(Path("/bin/echo").resolve(strict=True)),
+            "opaque-installation-token",
+        ]
+        fingerprint = fingerprint_command(
+            broker.repository, broker.permissions, command
+        )
         captured = {}
 
         def fake_child_runner(argv, environment):
             captured["argv"] = list(argv)
             captured["env"] = dict(environment)
-            return 0, b"opaque-installation-token\n", b"Bearer opaque-installation-token"
+            return (
+                0,
+                b"opaque-installation-token\n",
+                b"Bearer opaque-installation-token",
+            )
 
         broker._child_runner = fake_child_runner
-        with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-pat", "GITHUB_TOKEN": "ambient-pat"}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {"GH_TOKEN": "ambient-pat", "GITHUB_TOKEN": "ambient-pat"},
+            clear=False,
+        ):
             result = broker.execute(command, fingerprint)
         env = captured["env"]
         self.assertEqual("opaque-installation-token", env["GH_TOKEN"])
         self.assertNotIn("GITHUB_TOKEN", env)
-        self.assertNotIn("opaque-installation-token", result["stdout"] + result["stderr"])
+        self.assertNotIn(
+            "opaque-installation-token", result["stdout"] + result["stderr"]
+        )
 
     def test_fingerprint_mismatch_and_unsafe_sources(self):
         fake = FakeGitHub()
@@ -304,49 +360,126 @@ class BrokerTests(unittest.TestCase):
             writable.write_text("#!/bin/sh\n")
             writable.chmod(0o664)
             with self.assertRaises(BrokerError):
-                fingerprint_command("example-org/codex", {"metadata": "read"}, [str(writable)])
+                fingerprint_command(
+                    "example-org/codex", {"metadata": "read"}, [str(writable)]
+                )
             link = Path(temp) / "link.sh"
             link.symlink_to(writable)
             with self.assertRaises(BrokerError):
-                fingerprint_command("example-org/codex", {"metadata": "read"}, [str(link)])
+                fingerprint_command(
+                    "example-org/codex", {"metadata": "read"}, [str(link)]
+                )
 
     def test_body_redirect_and_host_bounds(self):
         fake = FakeGitHub()
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
         with self.assertRaises(BrokerError):
-            broker._coerce_response(HttpResult(200, {}, b"{}", "https://evil.example/redirect"), "https://api.github.com/app")
+            broker._coerce_response(
+                HttpResult(200, {}, b"{}", "https://evil.example/redirect"),
+                "https://api.github.com/app",
+            )
         with self.assertRaises(BrokerError):
-            broker._coerce_response(HttpResult(200, {}, b"x" * (MAX_HTTP_BODY + 1), "https://api.github.com/app"), "https://api.github.com/app")
+            broker._coerce_response(
+                HttpResult(
+                    200, {}, b"x" * (MAX_HTTP_BODY + 1), "https://api.github.com/app"
+                ),
+                "https://api.github.com/app",
+            )
 
     def test_fixed_production_origin_and_key_basename(self):
         fake = FakeGitHub()
         directory, _ = make_broker(fake)
         self.addCleanup(directory.cleanup)
         with self.assertRaises(BrokerError):
-            with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
-                GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, api_base_url="https://evil.example", requester=None)
+            with mock.patch(
+                "github_app_installation_broker._production_credentials_directory",
+                return_value=Path(directory.name),
+            ):
+                GitHubAppBroker(
+                    app_id=7,
+                    app_slug="sedna-codex-delivery-coordinator",
+                    installation_id=42,
+                    account="example-org",
+                    repository="example-org/codex",
+                    permissions={"metadata": "read"},
+                    api_base_url="https://evil.example",
+                    requester=None,
+                )
         with self.assertRaises(BrokerError):
-            with mock.patch("github_app_installation_broker._production_credentials_directory", return_value=Path(directory.name)):
-                GitHubAppBroker(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"}, key_basename="other.pem", requester=fake)
+            with mock.patch(
+                "github_app_installation_broker._production_credentials_directory",
+                return_value=Path(directory.name),
+            ):
+                GitHubAppBroker(
+                    app_id=7,
+                    app_slug="sedna-codex-delivery-coordinator",
+                    installation_id=42,
+                    account="example-org",
+                    repository="example-org/codex",
+                    permissions={"metadata": "read"},
+                    key_basename="other.pem",
+                    requester=fake,
+                )
 
     def test_production_credentials_root_boundary_precedes_filesystem_validation(self):
-        kwargs = dict(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"})
-        for value in ("/tmp/credentials", "/run/credentials/../etc", "/run/credentials-unit"):
-            with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": value}, clear=False), mock.patch("github_app_installation_broker._validate_credentials_directory") as validate:
+        kwargs = dict(
+            app_id=7,
+            app_slug="sedna-codex-delivery-coordinator",
+            installation_id=42,
+            account="example-org",
+            repository="example-org/codex",
+            permissions={"metadata": "read"},
+        )
+        for value in (
+            "/tmp/credentials",
+            "/run/credentials/../etc",
+            "/run/credentials-unit",
+        ):
+            with (
+                mock.patch.dict(
+                    os.environ, {"CREDENTIALS_DIRECTORY": value}, clear=False
+                ),
+                mock.patch(
+                    "github_app_installation_broker._validate_credentials_directory"
+                ) as validate,
+            ):
                 with self.assertRaises(BrokerError):
                     GitHubAppBroker(**kwargs)
                 validate.assert_not_called()
 
     def test_canonical_production_credentials_path_reaches_validation(self):
-        kwargs = dict(app_id=7, app_slug="sedna-codex-delivery-coordinator", installation_id=42, account="example-org", repository="example-org/codex", permissions={"metadata": "read"})
-        with mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": "/run/credentials/unit.service"}, clear=False), mock.patch("github_app_installation_broker._validate_credentials_directory") as validate:
+        kwargs = dict(
+            app_id=7,
+            app_slug="sedna-codex-delivery-coordinator",
+            installation_id=42,
+            account="example-org",
+            repository="example-org/codex",
+            permissions={"metadata": "read"},
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"CREDENTIALS_DIRECTORY": "/run/credentials/unit.service"},
+                clear=False,
+            ),
+            mock.patch(
+                "github_app_installation_broker._validate_credentials_directory"
+            ) as validate,
+        ):
             broker = GitHubAppBroker(**kwargs)
         validate.assert_called_once()
-        self.assertEqual("/run/credentials/unit.service", str(broker.credentials_directory))
-        self.assertEqual("/run/credentials/unit.service", str(_production_credentials_directory("/run/credentials/unit.service")))
+        self.assertEqual(
+            "/run/credentials/unit.service", str(broker.credentials_directory)
+        )
+        self.assertEqual(
+            "/run/credentials/unit.service",
+            str(_production_credentials_directory("/run/credentials/unit.service")),
+        )
 
-    def test_private_key_mode_owner_and_fd_identity_are_checked_without_signing_secret(self):
+    def test_private_key_mode_owner_and_fd_identity_are_checked_without_signing_secret(
+        self,
+    ):
         fake = FakeGitHub()
         directory, broker = make_broker(fake)
         self.addCleanup(directory.cleanup)
@@ -380,7 +513,9 @@ class BrokerTests(unittest.TestCase):
             script.write_text("#!/bin/sh\necho ok\n")
             script.chmod(0o755)
             command = [str(Path("/bin/sh").resolve(strict=True)), str(script)]
-            fingerprint = fingerprint_command(broker.repository, broker.permissions, command)
+            fingerprint = fingerprint_command(
+                broker.repository, broker.permissions, command
+            )
             original_get = broker.get_installation_token
 
             def mint_then_mutate():
@@ -401,9 +536,13 @@ class BrokerTests(unittest.TestCase):
             script.write_text("#!/bin/sh\necho ok\n")
             script.chmod(0o700)
             command = [str(Path("/bin/sh").resolve(strict=True)), str(script)]
-            before = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
+            before = fingerprint_command(
+                "example-org/codex", {"metadata": "read"}, command
+            )
             script.chmod(0o755)
-            after = fingerprint_command("example-org/codex", {"metadata": "read"}, command)
+            after = fingerprint_command(
+                "example-org/codex", {"metadata": "read"}, command
+            )
             self.assertNotEqual(before, after)
 
     def test_revocation_success_and_failure_are_nonsecret(self):
@@ -455,8 +594,15 @@ class BrokerTests(unittest.TestCase):
             _run_child_bounded(["/bin/sh", "-c", "yes x"], {}, terminate_group=True)
 
     def test_ipc_and_response_bounds_are_composable_without_sleeping(self):
-        self.assertGreaterEqual(MAX_IPC_RESPONSE, 2 * (((MAX_CHILD_OUTPUT + 2) // 3) * 4))
-        from github_app_broker_proxy import CONNECT_TIMEOUT, FRAME_TIMEOUT, RESPONSE_TIMEOUT
+        self.assertGreaterEqual(
+            MAX_IPC_RESPONSE, 2 * (((MAX_CHILD_OUTPUT + 2) // 3) * 4)
+        )
+        from github_app_broker_proxy import (
+            CONNECT_TIMEOUT,
+            FRAME_TIMEOUT,
+            RESPONSE_TIMEOUT,
+        )
+
         self.assertGreater(RESPONSE_TIMEOUT, 30 + 5)
         self.assertLessEqual(CONNECT_TIMEOUT, FRAME_TIMEOUT)
         worst = bytes((0, 10, 255)) * (MAX_CHILD_OUTPUT // 3)
@@ -492,7 +638,10 @@ class BrokerTests(unittest.TestCase):
 
     def test_token_bearing_child_descendants_are_gone_before_return(self):
         for inherit_pipes in (False, True):
-            with self.subTest(inherit_pipes=inherit_pipes), tempfile.TemporaryDirectory() as temp:
+            with (
+                self.subTest(inherit_pipes=inherit_pipes),
+                tempfile.TemporaryDirectory() as temp,
+            ):
                 script = Path(temp) / "spawn_descendant.py"
                 pid_file = Path(temp) / "descendant.pid"
                 script.write_text(
@@ -568,9 +717,12 @@ class BrokerTests(unittest.TestCase):
                 child_calls.append((list(argv), dict(kwargs)))
                 return _run_child_bounded(argv, child_env, **kwargs)
 
-            with mock.patch.dict(os.environ, environment, clear=False), mock.patch(
-                "github_app_installation_broker._run_child_bounded",
-                side_effect=recording_child_runner,
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch(
+                    "github_app_installation_broker._run_child_bounded",
+                    side_effect=recording_child_runner,
+                ),
             ):
                 fingerprint = fingerprint_brokered_command(
                     broker.repository, broker.permissions, command
@@ -590,7 +742,8 @@ class BrokerTests(unittest.TestCase):
         self.assertTrue(
             any(
                 call[0][0] == gh_resolved
-                and call[1] == {
+                and call[1]
+                == {
                     "timeout": 30,
                     "terminate_group": True,
                 }
@@ -642,27 +795,58 @@ class BrokerTests(unittest.TestCase):
                 child_calls.append((list(argv), dict(kwargs)))
                 return _run_child_bounded(argv, child_env, **kwargs)
 
-            with mock.patch.dict(os.environ, environment, clear=False), mock.patch(
-                "github_app_installation_broker._run_child_bounded",
-                side_effect=recording_child_runner,
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch(
+                    "github_app_installation_broker._run_child_bounded",
+                    side_effect=recording_child_runner,
+                ),
             ):
                 fingerprint = fingerprint_brokered_command(
                     broker.repository,
                     broker.permissions,
-                    [str(Path(sys.executable).resolve(strict=True)), str(watcher), "--pr", "1", "--repo", "example-org/codex", "--installation-observer", "--once"],
+                    [
+                        str(Path(sys.executable).resolve(strict=True)),
+                        str(watcher),
+                        "--pr",
+                        "1",
+                        "--repo",
+                        "example-org/codex",
+                        "--installation-observer",
+                        "--once",
+                    ],
                 )
                 broker.get_installation_token()
                 clock.value = 1_700_000_350
                 result = broker.execute_brokered_observer(
-                    [str(Path(sys.executable).resolve(strict=True)), str(watcher), "--pr", "1", "--repo", "example-org/codex", "--installation-observer", "--once"],
+                    [
+                        str(Path(sys.executable).resolve(strict=True)),
+                        str(watcher),
+                        "--pr",
+                        "1",
+                        "--repo",
+                        "example-org/codex",
+                        "--installation-observer",
+                        "--once",
+                    ],
                     fingerprint,
                 )
             logged = [json.loads(line) for line in argv_log.read_text().splitlines()]
         self.assertEqual(0, result["returncode"], result)
-        self.assertEqual({"attempted": True, "revoked": True, "status": 204}, result["revocation"])
+        self.assertEqual(
+            {"attempted": True, "revoked": True, "status": 204}, result["revocation"]
+        )
         self.assertNotIn("broker-only-secret", json.dumps(result))
-        self.assertGreaterEqual(sum(call[0][0] == str(Path(sys.executable).resolve(strict=True)) for call in child_calls), 1)
-        self.assertGreaterEqual(sum(call[0][0].endswith("/gh") for call in child_calls), 4)
+        self.assertGreaterEqual(
+            sum(
+                call[0][0] == str(Path(sys.executable).resolve(strict=True))
+                for call in child_calls
+            ),
+            1,
+        )
+        self.assertGreaterEqual(
+            sum(call[0][0].endswith("/gh") for call in child_calls), 4
+        )
         self.assertTrue(any("graphql" in args for args in logged))
         self.assertTrue(any("checks" in args for args in logged))
         self.assertTrue(any("pr" in args and "view" in args for args in logged))
@@ -681,8 +865,31 @@ class BrokerTests(unittest.TestCase):
             def close(self):
                 return {"attempted": True, "revoked": False}
 
-        with mock.patch("github_app_installation_broker.GitHubAppBroker", UnrevokedBroker):
-            result = main(["exec", "--app-id", "7", "--app-slug", "sedna-codex-delivery-coordinator", "--installation-id", "42", "--account", "example-org", "--repo", "example-org/codex", "--permissions", '{"metadata":"read"}', "--fingerprint", "fp", "--", "/bin/echo", "x"])
+        with mock.patch(
+            "github_app_installation_broker.GitHubAppBroker", UnrevokedBroker
+        ):
+            result = main(
+                [
+                    "exec",
+                    "--app-id",
+                    "7",
+                    "--app-slug",
+                    "sedna-codex-delivery-coordinator",
+                    "--installation-id",
+                    "42",
+                    "--account",
+                    "example-org",
+                    "--repo",
+                    "example-org/codex",
+                    "--permissions",
+                    '{"metadata":"read"}',
+                    "--fingerprint",
+                    "fp",
+                    "--",
+                    "/bin/echo",
+                    "x",
+                ]
+            )
         self.assertNotEqual(0, result)
 
 

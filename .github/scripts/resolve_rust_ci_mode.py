@@ -113,7 +113,9 @@ def parse_files_json(value: str, *, strict: bool = True) -> list[str] | None:
         if not strict:
             return None
         raise SystemExit(f"invalid JSON input for changed-files: {exc}") from exc
-    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+    if not isinstance(payload, list) or not all(
+        isinstance(item, str) for item in payload
+    ):
         if not strict:
             return None
         raise SystemExit("changed-files JSON inputs must be arrays of strings")
@@ -163,7 +165,10 @@ def any_path_matches(paths: list[str], patterns: list[str]) -> bool:
 
 
 def classify_files(files: list[str]) -> dict[str, bool]:
-    codex = any(any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS) for path in files)
+    codex = any(
+        any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS)
+        for path in files
+    )
     argument_comment_lint = any(
         any(path_matches(path, pattern) for pattern in RUST_BUNDLE_PATTERNS)
         or path.startswith("tools/argument-comment-lint/")
@@ -179,14 +184,21 @@ def classify_files(files: list[str]) -> dict[str, bool]:
         any(path_matches(path, pattern) for pattern in WORKFLOW_SURFACE_PATTERNS)
         for path in files
     )
-    high_risk = any(any(path_matches(path, pattern) for pattern in HIGH_RISK_PATTERNS) for path in files)
+    high_risk = any(
+        any(path_matches(path, pattern) for pattern in HIGH_RISK_PATTERNS)
+        for path in files
+    )
     return {
         "codex": codex,
         "argument_comment_lint": argument_comment_lint,
         "argument_comment_lint_package": argument_comment_lint_package,
         "workflows": workflows,
         "high_risk": high_risk,
-        "has_relevant_changes": codex or argument_comment_lint or argument_comment_lint_package or workflows or high_risk,
+        "has_relevant_changes": codex
+        or argument_comment_lint
+        or argument_comment_lint_package
+        or workflows
+        or high_risk,
     }
 
 
@@ -202,9 +214,7 @@ def followup_route_priority(route: dict) -> int:
 
 
 def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
-    routes_with_priority = [
-        (route, followup_route_priority(route)) for route in routes
-    ]
+    routes_with_priority = [(route, followup_route_priority(route)) for route in routes]
     if not files:
         return []
 
@@ -214,10 +224,14 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
         required_any_paths = route.get("required_any_paths", [])
         if not allowed_paths:
             continue
-        if not all(any(path_matches(path, pattern) for pattern in allowed_paths) for path in files):
+        if not all(
+            any(path_matches(path, pattern) for pattern in allowed_paths)
+            for path in files
+        ):
             continue
         if required_any_paths and not any(
-            any(path_matches(path, pattern) for pattern in required_any_paths) for path in files
+            any(path_matches(path, pattern) for pattern in required_any_paths)
+            for path in files
         ):
             continue
         matching_routes.append((route, priority))
@@ -227,9 +241,7 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
 
     highest_priority = max(priority for _, priority in matching_routes)
     highest_priority_routes = [
-        route
-        for route, priority in matching_routes
-        if priority == highest_priority
+        route for route, priority in matching_routes if priority == highest_priority
     ]
     if len(highest_priority_routes) != 1:
         return []
@@ -283,7 +295,10 @@ def merge_group_docs_only(
         and statuses is not None
         and len(statuses) == len(files)
         and all(status in {"A", "M"} for status in statuses)
-        and all(any(path_matches(path, pattern) for pattern in DOCS_ONLY_PATTERNS) for path in files)
+        and all(
+            any(path_matches(path, pattern) for pattern in DOCS_ONLY_PATTERNS)
+            for path in files
+        )
     )
 
 
@@ -373,7 +388,9 @@ def main() -> None:
         primary_line_count_input,
     )
     primary_lanes = select_followup_lanes(primary_files, routes)
-    primary_light_workflow_route = route_lanes_are_light_workflow_only(primary_lanes, catalog)
+    primary_light_workflow_route = route_lanes_are_light_workflow_only(
+        primary_lanes, catalog
+    )
 
     latest_delta_files = changed_files(
         repo_root,
@@ -390,7 +407,9 @@ def main() -> None:
     )
 
     followup_lanes = select_followup_lanes(latest_delta_files, routes)
-    followup_light_workflow_route = route_lanes_are_light_workflow_only(followup_lanes, catalog)
+    followup_light_workflow_route = route_lanes_are_light_workflow_only(
+        followup_lanes, catalog
+    )
     light_initial = (
         args.event_name == "pull_request"
         and args.event_action in INITIAL_ROUTE_ACTIONS
@@ -416,7 +435,9 @@ def main() -> None:
             "validation_mode": "light_followup",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
-            "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
+            "argument_comment_lint_package": as_output(
+                primary["argument_comment_lint_package"]
+            ),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
             # Once a PR head is already green, tiny mapped follow-ups should
@@ -435,7 +456,9 @@ def main() -> None:
             "validation_mode": "light_initial",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
-            "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
+            "argument_comment_lint_package": as_output(
+                primary["argument_comment_lint_package"]
+            ),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
             # For small initial PRs that map cleanly to one guarded seam, prove
@@ -454,13 +477,19 @@ def main() -> None:
             "validation_mode": "full",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
-            "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
+            "argument_comment_lint_package": as_output(
+                primary["argument_comment_lint_package"]
+            ),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
             "run_general": as_output(primary["codex"]),
             "run_cargo_shear": as_output(primary["codex"]),
-            "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
-            "run_argument_comment_lint_prebuilt": as_output(primary["argument_comment_lint"]),
+            "run_argument_comment_lint_package": as_output(
+                primary["argument_comment_lint_package"]
+            ),
+            "run_argument_comment_lint_prebuilt": as_output(
+                primary["argument_comment_lint"]
+            ),
             "run_incremental_validation": "false",
             "incremental_profile": "",
             "incremental_lane_set": "",

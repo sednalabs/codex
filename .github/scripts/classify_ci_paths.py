@@ -24,9 +24,26 @@ CODEQL_ALL = (
 )
 
 SOURCE_FORMAT_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
-    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
-    ".py", ".rs", ".toml", ".json", ".yaml", ".yml",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".rs",
+    ".toml",
+    ".json",
+    ".yaml",
+    ".yml",
 }
 
 C_CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
@@ -38,9 +55,7 @@ FULL_BLOCKING_PATHS = {
     ".github/scripts/test_classify_ci_paths.py",
 }
 
-FULL_CODEQL_PREFIXES = (
-    ".github/codeql/",
-)
+FULL_CODEQL_PREFIXES = (".github/codeql/",)
 FULL_CODEQL_PATHS = {
     ".github/workflows/codeql.yml",
     ".github/scripts/classify_ci_paths.py",
@@ -145,8 +160,7 @@ def classify(paths: Iterable[str]) -> Scope:
         for path in changed
     )
     clippy = any(
-        path in CLIPPY_REQUIRED_PATHS
-        or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
+        path in CLIPPY_REQUIRED_PATHS or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
         for path in changed
     )
 
@@ -174,7 +188,8 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             path == ".github/workflows/repo-checks.yml"
-            or path in {
+            or path
+            in {
                 ".github/scripts/verify_cargo_workspace_manifests.py",
                 ".github/scripts/verify_tui_core_boundary.py",
                 ".github/scripts/verify_bazel_clippy_lints.py",
@@ -201,7 +216,8 @@ def classify(paths: Iterable[str]) -> Scope:
         if (
             path == ".github/workflows/repo-checks.yml"
             or path in PACKAGE_ROOT_PATHS
-            or path in {"justfile", ".prettierignore", ".prettierrc", ".prettierrc.json"}
+            or path
+            in {"justfile", ".prettierignore", ".prettierrc", ".prettierrc.json"}
             or suffix in SOURCE_FORMAT_SUFFIXES
         ):
             # Markdown is intentionally excluded here. Documentation has its own
@@ -241,10 +257,7 @@ def classify(paths: Iterable[str]) -> Scope:
         if _starts(path, ".github/workflows/", ".github/actions/"):
             codeql.add("actions")
 
-        if (
-            suffix in C_CPP_SUFFIXES
-            or name == "CMakeLists.txt"
-        ):
+        if suffix in C_CPP_SUFFIXES or name == "CMakeLists.txt":
             codeql.add("c-cpp")
 
         if (
@@ -254,15 +267,13 @@ def classify(paths: Iterable[str]) -> Scope:
         ):
             codeql.add("javascript-typescript")
 
-        if (
-            suffix == ".py"
-            or name in {"pyproject.toml", "uv.lock", "requirements.txt"}
-        ):
+        if suffix == ".py" or name in {"pyproject.toml", "uv.lock", "requirements.txt"}:
             codeql.add("python")
 
         if (
             suffix == ".rs"
-            or name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            or name
+            in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
             or _starts(path, ".cargo/", "codex-rs/.cargo/")
         ):
             codeql.add("rust")
@@ -276,7 +287,9 @@ def classify(paths: Iterable[str]) -> Scope:
         repo_readme=repo_readme,
         sdk_python=sdk_python,
         sdk_typescript=sdk_typescript,
-        codeql_languages=tuple(language for language in CODEQL_ALL if language in codeql),
+        codeql_languages=tuple(
+            language for language in CODEQL_ALL if language in codeql
+        ),
         force_full_blocking=force_full_blocking,
         force_full_codeql=force_full_codeql,
     )

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded private client for broker-owned read-only GitHub CLI calls."""
+
 import base64
 import json
 import os
@@ -23,7 +24,10 @@ _REST_PATH = re.compile(r"^(?:actions|commits|issues|pulls)(?:/|\?|$)")
 _MERGE_QUEUE_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id state position headCommit{oid}}}}}"
 _REVIEW_THREADS_QUERY = "query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated path line comments(first:100){nodes{databaseId url body createdAt author{login} pullRequestReview{databaseId url state author{login}}}}}}}}}"
 
-class ProxyError(RuntimeError): pass
+
+class ProxyError(RuntimeError):
+    pass
+
 
 def _pairs(values):
     if len(values) % 2:
@@ -47,7 +51,10 @@ def _validate_graphql(values, repository=None):
                 raise ProxyError("GraphQL query field is invalid")
             query = field_value
         elif option not in {"-F", "--field"} or name not in {
-            "owner", "name", "number", "cursor"
+            "owner",
+            "name",
+            "number",
+            "cursor",
         }:
             raise ProxyError("unsupported GraphQL variable")
         else:
@@ -75,7 +82,10 @@ def _validate_graphql(values, repository=None):
         raise ProxyError("GraphQL variable set does not match the query template")
     if repository:
         owner, name = repository.split("/", 1)
-        if variables["owner"].lower() != owner.lower() or variables["name"].lower() != name.lower():
+        if (
+            variables["owner"].lower() != owner.lower()
+            or variables["name"].lower() != name.lower()
+        ):
             raise ProxyError("GraphQL repository binding rejected")
     if not variables["number"].isdigit():
         raise ProxyError("GraphQL pull request number is invalid")
@@ -90,7 +100,9 @@ def _validate_rest(endpoint, values, repository):
         if match is None:
             raise ProxyError("REST repository binding is required")
         prefix = match.group(0)
-    if not normalized.startswith(prefix) or not _REST_PATH.match(normalized[len(prefix):]):
+    if not normalized.startswith(prefix) or not _REST_PATH.match(
+        normalized[len(prefix) :]
+    ):
         raise ProxyError("REST repository binding rejected")
     explicit_get = False
     has_fields = False
@@ -118,7 +130,9 @@ def _validate_download_directory(value):
     name = match.group(1)
     try:
         with os.scandir("/tmp") as entries:
-            entry = next((candidate for candidate in entries if candidate.name == name), None)
+            entry = next(
+                (candidate for candidate in entries if candidate.name == name), None
+            )
         if entry is None:
             raise ProxyError("download directory is unavailable")
         info = entry.stat(follow_symlinks=False)
@@ -165,10 +179,13 @@ def validate_gh_argv(argv, repository=None):
             option_index = 3
         else:
             raise ProxyError("PR output shape rejected")
-        if target is not None and not (target.isdigit() or (
-            urlparse(target).netloc == "github.com"
-            and urlparse(target).path.startswith(f"/{repository}/pull/")
-        )):
+        if target is not None and not (
+            target.isdigit()
+            or (
+                urlparse(target).netloc == "github.com"
+                and urlparse(target).path.startswith(f"/{repository}/pull/")
+            )
+        ):
             raise ProxyError("PR target is outside the bound repository")
         if argv[option_index] != "--json" or not argv[option_index + 1]:
             raise ProxyError("PR output shape rejected")
@@ -182,19 +199,33 @@ def validate_gh_argv(argv, repository=None):
             if any(option not in allowed for option, _ in pairs):
                 raise ProxyError("workflow list shape rejected")
             names = [option for option, _ in pairs]
-            if any(names.count(name) != 1 for name in {"--workflow", "--limit", "--json"}):
+            if any(
+                names.count(name) != 1 for name in {"--workflow", "--limit", "--json"}
+            ):
                 raise ProxyError("workflow list shape rejected")
             values = dict(pairs)
-            if values["--limit"] != "30" or not values["--workflow"] or not values["--json"]:
+            if (
+                values["--limit"] != "30"
+                or not values["--workflow"]
+                or not values["--json"]
+            ):
                 raise ProxyError("workflow list shape rejected")
         elif subcommand == "view":
             tail = argv[2:]
             valid = (
-                len(tail) == 3 and tail[0].isdigit() and tail[1] == "--json" and bool(tail[2])
-            ) or (
-                len(tail) == 2 and tail[0].isdigit() and tail[1] == "--log-failed"
-            ) or (
-                len(tail) == 3 and tail[0] == "--job" and tail[1].isdigit() and tail[2] == "--log"
+                (
+                    len(tail) == 3
+                    and tail[0].isdigit()
+                    and tail[1] == "--json"
+                    and bool(tail[2])
+                )
+                or (len(tail) == 2 and tail[0].isdigit() and tail[1] == "--log-failed")
+                or (
+                    len(tail) == 3
+                    and tail[0] == "--job"
+                    and tail[1].isdigit()
+                    and tail[2] == "--log"
+                )
             )
             if not valid:
                 raise ProxyError("workflow view shape rejected")
@@ -213,19 +244,24 @@ def validate_gh_argv(argv, repository=None):
         raise ProxyError("unsupported GitHub CLI operation")
     return True
 
+
 def _read_frame(sock):
     header = _read_exact(sock, 4)
     size = struct.unpack("!I", header)[0]
-    if size > MAX_REQUEST: raise ProxyError("request exceeds safety bound")
+    if size > MAX_REQUEST:
+        raise ProxyError("request exceeds safety bound")
     return _read_exact(sock, size)
+
 
 def _read_exact(sock, size):
     out = bytearray()
     while len(out) < size:
         chunk = sock.recv(size - len(out))
-        if not chunk: raise ProxyError("truncated broker frame")
+        if not chunk:
+            raise ProxyError("truncated broker frame")
         out.extend(chunk)
     return bytes(out)
+
 
 def request(socket_path, argv, *, binary=False):
     return _request(socket_path, argv, binary=binary)
@@ -233,21 +269,33 @@ def request(socket_path, argv, *, binary=False):
 
 def _request(socket_path, argv, *, binary):
     validate_gh_argv(argv)
-    payload = json.dumps({"argv": argv, "binary": bool(binary)}, separators=(",", ":")).encode()
-    if len(payload) > MAX_REQUEST: raise ProxyError("request exceeds safety bound")
+    payload = json.dumps(
+        {"argv": argv, "binary": bool(binary)}, separators=(",", ":")
+    ).encode()
+    if len(payload) > MAX_REQUEST:
+        raise ProxyError("request exceeds safety bound")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(CONNECT_TIMEOUT); sock.connect(socket_path)
+        sock.settimeout(CONNECT_TIMEOUT)
+        sock.connect(socket_path)
         sock.settimeout(FRAME_TIMEOUT)
         sock.sendall(struct.pack("!I", len(payload)) + payload)
         sock.settimeout(RESPONSE_TIMEOUT)
         header = _read_exact(sock, 4)
         size = struct.unpack("!I", header)[0]
-        if size > MAX_RESPONSE: raise ProxyError("response exceeds safety bound")
+        if size > MAX_RESPONSE:
+            raise ProxyError("response exceeds safety bound")
         data = _read_exact(sock, size)
-        if sock.recv(1): raise ProxyError("multiple broker responses")
-    try: result = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ProxyError("malformed broker response") from exc
-    if not isinstance(result, dict) or "stdout_b64" not in result or "stderr_b64" not in result:
+        if sock.recv(1):
+            raise ProxyError("multiple broker responses")
+    try:
+        result = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProxyError("malformed broker response") from exc
+    if (
+        not isinstance(result, dict)
+        or "stdout_b64" not in result
+        or "stderr_b64" not in result
+    ):
         raise ProxyError("malformed broker response")
     try:
         result["stdout_bytes"] = base64.b64decode(result["stdout_b64"], validate=True)
