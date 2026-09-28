@@ -11,6 +11,7 @@ use super::THREAD_HISTORY_MIGRATOR;
 use super::repair_legacy_recency_migration_version;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
+use crate::runtime::migration_repair::repair_state_migrations;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
@@ -819,6 +820,9 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
     repair_legacy_recency_migration_version(&pool, &STATE_MIGRATOR)
         .await
         .expect("legacy migration history should be repaired");
+    repair_state_migrations(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("state migration overlaps should be repaired");
     STATE_MIGRATOR
         .run(&pool)
         .await
