@@ -80,12 +80,84 @@ async function readStdin() {
 
 async function browserStateDir() {
   const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const dir =
+  const dir = await safeStateDir(
     configured && configured.trim()
       ? configured
-      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
+      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright"),
+  );
   await fs.mkdir(dir, { recursive: true });
-  return dir;
+  await assertNoSymlinkComponents(dir);
+  const canonical = await fs.realpath(dir);
+  if (!(await allowedStateRoots()).some((root) => isWithinPath(root, canonical))) {
+    throw new Error(
+      "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must not resolve outside the home or temporary directory",
+    );
+  }
+  return canonical;
+}
+
+async function safeStateDir(value) {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.includes("\0")
+  ) {
+    throw new Error("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must be a valid path");
+  }
+  const resolved = path.resolve(value);
+  if (resolved === path.parse(resolved).root) {
+    throw new Error("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must not be a filesystem root");
+  }
+
+  const roots = await allowedStateRoots();
+  const parent = await canonicalExistingParent(resolved);
+  if (!roots.some((root) => isWithinPath(root, parent))) {
+    throw new Error(
+      "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must be under the home or temporary directory",
+    );
+  }
+  return resolved;
+}
+
+async function allowedStateRoots() {
+  return Promise.all(
+    [os.homedir(), os.tmpdir()].map((root) => fs.realpath(path.resolve(root))),
+  );
+}
+
+async function canonicalExistingParent(value) {
+  let current = value;
+  while (true) {
+    try {
+      return await fs.realpath(current);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        throw error;
+      }
+      current = parent;
+    }
+  }
+}
+
+async function assertNoSymlinkComponents(value) {
+  const root = path.parse(value).root;
+  let current = root;
+  for (const component of path.relative(root, value).split(path.sep)) {
+    if (!component) {
+      continue;
+    }
+    current = path.join(current, component);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must not contain symbolic links",
+      );
+    }
+  }
 }
 
 async function withProfileLock(stateDir, body) {
