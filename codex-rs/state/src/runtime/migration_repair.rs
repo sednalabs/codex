@@ -140,7 +140,7 @@ async fn repair_dynamic_tool_state_overlap(
             }
             return Ok(());
         }
-        (true, false, _) | (false, true, _) => {
+        (true, false, _) | (false, true, _) | (false, false, true) => {
             anyhow::bail!(
                 "state DB thread dynamic tool migration overlap is partial; refusing automatic repair"
             )
