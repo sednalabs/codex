@@ -17,6 +17,7 @@ use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::openai_models::ModelAccessPrograms;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
@@ -817,10 +818,7 @@ async fn openai_static_catalog_applies_overlay_but_other_static_catalogs_do_not(
     let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 0);
     candidate.model_messages = Some(ModelMessages {
         instructions_template: Some(format!("before {SENTENCE} after")),
-        instructions_variables: None,
-        approvals: None,
-        auto_review: None,
-        permissions: None,
+        ..Default::default()
     });
     let catalog = ModelsResponse {
         models: vec![candidate.clone()],
@@ -868,10 +866,7 @@ async fn openai_overlay_runs_after_remote_composition_and_before_operator_overri
     let mut candidate = remote_model("codex-auto-review", "Auto Review", /*priority*/ 0);
     candidate.model_messages = Some(ModelMessages {
         instructions_template: Some(format!("remote {SENTENCE}")),
-        instructions_variables: None,
-        approvals: None,
-        auto_review: None,
-        permissions: None,
+        ..Default::default()
     });
     let endpoint = TestModelsEndpoint::new(vec![vec![candidate]]);
     let home = tempfile::tempdir().expect("temp dir");

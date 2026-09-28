@@ -74,10 +74,7 @@ mod tests {
         model.slug = slug.to_string();
         model.model_messages = template.map(|template| ModelMessages {
             instructions_template: Some(template.to_string()),
-            instructions_variables: None,
-            approvals: None,
-            auto_review: None,
-            permissions: None,
+            ..Default::default()
         });
         model
     }
