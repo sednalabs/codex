@@ -103,6 +103,9 @@ async fn repair_dynamic_tool_state_overlap(
     let namespace_description =
         column_exists(pool, "thread_dynamic_tools", "namespace_description").await?;
 
+    let migration_9001_row = migration_record(pool, 9001).await?;
+    let migration_9002_row = migration_record(pool, 9002).await?;
+
     if let Some(row) = migration_58_row {
         validate_canonical_migration_row(&row, migration, 58)?;
         if !(persist_on_resume && capability_json && namespace_description) {
@@ -110,11 +113,34 @@ async fn repair_dynamic_tool_state_overlap(
                 "state DB migration 58 is recorded but its columns are incomplete; refusing automatic repair"
             );
         }
+        match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
+            (Some(row), Some(row_2)) => {
+                validate_canonical_migration_row(row, migration_9001, 9001)?;
+                validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+            }
+            (None, None) => {
+                mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
+            }
+            _ => anyhow::bail!(
+                "state DB dynamic tool alias migration history is partial; refusing automatic repair"
+            ),
+        }
         return Ok(());
     }
 
     match (persist_on_resume, capability_json, namespace_description) {
-        (false, false, false) => return Ok(()),
+        (false, false, false) => match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
+            (Some(row), Some(row_2)) => {
+                validate_canonical_migration_row(row, migration_9001, 9001)?;
+                validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+            }
+            (None, None) => {
+                mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
+            }
+            _ => anyhow::bail!(
+                "state DB dynamic tool alias migration history is partial; refusing automatic repair"
+            ),
+        },
         (true, false, _) | (false, true, _) => {
             anyhow::bail!(
                 "state DB thread dynamic tool migration overlap is partial; refusing automatic repair"
@@ -451,6 +477,42 @@ async fn mark_migration_applied(pool: &SqlitePool, migration: &Migration) -> any
     Ok(())
 }
 
+async fn mark_alias_migrations_applied(
+    pool: &SqlitePool,
+    migration_9001: &Migration,
+    migration_9002: &Migration,
+) -> anyhow::Result<()> {
+    ensure_migrations_table(pool).await?;
+    let mut tx = pool.begin().await?;
+    for migration in [migration_9001, migration_9002] {
+        sqlx::query(
+            r#"
+            INSERT INTO _sqlx_migrations (
+                version,
+                description,
+                success,
+                checksum,
+                execution_time
+            )
+            SELECT ?, ?, TRUE, ?, 0
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM _sqlx_migrations
+                WHERE version = ?
+            )
+            "#,
+        )
+        .bind(migration.version)
+        .bind(migration.description.as_ref())
+        .bind(migration.checksum.as_ref().to_vec())
+        .bind(migration.version)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
     sqlx::query(
         r#"
@@ -519,6 +581,88 @@ mod tests {
             row.get::<Vec<u8>, _>("checksum"),
             embedded.checksum.to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn repairs_fresh_pre_migration_58_state_and_reopens_idempotently() {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("sqlite database should open");
+        let pre_migration_58_migrator = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version <= 57)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: STATE_MIGRATOR.ignore_missing,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
+        };
+        pre_migration_58_migrator
+            .run(&pool)
+            .await
+            .expect("pre-58 state schema should apply");
+
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("fresh state migration aliases should be recorded");
+        for version in [9001_i64, 9002] {
+            let row = sqlx::query("SELECT success, description, checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(version)
+                .fetch_one(&pool)
+                .await
+                .expect("fresh alias migration row should exist");
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == version)
+                .expect("alias migration should be embedded");
+            assert!(row.get::<bool, _>("success"));
+            assert_eq!(row.get::<String, _>("description"), migration.description.as_ref());
+            assert_eq!(row.get::<Vec<u8>, _>("checksum"), migration.checksum.to_vec());
+        }
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("fresh state migrations should complete");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM pragma_table_info('thread_dynamic_tools') WHERE name IN ('persist_on_resume', 'capability_json', 'namespace_description')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("dynamic tool columns should be queryable"),
+            3
+        );
+        pool.close().await;
+
+        let reopened = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("reopened state database should open");
+        repair_state_migrations(&reopened, &STATE_MIGRATOR)
+            .await
+            .expect("fresh migration repair should be idempotent after reopen");
+        STATE_MIGRATOR
+            .run(&reopened)
+            .await
+            .expect("fresh migrations should be idempotent after reopen");
+        reopened.close().await;
     }
 
     #[tokio::test]
