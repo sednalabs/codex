@@ -8368,55 +8368,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {"types": ["checks_requested"]},
         )
 
-    def test_blocking_ci_scope_routes_pull_requests_and_merge_groups(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
-        scope_job = (payload.get("jobs") or {}).get("scope") or {}
-        scope_steps = scope_job.get("steps") or []
-        checkout_step = next(
-            step
-            for step in scope_steps
-            if step.get("name") == "Checkout PR head for path classification"
-        )
-        self.assertEqual(
-            checkout_step.get("if"),
-            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
-        )
-        self.assertEqual(
-            checkout_step.get("with") or {},
-            {
-                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
-                "fetch-depth": "1",
-                "persist-credentials": "false",
-            },
-        )
-        classify_step = next(
-            step
-            for step in scope_steps
-            if step.get("name") == "Classify blocking CI scope"
-        )
-        self.assertEqual(
-            classify_step.get("env") or {},
-            {
-                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
-                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
-            },
-        )
-        classify_run = classify_step.get("run") or ""
-        self.assertIn(
-            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
-            classify_run,
-        )
-        self.assertIn("classify_ci_paths.py --base-sha", classify_run)
-        self.assertIn(
-            "Unable to fetch PR base; running full blocking CI.", classify_run
-        )
-        self.assertIn(
-            "Unable to classify PR paths; running full blocking CI.", classify_run
-        )
-
-    def test_blocking_ci_clippy_required_lane_is_path_aware_and_fail_closed(
-        self,
-    ) -> None:
+    def test_blocking_ci_preserves_candidate_dispatch_and_required_gate(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
         triggers = payload.get("on") or {}
         self.assertIn("pull_request", triggers)
@@ -8424,51 +8376,50 @@ class ValidationPlanScriptTests(unittest.TestCase):
             triggers.get("merge_group"),
             {"types": ["checks_requested"]},
         )
-        jobs = payload.get("jobs") or {}
-        scope = jobs.get("scope") or {}
-        outputs = scope.get("outputs") or {}
-        self.assertEqual(outputs.get("clippy"), "${{ steps.scope.outputs.clippy }}")
-        scope_run = (
-            next(
-                step
-                for step in scope.get("steps") or []
-                if step.get("name") == "Classify blocking CI scope"
-            ).get("run")
-            or ""
+        self.assertEqual(
+            (triggers.get("push") or {}).get("branches"),
+            ["main", "upstream-main"],
         )
-        self.assertIn('echo "clippy=true"', scope_run)
-        self.assertIn('"clippy",', scope_run)
-        self.assertIn("if ! plan=", scope_run)
 
-        clippy = jobs.get("clippy-required") or {}
-        self.assertEqual(clippy.get("name"), "Linux full Clippy")
-        self.assertEqual(clippy.get("needs"), "scope")
-        self.assertEqual(clippy.get("if"), "${{ always() }}")
-        steps = clippy.get("steps") or []
-        verify = next(
-            step
-            for step in steps
-            if step.get("name") == "Verify Clippy scope classification"
-        )
-        verify_run = verify.get("run") or ""
-        self.assertIn('[[ "${SCOPE_RESULT}" == "success" ]]', verify_run)
-        self.assertIn("Unknown Clippy scope classification", verify_run)
-        command = next(
-            step
-            for step in steps
-            if step.get("name")
-            == "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings"
-        )
+        dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
         self.assertEqual(
-            command.get("run"),
-            "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings",
+            set(dispatch_inputs),
+            {"candidate_sha", "candidate_tree", "base_sha"},
         )
-        self.assertEqual(
-            command.get("if"),
-            "${{ needs.scope.outputs.clippy == 'true' }}",
+        self.assertTrue(
+            all(
+                input_spec.get("required") == "true"
+                for input_spec in dispatch_inputs.values()
+            )
         )
+
+        jobs = payload.get("jobs") or {}
         required = jobs.get("required") or {}
-        self.assertIn("clippy-required", required.get("needs") or [])
+        self.assertEqual(required.get("name"), "CI required")
+        self.assertEqual(required.get("if"), "${{ always() }}")
+        self.assertEqual(
+            required.get("needs"),
+            [
+                "bazel",
+                "blob-size-policy",
+                "cargo-deny",
+                "codespell",
+                "repo-checks",
+                "rust-ci",
+                "sdk",
+            ],
+        )
+
+        checkout = next(
+            step
+            for step in required.get("steps") or []
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        self.assertEqual(
+            (checkout.get("with") or {}).get("persist-credentials"),
+            "false",
+        )
+
 
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []

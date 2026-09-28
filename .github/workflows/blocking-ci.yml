@@ -3,9 +3,14 @@ name: blocking-ci
 # This is the single entrypoint for checks that block a PR merge. It also runs
 # after pushes to main so the same check family stays grouped in the Actions UI.
 on:
+  # Protected merge-queue entries require this workflow to emit the canonical
+  # `CI required` producer on the synthetic queue head. Keep the event narrow
+  # so ordinary pushes and pull requests retain their existing behavior.
+  merge_group:
+    types: [checks_requested]
   pull_request: {}
   push:
-    branches: [main]
+    branches: [main, upstream-main]
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -20,6 +25,23 @@ on:
         description: Exact comparison base commit used by the blob-size policy
         required: true
         type: string
+
+# Queue attempts use generated refs, so scope concurrency to the immutable
+# synthetic SHA and never cancel one queue attempt because another was created.
+# Pull-request reruns may still supersede an older head; all other event types
+# use a unique run fallback.
+concurrency:
+  group: >-
+    concurrency-group::${{ github.workflow }}::${{
+      github.event_name == 'merge_group' &&
+      format('merge-group-{0}', github.sha) ||
+      github.event_name == 'pull_request' &&
+      format('pr-{0}', github.event.pull_request.number) ||
+      github.event_name == 'push' &&
+      format('push-{0}', github.sha) ||
+      format('{0}-{1}', github.event_name, github.run_id)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the

@@ -39,6 +39,11 @@ jobs:
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             base='${{ github.event.pull_request.base.sha }}'
             head='${{ github.event.pull_request.head.sha }}'
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # Queue checks compare the protected base with the immutable
+            # synthetic merge-group head, not an unavailable PR input.
+            base='${{ github.event.merge_group.base_sha }}'
+            head='${{ github.sha }}'
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             base='${{ inputs.base_sha }}'
             head='${{ inputs.head_sha }}'
