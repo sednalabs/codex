@@ -7,6 +7,7 @@ use crate::truncate_function_output_items_with_policy;
 use crate::truncate_text;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageReference;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -114,7 +115,9 @@ fn truncates_across_multiple_under_limit_texts_and_reports_omitted() {
         FunctionCallOutputContentItem::InputText { text: t1.clone() },
         FunctionCallOutputContentItem::InputText { text: t2.clone() },
         FunctionCallOutputContentItem::InputImage {
-            image_url: "img:mid".to_string(),
+            image: ImageReference::Inline {
+                image_url: "img:mid".to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         },
         FunctionCallOutputContentItem::InputText { text: t3 },
@@ -142,7 +145,9 @@ fn truncates_across_multiple_under_limit_texts_and_reports_omitted() {
     assert_eq!(
         output[2],
         FunctionCallOutputContentItem::InputImage {
-            image_url: "img:mid".to_string(),
+            image: ImageReference::Inline {
+                image_url: "img:mid".to_string()
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         }
     );
@@ -161,6 +166,53 @@ fn truncates_across_multiple_under_limit_texts_and_reports_omitted() {
         other => panic!("unexpected summary item: {other:?}"),
     };
     assert!(summary_text.contains("omitted 2 text items"));
+}
+
+#[test]
+fn truncate_function_output_items_with_policy_discards_empty_text() {
+    let mut items = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: String::new(),
+        };
+        16_384
+    ];
+    for policy in [TruncationPolicy::Bytes(0), TruncationPolicy::Tokens(1)] {
+        assert_eq!(
+            truncate_function_output_items_with_policy(&items, policy, |_| 0),
+            Vec::new()
+        );
+    }
+
+    let content = vec![
+        FunctionCallOutputContentItem::InputText {
+            text: "caption".to_string(),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image: ImageReference::Inline {
+                image_url: "img:one".to_string(),
+            },
+            detail: Some(DEFAULT_IMAGE_DETAIL),
+        },
+        FunctionCallOutputContentItem::InputImage {
+            image: ImageReference::File {
+                file_id: "file_123".to_string(),
+            },
+            detail: Some(DEFAULT_IMAGE_DETAIL),
+        },
+        FunctionCallOutputContentItem::InputAudio {
+            audio_url: "audio:one".to_string(),
+        },
+        FunctionCallOutputContentItem::EncryptedContent {
+            encrypted_content: "enc_opaque".to_string(),
+        },
+    ];
+    items.extend(content.clone());
+    for policy in [TruncationPolicy::Bytes(16), TruncationPolicy::Tokens(4)] {
+        assert_eq!(
+            truncate_function_output_items_with_policy(&items, policy, |_| 1),
+            content
+        );
+    }
 }
 
 #[test]
@@ -214,7 +266,9 @@ fn formatted_truncate_text_content_items_with_policy_merges_text_and_appends_med
             text: "abcd".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
-            image_url: "img:one".to_string(),
+            image: ImageReference::Inline {
+                image_url: "img:one".to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         },
         FunctionCallOutputContentItem::InputText {
@@ -223,11 +277,19 @@ fn formatted_truncate_text_content_items_with_policy_merges_text_and_appends_med
         FunctionCallOutputContentItem::InputAudio {
             audio_url: "audio:one".to_string(),
         },
+        FunctionCallOutputContentItem::InputImage {
+            image: ImageReference::File {
+                file_id: "file_123".to_string(),
+            },
+            detail: Some(DEFAULT_IMAGE_DETAIL),
+        },
         FunctionCallOutputContentItem::InputText {
             text: "ijkl".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
-            image_url: "img:two".to_string(),
+            image: ImageReference::Inline {
+                image_url: "img:two".to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         },
     ];
@@ -242,14 +304,20 @@ fn formatted_truncate_text_content_items_with_policy_merges_text_and_appends_med
                 text: "Warning: truncated output (original token count: 4)\nTotal output lines: 3\n\nabcd…6 chars truncated…ijkl".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url: "img:one".to_string(),
+                image: ImageReference::Inline { image_url: "img:one".to_string() },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
             FunctionCallOutputContentItem::InputAudio {
                 audio_url: "audio:one".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url: "img:two".to_string(),
+                image: ImageReference::File {
+                    file_id: "file_123".to_string(),
+                },
+                detail: Some(DEFAULT_IMAGE_DETAIL),
+            },
+            FunctionCallOutputContentItem::InputImage {
+                image: ImageReference::Inline { image_url: "img:two".to_string() },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
         ]

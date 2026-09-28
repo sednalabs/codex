@@ -10,7 +10,6 @@ CREATE TABLE IF NOT EXISTS usage_threads (
     source TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-
 CREATE TABLE IF NOT EXISTS usage_spawn_requests (
     spawn_request_id TEXT PRIMARY KEY,
     parent_thread_id TEXT NOT NULL,

@@ -1,6 +1,8 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ComputerUseCallOutputContentItem": {
+      "description": "Content emitted by a native computer-use caller.",
       "oneOf": [
         {
           "properties": {
@@ -8,14 +10,16 @@
               "type": "string"
             },
             "type": {
-              "const": "inputText",
+              "enum": [
+                "inputText"
+              ],
               "title": "InputTextComputerUseCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "InputTextComputerUseCallOutputContentItem",
           "type": "object"
@@ -32,14 +36,16 @@
               "type": "string"
             },
             "type": {
-              "const": "inputImage",
+              "enum": [
+                "inputImage"
+              ],
               "title": "InputImageComputerUseCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "imageUrl"
+            "imageUrl",
+            "type"
           ],
           "title": "InputImageComputerUseCallOutputContentItem",
           "type": "object"
@@ -47,19 +53,13 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Result returned by a native computer-use caller.",
   "properties": {
     "contentItems": {
       "items": {
-        "$ref": "#/$defs/ComputerUseCallOutputContentItem"
+        "$ref": "#/definitions/ComputerUseCallOutputContentItem"
       },
       "type": "array"
-    },
-    "error": {
-      "type": [
-        "string",
-        "null"
-      ]
     },
     "success": {
       "type": "boolean"

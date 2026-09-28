@@ -8,15 +8,12 @@ use super::rate_limits::SpendControlLimitSnapshotDisplay;
 use super::rate_limits::StatusRateLimitData;
 use super::rate_limits::compose_rate_limit_data_many;
 use crate::history_cell::HistoryCell;
-use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::PlainHistoryCell;
-use crate::history_cell::TranscriptDetailMode;
 use crate::keymap::RuntimeKeymap;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::pager_overlay::TranscriptOverlay;
-use crate::pager_overlay::TranscriptOverlayState;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
 use crate::test_support::PathBufExt;
@@ -55,6 +52,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSpecialPath;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
 use ratatui::prelude::*;
@@ -67,11 +65,11 @@ fn stale_monthly_limit_marks_fresh_rolling_snapshot_stale() {
     let now = Local::now();
     let snapshot = RateLimitSnapshotDisplay {
         limit_name: "codex".to_string(),
+        normal_model_slug: None,
         captured_at: now,
         primary: Some(RateLimitWindowDisplay {
             used_percent: 20.0,
             resets_at: Some("soon".to_string()),
-            resets_at_unix_seconds: None,
             window_minutes: Some(300),
         }),
         secondary: None,
@@ -218,31 +216,6 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn sanitize_version_banner(lines: Vec<String>) -> Vec<String> {
-    lines
-        .into_iter()
-        .map(|line| {
-            if let (Some(title_pos), Some(pipe_idx)) =
-                (line.find("OpenAI Codex (v"), line.rfind('│'))
-            {
-                let prefix = &line[..title_pos];
-                let suffix = &line[pipe_idx..];
-                let content_width = pipe_idx.saturating_sub(title_pos);
-                let replacement = "OpenAI Codex (v0.0.0)";
-                let mut rebuilt = prefix.to_string();
-                rebuilt.push_str(replacement);
-                if content_width > replacement.len() {
-                    rebuilt.push_str(&" ".repeat(content_width - replacement.len()));
-                }
-                rebuilt.push_str(suffix);
-                rebuilt
-            } else {
-                line
-            }
-        })
-        .collect()
-}
-
 fn buffer_to_text(buffer: &Buffer, width: u16) -> String {
     let lines = buffer
         .content
@@ -272,6 +245,10 @@ fn reset_at_from(captured_at: &chrono::DateTime<chrono::Local>, seconds: i64) ->
 }
 
 fn permissions_text_for(config: &Config) -> Option<String> {
+    permissions_text_for_width(config, /*width*/ 80)
+}
+
+fn permissions_text_for_width(config: &Config, width: u16) -> Option<String> {
     let usage = TokenUsage::default();
     let captured_at = chrono::Local
         .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
@@ -293,7 +270,7 @@ fn permissions_text_for(config: &Config) -> Option<String> {
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
     );
-    render_lines(&composite.display_lines(/*width*/ 80))
+    render_lines(&composite.display_lines(width))
         .iter()
         .find(|line| line.contains("Permissions:"))
         .and_then(|line| {
@@ -323,7 +300,6 @@ async fn status_snapshot_includes_reasoning_details() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -336,6 +312,7 @@ async fn status_snapshot_includes_reasoning_details() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 72,
             window_duration_mins: Some(300),
@@ -379,74 +356,13 @@ async fn status_snapshot_includes_reasoning_details() {
             *line = line.replace('\\', "/");
         }
     }
-    let sanitized = sanitize_version_banner(sanitize_directory(rendered_lines)).join("\n");
-    assert_snapshot!(sanitized);
-}
-
-#[tokio::test]
-async fn status_snapshot_distinguishes_session_and_thread_token_usage() {
-    let temp_home = TempDir::new().expect("temp home");
-    let mut config = test_config(&temp_home).await;
-    config.model = Some("gpt-5.1-codex-max".to_string());
-    config.model_provider_id = "openai".to_string();
-    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::read_only())
-        .expect("set permission profile");
-
-    let thread_usage = TokenUsage {
-        input_tokens: 1_200,
-        cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
-        output_tokens: 900,
-        reasoning_output_tokens: 150,
-        total_tokens: 2_250,
-    };
-    let session_usage = TokenUsage {
-        input_tokens: 3_000,
-        cached_input_tokens: 400,
-        cache_write_input_tokens: 0,
-        output_tokens: 1_600,
-        reasoning_output_tokens: 150,
-        total_tokens: 4_750,
-    };
-    let captured_at = chrono::Local
-        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
-        .single()
-        .expect("timestamp");
-    let model_slug = get_model_offline_for_tests(config.model.as_deref());
-    let token_info = token_info_for(&model_slug, &config, &thread_usage);
-
-    let composite = new_status_output(
-        &config,
-        test_status_account_display().as_ref(),
-        Some(&token_info),
-        &session_usage,
-        &None,
-        /*thread_name*/ Some("Main".to_string()),
-        /*forked_from*/ None,
-        /*rate_limits*/ None,
-        None,
-        captured_at,
-        &model_slug,
-        /*collaboration_mode*/ Some("Default"),
-        /*reasoning_effort_override*/ None,
-    );
-    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
-    if cfg!(windows) {
-        for line in &mut rendered_lines {
-            *line = line.replace('\\', "/");
-        }
-    }
-    let sanitized = sanitize_version_banner(sanitize_directory(rendered_lines)).join("\n");
+    let sanitized = sanitize_directory(rendered_lines).join("\n");
     assert_snapshot!(sanitized);
 }
 
 #[tokio::test]
 async fn status_snapshot_shows_chatgpt_plan_without_email() {
     let temp_home = TempDir::new().expect("temp home");
-    write_models_cache(temp_home.path()).expect("write models cache");
     let mut config = test_config(&temp_home).await;
     config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
@@ -455,10 +371,13 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
 
     write_chatgpt_auth(
         temp_home.path(),
-        ChatGptAuthFixture::new("access-chatgpt").plan_type("enterprise"),
+        ChatGptAuthFixture::new("access-chatgpt").plan_type("enterprise_cbp_automation"),
         AuthCredentialsStoreMode::File,
     )
     .expect("write email-less ChatGPT auth");
+    write_models_cache(temp_home.path())
+        .await
+        .expect("write models cache");
     let mut app_server = crate::start_embedded_app_server_for_picker(&config)
         .await
         .expect("start embedded app server");
@@ -474,7 +393,7 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
         account_display,
         StatusAccountDisplay::ChatGpt {
             email: None,
-            plan: Some("Enterprise".to_string()),
+            plan: Some("Enterprise (Automation)".to_string()),
         }
     );
     let usage = TokenUsage::default();
@@ -712,7 +631,7 @@ async fn status_permissions_workspace_roots_include_profile_defined_directories(
                     /*exclude_slash_tmp*/ false,
                 ),
                 ActivePermissionProfile::new(":workspace"),
-                vec![profile_root.clone()],
+                vec![profile_root.clone().into()],
             ),
         )
         .expect("set permission profile");
@@ -820,14 +739,18 @@ async fn status_snapshot_shows_active_user_defined_profile() {
 }
 
 #[tokio::test]
-async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_link() {
+async fn status_uses_server_provider_id_and_auth_requirement() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
+    config.model = Some("gpt-5.6-sol".to_string());
+    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
     config.model_provider_id = "amazon-bedrock".to_string();
     config.model_provider =
         ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
             profile: None,
             region: Some("eu-west-1".to_string()),
+            credential_export: None,
+            auth_refresh: None,
         }));
     config.model_provider.base_url =
         Some("https://bedrock-mantle.us-east-1.api.aws/openai/v1".to_string());
@@ -837,11 +760,12 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         .single()
         .expect("timestamp");
     let model_slug = get_model_offline_for_tests(config.model.as_deref());
-    let runtime_base_url = "https://bedrock-mantle.eu-west-1.api.aws/openai/v1";
 
+    config.model_provider.requires_openai_auth = true;
     let (composite, _handle) = new_status_output_with_rate_limits_handle(
         &config,
-        Some(runtime_base_url),
+        /*requires_openai_auth*/ false,
+        Some("server-ollama"),
         /*remote_connection*/ None,
         test_status_account_display().as_ref(),
         /*token_info*/ None,
@@ -855,33 +779,24 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
+        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
-    let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
-
-    assert!(
-        rendered.contains(&format!("Amazon Bedrock - {runtime_base_url}")),
-        "expected /status to render runtime Bedrock URL, got: {rendered}"
-    );
-    assert!(
-        !rendered.contains("bedrock-mantle.us-east-1"),
-        "expected /status to ignore configured Bedrock base URL, got: {rendered}"
-    );
-    assert!(
-        !rendered.contains("https://chatgpt.com/codex/settings/usage"),
-        "expected /status to hide ChatGPT usage link for Bedrock, got: {rendered}"
-    );
+    let rendered =
+        sanitize_directory(render_lines(&composite.display_lines(/*width*/ 120))).join("\n");
+    assert_snapshot!("status_server_auth_not_required", rendered);
 
     config.model_provider_id = "openai-proxy".to_string();
     config.model_provider = ModelProviderInfo {
         name: "OpenAI Proxy".to_string(),
         base_url: Some("https://openai-proxy.example/v1".to_string()),
-        requires_openai_auth: true,
+        requires_openai_auth: false,
         ..ModelProviderInfo::default()
     };
     let (composite, _handle) = new_status_output_with_rate_limits_handle(
         &config,
-        /*runtime_model_provider_base_url*/ None,
+        /*requires_openai_auth*/ true,
+        Some("server-openai"),
         /*remote_connection*/ None,
         test_status_account_display().as_ref(),
         /*token_info*/ None,
@@ -895,14 +810,12 @@ async fn status_model_provider_uses_bedrock_runtime_base_url_and_gates_usage_lin
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
+        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
-    let rendered = render_lines(&composite.display_lines(/*width*/ 120)).join("\n");
-
-    assert!(
-        rendered.contains("https://chatgpt.com/codex/settings/usage"),
-        "expected /status to show ChatGPT usage link for OpenAI-auth proxy, got: {rendered}"
-    );
+    let rendered =
+        sanitize_directory(render_lines(&composite.display_lines(/*width*/ 120))).join("\n");
+    assert_snapshot!("status_server_auth_required", rendered);
 
     let wide_destinations: Vec<String> = composite
         .display_hyperlink_lines(/*width*/ 120)
@@ -1030,7 +943,6 @@ async fn status_snapshot_includes_forked_from() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1085,7 +997,6 @@ async fn status_snapshot_includes_monthly_limit() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1098,6 +1009,7 @@ async fn status_snapshot_includes_monthly_limit() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 12,
             window_duration_mins: Some(43_200),
@@ -1151,7 +1063,6 @@ async fn status_snapshot_includes_enterprise_monthly_credit_limit() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1163,6 +1074,7 @@ async fn status_snapshot_includes_enterprise_monthly_credit_limit() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: None,
@@ -1229,7 +1141,6 @@ async fn status_snapshot_uses_generic_limit_labels_for_unsupported_windows() {
     let usage = TokenUsage {
         input_tokens: 800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 400,
         reasoning_output_tokens: 0,
         total_tokens: 1_200,
@@ -1242,6 +1153,7 @@ async fn status_snapshot_uses_generic_limit_labels_for_unsupported_windows() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 35,
             window_duration_mins: Some(2 * 60),
@@ -1300,6 +1212,7 @@ async fn status_snapshot_shows_unlimited_credits() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: Some(CreditsSnapshot {
@@ -1352,6 +1265,7 @@ async fn status_snapshot_shows_positive_credits() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: Some(CreditsSnapshot {
@@ -1413,6 +1327,7 @@ async fn status_snapshot_shows_available_credits_without_display_balance() {
         let snapshot = RateLimitSnapshot {
             limit_id: None,
             limit_name: None,
+            normal_model_slug: None,
             primary: None,
             secondary: None,
             credits: Some(CreditsSnapshot {
@@ -1464,6 +1379,7 @@ async fn status_snapshot_respects_unlimited_without_has_credits_flag() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: Some(CreditsSnapshot {
@@ -1514,7 +1430,6 @@ async fn status_card_token_usage_excludes_cached_tokens() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 0,
         total_tokens: 2_100,
@@ -1563,7 +1478,6 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -1576,6 +1490,7 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 72,
             window_duration_mins: Some(300),
@@ -1620,6 +1535,42 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
 }
 
 #[tokio::test]
+async fn status_snapshot_truncates_halfwidth_kana_in_narrow_terminal() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    set_workspace_cwd(&mut config, test_path_buf("/workspace/tests").abs());
+
+    let account = StatusAccountDisplay::ChatGpt {
+        email: Some("ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ@example.com".to_string()),
+        plan: Some("ｶﾞﾊﾟ plan".to_string()),
+    };
+    let usage = TokenUsage::default();
+    let now = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let composite = new_status_output(
+        &config,
+        Some(&account),
+        /*token_info*/ None,
+        &usage,
+        &None,
+        Some("ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ thread".to_string()),
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
+        /*plan_type*/ None,
+        now,
+        "ｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟｶﾞﾊﾟ-model",
+        Some("ｶﾞﾊﾟ collaboration mode"),
+        /*reasoning_effort_override*/ None,
+    );
+    let rendered_lines = render_lines(&composite.display_lines(/*width*/ 42));
+    let sanitized = sanitize_directory(rendered_lines).join("\n");
+
+    assert_snapshot!(sanitized);
+}
+
+#[tokio::test]
 async fn status_snapshot_shows_missing_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;
@@ -1630,7 +1581,6 @@ async fn status_snapshot_shows_missing_limits_message() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1679,7 +1629,6 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1698,7 +1647,8 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
     let token_info = token_info_for(&model_slug, &config, &usage);
     let (composite, _) = new_status_output_with_rate_limits_handle(
         &config,
-        /*runtime_model_provider_base_url*/ None,
+        /*requires_openai_auth*/ true,
+        /*model_provider_id*/ None,
         Some(&remote_connection),
         account_display.as_ref(),
         Some(&token_info),
@@ -1712,6 +1662,7 @@ async fn status_snapshot_uses_default_reasoning_when_config_empty() {
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ Some(Some(ReasoningEffort::Medium)),
+        "<none>".to_string(),
         /*refreshing_rate_limits*/ false,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
@@ -1734,7 +1685,6 @@ async fn status_snapshot_shows_refreshing_limits_notice() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1746,6 +1696,7 @@ async fn status_snapshot_shows_refreshing_limits_notice() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 45,
             window_duration_mins: Some(300),
@@ -1807,7 +1758,8 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
 
     let (status, handle) = new_status_output_with_rate_limits_handle(
         &config,
-        /*runtime_model_provider_base_url*/ None,
+        /*requires_openai_auth*/ true,
+        /*model_provider_id*/ None,
         /*remote_connection*/ None,
         /*account_display*/ None,
         /*token_info*/ None,
@@ -1821,16 +1773,11 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
         &model_slug,
         /*collaboration_mode*/ None,
         /*reasoning_effort_override*/ None,
+        "<none>".to_string(),
         /*refreshing_rate_limits*/ true,
     );
-    let keymap = RuntimeKeymap::defaults();
-    let mut overlay = TranscriptOverlay::new(
-        vec![Arc::new(status)],
-        keymap.pager,
-        keymap.app.copy,
-        keymap.app.toggle_raw_output,
-        TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
-    );
+    let mut overlay =
+        TranscriptOverlay::new(vec![Arc::new(status)], RuntimeKeymap::defaults().pager);
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 30,
     );
@@ -1841,17 +1788,16 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
     handle.finish_rate_limit_refresh(
         &[RateLimitSnapshotDisplay {
             limit_name: "spark".to_string(),
+            normal_model_slug: None,
             captured_at: now,
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 45.0,
                 resets_at: Some("soon".to_string()),
-                resets_at_unix_seconds: None,
                 window_minutes: Some(300),
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 30.0,
                 resets_at: Some("later".to_string()),
-                resets_at_unix_seconds: None,
                 window_minutes: Some(10_080),
             }),
             credits: None,
@@ -1893,7 +1839,6 @@ async fn status_snapshot_includes_credits_and_limits() {
     let usage = TokenUsage {
         input_tokens: 1_500,
         cached_input_tokens: 100,
-        cache_write_input_tokens: 0,
         output_tokens: 600,
         reasoning_output_tokens: 0,
         total_tokens: 2_200,
@@ -1906,6 +1851,7 @@ async fn status_snapshot_includes_credits_and_limits() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 45,
             window_duration_mins: Some(300),
@@ -1966,7 +1912,6 @@ async fn status_snapshot_shows_unavailable_limits_message() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -1975,6 +1920,7 @@ async fn status_snapshot_shows_unavailable_limits_message() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: None,
@@ -2026,7 +1972,6 @@ async fn status_snapshot_treats_refreshing_empty_limits_as_unavailable() {
     let usage = TokenUsage {
         input_tokens: 500,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 250,
         reasoning_output_tokens: 0,
         total_tokens: 750,
@@ -2035,6 +1980,7 @@ async fn status_snapshot_treats_refreshing_empty_limits_as_unavailable() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: None,
         secondary: None,
         credits: None,
@@ -2088,7 +2034,6 @@ async fn status_snapshot_shows_stale_limits_message() {
     let usage = TokenUsage {
         input_tokens: 1_200,
         cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
         output_tokens: 900,
         reasoning_output_tokens: 150,
         total_tokens: 2_250,
@@ -2101,6 +2046,7 @@ async fn status_snapshot_shows_stale_limits_message() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 72,
             window_duration_mins: Some(300),
@@ -2158,7 +2104,6 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let usage = TokenUsage {
         input_tokens: 900,
         cached_input_tokens: 200,
-        cache_write_input_tokens: 0,
         output_tokens: 350,
         reasoning_output_tokens: 0,
         total_tokens: 1_450,
@@ -2171,6 +2116,7 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let snapshot = RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 60,
             window_duration_mins: Some(300),
@@ -2231,7 +2177,6 @@ async fn status_context_window_uses_last_usage() {
     let total_usage = TokenUsage {
         input_tokens: 12_800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 879,
         reasoning_output_tokens: 0,
         total_tokens: 102_000,
@@ -2239,7 +2184,6 @@ async fn status_context_window_uses_last_usage() {
     let last_usage = TokenUsage {
         input_tokens: 12_800,
         cached_input_tokens: 0,
-        cache_write_input_tokens: 0,
         output_tokens: 879,
         reasoning_output_tokens: 0,
         total_tokens: 13_679,
@@ -2284,5 +2228,38 @@ async fn status_context_window_uses_last_usage() {
     assert!(
         !context_line.contains("102K"),
         "context line should not use total aggregated tokens, got: {context_line}"
+    );
+}
+
+#[tokio::test]
+async fn status_permissions_include_executor_profile_root() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    set_workspace_cwd(&mut config, test_path_buf("/workspace/repo").abs());
+    config
+        .permissions
+        .approval_policy
+        .set(AskForApproval::OnRequest.to_core())
+        .expect("set approval policy");
+    let root = PathUri::parse("file://server/share/foreign").expect("executor URI");
+    config
+        .permissions
+        .set_permission_profile_from_session_snapshot(
+            PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                PermissionProfile::workspace_write_with_path_uris(
+                    std::slice::from_ref(&root),
+                    NetworkSandboxPolicy::Restricted,
+                    /*exclude_tmpdir_env_var*/ true,
+                    /*exclude_slash_tmp*/ true,
+                ),
+                ActivePermissionProfile::new("executor"),
+                vec![root.into()],
+            ),
+        )
+        .expect("set permission snapshot");
+
+    assert_snapshot!(
+        permissions_text_for_width(&config, /*width*/ 160).expect("permissions line"),
+        @r"Profile executor (workspace [\\server\share\foreign], Ask for approval)"
     );
 }

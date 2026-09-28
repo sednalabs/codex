@@ -5,10 +5,11 @@ use sqlx::migrate::Migrator;
 
 pub(crate) static STATE_MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 pub(crate) static LOGS_MIGRATOR: Migrator = sqlx::migrate!("./logs_migrations");
-pub(crate) static USAGE_MIGRATOR: Migrator = sqlx::migrate!("./usage_migrations");
 pub(crate) static GOALS_MIGRATOR: Migrator = sqlx::migrate!("./goals_migrations");
 pub(crate) static MEMORIES_MIGRATOR: Migrator = sqlx::migrate!("./memory_migrations");
+pub(crate) static QUEUE_MIGRATOR: Migrator = sqlx::migrate!("./queue_migrations");
 pub(crate) static THREAD_HISTORY_MIGRATOR: Migrator = sqlx::migrate!("./thread_history_migrations");
+pub(crate) static USAGE_MIGRATOR: Migrator = sqlx::migrate!("./usage_migrations");
 
 /// Allow an older Codex binary to open a database that has already been
 /// migrated by a newer binary running in parallel.
@@ -35,10 +36,6 @@ pub(crate) fn runtime_logs_migrator() -> Migrator {
     runtime_migrator(&LOGS_MIGRATOR)
 }
 
-pub(crate) fn runtime_usage_migrator() -> Migrator {
-    runtime_migrator(&USAGE_MIGRATOR)
-}
-
 pub(crate) fn runtime_goals_migrator() -> Migrator {
     runtime_migrator(&GOALS_MIGRATOR)
 }
@@ -47,66 +44,28 @@ pub(crate) fn runtime_memories_migrator() -> Migrator {
     runtime_migrator(&MEMORIES_MIGRATOR)
 }
 
+pub(crate) fn runtime_queue_migrator() -> Migrator {
+    runtime_migrator(&QUEUE_MIGRATOR)
+}
+
 // The paginated history projector will call this when it takes ownership of opening the database.
 #[allow(dead_code)]
 pub(crate) fn runtime_thread_history_migrator() -> Migrator {
     runtime_migrator(&THREAD_HISTORY_MIGRATOR)
 }
 
-const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
-const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
-const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
-const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
-const LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 41;
-const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
-const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
-const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
-const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
-
-const MIGRATION_VERSION_REPAIRS: &[(i64, i64)] = &[
-    (
-        LEGACY_RECENCY_MIGRATION_VERSION,
-        CURRENT_RECENCY_MIGRATION_VERSION,
-    ),
-    (
-        LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
-        CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION,
-    ),
-    (
-        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
-        CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
-    ),
-    (
-        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
-        CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
-    ),
-    (
-        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
-        CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
-    ),
-];
-
-pub(crate) async fn repair_state_migration_version_collisions(
-    pool: &SqlitePool,
-    migrator: &Migrator,
-) -> anyhow::Result<()> {
-    for (legacy_version, current_version) in MIGRATION_VERSION_REPAIRS {
-        repair_migration_version(pool, migrator, *legacy_version, *current_version).await?;
-    }
-    Ok(())
+pub(crate) fn runtime_usage_migrator() -> Migrator {
+    runtime_migrator(&USAGE_MIGRATOR)
 }
 
-async fn repair_migration_version(
+pub(crate) async fn repair_legacy_recency_migration_version(
     pool: &SqlitePool,
     migrator: &Migrator,
-    legacy_version: i64,
-    current_version: i64,
 ) -> anyhow::Result<()> {
-    let Some(current_migration) = migrator
+    let Some(recency_migration) = migrator
         .migrations
         .iter()
-        .find(|migration| migration.version == current_version)
+        .find(|migration| migration.version == 39)
     else {
         return Ok(());
     };
@@ -120,7 +79,7 @@ async fn repair_migration_version(
         return Ok(());
     }
 
-    let legacy_migration_needs_repair = sqlx::query_scalar::<_, i64>(
+    let legacy_recency_needs_repair = sqlx::query_scalar::<_, i64>(
         r#"
 SELECT 1
 FROM _sqlx_migrations
@@ -131,13 +90,13 @@ WHERE version = ?
   )
         "#,
     )
-    .bind(legacy_version)
-    .bind(current_migration.checksum.as_ref())
-    .bind(current_migration.version)
+    .bind(38_i64)
+    .bind(recency_migration.checksum.as_ref())
+    .bind(recency_migration.version)
     .fetch_optional(pool)
     .await?
     .is_some();
-    if !legacy_migration_needs_repair {
+    if !legacy_recency_needs_repair {
         return Ok(());
     }
 
@@ -152,11 +111,11 @@ WHERE version = ?
   )
         "#,
     )
-    .bind(current_migration.version)
-    .bind(current_migration.description.as_ref())
-    .bind(legacy_version)
-    .bind(current_migration.checksum.as_ref())
-    .bind(current_migration.version)
+    .bind(recency_migration.version)
+    .bind(recency_migration.description.as_ref())
+    .bind(38_i64)
+    .bind(recency_migration.checksum.as_ref())
+    .bind(recency_migration.version)
     .execute(pool)
     .await?;
     Ok(())

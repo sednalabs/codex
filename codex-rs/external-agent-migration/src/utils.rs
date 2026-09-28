@@ -2,7 +2,6 @@ use crate::RewriteProfile;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io;
-use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -12,46 +11,6 @@ pub(super) fn display_source_paths(paths: &[PathBuf]) -> String {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-pub(super) fn ensure_migration_path(root: &Path, path: &Path) -> io::Result<()> {
-    let relative = path.strip_prefix(root).map_err(|_| {
-        invalid_data_error(format!(
-            "migration path `{}` is outside migration root `{}`",
-            path.display(),
-            root.display()
-        ))
-    })?;
-    if relative
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(invalid_data_error(format!(
-            "migration path `{}` is not normalized beneath `{}`",
-            path.display(),
-            root.display()
-        )));
-    }
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            unreachable!("migration path components were validated above");
-        };
-        current.push(component);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(invalid_data_error(format!(
-                    "migration path `{}` contains symlink component `{}`",
-                    path.display(),
-                    current.display()
-                )));
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => break,
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn read_json_file(path: &Path) -> io::Result<Option<JsonValue>> {
@@ -78,14 +37,6 @@ pub(super) fn is_missing_or_empty_text_file(path: &Path) -> io::Result<bool> {
     Ok(fs::read_to_string(path)?.trim().is_empty())
 }
 
-pub(crate) fn path_is_missing_without_follow(path: &Path) -> io::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(false),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
-        Err(err) => Err(err),
-    }
-}
-
 pub(super) fn invalid_data_error(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -95,24 +46,7 @@ pub(super) fn copy_dir_recursive(
     target: &Path,
     rewrite_profile: RewriteProfile,
 ) -> io::Result<()> {
-    let source_metadata = fs::symlink_metadata(source)?;
-    if !source_metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("migration source `{}` is not a directory", source.display()),
-        ));
-    }
-    match fs::symlink_metadata(target) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("migration target `{}` is not a directory", target.display()),
-            ));
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => fs::create_dir_all(target)?,
-        Err(err) => return Err(err),
-    }
+    fs::create_dir_all(target)?;
 
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -158,23 +92,4 @@ fn rewrite_and_copy_text_file(
     let source_contents = fs::read_to_string(source)?;
     let rewritten = rewrite_external_agent_terms(&source_contents, rewrite_profile);
     fs::write(target, rewritten)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-    use tempfile::TempDir;
-
-    #[test]
-    fn ensure_migration_path_rejects_parent_after_missing_component() {
-        let root = TempDir::new().expect("create tempdir");
-        let path = root.path().join("missing/../outside");
-
-        let error = ensure_migration_path(root.path(), &path)
-            .expect_err("reject parent component after missing path");
-
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("not normalized"));
-    }
 }

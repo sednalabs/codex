@@ -1,10 +1,12 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "oneOf": [
     {
       "properties": {
         "type": {
-          "const": "apiKey",
+          "enum": [
+            "apiKey"
+          ],
           "title": "ApiKeyv2::LoginAccountResponseType",
           "type": "string"
         }
@@ -25,15 +27,17 @@
           "type": "string"
         },
         "type": {
-          "const": "chatgpt",
+          "enum": [
+            "chatgpt"
+          ],
           "title": "Chatgptv2::LoginAccountResponseType",
           "type": "string"
         }
       },
       "required": [
-        "type",
+        "authUrl",
         "loginId",
-        "authUrl"
+        "type"
       ],
       "title": "Chatgptv2::LoginAccountResponse",
       "type": "object"
@@ -44,7 +48,9 @@
           "type": "string"
         },
         "type": {
-          "const": "chatgptDeviceCode",
+          "enum": [
+            "chatgptDeviceCode"
+          ],
           "title": "ChatgptDeviceCodev2::LoginAccountResponseType",
           "type": "string"
         },
@@ -58,10 +64,10 @@
         }
       },
       "required": [
-        "type",
         "loginId",
-        "verificationUrl",
-        "userCode"
+        "type",
+        "userCode",
+        "verificationUrl"
       ],
       "title": "ChatgptDeviceCodev2::LoginAccountResponse",
       "type": "object"
@@ -69,7 +75,9 @@
     {
       "properties": {
         "type": {
-          "const": "chatgptAuthTokens",
+          "enum": [
+            "chatgptAuthTokens"
+          ],
           "title": "ChatgptAuthTokensv2::LoginAccountResponseType",
           "type": "string"
         }
@@ -83,7 +91,9 @@
     {
       "properties": {
         "type": {
-          "const": "amazonBedrock",
+          "enum": [
+            "amazonBedrock"
+          ],
           "title": "AmazonBedrockv2::LoginAccountResponseType",
           "type": "string"
         }

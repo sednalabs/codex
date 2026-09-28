@@ -1,9 +1,7 @@
 //! Messages and framing for the code-mode host boundary.
 //!
 //! Protocol version 1 multiplexes session operations and delegate callbacks by
-//! request ID over one ordered connection. It defines no optional capabilities
-//! yet; capability names provide an extension point for later versions without
-//! weakening the v1 decoder.
+//! request ID over one ordered connection.
 
 mod codec;
 mod error;
@@ -13,6 +11,9 @@ mod types;
 
 /// Maximum number of unresolved delegate callbacks allowed per host connection.
 pub const MAX_PENDING_DELEGATE_CALLS: usize = 1_024;
+
+/// Negotiated support for cell execution resource limits on `session/open`.
+pub const SESSION_RESOURCE_LIMITS_CAPABILITY: &str = "session-cell-execution-resource-limits";
 
 pub use codec::EncodedFrame;
 pub use codec::FramedReader;
@@ -35,6 +36,7 @@ pub use payload::WireExecuteRequest;
 pub use payload::WireImageDetail;
 pub use payload::WireNestedToolCall;
 pub use payload::WireRuntimeResponse;
+pub use payload::WireSessionCellExecutionLimits;
 pub use payload::WireToolDefinition;
 pub use payload::WireToolKind;
 pub use payload::WireToolName;

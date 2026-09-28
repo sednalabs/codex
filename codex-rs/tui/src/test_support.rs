@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 const TEST_WORKER_THREADS: usize = 1;
-const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) static TEST_MODEL_PRESETS: LazyLock<Vec<ModelPreset>> = LazyLock::new(|| {
     let mut response = bundled_models_response()
@@ -40,16 +40,7 @@ where
             runtime.block_on(test_body())
         })?
         .join()
-        .map_err(|panic| {
-            let panic_message = if let Some(message) = panic.downcast_ref::<&str>() {
-                (*message).to_string()
-            } else if let Some(message) = panic.downcast_ref::<String>() {
-                message.clone()
-            } else {
-                "large-stack test thread panicked".to_string()
-            };
-            color_eyre::eyre::eyre!("{panic_message}")
-        })?
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 pub(crate) fn test_path_display(path: &str) -> String {

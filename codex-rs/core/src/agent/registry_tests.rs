@@ -3,7 +3,6 @@ use codex_protocol::AgentPath;
 use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
-use std::sync::Barrier;
 
 fn agent_path(path: &str) -> AgentPath {
     AgentPath::try_from(path).expect("valid agent path")
@@ -14,27 +13,6 @@ fn agent_metadata(thread_id: ThreadId) -> AgentMetadata {
         agent_id: Some(thread_id),
         ..Default::default()
     }
-}
-
-#[test]
-fn cold_status_text_stays_compact_when_json_escaped() {
-    let control_characters = (0..=31).map(char::from).collect::<String>();
-    let status = AgentStatus::Errored(bound_cold_status_text(
-        control_characters.repeat(COLD_STATUS_MAX_BYTES),
-    ));
-    let AgentStatus::Errored(message) = &status else {
-        panic!("expected errored status");
-    };
-
-    assert_eq!(message.len(), COLD_STATUS_MAX_BYTES);
-    assert!(message.ends_with(COLD_STATUS_TRUNCATION_MARKER));
-    assert!(message.contains('\0'));
-    assert!(
-        serde_json::to_vec(&status)
-            .expect("serialize cold status")
-            .len()
-            < 1024
-    );
 }
 
 #[test]
@@ -84,73 +62,6 @@ fn thread_spawn_depth_increments_and_enforces_limit() {
 }
 
 #[test]
-fn spawn_delivery_ownership_prevents_cancellation_from_claiming_abort() {
-    let registry = Arc::new(AgentRegistry::default());
-    let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");
-    registry.begin_spawn_publication(key.clone());
-    assert_eq!(
-        registry.claim_spawn_publication_delivery(&key),
-        SpawnPublicationDecision::DeliveryOwned
-    );
-    let start = Arc::new(Barrier::new(3));
-
-    let publish_registry = Arc::clone(&registry);
-    let publish_key = key.clone();
-    let publish_start = Arc::clone(&start);
-    let publisher = std::thread::spawn(move || {
-        publish_start.wait();
-        publish_registry.publish_spawn_publication(&publish_key)
-    });
-
-    let cancel_registry = Arc::clone(&registry);
-    let cancel_key = key.clone();
-    let cancel_start = Arc::clone(&start);
-    let canceller = std::thread::spawn(move || {
-        cancel_start.wait();
-        cancel_registry.cancel_spawn_publication(cancel_key)
-    });
-
-    start.wait();
-    let publish_result = publisher.join().expect("publisher should join");
-    let cancel_result = canceller.join().expect("canceller should join");
-    assert_eq!(publish_result, SpawnPublicationDecision::Published);
-    assert!(matches!(
-        cancel_result,
-        SpawnPublicationDecision::DeliveryOwned | SpawnPublicationDecision::Published
-    ));
-    assert_eq!(
-        registry.spawn_publication_decision(&key),
-        SpawnPublicationDecision::Published,
-        "delivery ownership must allow only the spawn owner to reach publication"
-    );
-}
-
-#[test]
-fn spawn_cancellation_recorded_before_dispatch_rejects_late_publication() {
-    let registry = AgentRegistry::default();
-    let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");
-
-    assert_eq!(
-        registry.cancel_spawn_publication(key.clone()),
-        SpawnPublicationDecision::CancellationOwned
-    );
-    registry.begin_spawn_publication(key.clone());
-    assert_eq!(
-        registry.claim_spawn_publication_delivery(&key),
-        SpawnPublicationDecision::CancellationOwned
-    );
-    assert_eq!(
-        registry.publish_spawn_publication(&key),
-        SpawnPublicationDecision::CancellationOwned
-    );
-    registry.finish_spawn_publication(&key);
-    assert_eq!(
-        registry.spawn_publication_decision(&key),
-        SpawnPublicationDecision::Untracked
-    );
-}
-
-#[test]
 fn non_thread_spawn_subagents_default_to_depth_zero() {
     let session_source = SessionSource::SubAgent(SubAgentSource::Review);
     assert_eq!(session_depth(&session_source), 0);
@@ -177,6 +88,13 @@ fn commit_holds_slot_until_release() {
     let thread_id = ThreadId::new();
     reservation.commit(agent_metadata(thread_id));
 
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.agent_id),
+        Some(thread_id)
+    );
+
     let err = match registry.reserve_spawn_slot(Some(1)) {
         Ok(_) => panic!("limit should be enforced"),
         Err(err) => err,
@@ -187,10 +105,35 @@ fn commit_holds_slot_until_release() {
     assert_eq!(*max_threads, 1);
 
     registry.release_spawned_thread(thread_id);
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
     let reservation = registry
         .reserve_spawn_slot(Some(1))
         .expect("slot released after thread removal");
     drop(reservation);
+}
+
+#[test]
+fn releasing_one_spawned_thread_preserves_sibling_identity() {
+    let registry = Arc::new(AgentRegistry::default());
+    let first_id = ThreadId::new();
+    let second_id = ThreadId::new();
+
+    for thread_id in [first_id, second_id] {
+        registry
+            .reserve_spawn_slot(/*max_threads*/ None)
+            .expect("reserve sibling slot")
+            .commit(agent_metadata(thread_id));
+    }
+
+    registry.release_spawned_thread(first_id);
+
+    assert!(registry.agent_metadata_for_thread(first_id).is_none());
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(second_id)
+            .and_then(|metadata| metadata.agent_id),
+        Some(second_id)
+    );
 }
 
 #[test]
@@ -390,6 +333,40 @@ fn register_root_thread_indexes_root_path() {
         registry.agent_id_for_path(&AgentPath::root()),
         Some(root_thread_id)
     );
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(root_thread_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(AgentPath::root())
+    );
+
+    let other_thread_id = ThreadId::new();
+    registry.register_root_thread(other_thread_id);
+
+    assert_eq!(
+        registry.agent_id_for_path(&AgentPath::root()),
+        Some(root_thread_id)
+    );
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(root_thread_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(AgentPath::root())
+    );
+    assert!(
+        registry
+            .agent_metadata_for_thread(other_thread_id)
+            .is_none()
+    );
+
+    registry.release_spawned_thread(root_thread_id);
+    assert_eq!(registry.agent_id_for_path(&AgentPath::root()), None);
+    assert!(registry.agent_metadata_for_thread(root_thread_id).is_none());
+
+    let reservation = registry
+        .reserve_spawn_slot(Some(1))
+        .expect("releasing the uncounted root should not consume a spawn slot");
+    drop(reservation);
 }
 
 #[test]
@@ -431,10 +408,166 @@ fn committed_agent_path_is_indexed_until_release() {
         registry.agent_id_for_path(&agent_path("/root/researcher")),
         Some(thread_id)
     );
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .and_then(|metadata| metadata.agent_path),
+        Some(agent_path("/root/researcher"))
+    );
 
     registry.release_spawned_thread(thread_id);
     assert_eq!(
         registry.agent_id_for_path(&agent_path("/root/researcher")),
         None
     );
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
+}
+
+#[test]
+fn replacing_agent_metadata_updates_thread_identity_index() {
+    let registry = AgentRegistry::default();
+    let previous_thread_id = ThreadId::new();
+    let current_thread_id = ThreadId::new();
+    let path = agent_path("/root/researcher");
+
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(previous_thread_id),
+        agent_path: Some(path.clone()),
+        ..Default::default()
+    });
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(current_thread_id),
+        agent_path: Some(path.clone()),
+        ..Default::default()
+    });
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(current_thread_id),
+        agent_path: Some(path.clone()),
+        agent_role: Some("researcher".to_string()),
+        ..Default::default()
+    });
+
+    assert!(
+        registry
+            .agent_metadata_for_thread(previous_thread_id)
+            .is_none()
+    );
+    assert_eq!(registry.agent_id_for_path(&path), Some(current_thread_id));
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(current_thread_id)
+            .map(|metadata| (metadata.agent_path, metadata.agent_role)),
+        Some((Some(path), Some("researcher".to_string())))
+    );
+
+    registry.release_spawned_thread(previous_thread_id);
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(current_thread_id)
+            .and_then(|metadata| metadata.agent_id),
+        Some(current_thread_id)
+    );
+}
+
+#[test]
+fn thread_identity_can_move_between_pathless_and_path_backed_metadata() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let path = agent_path("/root/researcher");
+    let reservation = registry.reserve_spawn_slot(Some(1)).expect("reserve slot");
+    reservation.commit(agent_metadata(thread_id));
+
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(thread_id),
+        agent_path: Some(path.clone()),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .map(|metadata| (metadata.agent_id, metadata.agent_path)),
+        Some((Some(thread_id), Some(path.clone())))
+    );
+    assert_eq!(registry.agent_id_for_path(&path), Some(thread_id));
+
+    registry.register_spawned_thread(agent_metadata(thread_id));
+
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .map(|metadata| (metadata.agent_id, metadata.agent_path)),
+        Some((Some(thread_id), None))
+    );
+    assert_eq!(registry.agent_id_for_path(&path), None);
+
+    let mut path_reservation = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve path reuse slot");
+    path_reservation
+        .reserve_agent_path(&path)
+        .expect("moving back to pathless metadata should release the old path");
+    drop(path_reservation);
+
+    registry.release_spawned_thread(thread_id);
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
+
+    let reservation = registry
+        .reserve_spawn_slot(Some(1))
+        .expect("releasing the migrated agent should free its spawn slot");
+    drop(reservation);
+}
+
+#[test]
+fn thread_identity_can_move_between_agent_paths() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let previous_path = agent_path("/root/researcher");
+    let current_path = agent_path("/root/reviewer");
+    let mut reservation = registry.reserve_spawn_slot(Some(1)).expect("reserve slot");
+    reservation
+        .reserve_agent_path(&previous_path)
+        .expect("reserve original path");
+    reservation.commit(AgentMetadata {
+        agent_id: Some(thread_id),
+        agent_path: Some(previous_path.clone()),
+        ..Default::default()
+    });
+
+    registry.register_spawned_thread(AgentMetadata {
+        agent_id: Some(thread_id),
+        agent_path: Some(current_path.clone()),
+        agent_role: Some("reviewer".to_string()),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        registry
+            .agent_metadata_for_thread(thread_id)
+            .map(|metadata| (metadata.agent_id, metadata.agent_path, metadata.agent_role)),
+        Some((
+            Some(thread_id),
+            Some(current_path.clone()),
+            Some("reviewer".to_string())
+        ))
+    );
+    assert_eq!(registry.agent_id_for_path(&previous_path), None);
+    assert_eq!(registry.agent_id_for_path(&current_path), Some(thread_id));
+
+    let mut path_reservation = registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve path reuse slot");
+    path_reservation
+        .reserve_agent_path(&previous_path)
+        .expect("moving to a different path should release the old path");
+    drop(path_reservation);
+
+    registry.release_spawned_thread(thread_id);
+    assert_eq!(registry.agent_id_for_path(&current_path), None);
+    assert!(registry.agent_metadata_for_thread(thread_id).is_none());
+
+    let reservation = registry
+        .reserve_spawn_slot(Some(1))
+        .expect("releasing the migrated agent should free its spawn slot");
+    drop(reservation);
 }

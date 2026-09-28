@@ -109,6 +109,6 @@ pub(super) fn selection_view_params(
                 ..Default::default()
             },
         ],
-        ..Default::default()
+        ..SelectionViewParams::picker()
     }
 }

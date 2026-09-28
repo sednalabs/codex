@@ -5,6 +5,7 @@
 use crate::ModelsManagerConfig;
 use crate::bundled_models_response;
 use crate::manager::construct_model_info_from_candidates;
+use crate::manager::ModelProviderKind;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 
@@ -34,5 +35,5 @@ pub fn construct_model_info_offline_for_tests(
     } else {
         &[]
     };
-    construct_model_info_from_candidates(model, candidates, config)
+    construct_model_info_from_candidates(model, candidates, config, ModelProviderKind::Other)
 }

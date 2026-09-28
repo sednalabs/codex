@@ -1,5 +1,6 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Parameters for a native computer-use call delegated to the client.",
   "properties": {
     "adapter": {
       "type": "string"
@@ -25,12 +26,12 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
-    "callId",
     "adapter",
+    "arguments",
+    "callId",
+    "threadId",
     "tool",
-    "arguments"
+    "turnId"
   ],
   "title": "ComputerUseCallParams",
   "type": "object"
