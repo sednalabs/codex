@@ -15,6 +15,7 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::call_trace;
+use crate::tools::handlers::get_context_remaining_spec::GET_CONTEXT_REMAINING_TOOL_NAME;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::tool_log_payload;
@@ -334,11 +335,25 @@ pub(crate) async fn handle_output_item_done(
                 .await;
 
             let cancellation_token = ctx.cancellation_token.child_token();
-            let tool_future: InFlightFuture<'static> = Box::pin(
-                ctx.tool_runtime
-                    .clone()
-                    .handle_tool_call(call, cancellation_token),
-            );
+            // This tool reports the context remaining after the completed response's usage.
+            // Tool runtimes currently spawn their dispatch task while the future is built, so
+            // constructing this one eagerly would let it race the response.completed handler and
+            // observe the previous token-usage snapshot. Defer construction until the in-flight
+            // queue is drained, after response.completed has recorded usage.
+            let defer_until_response_completed = call.tool_name.namespace.is_none()
+                && call.tool_name.name == GET_CONTEXT_REMAINING_TOOL_NAME;
+            let tool_future: InFlightFuture<'static> = if defer_until_response_completed {
+                let tool_runtime = ctx.tool_runtime.clone();
+                Box::pin(async move {
+                    tool_runtime.handle_tool_call(call, cancellation_token).await
+                })
+            } else {
+                Box::pin(
+                    ctx.tool_runtime
+                        .clone()
+                        .handle_tool_call(call, cancellation_token),
+                )
+            };
 
             output.needs_follow_up = true;
             output.tool_future = Some(tool_future);

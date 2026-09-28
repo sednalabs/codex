@@ -474,16 +474,16 @@ core-subagent-model-pinning-targeted:
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
-    cargo test -p codex-state thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::threads::tests::thread_spawn_edges_track_directional_status --lib -- --exact --test-threads=1
     cargo test -p codex-core session::tests::base_instruction_provenance_survives_resume_child_and_grandchild --lib -- --exact --test-threads=1
     cargo test -p codex-core agent::role::tests::apply_role_refreshes_model_owned_instructions_when_model_changes --lib -- --exact --test-threads=1
     cargo test -p codex-core agent::role::tests::apply_role_refreshes_model_instructions_only_when_personality_opt_out_changes --lib -- --exact --test-threads=1
-    cargo test -p codex-core tools::handlers::multi_agents::tests::build_agent_spawn_config_uses_captured_step_settings_and_turn_context_values --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::handlers::multi_agents::tests::build_agent_spawn_config_uses_captured_step_settings_and_turn_context_values --lib -- --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::resume::resume_switches_models_recomposes_model_instructions -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::personality::config_personality_none_preserves_explicit_base_instructions -- --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::client::includes_base_instructions_override_in_request -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::responses_lite::responses_lite_uses_input_items_for_instructions_and_tools -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::remote_compact_v2_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::trimming::remote_compact_v2_trim_estimate_uses_session_base_instructions -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::token_budget::token_budget_auto_compact_fallback_uses_buffer_until_new_context -- --exact --test-threads=1
 
 # Focused app-server collab-spawn requested/effective identity projection slice.
