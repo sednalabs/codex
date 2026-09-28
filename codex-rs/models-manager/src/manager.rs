@@ -340,7 +340,12 @@ impl OpenAiModelsManager {
         auth_manager: Option<Arc<AuthManager>>,
         provider_kind: ModelProviderKind,
     ) -> Self {
-        Self::new_with_optional_cache(/*cache*/ None, endpoint_client, auth_manager, provider_kind)
+        Self::new_with_optional_cache(
+            /*cache*/ None,
+            endpoint_client,
+            auth_manager,
+            provider_kind,
+        )
     }
 
     /// Constructs an OpenAI-compatible model manager with a caller-provided cache.

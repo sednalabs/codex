@@ -2428,188 +2428,189 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
     )
 }
 
-async fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children_impl() -> Result<()> {
-        let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
-        let root_thread_id = ThreadId::new();
-        let rollout_dir = app
-            .config
-            .codex_home
-            .join("sessions")
-            .join("2026")
-            .join("01")
-            .join("01");
-        std::fs::create_dir_all(&rollout_dir)?;
-        let root_session_meta = SessionMeta {
+async fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children_impl()
+-> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let root_thread_id = ThreadId::new();
+    let rollout_dir = app
+        .config
+        .codex_home
+        .join("sessions")
+        .join("2026")
+        .join("01")
+        .join("01");
+    std::fs::create_dir_all(&rollout_dir)?;
+    let root_session_meta = SessionMeta {
+        session_id: root_thread_id.into(),
+        id: root_thread_id,
+        timestamp: "2026-01-01T00:00:00Z".to_string(),
+        cwd: app.config.cwd.to_path_buf(),
+        originator: "codex-tui-test".to_string(),
+        cli_version: "0.0.0".to_string(),
+        source: RolloutSessionSource::Cli,
+        model_provider: Some(app.config.model_provider_id.clone()),
+        multi_agent_version: Some(MultiAgentVersion::V2),
+        ..SessionMeta::default()
+    };
+    let root_session_meta_line = serde_json::json!({
+        "timestamp": "2026-01-01T00:00:00Z",
+        "type": "session_meta",
+        "payload": serde_json::to_value(root_session_meta)?,
+    });
+    std::fs::write(
+        rollout_dir.join(format!(
+            "rollout-2026-01-01T00-00-00-{root_thread_id}.jsonl"
+        )),
+        format!("{root_session_meta_line}\n"),
+    )?;
+    let mut child_thread_ids = Vec::new();
+    for (index, multi_agent_version) in [MultiAgentVersion::V1, MultiAgentVersion::V2]
+        .into_iter()
+        .enumerate()
+    {
+        let child_thread_id = ThreadId::new();
+        let timestamp = format!("2026-01-01T00:00:0{index}Z");
+        let session_meta = SessionMeta {
             session_id: root_thread_id.into(),
-            id: root_thread_id,
-            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            id: child_thread_id,
+            parent_thread_id: Some(root_thread_id),
+            timestamp: timestamp.clone(),
             cwd: app.config.cwd.to_path_buf(),
             originator: "codex-tui-test".to_string(),
             cli_version: "0.0.0".to_string(),
-            source: RolloutSessionSource::Cli,
+            source: RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some(format!("child-{index}")),
+                agent_role: Some("worker".to_string()),
+            }),
             model_provider: Some(app.config.model_provider_id.clone()),
-            multi_agent_version: Some(MultiAgentVersion::V2),
+            multi_agent_version: Some(multi_agent_version),
             ..SessionMeta::default()
         };
-        let root_session_meta_line = serde_json::json!({
-            "timestamp": "2026-01-01T00:00:00Z",
+        let rollout_path = rollout_dir.join(format!(
+            "rollout-2026-01-01T00-00-0{index}-{child_thread_id}.jsonl"
+        ));
+        let session_meta_line = serde_json::json!({
+            "timestamp": timestamp,
             "type": "session_meta",
-            "payload": serde_json::to_value(root_session_meta)?,
+            "payload": serde_json::to_value(session_meta)?,
         });
-        std::fs::write(
-            rollout_dir.join(format!(
-                "rollout-2026-01-01T00-00-00-{root_thread_id}.jsonl"
-            )),
-            format!("{root_session_meta_line}\n"),
-        )?;
-        let mut child_thread_ids = Vec::new();
-        for (index, multi_agent_version) in [MultiAgentVersion::V1, MultiAgentVersion::V2]
-            .into_iter()
-            .enumerate()
-        {
-            let child_thread_id = ThreadId::new();
-            let timestamp = format!("2026-01-01T00:00:0{index}Z");
-            let session_meta = SessionMeta {
-                session_id: root_thread_id.into(),
-                id: child_thread_id,
-                parent_thread_id: Some(root_thread_id),
-                timestamp: timestamp.clone(),
-                cwd: app.config.cwd.to_path_buf(),
-                originator: "codex-tui-test".to_string(),
-                cli_version: "0.0.0".to_string(),
-                source: RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id: root_thread_id,
-                    depth: 1,
-                    agent_path: None,
-                    agent_nickname: Some(format!("child-{index}")),
-                    agent_role: Some("worker".to_string()),
-                }),
-                model_provider: Some(app.config.model_provider_id.clone()),
-                multi_agent_version: Some(multi_agent_version),
-                ..SessionMeta::default()
-            };
-            let rollout_path = rollout_dir.join(format!(
-                "rollout-2026-01-01T00-00-0{index}-{child_thread_id}.jsonl"
-            ));
-            let session_meta_line = serde_json::json!({
-                "timestamp": timestamp,
-                "type": "session_meta",
-                "payload": serde_json::to_value(session_meta)?,
-            });
-            std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
-            child_thread_ids.push(child_thread_id);
-        }
+        std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
+        child_thread_ids.push(child_thread_id);
+    }
 
-        // Cold-resume the persisted V2 root so its children are registered before selection.
-        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
-            app.chat_widget.config_ref(),
-        ))
+    // Cold-resume the persisted V2 root so its children are registered before selection.
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let root = Box::pin(app_server.resume_thread(
+        &app.local_settings,
+        app.config.clone(),
+        root_thread_id,
+        crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+    ))
+    .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
         .await?;
-        let root = Box::pin(app_server.resume_thread(
-            &app.local_settings,
-            app.config.clone(),
-            root_thread_id,
-            crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
-        ))
-        .await?;
-        app.enqueue_primary_thread_session(root.session, root.turns)
-            .await?;
-        for (child_thread_id, multi_agent_version) in child_thread_ids
-            .iter()
-            .copied()
-            .zip([MultiAgentVersion::V1, MultiAgentVersion::V2])
-        {
-            assert!(
-                app.attach_live_thread_for_selection(&mut app_server, child_thread_id)
-                    .await?
-            );
-            assert_eq!(
-                app.agent_navigation.is_parent_owned(child_thread_id),
-                multi_agent_version == MultiAgentVersion::V2
-            );
-        }
-
-        app.agent_navigation
-            .record_sub_agent_activity(SubAgentActivityDisplay {
-                thread_id: child_thread_ids[0],
-                agent_path: "/root/child-0".to_string(),
-                is_running_hint: true,
-            });
-        app.thread_event_channels.remove(&child_thread_ids[1]);
-        let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
-        assert!(backfill.completed);
-        assert_eq!(
-            backfill.refreshed_thread_ids,
-            [child_thread_ids[1]].into_iter().collect()
+    for (child_thread_id, multi_agent_version) in child_thread_ids
+        .iter()
+        .copied()
+        .zip([MultiAgentVersion::V1, MultiAgentVersion::V2])
+    {
+        assert!(
+            app.attach_live_thread_for_selection(&mut app_server, child_thread_id)
+                .await?
         );
         assert_eq!(
-            app.agent_navigation.get(&child_thread_ids[0]),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: Some("child-0".to_string()),
-                agent_role: Some("worker".to_string()),
-                agent_path: Some("/root/child-0".to_string()),
-                is_running: true,
-                is_closed: false,
-            })
+            app.agent_navigation.is_parent_owned(child_thread_id),
+            multi_agent_version == MultiAgentVersion::V2
         );
-        assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
-        assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
+    }
 
-        let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
-            .await?;
-        while app_event_rx.try_recv().is_ok() {}
-        app.chat_widget
-            .restore_user_message_to_composer("v1 remains writable".into());
-        app.chat_widget
-            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(
-            std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
-        );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: child_thread_ids[0],
+            agent_path: "/root/child-0".to_string(),
+            is_running_hint: true,
+        });
+    app.thread_event_channels.remove(&child_thread_ids[1]);
+    let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert!(backfill.completed);
+    assert_eq!(
+        backfill.refreshed_thread_ids,
+        [child_thread_ids[1]].into_iter().collect()
+    );
+    assert_eq!(
+        app.agent_navigation.get(&child_thread_ids[0]),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("child-0".to_string()),
+            agent_role: Some("worker".to_string()),
+            agent_path: Some("/root/child-0".to_string()),
+            is_running: true,
+            is_closed: false,
+        })
+    );
+    assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
+    assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
 
-        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
-            .await?;
-        while app_event_rx.try_recv().is_ok() {}
-        app.chat_widget
-            .restore_user_message_to_composer("v2 stays view-only".into());
-        let draft = app.chat_widget.composer_text_with_pending();
-        app.chat_widget
-            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
-        assert!(
-            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
-        );
-
-        let resumed = Box::pin(app_server.resume_thread(
-            &app.local_settings,
-            app.config.clone(),
-            child_thread_ids[1],
-            app.resume_model_settings(),
-        ))
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
         .await?;
-        assert!(resumed.blocks_direct_input);
-        app.replace_chat_widget_with_app_server_thread(
-            &mut tui,
-            resumed,
-            crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
-            /*initial_user_message*/ None,
-        )
-        .await?;
-        while app_event_rx.try_recv().is_ok() {}
-        app.chat_widget
-            .restore_user_message_to_composer("direct resume stays view-only".into());
-        let draft = app.chat_widget.composer_text_with_pending();
-        app.chat_widget
-            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer("v1 remains writable".into());
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+    );
 
-        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
-        assert!(
-            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
-                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
-        );
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
+        .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer("v2 stays view-only".into());
+    let draft = app.chat_widget.composer_text_with_pending();
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+    assert!(
+        !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+    );
+
+    let resumed = Box::pin(app_server.resume_thread(
+        &app.local_settings,
+        app.config.clone(),
+        child_thread_ids[1],
+        app.resume_model_settings(),
+    ))
+    .await?;
+    assert!(resumed.blocks_direct_input);
+    app.replace_chat_widget_with_app_server_thread(
+        &mut tui,
+        resumed,
+        crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
+        /*initial_user_message*/ None,
+    )
+    .await?;
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .restore_user_message_to_composer("direct resume stays view-only".into());
+    let draft = app.chat_widget.composer_text_with_pending();
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+    assert!(
+        !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+    );
     Ok(())
 }
 
