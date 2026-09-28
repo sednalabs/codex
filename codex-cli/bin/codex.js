@@ -192,6 +192,20 @@ function detectPackageManager() {
   // Search ancestors of both the canonical package root and lexical entrypoint
   // because the package manager may link either path.
   const entrypointDir = path.dirname(path.resolve(process.argv[1]));
+  // Vite+ ownership metadata is read only from ancestors of the canonical,
+  // resolved package root. Keep the entrypoint traversal limited to pnpm's
+  // existing marker so a user-controlled argv path cannot reach Vite+ metadata.
+  const canonicalFilesystemRoot = path.parse(codexPackageRoot).root;
+  for (
+    let currentDir = codexPackageRoot;
+    currentDir !== canonicalFilesystemRoot;
+    currentDir = path.dirname(currentDir)
+  ) {
+    if (isVitePlusOwnedCodexInstall(currentDir)) {
+      return "vite-plus";
+    }
+  }
+
   for (const startDir of new Set([codexPackageRoot, entrypointDir])) {
     const filesystemRoot = path.parse(startDir).root;
     for (
@@ -199,9 +213,6 @@ function detectPackageManager() {
       currentDir !== filesystemRoot;
       currentDir = path.dirname(currentDir)
     ) {
-      if (isVitePlusOwnedCodexInstall(currentDir)) {
-        return "vite-plus";
-      }
       if (isPnpmOwnedCodexInstall(path.join(currentDir, "node_modules"))) {
         return "pnpm";
       }
