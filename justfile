@@ -159,7 +159,7 @@ thread-manager-sample-targeted:
 core-config-consumers-targeted:
     cargo fmt -p codex-core-api -p codex-thread-manager-sample -- --check
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo check --locked -p codex-core-api -p codex-thread-manager-sample
-    TARGETED_CLIPPY_PACKAGES='["codex-core-api","codex-thread-manager-sample"]' .github/scripts/run_targeted_clippy.sh
+    TARGETED_CLIPPY_PACKAGES='["codex-core-api","codex-thread-manager-sample"]' {{ justfile_directory() }}/.github/scripts/run_targeted_clippy.sh
 
 # Focused model catalog compatibility and overlay regression slice.
 model-catalog-compat-targeted:

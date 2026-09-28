@@ -61,6 +61,14 @@ def parse_args():
     parser.add_argument("--pr", default="auto", help="auto, PR number, or PR URL")
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
     parser.add_argument(
+        "--installation-observer",
+        action="store_true",
+        help=(
+            "Use an explicitly supplied GitHub App installation token as a read-only "
+            "observer; do not query the unavailable /user endpoint"
+        ),
+    )
+    parser.add_argument(
         "--poll-seconds", type=int, default=30, help="Watch poll interval"
     )
     parser.add_argument(
@@ -88,6 +96,11 @@ def parse_args():
     )
     args = parser.parse_args()
 
+    if args.installation_observer and args.retry_failed_now:
+        parser.error(
+            "--installation-observer cannot be combined with --retry-failed-now "
+            "(observer mode is read-only)"
+        )
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
     if args.max_flaky_retries < 0:
@@ -111,6 +124,19 @@ def _format_gh_error(cmd, err):
 
 
 def gh_text(args, repo=None):
+    broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
+    if broker_socket:
+        from github_app_broker_proxy import request
+
+        broker_args = list(args)
+        if repo and (not broker_args or broker_args[0] != "api"):
+            broker_args = ["-R", repo, *broker_args]
+        result = request(broker_socket, broker_args)
+        if int(result.get("returncode", 1)) != 0:
+            raise GhCommandError(
+                f"brokered GitHub CLI command failed: {result.get('stderr', '')}"
+            )
+        return str(result.get("stdout", ""))
     cmd = ["gh"]
     # `gh api` does not accept `-R/--repo` on all gh versions. The watcher's
     # API calls use explicit endpoints (e.g. repos/{owner}/{repo}/...), so the
@@ -746,7 +772,9 @@ def collect_snapshot(args):
     if not state.get("started_at"):
         state["started_at"] = int(time.time())
 
-    authenticated_login = get_authenticated_login()
+    authenticated_login = None
+    if not getattr(args, "installation_observer", False):
+        authenticated_login = get_authenticated_login()
     new_review_items = fetch_new_review_items(
         pr,
         state,
