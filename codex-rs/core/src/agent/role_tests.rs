@@ -346,7 +346,8 @@ async fn apply_role_refreshes_model_owned_instructions_when_model_changes() {
         ),
     ] {
         let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
-        let role_path = write_role_config(&home, "model-role.toml", "model = \"child-model\"").await;
+        let role_path =
+            write_role_config(&home, "model-role.toml", "model = \"child-model\"").await;
         config.agent_roles.insert(
             "custom".to_string(),
             AgentRoleConfig {

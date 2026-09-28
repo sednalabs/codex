@@ -70,7 +70,9 @@ class AuthState:
                 self.source = "app_helper"
             else:
                 self.provider_failed = True
-                raise RuntimeError(f"{TOKEN_COMMAND_ENV} was configured but did not return a token")
+                raise RuntimeError(
+                    f"{TOKEN_COMMAND_ENV} was configured but did not return a token"
+                )
         if self._token:
             env["GH_TOKEN"] = self._token
             env.pop("GITHUB_TOKEN", None)
@@ -128,15 +130,28 @@ def is_retry_safe(args):
                     return False
                 if method != "GET":
                     return False
-        if any(str(value).startswith(("--input=", "--field=", "--raw-field=", "--method=", "-X")) for value in args[2:]):
+        if any(
+            str(value).startswith(
+                ("--input=", "--field=", "--raw-field=", "--method=", "-X")
+            )
+            for value in args[2:]
+        ):
             return False
         if "--input" in args:
             return False
-        fields = [str(args[i + 1]) for i, value in enumerate(args[:-1]) if value in {"-f", "-F", "--raw-field", "--field"}]
+        fields = [
+            str(args[i + 1])
+            for i, value in enumerate(args[:-1])
+            if value in {"-f", "-F", "--raw-field", "--field"}
+        ]
         if fields:
-            if endpoint != "graphql" or not any(field.startswith("query=") for field in fields):
+            if endpoint != "graphql" or not any(
+                field.startswith("query=") for field in fields
+            ):
                 return False
-            query = next(field.split("=", 1)[1] for field in fields if field.startswith("query="))
+            query = next(
+                field.split("=", 1)[1] for field in fields if field.startswith("query=")
+            )
             if "mutation" in query.casefold() or "subscription" in query.casefold():
                 return False
         return len(args) > 1
@@ -151,20 +166,27 @@ def rate_resource(args):
         endpoint = str(args[1] if len(args) > 1 else "")
         if endpoint == "graphql":
             return "graphql"
-        if "/search/" in f"/{endpoint.lstrip('/')}" :
+        if "/search/" in f"/{endpoint.lstrip('/')}":
             return "search"
     return "core"
 
 
 def is_auth_failure(message):
     normalized = str(message or "").casefold()
-    return any(marker in normalized for marker in ("http 401", "bad credentials", "authentication failed"))
+    return any(
+        marker in normalized
+        for marker in ("http 401", "bad credentials", "authentication failed")
+    )
 
 
 def reset_from_message(message):
     import re
 
-    match = re.search(r"(?:x[- ]?ratelimit[- ]?reset|reset(?:s)?)[^0-9]{0,20}(\d{9,})", str(message), re.I)
+    match = re.search(
+        r"(?:x[- ]?ratelimit[- ]?reset|reset(?:s)?)[^0-9]{0,20}(\d{9,})",
+        str(message),
+        re.I,
+    )
     return int(match.group(1)) if match else None
 
 

@@ -45,7 +45,16 @@ CHILD_TERMINATION_GRACE_SECONDS = 5
 JWT_LIFETIME_SECONDS = 9 * 60
 REFRESH_THRESHOLD_SECONDS = 120
 ALLOWED_PERMISSIONS = frozenset(
-    {"metadata", "contents", "pull_requests", "merge_queues", "checks", "actions", "statuses", "administration"}
+    {
+        "metadata",
+        "contents",
+        "pull_requests",
+        "merge_queues",
+        "checks",
+        "actions",
+        "statuses",
+        "administration",
+    }
 )
 READ_PERMISSION_NAMES = frozenset(ALLOWED_PERMISSIONS)
 TOKEN_ENV_NAMES = frozenset(
@@ -62,10 +71,21 @@ TOKEN_ENV_NAMES = frozenset(
 )
 TOKEN_ENV_RE = re.compile(r"^(?:GH|GITHUB)_.+(?:TOKEN|PAT|SECRET|PRIVATE_KEY)$")
 GH_HERMETIC_PASSTHROUGH = frozenset(
-    {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "LANG", "LC_ALL", "LANGUAGE", "TZ"}
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "LANG",
+        "LC_ALL",
+        "LANGUAGE",
+        "TZ",
+    }
 )
 APP_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-JWT_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{12,}(?![A-Za-z0-9_-])")
+JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{12,}(?![A-Za-z0-9_-])"
+)
 
 
 class BrokerError(RuntimeError):
@@ -98,7 +118,15 @@ def build_jwt_claims(app_id: str | int, now: int) -> tuple[str, str]:
     if not str(app_id).isdigit():
         raise BrokerError("App ID must be numeric")
     header = _b64url(_json_bytes({"alg": "RS256", "typ": "JWT"}))
-    claims = _b64url(_json_bytes({"iat": int(now) - 60, "exp": int(now) + JWT_LIFETIME_SECONDS, "iss": int(app_id)}))
+    claims = _b64url(
+        _json_bytes(
+            {
+                "iat": int(now) - 60,
+                "exp": int(now) + JWT_LIFETIME_SECONDS,
+                "iss": int(app_id),
+            }
+        )
+    )
     return header, claims
 
 
@@ -107,7 +135,9 @@ def _redact(value: Any, secrets: Sequence[str] = ()) -> str:
     for secret in secrets:
         if secret:
             text = text.replace(secret, "[REDACTED]")
-    text = re.sub(r"(?i)(authorization\s*:\s*(?:bearer|token)\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(
+        r"(?i)(authorization\s*:\s*(?:bearer|token)\s+)[^\s,;]+", r"\1[REDACTED]", text
+    )
     text = JWT_RE.sub("[REDACTED]", text)
     return text
 
@@ -120,8 +150,14 @@ def _without_ambient_tokens(environment: Mapping[str, str]) -> dict[str, str]:
     return clean
 
 
-def _hermetic_gh_environment(environment: Mapping[str, str], token: str, config_dir: str, home_dir: str) -> dict[str, str]:
-    clean = {name: value for name, value in environment.items() if name in GH_HERMETIC_PASSTHROUGH}
+def _hermetic_gh_environment(
+    environment: Mapping[str, str], token: str, config_dir: str, home_dir: str
+) -> dict[str, str]:
+    clean = {
+        name: value
+        for name, value in environment.items()
+        if name in GH_HERMETIC_PASSTHROUGH
+    }
     clean.update(
         {
             "GH_TOKEN": token,
@@ -185,11 +221,15 @@ def _normalise_phase_a_grant(value: Any, *, source: str) -> dict[str, str]:
             raise BrokerError(f"{source} permission name is invalid")
         name = raw_name.lower()
         if name not in ALLOWED_PERMISSIONS or raw_level != "read" or name in result:
-            raise BrokerError(f"{source} permissions exceed the Phase A read-only ceiling")
+            raise BrokerError(
+                f"{source} permissions exceed the Phase A read-only ceiling"
+            )
         result[name] = "read"
     expected = {name: "read" for name in ALLOWED_PERMISSIONS}
     if result != expected:
-        raise BrokerError(f"{source} permissions do not match the Phase A read-only ceiling")
+        raise BrokerError(
+            f"{source} permissions do not match the Phase A read-only ceiling"
+        )
     return dict(sorted(result.items()))
 
 
@@ -227,7 +267,9 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         raise BrokerError("GitHub redirect rejected")
 
 
-def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]) -> str:
+def fingerprint_command(
+    repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]
+) -> str:
     """Return a deterministic fingerprint for one command and its source files."""
     if not argv or any(not isinstance(arg, str) for arg in argv):
         raise BrokerError("command argv must be non-empty strings")
@@ -242,7 +284,10 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
         arg
         for arg in argv[1:]
         if _looks_like_path(arg)
-        and (Path(arg).expanduser().exists() or arg.endswith((".py", ".sh", ".js", ".mjs", ".rb", ".pl")))
+        and (
+            Path(arg).expanduser().exists()
+            or arg.endswith((".py", ".sh", ".js", ".mjs", ".rb", ".pl"))
+        )
     ]
     for candidate in (executable, *script_args):
         path = Path(candidate).expanduser()
@@ -271,14 +316,23 @@ def fingerprint_command(repository: str, permissions: Mapping[str, Any] | Sequen
                 "ino": path.stat().st_ino,
             }
         )
-    payload = {"argv": list(argv), "executable": str(Path(executable).resolve()), "repository": repo, "permissions": perms, "sources": source_entries}
+    payload = {
+        "argv": list(argv),
+        "executable": str(Path(executable).resolve()),
+        "repository": repo,
+        "permissions": perms,
+        "sources": source_entries,
+    }
     return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
 
 # Descriptive alias for callers that prefer noun-first naming.
 command_fingerprint = fingerprint_command
 
-def fingerprint_brokered_command(repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]) -> str:
+
+def fingerprint_brokered_command(
+    repository: str, permissions: Mapping[str, Any] | Sequence[str], argv: Sequence[str]
+) -> str:
     """Bind observer argv to the fixed proxy helper and real gh executable."""
     helper = Path(__file__).with_name("github_app_broker_proxy.py")
     gh = shutil.which("gh")
@@ -288,7 +342,12 @@ def fingerprint_brokered_command(repository: str, permissions: Mapping[str, Any]
     gh_resolved = Path(gh).resolve(strict=True)
     _validate_source(helper_resolved)
     _validate_source(gh_resolved)
-    payload = {"command": fingerprint_command(repository, permissions, argv), "helper": hashlib.sha256(helper_resolved.read_bytes()).hexdigest(), "gh": str(gh_resolved), "gh_sha256": hashlib.sha256(gh_resolved.read_bytes()).hexdigest()}
+    payload = {
+        "command": fingerprint_command(repository, permissions, argv),
+        "helper": hashlib.sha256(helper_resolved.read_bytes()).hexdigest(),
+        "gh": str(gh_resolved),
+        "gh_sha256": hashlib.sha256(gh_resolved.read_bytes()).hexdigest(),
+    }
     return hashlib.sha256(_json_bytes(payload)).hexdigest()
 
 
@@ -336,7 +395,9 @@ def _validate_credentials_directory(path: Path) -> None:
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise BrokerError("CREDENTIALS_DIRECTORY must be a non-symlink directory")
     if info.st_mode & 0o077:
-        raise BrokerError("CREDENTIALS_DIRECTORY must not be accessible to group or other users")
+        raise BrokerError(
+            "CREDENTIALS_DIRECTORY must not be accessible to group or other users"
+        )
     if info.st_uid not in {0, os.geteuid()}:
         raise BrokerError("CREDENTIALS_DIRECTORY owner is not trusted")
 
@@ -455,7 +516,10 @@ def _run_child_bounded(
         process.wait()
         raise BrokerError("child output pipes were not created")
 
-    streams = {process.stdout.fileno(): ("stdout", process.stdout), process.stderr.fileno(): ("stderr", process.stderr)}
+    streams = {
+        process.stdout.fileno(): ("stdout", process.stdout),
+        process.stderr.fileno(): ("stderr", process.stderr),
+    }
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
     selector = selectors.DefaultSelector()
     for descriptor, (label, stream) in streams.items():
@@ -467,14 +531,18 @@ def _run_child_bounded(
     started = time.monotonic()
     try:
         while selector.get_map():
-            remaining_time = None if timeout is None else timeout - (time.monotonic() - started)
+            remaining_time = (
+                None if timeout is None else timeout - (time.monotonic() - started)
+            )
             if remaining_time is not None and remaining_time <= 0:
                 if terminate_group:
                     _terminate_process_group(process)
                 else:
                     _terminate_single_process(process)
                 raise BrokerError("child command timed out")
-            events = selector.select(timeout=1 if remaining_time is None else min(1, remaining_time))
+            events = selector.select(
+                timeout=1 if remaining_time is None else min(1, remaining_time)
+            )
             leader_exited = (
                 _leader_exited_unreaped(process)
                 if terminate_group
@@ -531,7 +599,11 @@ def _run_child_bounded(
         returncode = int(process.returncode or 0)
         return returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
     try:
-        wait_timeout = None if timeout is None else max(0.1, timeout - (time.monotonic() - started))
+        wait_timeout = (
+            None
+            if timeout is None
+            else max(0.1, timeout - (time.monotonic() - started))
+        )
         returncode = process.wait(timeout=wait_timeout)
     except subprocess.TimeoutExpired:
         if terminate_group:
@@ -557,7 +629,9 @@ class GitHubAppBroker:
         key_basename: str = KEY_BASENAME,
         api_base_url: str = DEFAULT_API_BASE,
         requester: Callable[..., Any] | None = None,
-        child_runner: Callable[[Sequence[str], Mapping[str, str]], tuple[int, bytes, bytes]] = _run_child_bounded,
+        child_runner: Callable[
+            [Sequence[str], Mapping[str, str]], tuple[int, bytes, bytes]
+        ] = _run_child_bounded,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.app_id = str(app_id)
@@ -574,7 +648,9 @@ class GitHubAppBroker:
         if owner.lower() != self.account.lower():
             raise BrokerError("selected repository is outside the installation account")
         self.permissions = _normalise_permissions(permissions)
-        self.credentials_directory = _production_credentials_directory(os.environ.get("CREDENTIALS_DIRECTORY"))
+        self.credentials_directory = _production_credentials_directory(
+            os.environ.get("CREDENTIALS_DIRECTORY")
+        )
         _validate_credentials_directory(self.credentials_directory)
         if key_basename != KEY_BASENAME:
             raise BrokerError("private-key basename must use the fixed credential name")
@@ -623,10 +699,15 @@ class GitHubAppBroker:
             raise BrokerError("private key could not be opened") from exc
         try:
             opened_key = os.fstat(key_fd)
-            if (opened_key.st_dev, opened_key.st_ino) != (expected_key.st_dev, expected_key.st_ino):
+            if (opened_key.st_dev, opened_key.st_ino) != (
+                expected_key.st_dev,
+                expected_key.st_ino,
+            ):
                 raise BrokerError("private key changed while it was being opened")
             if opened_key.st_mode & 0o077 or opened_key.st_uid not in {0, os.geteuid()}:
-                raise BrokerError("opened private key no longer satisfies the custody boundary")
+                raise BrokerError(
+                    "opened private key no longer satisfies the custody boundary"
+                )
             os.set_inheritable(key_fd, True)
             completed = subprocess.run(
                 [OPENSSL_PATH, "dgst", "-sha256", "-sign", f"/dev/fd/{key_fd}"],
@@ -654,21 +735,33 @@ class GitHubAppBroker:
             raise BrokerError("cross-host GitHub target rejected")
         return url
 
-    def _urllib_request(self, method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> HttpResult:
+    def _urllib_request(
+        self, method: str, url: str, headers: Mapping[str, str], data: bytes | None
+    ) -> HttpResult:
         request = Request(url, method=method, headers=dict(headers), data=data)
         try:
             with build_opener(_NoRedirectHandler).open(request, timeout=15) as response:
                 body = response.read(MAX_HTTP_BODY + 1)
-                return HttpResult(response.status, dict(response.headers.items()), body, response.geturl())
+                return HttpResult(
+                    response.status,
+                    dict(response.headers.items()),
+                    body,
+                    response.geturl(),
+                )
         except HTTPError as exc:
             body = exc.read(MAX_HTTP_BODY + 1)
             return HttpResult(exc.code, dict(exc.headers.items()), body, exc.geturl())
         except (URLError, TimeoutError, OSError) as exc:
             raise BrokerError(f"GitHub request failed: {_redact(exc)}") from exc
 
-    def _request_json(self, method: str, path: str, token: str | None, body: Any = None) -> tuple[HttpResult, Any]:
+    def _request_json(
+        self, method: str, path: str, token: str | None, body: Any = None
+    ) -> tuple[HttpResult, Any]:
         url = self._url(path)
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": API_VERSION}
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": API_VERSION,
+        }
         if token:
             headers["Authorization"] = f"Bearer {token}"
         data = None if body is None else _json_bytes(body)
@@ -679,17 +772,26 @@ class GitHubAppBroker:
         except BrokerError:
             raise
         except (TypeError, ValueError) as exc:
-            raise BrokerError("GitHub requester failed before returning a response") from exc
+            raise BrokerError(
+                "GitHub requester failed before returning a response"
+            ) from exc
         response = self._coerce_response(raw, url)
         if response.status < 200 or response.status >= 300:
             detail = ""
             if response.body and len(response.body) <= MAX_HTTP_BODY:
                 try:
                     parsed = json.loads(response.body.decode("utf-8"))
-                    detail = parsed.get("message", "") if isinstance(parsed, dict) else ""
+                    detail = (
+                        parsed.get("message", "") if isinstance(parsed, dict) else ""
+                    )
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     detail = ""
-            raise BrokerError(_redact(f"GitHub request returned HTTP {response.status}: {detail}", (token,) if token else ()))
+            raise BrokerError(
+                _redact(
+                    f"GitHub request returned HTTP {response.status}: {detail}",
+                    (token,) if token else (),
+                )
+            )
         if method == "DELETE" and not response.body:
             return response, None
         return response, _response_json(response)
@@ -703,12 +805,25 @@ class GitHubAppBroker:
             body = raw.get("body", b"")
             if isinstance(body, str):
                 body = body.encode("utf-8")
-            response = HttpResult(int(raw.get("status", 200)), dict(raw.get("headers", {})), bytes(body), str(raw.get("url", expected_url)))
+            response = HttpResult(
+                int(raw.get("status", 200)),
+                dict(raw.get("headers", {})),
+                bytes(body),
+                str(raw.get("url", expected_url)),
+            )
         else:
             raise BrokerError("requester returned an invalid response")
         parsed_expected = urlparse(expected_url)
         parsed_actual = urlparse(response.url)
-        if (parsed_actual.scheme, parsed_actual.hostname, parsed_actual.port or 443) != (parsed_expected.scheme, parsed_expected.hostname, parsed_expected.port or 443):
+        if (
+            parsed_actual.scheme,
+            parsed_actual.hostname,
+            parsed_actual.port or 443,
+        ) != (
+            parsed_expected.scheme,
+            parsed_expected.hostname,
+            parsed_expected.port or 443,
+        ):
             raise BrokerError("cross-host redirect rejected")
         if response.url != expected_url:
             raise BrokerError("GitHub redirect rejected")
@@ -720,7 +835,10 @@ class GitHubAppBroker:
         response, payload = self._request_json("GET", "/app", self._jwt())
         if not isinstance(payload, dict):
             raise BrokerError("App response is not an object")
-        if str(payload.get("id")) != self.app_id or payload.get("slug") != self.app_slug:
+        if (
+            str(payload.get("id")) != self.app_id
+            or payload.get("slug") != self.app_slug
+        ):
             raise BrokerError("App identity mismatch")
         owner = payload.get("owner")
         if (
@@ -735,13 +853,18 @@ class GitHubAppBroker:
         return {"permissions": permissions, "headers": response.headers}
 
     def _validate_installation(self) -> Mapping[str, Any]:
-        response, payload = self._request_json("GET", f"/app/installations/{self.installation_id}", self._jwt())
+        response, payload = self._request_json(
+            "GET", f"/app/installations/{self.installation_id}", self._jwt()
+        )
         if not isinstance(payload, dict):
             raise BrokerError("installation response is not an object")
         if str(payload.get("id")) != self.installation_id:
             raise BrokerError("installation identity mismatch")
         account = payload.get("account")
-        if not isinstance(account, dict) or str(account.get("login", "")).lower() != self.account.lower():
+        if (
+            not isinstance(account, dict)
+            or str(account.get("login", "")).lower() != self.account.lower()
+        ):
             raise BrokerError("installation account mismatch")
         if str(payload.get("app_id", "")) != self.app_id:
             raise BrokerError("App identity mismatch")
@@ -754,25 +877,38 @@ class GitHubAppBroker:
         if payload.get("suspended_at") is not None:
             raise BrokerError("installation is suspended")
         if payload.get("events") != []:
-            raise BrokerError("installation has webhook event subscriptions outside Phase A")
-        normalised_granted = _normalise_phase_a_grant(payload.get("permissions"), source="installation")
+            raise BrokerError(
+                "installation has webhook event subscriptions outside Phase A"
+            )
+        normalised_granted = _normalise_phase_a_grant(
+            payload.get("permissions"), source="installation"
+        )
         return {"permissions": normalised_granted, "headers": response.headers}
 
     def _revoke_token_once(self, token: str) -> dict[str, Any]:
         try:
             response, _ = self._request_json("DELETE", "/installation/token", token)
             if response.status not in {204, 200}:
-                raise BrokerError("installation token revocation returned an unexpected status")
+                raise BrokerError(
+                    "installation token revocation returned an unexpected status"
+                )
             return {"attempted": True, "revoked": True, "status": response.status}
         except BrokerError as exc:
-            return {"attempted": True, "revoked": False, "error": _redact(exc, (token,))}
+            return {
+                "attempted": True,
+                "revoked": False,
+                "error": _redact(exc, (token,)),
+            }
 
     def get_installation_token(self) -> TokenRecord:
         if self._closed:
             raise BrokerError("broker is closed")
         if self._pending_cleanup_token is not None:
             raise BrokerError("installation token cleanup is pending")
-        if self._record and self._clock() < self._record.expires_epoch - REFRESH_THRESHOLD_SECONDS:
+        if (
+            self._record
+            and self._clock() < self._record.expires_epoch - REFRESH_THRESHOLD_SECONDS
+        ):
             return self._record
         if self._record is not None:
             old_token = self._record.token
@@ -781,7 +917,9 @@ class GitHubAppBroker:
                 self._pending_cleanup_token = old_token
                 self._record = None
                 self._closed = True
-                raise BrokerError("cached installation token could not be revoked before refresh")
+                raise BrokerError(
+                    "cached installation token could not be revoked before refresh"
+                )
             self._record = None
         self._validate_app()
         self._validate_installation()
@@ -789,14 +927,19 @@ class GitHubAppBroker:
             "POST",
             f"/app/installations/{self.installation_id}/access_tokens",
             self._jwt(),
-            {"repositories": [self.repository.split("/", 1)[1]], "permissions": self.permissions},
+            {
+                "repositories": [self.repository.split("/", 1)[1]],
+                "permissions": self.permissions,
+            },
         )
         issued_token = payload.get("token") if isinstance(payload, dict) else None
         try:
             if not isinstance(issued_token, str) or not issued_token:
                 raise BrokerError("installation token response is invalid")
             if payload.get("repository_selection") != "selected":
-                raise BrokerError("installation token is not selected-repository scoped")
+                raise BrokerError(
+                    "installation token is not selected-repository scoped"
+                )
             expires_at, expires_epoch = _parse_expiry(payload.get("expires_at"))
             if expires_epoch <= self._clock():
                 raise BrokerError("installation token is already expired")
@@ -805,9 +948,15 @@ class GitHubAppBroker:
                 raise BrokerError("installation token permissions are missing")
             normalised_returned = _normalise_permissions(returned_permissions)
             if normalised_returned != self.permissions:
-                raise BrokerError("installation token permissions do not match the requested subset")
+                raise BrokerError(
+                    "installation token permissions do not match the requested subset"
+                )
             repositories = payload.get("repositories")
-            if not isinstance(repositories, list) or len(repositories) != 1 or not isinstance(repositories[0], dict):
+            if (
+                not isinstance(repositories, list)
+                or len(repositories) != 1
+                or not isinstance(repositories[0], dict)
+            ):
                 raise BrokerError("installation token repository binding is invalid")
             full_name = repositories[0].get("full_name")
             if str(full_name).lower() != self.repository.lower():
@@ -818,22 +967,42 @@ class GitHubAppBroker:
                 if not cleanup["revoked"]:
                     self._pending_cleanup_token = issued_token
                     self._closed = True
-                    raise BrokerError("installation token response was rejected and revocation was not proven") from exc
+                    raise BrokerError(
+                        "installation token response was rejected and revocation was not proven"
+                    ) from exc
             raise
-        rate_headers = {key: value for key, value in response.headers.items() if key.lower().startswith("x-ratelimit-")}
-        self._record = TokenRecord(issued_token, expires_at, expires_epoch, normalised_returned, rate_headers)
+        rate_headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower().startswith("x-ratelimit-")
+        }
+        self._record = TokenRecord(
+            issued_token, expires_at, expires_epoch, normalised_returned, rate_headers
+        )
         return self._record
 
     def public_identity(self, record: TokenRecord | None = None) -> dict[str, Any]:
         record = record or self.get_installation_token()
-        return {"app_id": self.app_id, "app_slug": self.app_slug, "installation_id": self.installation_id, "account": self.account, "repository": self.repository, "permissions": dict(record.permissions), "expires_at": record.expires_at, "mint_rate_limit_headers": dict(record.rate_headers)}
+        return {
+            "app_id": self.app_id,
+            "app_slug": self.app_slug,
+            "installation_id": self.installation_id,
+            "account": self.account,
+            "repository": self.repository,
+            "permissions": dict(record.permissions),
+            "expires_at": record.expires_at,
+            "mint_rate_limit_headers": dict(record.rate_headers),
+        }
 
     def execute(self, argv: Sequence[str], expected_fingerprint: str) -> dict[str, Any]:
         actual = fingerprint_command(self.repository, self.permissions, argv)
         if not isinstance(expected_fingerprint, str) or actual != expected_fingerprint:
             raise BrokerError("command fingerprint mismatch")
         record = self.get_installation_token()
-        if fingerprint_command(self.repository, self.permissions, argv) != expected_fingerprint:
+        if (
+            fingerprint_command(self.repository, self.permissions, argv)
+            != expected_fingerprint
+        ):
             raise BrokerError("command fingerprint changed before child execution")
         child_env = _without_ambient_tokens(os.environ)
         child_env["GH_TOKEN"] = record.token
@@ -842,15 +1011,27 @@ class GitHubAppBroker:
         except BrokerError:
             raise
         except (OSError, ValueError) as exc:
-            raise BrokerError(f"child command failed to start: {_redact(exc, (record.token,))}") from exc
+            raise BrokerError(
+                f"child command failed to start: {_redact(exc, (record.token,))}"
+            ) from exc
         stdout = _redact(raw_stdout.decode("utf-8", "replace"), (record.token,))
         stderr = _redact(raw_stderr.decode("utf-8", "replace"), (record.token,))
-        return {"identity": self.public_identity(record), "returncode": returncode, "stdout": stdout, "stderr": stderr}
+        return {
+            "identity": self.public_identity(record),
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
 
-    def execute_brokered_observer(self, argv: Sequence[str], expected_fingerprint: str) -> dict[str, Any]:
+    def execute_brokered_observer(
+        self, argv: Sequence[str], expected_fingerprint: str
+    ) -> dict[str, Any]:
         """Run an unchanged observer while brokering each short-lived ``gh`` call."""
         helper = Path(__file__).with_name("github_app_broker_proxy.py")
-        if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+        if (
+            fingerprint_brokered_command(self.repository, self.permissions, argv)
+            != expected_fingerprint
+        ):
             raise BrokerError("command fingerprint mismatch")
         if not helper.is_file():
             raise BrokerError("broker proxy helper is missing")
@@ -882,18 +1063,38 @@ class GitHubAppBroker:
                     conn.settimeout(15)
                     header = _read_exact(conn, 4)
                     size = int.from_bytes(header, "big")
-                    if size > MAX_IPC_REQUEST: raise BrokerError("proxy request exceeds safety bound")
+                    if size > MAX_IPC_REQUEST:
+                        raise BrokerError("proxy request exceeds safety bound")
                     request = json.loads(_read_exact(conn, size).decode("utf-8"))
-                    if not isinstance(request, dict) or set(request) != {"argv", "binary"} or not isinstance(request["binary"], bool): raise BrokerError("malformed proxy request")
+                    if (
+                        not isinstance(request, dict)
+                        or set(request) != {"argv", "binary"}
+                        or not isinstance(request["binary"], bool)
+                    ):
+                        raise BrokerError("malformed proxy request")
                     request_argv = request["argv"]
                     validate_gh_argv(request_argv, self.repository)
                     if stop.is_set():
                         raise BrokerError("broker channel is closed")
-                    if fingerprint_brokered_command(self.repository, self.permissions, argv) != expected_fingerprint:
+                    if (
+                        fingerprint_brokered_command(
+                            self.repository, self.permissions, argv
+                        )
+                        != expected_fingerprint
+                    ):
                         raise BrokerError("bound command source changed")
                     record = self.get_installation_token()
-                    with tempfile.TemporaryDirectory(prefix="gh-broker-config-", dir="/tmp") as config_dir, tempfile.TemporaryDirectory(prefix="gh-broker-home-", dir="/tmp") as home_dir:
-                        env = _hermetic_gh_environment(os.environ, record.token, config_dir, home_dir)
+                    with (
+                        tempfile.TemporaryDirectory(
+                            prefix="gh-broker-config-", dir="/tmp"
+                        ) as config_dir,
+                        tempfile.TemporaryDirectory(
+                            prefix="gh-broker-home-", dir="/tmp"
+                        ) as home_dir,
+                    ):
+                        env = _hermetic_gh_environment(
+                            os.environ, record.token, config_dir, home_dir
+                        )
                         returncode, raw_stdout, raw_stderr = _run_child_bounded(
                             [gh_path, *request_argv],
                             env,
@@ -905,21 +1106,26 @@ class GitHubAppBroker:
                     safe_stdout = raw_stdout.replace(
                         record.token.encode(), b"[REDACTED]"
                     )
-                    safe_stderr = raw_stderr.replace(record.token.encode(), b"[REDACTED]")
+                    safe_stderr = raw_stderr.replace(
+                        record.token.encode(), b"[REDACTED]"
+                    )
                     body = {
                         "returncode": returncode,
                         "stdout_b64": base64.b64encode(safe_stdout).decode("ascii"),
                         "stderr_b64": base64.b64encode(safe_stderr).decode("ascii"),
                     }
                     encoded = _json_bytes(body)
-                    if len(encoded) > MAX_IPC_RESPONSE: raise BrokerError("proxy response exceeds safety bound")
+                    if len(encoded) > MAX_IPC_RESPONSE:
+                        raise BrokerError("proxy response exceeds safety bound")
                     conn.sendall(len(encoded).to_bytes(4, "big") + encoded)
             except Exception as exc:
                 secrets = (record.token,) if record is not None else ()
                 body_data = {
                     "returncode": 1,
                     "stdout_b64": "",
-                    "stderr_b64": base64.b64encode(_redact(str(exc), secrets).encode()).decode("ascii"),
+                    "stderr_b64": base64.b64encode(
+                        _redact(str(exc), secrets).encode()
+                    ).decode("ascii"),
                 }
                 body = _json_bytes(body_data)
                 if len(body) <= MAX_IPC_RESPONSE:
@@ -982,7 +1188,9 @@ class GitHubAppBroker:
         return result
 
     def revoke(self) -> dict[str, Any]:
-        token = self._pending_cleanup_token or (self._record.token if self._record is not None else None)
+        token = self._pending_cleanup_token or (
+            self._record.token if self._record is not None else None
+        )
         if token is None:
             self._closed = True
             return {"attempted": False, "revoked": False}
@@ -1033,9 +1241,13 @@ def _build_parser() -> argparse.ArgumentParser:
     common.add_argument("--account", required=True)
     common.add_argument("--repo", required=True)
     common.add_argument("--permissions", required=True, type=_parse_permissions_arg)
-    fp = sub.add_parser("fingerprint", parents=[common], help="print a non-minting command fingerprint")
+    fp = sub.add_parser(
+        "fingerprint", parents=[common], help="print a non-minting command fingerprint"
+    )
     fp.add_argument("argv", nargs=argparse.REMAINDER)
-    run = sub.add_parser("exec", parents=[common], help="run one fingerprint-bound command")
+    run = sub.add_parser(
+        "exec", parents=[common], help="run one fingerprint-bound command"
+    )
     run.add_argument("--fingerprint", required=True)
     run.add_argument("argv", nargs=argparse.REMAINDER)
     return parser
@@ -1052,26 +1264,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not command_argv:
             raise BrokerError("a command is required")
         if args.command == "fingerprint":
-            print(fingerprint_brokered_command(args.repo, args.permissions, command_argv))
+            print(
+                fingerprint_brokered_command(args.repo, args.permissions, command_argv)
+            )
             return 0
-        broker = GitHubAppBroker(app_id=args.app_id, app_slug=args.app_slug, installation_id=args.installation_id, account=args.account, repository=args.repo, permissions=args.permissions)
+        broker = GitHubAppBroker(
+            app_id=args.app_id,
+            app_slug=args.app_slug,
+            installation_id=args.installation_id,
+            account=args.account,
+            repository=args.repo,
+            permissions=args.permissions,
+        )
         runner = getattr(broker, "execute_brokered_observer", broker.execute)
         result = runner(command_argv, args.fingerprint)
-        revocation = result.pop("revocation", None) or getattr(broker, "_last_revocation", None) or broker.close()
+        revocation = (
+            result.pop("revocation", None)
+            or getattr(broker, "_last_revocation", None)
+            or broker.close()
+        )
         result["revocation"] = revocation
         print(json.dumps(result, sort_keys=True))
         if revocation.get("attempted") and not revocation.get("revoked"):
             return 3
         return int(result["returncode"])
     except BrokerError as exc:
-        revocation = broker.close() if broker is not None else {"attempted": False, "revoked": False}
+        revocation = (
+            broker.close()
+            if broker is not None
+            else {"attempted": False, "revoked": False}
+        )
         message = _redact(exc)
         if revocation.get("attempted") and not revocation.get("revoked"):
             message = f"{message}; installation token revocation was not proven"
         print(message, file=sys.stderr)
         return 2
     except Exception:
-        revocation = broker.close() if broker is not None else {"attempted": False, "revoked": False}
+        revocation = (
+            broker.close()
+            if broker is not None
+            else {"attempted": False, "revoked": False}
+        )
         message = "broker failed closed on an unexpected internal error"
         if revocation.get("attempted") and not revocation.get("revoked"):
             message = f"{message}; installation token revocation was not proven"

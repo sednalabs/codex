@@ -46,18 +46,25 @@ def resolve_bazel_ci_mode(
         and isinstance(statuses, list)
         and bool(files)
         and len(files) == len(statuses)
-        and all(isinstance(path, str) and isinstance(status, str) for path, status in zip(files, statuses))
+        and all(
+            isinstance(path, str) and isinstance(status, str)
+            for path, status in zip(files, statuses)
+        )
     )
     if not aligned_statuses:
         return {"mode": "full", "run_bazel": "true", "run_observer": "false"}
 
-    allowed_statuses = all(status in {"A", "M", "added", "modified"} for status in statuses)
-    files_are_docs_only = (
-        allowed_statuses and all(is_docs_only_path(path) for path in files)
+    allowed_statuses = all(
+        status in {"A", "M", "added", "modified"} for status in statuses
+    )
+    files_are_docs_only = allowed_statuses and all(
+        is_docs_only_path(path) for path in files
     )
     if files_are_docs_only:
         return {"mode": "docs_only", "run_bazel": "false", "run_observer": "false"}
-    files_are_observer_only = allowed_statuses and all(path in OBSERVER_ONLY_PATHS for path in files)
+    files_are_observer_only = allowed_statuses and all(
+        path in OBSERVER_ONLY_PATHS for path in files
+    )
     if files_are_observer_only:
         return {"mode": "observer_only", "run_bazel": "false", "run_observer": "true"}
     return {"mode": "full", "run_bazel": "true", "run_observer": "false"}

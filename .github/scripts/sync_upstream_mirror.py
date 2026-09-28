@@ -91,15 +91,24 @@ def sync_upstream_mirror(
     upstream_sha = rev_parse(repo, upstream_ref)
     mirror_exists = show_ref(repo, mirror_ref)
     mirror_sha = rev_parse(repo, mirror_ref) if mirror_exists else None
-    mirror_state = classify_mirror(repo, mirror_ref, upstream_ref, mirror_sha, upstream_sha)
+    mirror_state = classify_mirror(
+        repo, mirror_ref, upstream_ref, mirror_sha, upstream_sha
+    )
 
     wrote_mirror = False
     audit_baseline = "origin-mirror"
-    mirror_audit_args = ["--mirror-remote", mirror_remote, "--mirror-branch", mirror_branch]
+    mirror_audit_args = [
+        "--mirror-remote",
+        mirror_remote,
+        "--mirror-branch",
+        mirror_branch,
+    ]
 
     if mirror_state in {"missing", "stale_ff_only"}:
         if mode == "required-write":
-            push_url = mirror_push_url or authenticated_origin_url(github_repository, token)
+            push_url = mirror_push_url or authenticated_origin_url(
+                github_repository, token
+            )
             run_git(repo, ["remote", "set-url", mirror_remote, push_url])
             run_git(
                 repo,
@@ -279,8 +288,7 @@ def run_git(
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         raise MirrorSyncError(
-            "git command failed: "
-            f"{' '.join(args)}\nstdout={stdout}\nstderr={stderr}"
+            f"git command failed: {' '.join(args)}\nstdout={stdout}\nstderr={stderr}"
         )
     return result
 

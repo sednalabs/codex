@@ -50,7 +50,8 @@ fn transform(instructions: &mut String) -> bool {
     let cadence = instructions.contains(COMMENTARY_CADENCE_LITERAL);
     let blocking = instructions.contains(BLOCKING_WAIT_LITERAL);
     if cadence {
-        *instructions = instructions.replace(COMMENTARY_CADENCE_LITERAL, COMMENTARY_CADENCE_REPLACEMENT);
+        *instructions =
+            instructions.replace(COMMENTARY_CADENCE_LITERAL, COMMENTARY_CADENCE_REPLACEMENT);
     }
     if blocking {
         *instructions = instructions.replace(BLOCKING_WAIT_LITERAL, "");
@@ -112,10 +113,17 @@ mod tests {
             let mut model = model(slug, Some(&source));
             assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
         }
-        for slug in ["custom", "codex-auto-review-v2", "openai-codex/codex-auto-review"] {
+        for slug in [
+            "custom",
+            "codex-auto-review-v2",
+            "openai-codex/codex-auto-review",
+        ] {
             let mut model = model(slug, Some(&source));
             let original = model.clone();
-            assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::NotApplicable);
+            assert_eq!(
+                apply_openai_compatible(&mut model),
+                OverlayOutcome::NotApplicable
+            );
             assert_eq!(model, original);
         }
     }

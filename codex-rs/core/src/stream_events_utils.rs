@@ -345,7 +345,9 @@ pub(crate) async fn handle_output_item_done(
             let tool_future: InFlightFuture<'static> = if defer_until_response_completed {
                 let tool_runtime = ctx.tool_runtime.clone();
                 Box::pin(async move {
-                    tool_runtime.handle_tool_call(call, cancellation_token).await
+                    tool_runtime
+                        .handle_tool_call(call, cancellation_token)
+                        .await
                 })
             } else {
                 Box::pin(

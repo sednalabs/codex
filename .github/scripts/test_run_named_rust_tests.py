@@ -40,7 +40,9 @@ class NamedRustTests(TestCase):
         inventory = self.completed(stdout="suite::known: test\n")
         execution = self.completed(stdout=test_output, code=test_code)
         with (
-            mock.patch.object(MODULE.subprocess, "run", side_effect=[inventory, execution]),
+            mock.patch.object(
+                MODULE.subprocess, "run", side_effect=[inventory, execution]
+            ),
             mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
@@ -87,7 +89,10 @@ class NamedRustTests(TestCase):
 
         self.assertEqual(result["status"], "failure")
         self.assertEqual(result["failure_code"], "inventory_failed")
-        self.assertIn("manifest could not be loaded", result["inventory"]["diagnostics"]["stderr_tail"])
+        self.assertIn(
+            "manifest could not be loaded",
+            result["inventory"]["diagnostics"]["stderr_tail"],
+        )
 
     def test_diagnostic_tail_is_bounded(self) -> None:
         value = MODULE.bounded_diagnostic("x" * (MODULE.MAX_DIAGNOSTIC_CHARS + 100))
@@ -104,7 +109,9 @@ class NamedRustTests(TestCase):
                 list_only=True,
             )
         with self.assertRaises(ValueError):
-            MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
+            MODULE.cargo_args(
+                REQUEST, list_only=False, test_name="suite::known; echo nope"
+            )
 
     def test_command_builder_returns_only_catalog_commands(self) -> None:
         self.assertEqual(

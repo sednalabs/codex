@@ -41,7 +41,9 @@ def strip_log_prefix(line: str) -> str:
 def load_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
-    return [strip_log_prefix(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [
+        strip_log_prefix(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
 
 
 def nextest_summary(path: Path, suite: str) -> dict[str, Any]:
@@ -169,7 +171,9 @@ def job_results(needs_json: str) -> dict[str, str]:
     return results
 
 
-def primary_blockers(jobs: dict[str, str], summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def primary_blockers(
+    jobs: dict[str, str], summaries: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     for job_name, result in jobs.items():
         if result not in {"success", "skipped"}:
@@ -221,12 +225,16 @@ def aggregate_summary(
         "primary_blockers": primary_blockers(jobs, summaries),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def write_summary(summary: dict[str, Any], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
