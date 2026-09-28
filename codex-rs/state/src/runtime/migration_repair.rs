@@ -388,7 +388,7 @@ async fn migration_record(
     .bind(version)
     .fetch_optional(pool)
     .await?
-    .map(|row| {
+    .map(|row| -> anyhow::Result<AppliedMigrationRow> {
         Ok(AppliedMigrationRow {
             version: row.try_get("version")?,
             description: row.try_get("description")?,
