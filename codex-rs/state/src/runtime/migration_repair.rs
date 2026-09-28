@@ -87,10 +87,6 @@ async fn repair_dynamic_tool_state_overlap(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
-    if !table_exists(pool, "thread_dynamic_tools").await? {
-        return Ok(());
-    }
-
     let migration = migration_by_version(migrator, 58)
         .with_context(|| "embedded state migration 58 is missing")?;
     let migration_9001 = migration_by_version(migrator, 9001)
@@ -581,6 +577,63 @@ mod tests {
             row.get::<Vec<u8>, _>("checksum"),
             embedded.checksum.to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn repairs_empty_state_before_first_migration_and_reopens_idempotently() {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("empty state database should open");
+
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("empty state migration aliases should be recorded");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version IN (9001, 9002)",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("alias migration rows should exist"),
+            2
+        );
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("empty state migrations should complete");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version IN (9001, 9002)",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("alias migration rows should remain canonical"),
+            2
+        );
+        pool.close().await;
+
+        let reopened = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("reopened empty state database should open");
+        repair_state_migrations(&reopened, &STATE_MIGRATOR)
+            .await
+            .expect("empty migration repair should be idempotent after reopen");
+        STATE_MIGRATOR
+            .run(&reopened)
+            .await
+            .expect("empty migrations should be idempotent after reopen");
+        reopened.close().await;
     }
 
     #[tokio::test]
