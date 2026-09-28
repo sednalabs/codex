@@ -134,7 +134,7 @@ runs:
         set -euo pipefail
         cargo build --target "${TARGET}" --release --timings --bin bwrap
 
-        bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+        bwrap_path="${CARGO_TARGET_DIR:-target}/${TARGET}/release/bwrap"
         # Codex embeds this digest at build time and verifies the packaged
         # bwrap at runtime, so hash its final stripped bytes first.
         strip --strip-debug --strip-unneeded "$bwrap_path"
@@ -169,7 +169,7 @@ runs:
         TARGET: ${{ inputs.target }}
       run: |
         set -euo pipefail
-        release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
+        release_dir="${CARGO_TARGET_DIR:-target}/${TARGET}/release"
         for binary in $NEEDED_BINARIES; do
           expected_pdb="${release_dir}/${binary}.pdb"
           if [[ -f "$expected_pdb" ]]; then
@@ -205,7 +205,7 @@ runs:
         bash "${PACKAGE_ACTION_PATH}/../../../.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
           --target "${TARGET}" \
           --artifact-name "${TARGET}" \
-          --release-dir "${CARGO_TARGET_DIR}/${TARGET}/release" \
+          --release-dir "${CARGO_TARGET_DIR:-target}/${TARGET}/release" \
           --archive-dir "../symbols-dist/${TARGET}" \
           --binaries "$NEEDED_BINARIES"
 
@@ -219,7 +219,7 @@ runs:
       run: |
         set -euo pipefail
         target="${TARGET}"
-        release_dir="${CARGO_TARGET_DIR}/${target}/release"
+        release_dir="${CARGO_TARGET_DIR:-target}/${target}/release"
         archive_dir="${GITHUB_WORKSPACE}/dist/${target}"
         exe_suffix=""
         if [[ "$RUNNER_OS" == "Windows" ]]; then
