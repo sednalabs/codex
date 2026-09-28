@@ -80,12 +80,32 @@ async function readStdin() {
 
 async function browserStateDir() {
   const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const dir =
-    configured && configured.trim()
-      ? configured
-      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
+  const root = path.join(
+    os.homedir(),
+    ".codex",
+    "browser-computer-use-playwright",
+  );
+  const profile =
+    configured === undefined ? null : safeProfileKey(configured.trim());
+  const dir = profile === null ? root : path.join(root, profile);
   await fs.mkdir(dir, { recursive: true });
   return dir;
+}
+
+function safeProfileKey(value) {
+  if (
+    !value ||
+    value === "." ||
+    value === ".." ||
+    path.isAbsolute(value) ||
+    value.includes("\0") ||
+    !/^[A-Za-z0-9._-]+$/.test(value)
+  ) {
+    throw new Error(
+      "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must be a non-empty profile key",
+    );
+  }
+  return value;
 }
 
 async function withProfileLock(stateDir, body) {
