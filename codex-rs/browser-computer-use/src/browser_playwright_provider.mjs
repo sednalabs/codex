@@ -80,12 +80,33 @@ async function readStdin() {
 
 async function browserStateDir() {
   const configured = process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR;
-  const dir =
+  const dir = safeStateDir(
     configured && configured.trim()
       ? configured
-      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright");
+      : path.join(os.homedir(), ".codex", "browser-computer-use-playwright"),
+  );
   await fs.mkdir(dir, { recursive: true });
   return dir;
+}
+
+function safeStateDir(value) {
+  if (typeof value !== "string" || value.includes("\0")) {
+    throw new Error("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must be a valid path");
+  }
+  const resolved = path.resolve(value);
+  if (resolved === path.parse(resolved).root) {
+    throw new Error("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must not be a filesystem root");
+  }
+  const allowedRoots = [os.homedir(), os.tmpdir()].map((root) => path.resolve(root));
+  if (!allowedRoots.some((root) => isWithinPath(root, resolved))) {
+    throw new Error("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR must be under the home or temporary directory");
+  }
+  return resolved;
+}
+
+function isWithinPath(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 async function withProfileLock(stateDir, body) {
