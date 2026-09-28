@@ -125,18 +125,21 @@ async fn repair_dynamic_tool_state_overlap(
     }
 
     match (persist_on_resume, capability_json, namespace_description) {
-        (false, false, false) => match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
-            (Some(row), Some(row_2)) => {
-                validate_canonical_migration_row(row, migration_9001, 9001)?;
-                validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+        (false, false, false) => {
+            match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
+                (Some(row), Some(row_2)) => {
+                    validate_canonical_migration_row(row, migration_9001, 9001)?;
+                    validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+                }
+                (None, None) => {
+                    mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
+                }
+                _ => anyhow::bail!(
+                    "state DB dynamic tool alias migration history is partial; refusing automatic repair"
+                ),
             }
-            (None, None) => {
-                mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
-            }
-            _ => anyhow::bail!(
-                "state DB dynamic tool alias migration history is partial; refusing automatic repair"
-            ),
-        },
+            return Ok(());
+        }
         (true, false, _) | (false, true, _) => {
             anyhow::bail!(
                 "state DB thread dynamic tool migration overlap is partial; refusing automatic repair"
