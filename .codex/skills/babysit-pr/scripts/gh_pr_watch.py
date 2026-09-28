@@ -165,6 +165,63 @@ def gh_json(args, repo=None):
         ) from err
 
 
+REVIEW_THREADS_QUERY = (
+    "query($owner:String!,$name:String!,$number:Int!,$cursor:String)"
+    "{repository(owner:$owner,name:$name){pullRequest(number:$number){"
+    "reviewThreads(first:100,after:$cursor){pageInfo{hasNextPage endCursor}"
+    "nodes{id isResolved isOutdated path line comments(first:100){nodes{"
+    "databaseId url body createdAt author{login} pullRequestReview{"
+    "databaseId url state author{login}}}}}}}}}"
+)
+
+
+def get_review_threads(pr):
+    """Read review-thread state through the brokered, read-only GraphQL path."""
+    owner, name = pr["repo"].split("/", 1)
+    cursor = ""
+    threads = []
+    while True:
+        payload = gh_json(
+            [
+                "api",
+                "graphql",
+                "-f",
+                f"query={REVIEW_THREADS_QUERY}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+                "-F",
+                f"number={pr['number']}",
+                "-F",
+                f"cursor={cursor}",
+            ]
+        )
+        if not isinstance(payload, dict):
+            raise GhCommandError("Unexpected reviewThreads GraphQL payload")
+        if payload.get("errors"):
+            raise GhCommandError("reviewThreads GraphQL query failed")
+        review_threads = (
+            payload.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+        )
+        if not isinstance(review_threads, dict):
+            raise GhCommandError("Unexpected reviewThreads GraphQL result")
+        nodes = review_threads.get("nodes") or []
+        if not isinstance(nodes, list):
+            raise GhCommandError("Expected reviewThreads.nodes to be a list")
+        threads.extend(node for node in nodes if isinstance(node, dict))
+        page_info = review_threads.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            raise GhCommandError("reviewThreads pagination omitted endCursor")
+    return threads
+
+
 def parse_pr_spec(pr_spec):
     if pr_spec == "auto":
         return {"mode": "auto", "value": None}
@@ -781,6 +838,12 @@ def collect_snapshot(args):
         fresh_state=fresh_state,
         authenticated_login=authenticated_login,
     )
+    review_threads = get_review_threads(pr)
+    unresolved_threads = [
+        thread for thread in review_threads if not thread.get("isResolved")
+    ]
+    if unresolved_threads:
+        new_review_items = [*new_review_items, *unresolved_threads]
     # Surface review feedback before drilling into CI and mergeability details.
     # That keeps the babysitter responsive to new comments even when other
     # actions are also available.
@@ -813,6 +876,7 @@ def collect_snapshot(args):
     snapshot = {
         "pr": pr,
         "checks": checks_summary,
+        "review_threads": review_threads,
         "failed_runs": failed_runs,
         "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
