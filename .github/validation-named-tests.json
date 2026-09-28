@@ -18,6 +18,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-config", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-state",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-state", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-core",
       "target_kind": "lib",
       "target": "",
