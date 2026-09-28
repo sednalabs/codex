@@ -76,9 +76,92 @@ pub(crate) async fn repair_state_migrations(
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
     repair_shifted_state_migrations(pool, migrator).await?;
+    repair_dynamic_tool_state_overlap(pool, migrator).await?;
     for repair in COLUMN_MIGRATION_REPAIRS {
         repair_column_migration(pool, migrator, repair).await?;
     }
+    Ok(())
+}
+
+async fn repair_dynamic_tool_state_overlap(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    if !table_exists(pool, "thread_dynamic_tools").await? {
+        return Ok(());
+    }
+
+    let migration = migration_by_version(migrator, 58)
+        .with_context(|| "embedded state migration 58 is missing")?;
+    let migration_9001 = migration_by_version(migrator, 9001)
+        .with_context(|| "embedded state migration 9001 is missing")?;
+    let migration_9002 = migration_by_version(migrator, 9002)
+        .with_context(|| "embedded state migration 9002 is missing")?;
+    let migration_58_row = migration_record(pool, 58).await?;
+    let persist_on_resume = column_exists(pool, "thread_dynamic_tools", "persist_on_resume").await?;
+    let capability_json = column_exists(pool, "thread_dynamic_tools", "capability_json").await?;
+    let namespace_description =
+        column_exists(pool, "thread_dynamic_tools", "namespace_description").await?;
+
+    if let Some(row) = migration_58_row {
+        validate_canonical_migration_row(&row, migration, 58)?;
+        if !(persist_on_resume && capability_json && namespace_description) {
+            anyhow::bail!(
+                "state DB migration 58 is recorded but its columns are incomplete; refusing automatic repair"
+            );
+        }
+        return Ok(());
+    }
+
+    match (persist_on_resume, capability_json, namespace_description) {
+        (false, false, false) => return Ok(()),
+        (true, false, _) | (false, true, _) => {
+            anyhow::bail!(
+                "state DB thread dynamic tool migration overlap is partial; refusing automatic repair"
+            )
+        }
+        (true, true, _) => {}
+    }
+
+    for (version, expected) in [(9001, migration_9001), (9002, migration_9002)] {
+        let row = migration_record(pool, version)
+            .await?
+            .with_context(|| format!("state DB migration {version} history is missing"))?;
+        validate_canonical_migration_row(&row, expected, version)?;
+    }
+
+    let mut tx = pool.begin().await?;
+    if !namespace_description {
+        sqlx::query(
+            "ALTER TABLE thread_dynamic_tools ADD COLUMN namespace_description TEXT",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO _sqlx_migrations (
+            version,
+            description,
+            success,
+            checksum,
+            execution_time
+        )
+        SELECT ?, ?, TRUE, ?, 0
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM _sqlx_migrations
+            WHERE version = ?
+        )
+        "#,
+    )
+    .bind(migration.version)
+    .bind(migration.description.as_ref())
+    .bind(migration.checksum.as_ref().to_vec())
+    .bind(migration.version)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -260,6 +343,53 @@ async fn migration_record_exists(pool: &SqlitePool, version: i64) -> anyhow::Res
     .await?
     .unwrap_or(false);
     Ok(exists)
+}
+
+async fn migration_record(
+    pool: &SqlitePool,
+    version: i64,
+) -> anyhow::Result<Option<AppliedMigrationRow>> {
+    if !table_exists(pool, "_sqlx_migrations").await? {
+        return Ok(None);
+    }
+
+    let row = sqlx::query(
+        r#"
+        SELECT version, description, success, checksum
+        FROM _sqlx_migrations
+        WHERE version = ?
+        "#,
+    )
+    .bind(version)
+    .fetch_optional(pool)
+    .await?
+    .map(|row| {
+        Ok(AppliedMigrationRow {
+            version: row.try_get("version")?,
+            description: row.try_get("description")?,
+            success: row.try_get("success")?,
+            checksum: row.try_get("checksum")?,
+        })
+    })
+    .transpose()?;
+    Ok(row)
+}
+
+fn validate_canonical_migration_row(
+    row: &AppliedMigrationRow,
+    migration: &Migration,
+    version: i64,
+) -> anyhow::Result<()> {
+    if row.version != version
+        || !row.success
+        || row.description != migration.description.as_ref()
+        || row.checksum != migration.checksum.as_ref()
+    {
+        anyhow::bail!(
+            "state DB migration {version} history is not canonical; refusing automatic repair"
+        );
+    }
+    Ok(())
 }
 
 async fn table_exists(pool: &SqlitePool, table_name: &str) -> anyhow::Result<bool> {
@@ -519,12 +649,12 @@ INSERT INTO _sqlx_migrations (
             .expect("forward state migrations should complete");
 
         let applied = sqlx::query(
-            "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version IN (24, 25, 26, 27, 28, 29, 9000, 9001, 9002) ORDER BY version",
+            "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version IN (24, 25, 26, 27, 28, 29, 58, 9000, 9001, 9002) ORDER BY version",
         )
         .fetch_all(&pool)
             .await
             .expect("repaired migration rows should load");
-        assert_eq!(applied.len(), 9);
+        assert_eq!(applied.len(), 10);
         for row in applied {
             let version = row.get::<i64, _>("version");
             let migration = STATE_MIGRATOR
@@ -550,13 +680,17 @@ INSERT INTO _sqlx_migrations (
         assert_eq!(thread.get::<String, _>("preview"), "legacy first message");
         assert_eq!(thread.get::<Option<String>, _>("thread_source"), None);
         let dynamic_tool = sqlx::query(
-            "SELECT namespace, persist_on_resume, capability_json FROM thread_dynamic_tools WHERE thread_id = ?",
+            "SELECT namespace, namespace_description, persist_on_resume, capability_json FROM thread_dynamic_tools WHERE thread_id = ?",
         )
         .bind("thread-preserved")
         .fetch_one(&pool)
         .await
         .expect("representative dynamic tool should survive forward migration");
         assert_eq!(dynamic_tool.get::<Option<String>, _>("namespace"), None);
+        assert_eq!(
+            dynamic_tool.get::<Option<String>, _>("namespace_description"),
+            None
+        );
         assert_eq!(dynamic_tool.get::<i64, _>("persist_on_resume"), 1);
         assert_eq!(dynamic_tool.get::<Option<String>, _>("capability_json"), None);
         pool.close().await;
