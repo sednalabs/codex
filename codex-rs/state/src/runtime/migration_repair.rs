@@ -346,6 +346,8 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
     use sqlx::Row;
+    use sqlx::migrate::Migrator;
+    use std::borrow::Cow;
 
     #[tokio::test]
     async fn repairs_deployed_thread_source_schema_with_embedded_migration_metadata() {
@@ -387,5 +389,197 @@ mod tests {
             row.get::<Vec<u8>, _>("checksum"),
             embedded.checksum.to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn repairs_known_good_pre_migration_24_state_and_reopens_idempotently() {
+        let sqlite_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&sqlite_home)
+            .await
+            .expect("sqlite home should be created");
+        let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+            let _ = std::fs::remove_dir_all(sqlite_home);
+        });
+        let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("sqlite database should open");
+        let pre_repair_migrator = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version <= 23)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: STATE_MIGRATOR.ignore_missing,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+            table_name: STATE_MIGRATOR.table_name.clone(),
+            create_schemas: STATE_MIGRATOR.create_schemas.clone(),
+        };
+        pre_repair_migrator
+            .run(&pool)
+            .await
+            .expect("pre-repair state schema should apply");
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+    title, sandbox_policy, approval_mode, first_user_message
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("thread-preserved")
+        .bind("/tmp/legacy.jsonl")
+        .bind(1_700_000_000_i64)
+        .bind(1_700_000_001_i64)
+        .bind("cli")
+        .bind("openai")
+        .bind("/tmp")
+        .bind("legacy title")
+        .bind("read-only")
+        .bind("on-request")
+        .bind("legacy first message")
+        .execute(&pool)
+        .await
+        .expect("representative thread should insert");
+        sqlx::query(
+            r#"
+INSERT INTO thread_dynamic_tools (
+    thread_id, position, name, description, input_schema, defer_loading
+) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("thread-preserved")
+        .bind(0_i64)
+        .bind("legacy-tool")
+        .bind("legacy description")
+        .bind(r#"{"type":"object"}"#)
+        .bind(0_i64)
+        .execute(&pool)
+        .await
+        .expect("representative dynamic tool should insert");
+
+        for target_version in [9000_i64, 24, 25, 9001, 9002, 26, 27, 28, 29] {
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == target_version)
+                .expect("historical target migration should be embedded");
+            sqlx::raw_sql(migration.sql.as_ref())
+                .execute(&pool)
+                .await
+                .expect("historical target schema should be present");
+        }
+
+        let historical_rows = [
+            (24_i64, "phase2 attestation roots", 9000_i64),
+            (25, "remote control enrollments", 24),
+            (26, "thread timestamps millis", 25),
+            (27, "thread dynamic tools persist on resume", 9001),
+            (28, "thread dynamic tools capability json", 9002),
+            (29, "thread dynamic tools namespace", 26),
+            (30, "threads cwd sort indexes", 27),
+            (31, "device key bindings", 28),
+            (32, "thread goals", 29),
+        ];
+        for (source_version, description, target_version) in historical_rows {
+            let checksum = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == target_version)
+                .expect("target migration should be embedded")
+                .checksum
+                .to_vec();
+            sqlx::query(
+                r#"
+INSERT INTO _sqlx_migrations (
+    version, description, success, checksum, execution_time
+) VALUES (?, ?, TRUE, ?, 0)
+                "#,
+            )
+            .bind(source_version)
+            .bind(description)
+            .bind(checksum)
+            .execute(&pool)
+            .await
+            .expect("historical migration row should insert");
+        }
+
+        repair_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect("known-good historical migration rows should repair");
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("forward state migrations should complete");
+
+        let applied = sqlx::query(
+            "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version IN (24, 25, 26, 27, 28, 29, 9000, 9001, 9002) ORDER BY version",
+        )
+        .fetch_all(&pool)
+            .await
+            .expect("repaired migration rows should load");
+        assert_eq!(applied.len(), 9);
+        for row in applied {
+            let version = row.get::<i64, _>("version");
+            let migration = STATE_MIGRATOR
+                .migrations
+                .iter()
+                .find(|migration| migration.version == version)
+                .expect("canonical migration should be embedded");
+            assert!(row.get::<bool, _>("success"));
+            assert_eq!(row.get::<String, _>("description"), migration.description.as_ref());
+            assert_eq!(row.get::<Vec<u8>, _>("checksum"), migration.checksum.to_vec());
+        }
+        let thread = sqlx::query(
+            "SELECT title, first_user_message, created_at_ms, updated_at_ms, preview, thread_source FROM threads WHERE id = ?",
+        )
+        .bind("thread-preserved")
+        .fetch_one(&pool)
+        .await
+        .expect("representative thread should survive forward migration");
+        assert_eq!(thread.get::<String, _>("title"), "legacy title");
+        assert_eq!(thread.get::<String, _>("first_user_message"), "legacy first message");
+        assert_eq!(thread.get::<i64, _>("created_at_ms"), 1_700_000_000_000);
+        assert_eq!(thread.get::<i64, _>("updated_at_ms"), 1_700_000_001_000);
+        assert_eq!(thread.get::<String, _>("preview"), "legacy first message");
+        assert_eq!(thread.get::<Option<String>, _>("thread_source"), None);
+        let dynamic_tool = sqlx::query(
+            "SELECT namespace, persist_on_resume, capability_json FROM thread_dynamic_tools WHERE thread_id = ?",
+        )
+        .bind("thread-preserved")
+        .fetch_one(&pool)
+        .await
+        .expect("representative dynamic tool should survive forward migration");
+        assert_eq!(dynamic_tool.get::<Option<String>, _>("namespace"), None);
+        assert_eq!(dynamic_tool.get::<i64, _>("persist_on_resume"), 1);
+        assert_eq!(dynamic_tool.get::<Option<String>, _>("capability_json"), None);
+        pool.close().await;
+
+        let reopened = sqlite
+            .open_read_write_pool(&state_path)
+            .await
+            .expect("reopened state database should open");
+        repair_state_migrations(&reopened, &STATE_MIGRATOR)
+            .await
+            .expect("second migration repair should be idempotent");
+        STATE_MIGRATOR
+            .run(&reopened)
+            .await
+            .expect("second forward migration should be idempotent");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM threads WHERE id = ?")
+                .bind("thread-preserved")
+                .fetch_one(&reopened)
+                .await
+                .expect("preserved thread should remain queryable"),
+            1
+        );
+        reopened.close().await;
     }
 }
