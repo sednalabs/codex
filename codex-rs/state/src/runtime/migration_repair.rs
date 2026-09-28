@@ -1,7 +1,63 @@
 use anyhow::Context;
 use sqlx::SqlitePool;
+use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+
+#[derive(Debug)]
+struct MigrationHistoryMove {
+    source_version: i64,
+    source_description: &'static str,
+    target_version: i64,
+}
+
+const SHIFTED_STATE_MIGRATION_MOVES: &[MigrationHistoryMove] = &[
+    MigrationHistoryMove {
+        source_version: 24,
+        source_description: "phase2_attestation_roots",
+        target_version: 9000,
+    },
+    MigrationHistoryMove {
+        source_version: 25,
+        source_description: "remote_control_enrollments",
+        target_version: 24,
+    },
+    MigrationHistoryMove {
+        source_version: 26,
+        source_description: "thread_timestamps_millis",
+        target_version: 25,
+    },
+    MigrationHistoryMove {
+        source_version: 27,
+        source_description: "thread_dynamic_tools_persist_on_resume",
+        target_version: 9001,
+    },
+    MigrationHistoryMove {
+        source_version: 28,
+        source_description: "thread_dynamic_tools_capability_json",
+        target_version: 9002,
+    },
+    MigrationHistoryMove {
+        source_version: 29,
+        source_description: "thread_dynamic_tools_namespace",
+        target_version: 26,
+    },
+    MigrationHistoryMove {
+        source_version: 30,
+        source_description: "threads_cwd_sort_indexes",
+        target_version: 27,
+    },
+    MigrationHistoryMove {
+        source_version: 31,
+        source_description: "device_key_bindings",
+        target_version: 28,
+    },
+    MigrationHistoryMove {
+        source_version: 32,
+        source_description: "thread_goals",
+        target_version: 29,
+    },
+];
 
 struct ColumnMigrationRepair {
     version: i64,
@@ -19,10 +75,132 @@ pub(crate) async fn repair_state_migrations(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
+    repair_shifted_state_migrations(pool, migrator).await?;
     for repair in COLUMN_MIGRATION_REPAIRS {
         repair_column_migration(pool, migrator, repair).await?;
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct AppliedMigrationRow {
+    version: i64,
+    description: String,
+    success: bool,
+    checksum: Vec<u8>,
+}
+
+async fn repair_shifted_state_migrations(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    if !table_exists(pool, "_sqlx_migrations").await? {
+        return Ok(());
+    }
+
+    let rows = sqlx::query(
+        r#"
+        SELECT version, description, success, checksum
+        FROM _sqlx_migrations
+        WHERE version BETWEEN 24 AND 32 OR version IN (9000, 9001, 9002)
+        ORDER BY version
+        "#,
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok(AppliedMigrationRow {
+            version: row.try_get("version")?,
+            description: row.try_get("description")?,
+            success: row.try_get("success")?,
+            checksum: row.try_get("checksum")?,
+        })
+    })
+    .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut moves = Vec::new();
+    for row in &rows {
+        if migration_checksum_matches(migrator, row.version, &row.checksum) {
+            continue;
+        }
+        let Some(migration_move) = SHIFTED_STATE_MIGRATION_MOVES
+            .iter()
+            .find(|migration_move| migration_move.source_version == row.version)
+        else {
+            anyhow::bail!(
+                "state DB migration history contains unknown shifted migration version {}; refusing automatic repair",
+                row.version
+            );
+        };
+        if !row.success {
+            anyhow::bail!(
+                "state DB migration {} is marked unsuccessful; refusing automatic repair",
+                row.version
+            );
+        }
+        if row.description != migration_move.source_description {
+            anyhow::bail!(
+                "state DB migration {} has unexpected description; refusing automatic repair",
+                row.version
+            );
+        }
+        if !migration_checksum_matches(migrator, migration_move.target_version, &row.checksum) {
+            anyhow::bail!(
+                "state DB migration {} has an unknown checksum; refusing automatic repair",
+                row.version
+            );
+        }
+        moves.push(migration_move);
+    }
+    if moves.is_empty() {
+        return Ok(());
+    }
+
+    for migration_move in &moves {
+        if rows.iter().any(|row| {
+            row.version == migration_move.target_version
+                && !moves.iter().any(|item| item.source_version == row.version)
+        }) {
+            anyhow::bail!(
+                "state DB migration repair would overwrite existing migration {}; refusing automatic repair",
+                migration_move.target_version
+            );
+        }
+    }
+
+    let mut tx = pool.begin().await?;
+    for migration_move in &moves {
+        sqlx::query("UPDATE _sqlx_migrations SET version = ? WHERE version = ?")
+            .bind(temporary_repair_version(migration_move.source_version))
+            .bind(migration_move.source_version)
+            .execute(&mut *tx)
+            .await?;
+    }
+    for migration_move in moves {
+        let migration = migration_by_version(migrator, migration_move.target_version)
+            .with_context(|| format!("embedded state migration {} is missing", migration_move.target_version))?;
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = ?",
+        )
+        .bind(migration_move.target_version)
+        .bind(migration.description.as_ref())
+        .bind(migration.checksum.as_ref())
+        .bind(temporary_repair_version(migration_move.source_version))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+fn migration_checksum_matches(migrator: &Migrator, version: i64, checksum: &[u8]) -> bool {
+    migration_by_version(migrator, version)
+        .is_some_and(|migration| migration.checksum.as_ref() == checksum)
+}
+
+fn temporary_repair_version(version: i64) -> i64 {
+    -9_000_000 - version
 }
 
 async fn repair_column_migration(
