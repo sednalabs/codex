@@ -87,24 +87,24 @@ async fn repair_dynamic_tool_state_overlap(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
-    let migration = migration_by_version(migrator, 58)
+    let migration = migration_by_version(migrator, /*version*/ 58)
         .with_context(|| "embedded state migration 58 is missing")?;
-    let migration_9001 = migration_by_version(migrator, 9001)
+    let migration_9001 = migration_by_version(migrator, /*version*/ 9001)
         .with_context(|| "embedded state migration 9001 is missing")?;
-    let migration_9002 = migration_by_version(migrator, 9002)
+    let migration_9002 = migration_by_version(migrator, /*version*/ 9002)
         .with_context(|| "embedded state migration 9002 is missing")?;
-    let migration_58_row = migration_record(pool, 58).await?;
+    let migration_58_row = migration_record(pool, /*version*/ 58).await?;
     let persist_on_resume =
         column_exists(pool, "thread_dynamic_tools", "persist_on_resume").await?;
     let capability_json = column_exists(pool, "thread_dynamic_tools", "capability_json").await?;
     let namespace_description =
         column_exists(pool, "thread_dynamic_tools", "namespace_description").await?;
 
-    let migration_9001_row = migration_record(pool, 9001).await?;
-    let migration_9002_row = migration_record(pool, 9002).await?;
+    let migration_9001_row = migration_record(pool, /*version*/ 9001).await?;
+    let migration_9002_row = migration_record(pool, /*version*/ 9002).await?;
 
     if let Some(row) = migration_58_row {
-        validate_canonical_migration_row(&row, migration, 58)?;
+        validate_canonical_migration_row(&row, migration, /*version*/ 58)?;
         if !(persist_on_resume && capability_json && namespace_description) {
             anyhow::bail!(
                 "state DB migration 58 is recorded but its columns are incomplete; refusing automatic repair"
@@ -112,8 +112,8 @@ async fn repair_dynamic_tool_state_overlap(
         }
         match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
             (Some(row), Some(row_2)) => {
-                validate_canonical_migration_row(row, migration_9001, 9001)?;
-                validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+                validate_canonical_migration_row(row, migration_9001, /*version*/ 9001)?;
+                validate_canonical_migration_row(row_2, migration_9002, /*version*/ 9002)?;
             }
             (None, None) => {
                 mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
@@ -129,8 +129,8 @@ async fn repair_dynamic_tool_state_overlap(
         (false, false, false) => {
             match (migration_9001_row.as_ref(), migration_9002_row.as_ref()) {
                 (Some(row), Some(row_2)) => {
-                    validate_canonical_migration_row(row, migration_9001, 9001)?;
-                    validate_canonical_migration_row(row_2, migration_9002, 9002)?;
+                    validate_canonical_migration_row(row, migration_9001, /*version*/ 9001)?;
+                    validate_canonical_migration_row(row_2, migration_9002, /*version*/ 9002)?;
                 }
                 (None, None) => {
                     mark_alias_migrations_applied(pool, migration_9001, migration_9002).await?;
@@ -153,7 +153,7 @@ async fn repair_dynamic_tool_state_overlap(
         let row = migration_record(pool, version)
             .await?
             .with_context(|| format!("state DB migration {version} history is missing"))?;
-        validate_canonical_migration_row(&row, expected, version)?;
+        validate_canonical_migration_row(&row, expected, /*version*/ version)?;
     }
 
     let mut tx = pool.begin().await?;
