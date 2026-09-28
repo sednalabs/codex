@@ -674,9 +674,9 @@ state-migration-repair-targeted:
     cargo test -p codex-state migrations::tests::repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
-# Codex authoritative usage.sqlite logging contracts.
+# Codex usage-ledger migration and credit-rate compatibility contracts.
 core-ledger-smoke:
-    cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
+    cargo nextest run -p codex-state --no-fail-fast -- runtime::usage_migration_compat::tests::usage_migrator_covers_supported_credit_models runtime::usage_migration_compat::tests::usage_migrator_has_current_standard_credit_rates runtime::usage_migration_compat::tests::preserves_known_old_main_checksums_in_memory runtime::usage_migration_compat::tests::respects_custom_migration_table_name runtime::usage_migration_compat::tests::leaves_unknown_checksums_for_sqlx_to_reject runtime::usage_migration_compat::tests::upgrades_old_main_views_without_rewriting_history --exact
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 

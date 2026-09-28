@@ -3580,59 +3580,63 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it() -> Result<()>
-    {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let config = build_config(&codex_home).await;
-        let source_thread_id = ThreadId::from_string(
-            &create_fake_rollout(
-                codex_home.path(),
-                "2025-01-05T12-00-00",
-                "2025-01-05T12:00:00Z",
-                "Saved user message",
-                Some(config.model_provider_id.as_str()),
-                /*git_info*/ None,
-            )
-            .expect("create source rollout"),
-        )?;
-        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
-        app_server
-            .resume_thread(
-                &LocalSettings::from(&config),
-                config.clone(),
-                source_thread_id,
-                ResumeModelSettings::RestoreFromThread,
-            )
-            .await?;
-        app_server
-            .thread_set_name(source_thread_id, "Source thread".to_string())
-            .await?;
+    #[test]
+    fn side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it() -> Result<()> {
+        crate::test_support::run_large_stack_test(
+            "side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it",
+            || async {
+                let codex_home = tempfile::tempdir().expect("tempdir");
+                let config = build_config(&codex_home).await;
+                let source_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2025-01-05T12-00-00",
+                        "2025-01-05T12:00:00Z",
+                        "Saved user message",
+                        Some(config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create source rollout"),
+                )?;
+                let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+                app_server
+                    .resume_thread(
+                        &LocalSettings::from(&config),
+                        config.clone(),
+                        source_thread_id,
+                        ResumeModelSettings::RestoreFromThread,
+                    )
+                    .await?;
+                app_server
+                    .thread_set_name(source_thread_id, "Source thread".to_string())
+                    .await?;
 
-        let mut ephemeral_config = config;
-        ephemeral_config.ephemeral = true;
-        let normal_ephemeral_fork = app_server
-            .fork_thread(
-                &LocalSettings::from(&ephemeral_config),
-                ephemeral_config.clone(),
-                source_thread_id,
-            )
-            .await?;
-        let side_fork = app_server
-            .fork_side_thread(
-                &LocalSettings::from(&ephemeral_config),
-                ephemeral_config,
-                source_thread_id,
-            )
-            .await?;
+                let mut ephemeral_config = config;
+                ephemeral_config.ephemeral = true;
+                let normal_ephemeral_fork = app_server
+                    .fork_thread(
+                        &LocalSettings::from(&ephemeral_config),
+                        ephemeral_config.clone(),
+                        source_thread_id,
+                    )
+                    .await?;
+                let side_fork = app_server
+                    .fork_side_thread(
+                        &LocalSettings::from(&ephemeral_config),
+                        ephemeral_config,
+                        source_thread_id,
+                    )
+                    .await?;
 
-        assert_eq!(
-            normal_ephemeral_fork.session.fork_parent_title.as_deref(),
-            Some("Source thread")
-        );
-        assert_eq!(side_fork.session.fork_parent_title, None);
-        app_server.shutdown().await?;
-        Ok(())
+                assert_eq!(
+                    normal_ephemeral_fork.session.fork_parent_title.as_deref(),
+                    Some("Source thread")
+                );
+                assert_eq!(side_fork.session.fork_parent_title, None);
+                app_server.shutdown().await?;
+                Ok(())
+            },
+        )
     }
 
     #[tokio::test]
@@ -3857,43 +3861,48 @@ mod tests {
         assert_eq!(params.base_instructions, None);
     }
 
-    #[tokio::test]
-    async fn side_fork_excludes_turns_without_clearing_regular_ephemeral_fork() -> Result<()> {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let mut config = build_config(&codex_home).await;
-        config.ephemeral = true;
-        let thread_id = ThreadId::from_string(
-            &create_fake_rollout(
-                codex_home.path(),
-                "2025-01-05T12-00-00",
-                "2025-01-05T12:00:00Z",
-                "Saved user message",
-                Some(config.model_provider_id.as_str()),
-                /*git_info*/ None,
-            )
-            .expect("create rollout"),
-        )?;
-        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+    #[test]
+    fn side_fork_excludes_turns_without_clearing_regular_ephemeral_fork() -> Result<()> {
+        crate::test_support::run_large_stack_test(
+            "side_fork_excludes_turns_without_clearing_regular_ephemeral_fork",
+            || async {
+                let codex_home = tempfile::tempdir().expect("tempdir");
+                let mut config = build_config(&codex_home).await;
+                config.ephemeral = true;
+                let thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2025-01-05T12-00-00",
+                        "2025-01-05T12:00:00Z",
+                        "Saved user message",
+                        Some(config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create rollout"),
+                )?;
+                let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
 
-        let regular = app_server
-            .fork_thread(&LocalSettings::from(&config), config.clone(), thread_id)
-            .await?;
-        let side = app_server
-            .fork_side_thread(&LocalSettings::from(&config), config, thread_id)
-            .await?;
+                let regular = app_server
+                    .fork_thread(&LocalSettings::from(&config), config.clone(), thread_id)
+                    .await?;
+                let side = app_server
+                    .fork_side_thread(&LocalSettings::from(&config), config, thread_id)
+                    .await?;
 
-        assert_eq!(regular.turns.len(), 1);
-        assert!(matches!(
-            regular.turns[0].items.as_slice(),
-            [codex_app_server_protocol::ThreadItem::UserMessage { content, .. }]
-                if content == &[UserInput::Text {
-                    text: "Saved user message".to_string(),
-                    text_elements: Vec::new(),
-                }]
-        ));
-        assert_eq!(side.turns, Vec::<Turn>::new());
-        app_server.shutdown().await?;
-        Ok(())
+                assert_eq!(regular.turns.len(), 1);
+                assert!(matches!(
+                    regular.turns[0].items.as_slice(),
+                    [codex_app_server_protocol::ThreadItem::UserMessage { content, .. }]
+                        if content == &[UserInput::Text {
+                            text: "Saved user message".to_string(),
+                            text_elements: Vec::new(),
+                        }]
+                ));
+                assert_eq!(side.turns, Vec::<Turn>::new());
+                app_server.shutdown().await?;
+                Ok(())
+            },
+        )
     }
 
     #[tokio::test]

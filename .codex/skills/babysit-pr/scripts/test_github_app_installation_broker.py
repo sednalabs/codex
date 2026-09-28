@@ -611,7 +611,7 @@ class BrokerTests(unittest.TestCase):
             gh = temp_path / "gh"
             argv_log = temp_path / "gh-argv.log"
             gh.write_text(
-                "#!/usr/bin/env python3\n"
+                f"#!{sys.executable}\n"
                 "import json, os, pathlib, subprocess, sys\n"
                 f"pathlib.Path({str(argv_log)!r}).open('a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
                 "assert os.environ.get('GH_HOST') == 'github.com'\n"
