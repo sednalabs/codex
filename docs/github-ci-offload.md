@@ -6,6 +6,7 @@ artifacts.
 ## Lanes
 
 - `validation-named-tests`
+
   - trigger: explicit manual dispatch through `scripts/validate`
   - purpose: hosted, exact named-test proof for one Cargo package/target seam
   - contract: accepts a `rust-tests-v1` typed JSON request, selects a target
