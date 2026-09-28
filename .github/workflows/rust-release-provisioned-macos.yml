@@ -117,7 +117,7 @@ jobs:
 
   verify:
     needs: sign
-    runs-on: macos-15-xlarge
+    runs-on: macos-15
     timeout-minutes: 30
     environment:
       name: codesigning
