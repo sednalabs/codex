@@ -125,11 +125,12 @@ mod tests {
     use crate::migrations::runtime_usage_migrator;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
+    use sqlx::AssertSqlSafe;
+    use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::migrate::Migration;
     use sqlx::raw_sql;
     use std::collections::BTreeSet;
-    use std::borrow::Cow;
 
     async fn test_pool() -> SqlitePool {
         let codex_home = unique_temp_dir();
@@ -170,7 +171,7 @@ mod tests {
             current.version,
             current.description.clone(),
             current.migration_type,
-            Cow::Owned(sql),
+            AssertSqlSafe(sql).into_sql_str(),
             current.no_tx,
         )
     }
