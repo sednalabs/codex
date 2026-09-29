@@ -502,6 +502,7 @@ app-server-collab-spawn-identity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
 
 # Focused analytics and protocol consumer slice for collab-spawn requested identity.
+[unix]
 collab-spawn-identity-consumers-targeted:
     @for test_spec in \
         'codex-analytics|tests::suite::events::turn_event_counts_completed_tool_items' \
