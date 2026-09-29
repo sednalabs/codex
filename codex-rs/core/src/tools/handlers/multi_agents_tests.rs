@@ -2941,8 +2941,10 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed. Wait outcome: unattributed_mailbox_activity.".to_string(),
             timed_out: false,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::UnattributedMailboxActivity),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -2987,9 +2989,11 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message:
-                "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
+                "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms. Wait outcome: timeout."
                     .to_string(),
             timed_out: true,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::Timeout),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3023,8 +3027,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
+            message: "Wait timed out. Wait outcome: timeout.".to_string(),
             timed_out: true,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::Timeout),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3078,8 +3084,10 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
+            message: "Wait timed out. Wait outcome: timeout.".to_string(),
             timed_out: true,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::Timeout),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3118,8 +3126,10 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
+            message: "Wait timed out. Wait outcome: timeout.".to_string(),
             timed_out: true,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::Timeout),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3183,8 +3193,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
+            message: "Wait timed out. Wait outcome: timeout.".to_string(),
             timed_out: true,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::Timeout),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3445,8 +3457,10 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed. Wait outcome: unattributed_mailbox_activity.".to_string(),
             timed_out: false,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::UnattributedMailboxActivity),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3529,8 +3543,10 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed. Wait outcome: unattributed_mailbox_activity.".to_string(),
             timed_out: false,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::UnattributedMailboxActivity),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3623,8 +3639,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed. Wait outcome: unattributed_mailbox_activity.".to_string(),
             timed_out: false,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::UnattributedMailboxActivity),
+            queued_update_count: None,
         }
     );
     assert_eq!(success, None);
@@ -3714,8 +3732,10 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Wait completed. Wait outcome: unattributed_mailbox_activity.".to_string(),
             timed_out: false,
+            outcome: Some(codex_protocol::items::WaitAgentOutcome::UnattributedMailboxActivity),
+            queued_update_count: None,
         }
     );
     assert!(!content.contains("sensitive child output"));

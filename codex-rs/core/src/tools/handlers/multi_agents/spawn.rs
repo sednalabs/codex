@@ -85,6 +85,8 @@ async fn handle_spawn_agent(
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(prompt.clone()),
                 model: Some(args.model.clone().unwrap_or_default()),
                 reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),

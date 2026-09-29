@@ -8,10 +8,12 @@ expression: snapshot
 • Sent input to Robie [explorer]
   └ Please continue and return the answer only.
 
-• Waiting for Robie [explorer]
+• Waiting for Projected Robie [researcher]
 
 • Finished waiting
-  └ Robie [explorer]: Completed - 39916800
+  └ Projected Robie [researcher]: Completed - 39916800
     Bob [worker]: Error - tool timeout
+    Wait outcome: Exact-target actionable message
+    Quiet queued updates: 2 (did not wake this wait)
 
 • Closed Robie [explorer]

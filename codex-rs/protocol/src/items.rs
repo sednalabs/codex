@@ -338,6 +338,26 @@ pub enum CollabAgentToolCallStatus {
     Interrupted,
 }
 
+/// The observed reason a V2 `wait_agent` call returned.
+///
+/// This records the event that actually completed the wait. It is deliberately
+/// separate from queued-update metadata: quiet mailbox progress can remain
+/// queued without causing a wait to return.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitAgentOutcome {
+    TargetTerminalAny,
+    TargetTerminalAll,
+    ExactTargetActionableMessage,
+    TargetlessActionableMessage,
+    UnattributedMailboxActivity,
+    AmbiguousMailboxActivity,
+    TerminalCompletion,
+    OperatorSteer,
+    Timeout,
+    SubscriptionLoss,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
     pub id: String,
@@ -348,6 +368,15 @@ pub struct CollabAgentToolCallItem {
     pub receiver_thread_ids: Vec<ThreadId>,
     #[serde(default)]
     pub receiver_agents: Vec<CollabAgentRef>,
+    /// Actual completion reason for a V2 wait call, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_outcome: Option<WaitAgentOutcome>,
+    /// Count of newly published quiet mailbox updates still queued when the
+    /// wait completed. This is metadata only and does not imply a wake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queued_update_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub prompt: Option<String>,
@@ -792,6 +821,31 @@ mod tests {
                 "id": "sleep-1",
                 "durationMs": 1_000,
             })
+        );
+    }
+
+    #[test]
+    fn collab_wait_projection_defaults_for_legacy_items() {
+        let item: CollabAgentToolCallItem = serde_json::from_value(json!({
+            "id": "wait-1",
+            "tool": "wait",
+            "status": "in_progress",
+            "sender_thread_id": "00000000-0000-0000-0000-000000000001",
+            "agents_states": {},
+        }))
+        .expect("deserialize legacy collab wait item");
+
+        assert!(item.receiver_agents.is_empty());
+        assert_eq!(item.wait_outcome, None);
+        assert_eq!(item.queued_update_count, None);
+    }
+
+    #[test]
+    fn wait_outcome_uses_stable_snake_case_wire_values() {
+        assert_eq!(
+            serde_json::to_value(WaitAgentOutcome::AmbiguousMailboxActivity)
+                .expect("serialize wait outcome"),
+            json!("ambiguous_mailbox_activity")
         );
     }
 

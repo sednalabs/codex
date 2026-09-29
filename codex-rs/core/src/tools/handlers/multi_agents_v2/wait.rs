@@ -5,6 +5,8 @@ use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_protocol::ThreadId;
+use codex_protocol::items::CollabAgentRef;
+use codex_protocol::items::WaitAgentOutcome;
 use codex_protocol::protocol::AgentStatus;
 use codex_tools::ToolSpec;
 use futures::FutureExt;
@@ -201,7 +203,9 @@ impl Handler {
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: target_ids.clone(),
-                    receiver_agents: Vec::new(),
+                    receiver_agents: receiver_agent_refs(&session, &target_ids),
+                    wait_outcome: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
@@ -227,21 +231,38 @@ impl Handler {
         })
         .await;
 
+        let queued_update_count = if args.native_event_wait {
+            Some(queued_non_waking_mailbox_count(
+                &session.input_queue.pending_mailbox_authors().await,
+                mailbox_generation,
+            ))
+        } else {
+            None
+        };
+
         let mut message = reason.message();
         if let Some(requested) = args.timeout_ms.filter(|requested| *requested < timeout_ms) {
             message = format!(
                 "{message}\n\nRequested timeout of {requested}ms was clamped to the minimum of {timeout_ms}ms."
             );
         }
-        if args.native_event_wait {
+        message = format!(
+            "{message} Wait outcome: {}.",
+            wait_outcome_label(reason.outcome()),
+        );
+        if let Some(count) = queued_update_count {
             message = format!(
-                "{message} Wake cause: {}; origin: {}; disposition: {}.",
-                reason.wake_cause(),
-                reason.notification_origin(),
-                reason.delivery_disposition()
+                "{message} Quiet queued updates: {count} (did not wake this wait)."
             );
         }
-        let result = WaitAgentResult { message, timed_out };
+        let outcome = reason.outcome();
+        let completed_receiver_agents = receiver_agent_refs(&session, &target_ids);
+        let result = WaitAgentResult {
+            message,
+            timed_out,
+            outcome: Some(outcome),
+            queued_update_count,
+        };
         session
             .emit_turn_item_completed(
                 &turn,
@@ -251,7 +272,9 @@ impl Handler {
                     status: CollabAgentToolCallStatus::Completed,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: target_ids,
-                    receiver_agents: Vec::new(),
+                    receiver_agents: completed_receiver_agents,
+                    wait_outcome: Some(outcome),
+                    queued_update_count,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
@@ -293,6 +316,10 @@ enum ReturnWhen {
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) outcome: Option<WaitAgentOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) queued_update_count: Option<u32>,
 }
 
 impl ToolOutput for WaitAgentResult {
@@ -312,8 +339,11 @@ impl ToolOutput for WaitAgentResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WaitReason {
-    TargetTerminal,
-    Mailbox,
+    TargetTerminal(ReturnWhen),
+    ExactTargetActionableMessage,
+    TargetlessActionableMessage,
+    UnattributedMailboxActivity,
+    AmbiguousMailboxActivity,
     TerminalCompletion,
     Steer,
     Timeout,
@@ -323,7 +353,9 @@ enum WaitReason {
 impl WaitReason {
     fn message(self) -> String {
         match self {
-            Self::TargetTerminal | Self::Mailbox | Self::TerminalCompletion => {
+            Self::TargetTerminal(_) | Self::ExactTargetActionableMessage
+            | Self::TargetlessActionableMessage | Self::UnattributedMailboxActivity
+            | Self::AmbiguousMailboxActivity | Self::TerminalCompletion => {
                 "Wait completed.".into()
             }
             Self::Steer => "Wait interrupted by new input.".into(),
@@ -331,35 +363,36 @@ impl WaitReason {
             Self::SubscriptionLoss => "Wait ended because an event subscription was lost.".into(),
         }
     }
-    fn wake_cause(self) -> &'static str {
+    fn outcome(self) -> WaitAgentOutcome {
         match self {
-            Self::TargetTerminal => "target_terminal",
-            Self::Mailbox => "target_actionable_message",
-            Self::TerminalCompletion => "terminal_completion",
-            Self::Steer => "operator_message",
-            Self::Timeout => "timeout_lease_expiry",
-            Self::SubscriptionLoss => "runtime_system_event",
+            Self::TargetTerminal(ReturnWhen::Any) => WaitAgentOutcome::TargetTerminalAny,
+            Self::TargetTerminal(ReturnWhen::All) => WaitAgentOutcome::TargetTerminalAll,
+            Self::ExactTargetActionableMessage => {
+                WaitAgentOutcome::ExactTargetActionableMessage
+            }
+            Self::TargetlessActionableMessage => WaitAgentOutcome::TargetlessActionableMessage,
+            Self::UnattributedMailboxActivity => WaitAgentOutcome::UnattributedMailboxActivity,
+            Self::AmbiguousMailboxActivity => WaitAgentOutcome::AmbiguousMailboxActivity,
+            Self::TerminalCompletion => WaitAgentOutcome::TerminalCompletion,
+            Self::Steer => WaitAgentOutcome::OperatorSteer,
+            Self::Timeout => WaitAgentOutcome::Timeout,
+            Self::SubscriptionLoss => WaitAgentOutcome::SubscriptionLoss,
         }
     }
-    fn notification_origin(self) -> &'static str {
-        match self {
-            Self::Mailbox => "agent_mailbox",
-            Self::TerminalCompletion => "unified_exec",
-            Self::Steer => "operator",
-            Self::TargetTerminal => "agent_status",
-            Self::Timeout => "runtime",
-            Self::SubscriptionLoss => "runtime",
-        }
-    }
-    fn delivery_disposition(self) -> &'static str {
-        match self {
-            Self::Mailbox => "queued",
-            Self::TerminalCompletion => "terminal",
-            Self::Steer => "turn_triggered",
-            Self::TargetTerminal => "terminal",
-            Self::Timeout => "lease_expired",
-            Self::SubscriptionLoss => "lost",
-        }
+}
+
+fn wait_outcome_label(outcome: WaitAgentOutcome) -> &'static str {
+    match outcome {
+        WaitAgentOutcome::TargetTerminalAny => "target_terminal_any",
+        WaitAgentOutcome::TargetTerminalAll => "target_terminal_all",
+        WaitAgentOutcome::ExactTargetActionableMessage => "exact_target_actionable_message",
+        WaitAgentOutcome::TargetlessActionableMessage => "targetless_actionable_message",
+        WaitAgentOutcome::UnattributedMailboxActivity => "unattributed_mailbox_activity",
+        WaitAgentOutcome::AmbiguousMailboxActivity => "ambiguous_mailbox_activity",
+        WaitAgentOutcome::TerminalCompletion => "terminal_completion",
+        WaitAgentOutcome::OperatorSteer => "operator_steer",
+        WaitAgentOutcome::Timeout => "timeout",
+        WaitAgentOutcome::SubscriptionLoss => "subscription_loss",
     }
 }
 
@@ -412,7 +445,7 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         pending_mailbox,
     } = context;
     if terminal_rule_satisfied(target_ids, return_when, statuses) {
-        return (WaitReason::TargetTerminal, false);
+        return (WaitReason::TargetTerminal(return_when), false);
     }
     if matches!(
         pending_activity,
@@ -424,21 +457,23 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         return (WaitReason::Steer, false);
     }
     if native_event_wait
-        && mailbox_wake_matches(
+        && let Some(reason) = mailbox_wake_reason(
             target_ids,
             target_paths,
             pending_mailbox,
             mailbox_generation,
         )
     {
-        return (WaitReason::Mailbox, false);
+        return (reason, false);
     }
     if !native_event_wait {
         if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
             return (WaitReason::Steer, false);
         }
         match pending_activity {
-            Some(InputQueueActivity::Mailbox) => return (WaitReason::Mailbox, false),
+            Some(InputQueueActivity::Mailbox) => {
+                return (WaitReason::UnattributedMailboxActivity, false);
+            }
             Some(InputQueueActivity::TerminalCompletion) => {
                 return (WaitReason::TerminalCompletion, false);
             }
@@ -462,26 +497,33 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                         }
                     }
                     if terminal_rule_satisfied(target_ids, return_when, statuses) {
-                        return (WaitReason::TargetTerminal, false);
+                        return (WaitReason::TargetTerminal(return_when), false);
                     }
                 }
                 if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
                     && !native_event_wait
                 {
                     if terminal_rule_satisfied(target_ids, return_when, statuses) {
-                        return (WaitReason::TargetTerminal, false);
+                        return (WaitReason::TargetTerminal(return_when), false);
                     }
-                    return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false);
+                    return (
+                        if activity == InputQueueActivity::TerminalCompletion {
+                            WaitReason::TerminalCompletion
+                        } else {
+                            WaitReason::UnattributedMailboxActivity
+                        },
+                        false,
+                    );
                 }
                 if native_event_wait && matches!(activity, InputQueueActivity::Mailbox) {
                     let pending_mailbox = session.input_queue.pending_mailbox_authors().await;
-                    if mailbox_wake_matches(
+                    if let Some(reason) = mailbox_wake_reason(
                         target_ids,
                         target_paths,
                         &pending_mailbox,
                         mailbox_generation,
                     ) {
-                        return (WaitReason::Mailbox, false);
+                        return (reason, false);
                     }
                 }
             }
@@ -490,7 +532,7 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                 if changed.is_err() { return (WaitReason::SubscriptionLoss, false); }
                 let value = rx.borrow().clone();
                 if is_final(&value) { statuses.insert(id, value); }
-                if terminal_rule_satisfied(target_ids, return_when, statuses) { return (WaitReason::TargetTerminal, false); }
+                if terminal_rule_satisfied(target_ids, return_when, statuses) { return (WaitReason::TargetTerminal(return_when), false); }
                 status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -504,19 +546,84 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
     }
 }
 
+fn mailbox_wake_reason(
+    target_ids: &[ThreadId],
+    target_paths: &[codex_protocol::AgentPath],
+    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
+    mailbox_generation: u64,
+) -> Option<WaitReason> {
+    let newly_actionable = pending_mailbox
+        .iter()
+        .filter(|(_, sequence, trigger_turn)| {
+            *sequence > mailbox_generation && *trigger_turn
+        })
+        .collect::<Vec<_>>();
+    if newly_actionable.is_empty() {
+        return None;
+    }
+
+    if target_ids.is_empty() {
+        return Some(if newly_actionable.len() == 1 {
+            WaitReason::TargetlessActionableMessage
+        } else {
+            WaitReason::AmbiguousMailboxActivity
+        });
+    }
+
+    let eligible = newly_actionable
+        .iter()
+        .filter(|(author, _, _)| target_paths.contains(author))
+        .count();
+    if eligible == 0 {
+        return None;
+    }
+    let outside_targets = newly_actionable.len().saturating_sub(eligible);
+    Some(if eligible == 1 && outside_targets == 0 {
+        WaitReason::ExactTargetActionableMessage
+    } else {
+        WaitReason::AmbiguousMailboxActivity
+    })
+}
+
 fn mailbox_wake_matches(
     target_ids: &[ThreadId],
     target_paths: &[codex_protocol::AgentPath],
     pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
     mailbox_generation: u64,
 ) -> bool {
+    mailbox_wake_reason(target_ids, target_paths, pending_mailbox, mailbox_generation).is_some()
+}
+
+fn queued_non_waking_mailbox_count(
+    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
+    mailbox_generation: u64,
+) -> u32 {
     pending_mailbox
         .iter()
-        .any(|(author, sequence, trigger_turn)| {
-            *sequence > mailbox_generation
-                && *trigger_turn
-                && (target_ids.is_empty() || target_paths.contains(author))
+        .filter(|(_, sequence, trigger_turn)| {
+            *sequence > mailbox_generation && !*trigger_turn
         })
+        .count()
+        .min(u32::MAX as usize) as u32
+}
+
+fn receiver_agent_refs(
+    session: &crate::session::session::Session,
+    receiver_thread_ids: &[ThreadId],
+) -> Vec<CollabAgentRef> {
+    receiver_thread_ids
+        .iter()
+        .map(|thread_id| {
+            let metadata = session.services.agent_control.get_agent_metadata(*thread_id);
+            CollabAgentRef {
+                thread_id: *thread_id,
+                agent_nickname: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.agent_nickname.clone()),
+                agent_role: metadata.and_then(|metadata| metadata.agent_role),
+            }
+        })
+        .collect()
 }
 
 fn terminal_rule_satisfied(
@@ -729,7 +836,7 @@ mod tests {
         second_tx
             .send(AgentStatus::Shutdown)
             .expect("second status receiver");
-        assert_eq!(wait.await, (WaitReason::TargetTerminal, false));
+        assert_eq!(wait.await, (WaitReason::TargetTerminal(ReturnWhen::All), false));
     }
 
     #[tokio::test]
@@ -804,7 +911,63 @@ mod tests {
                 Default::default(),
             )
             .await;
-        assert_eq!(wait.await, (WaitReason::Mailbox, false));
+        assert_eq!(
+            wait.await,
+            (WaitReason::TargetlessActionableMessage, false)
+        );
         tokio::time::resume();
+    }
+
+    #[test]
+    fn mailbox_outcome_requires_unique_causal_target() {
+        let worker = path("/root/worker");
+        let other = path("/root/other");
+        let target = ThreadId::new();
+        let targets = [target];
+        let target_paths = [worker.clone()];
+
+        let one_target = vec![(worker.clone(), 11, true)];
+        assert_eq!(
+            mailbox_wake_reason(&targets, &target_paths, &one_target, 10),
+            Some(WaitReason::ExactTargetActionableMessage)
+        );
+
+        let competing_targets = vec![(worker.clone(), 11, true), (worker.clone(), 12, true)];
+        assert_eq!(
+            mailbox_wake_reason(&targets, &target_paths, &competing_targets, 10),
+            Some(WaitReason::AmbiguousMailboxActivity)
+        );
+
+        let target_and_outside = vec![(worker.clone(), 11, true), (other, 12, true)];
+        assert_eq!(
+            mailbox_wake_reason(&targets, &target_paths, &target_and_outside, 10),
+            Some(WaitReason::AmbiguousMailboxActivity)
+        );
+
+        let queued_only = vec![(worker, 11, false)];
+        assert_eq!(
+            mailbox_wake_reason(&targets, &target_paths, &queued_only, 10),
+            None
+        );
+        assert_eq!(queued_non_waking_mailbox_count(&queued_only, 10), 1);
+        assert_eq!(queued_non_waking_mailbox_count(&queued_only, 11), 0);
+    }
+
+    #[test]
+    fn targetless_mailbox_outcome_marks_competing_messages_ambiguous() {
+        let one_message = vec![(path("/root/worker"), 11, true)];
+        assert_eq!(
+            mailbox_wake_reason(&[], &[], &one_message, 10),
+            Some(WaitReason::TargetlessActionableMessage)
+        );
+
+        let two_messages = vec![
+            (path("/root/worker"), 11, true),
+            (path("/root/other"), 12, true),
+        ];
+        assert_eq!(
+            mailbox_wake_reason(&[], &[], &two_messages, 10),
+            Some(WaitReason::AmbiguousMailboxActivity)
+        );
     }
 }

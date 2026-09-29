@@ -28,6 +28,8 @@ impl ToolCallAnalytics {
                 sender_thread_id: invocation.session.thread_id,
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
