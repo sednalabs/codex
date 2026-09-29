@@ -67,7 +67,7 @@
       "title": "Native multi-agent wait continuity and causal wake handling",
       "status": "p7-behavior-regression-pending-repair",
       "category": "agent-runtime",
-      "surface": ["queue-only mailbox filtering", "mailbox generation boundary", "actionable causal wake and provenance", "terminal-completion wake", "exact-target any/all waits"],
+      "surface": ["queue-only mailbox filtering", "mailbox generation boundary", "actionable causal wake and provenance", "terminal-completion wake", "turn-reopen semantics", "exact-target any/all waits"],
       "files": [
         "codex-rs/core/src/session/input_queue.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
