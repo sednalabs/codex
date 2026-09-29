@@ -26,6 +26,11 @@ def main() -> None:
         action="store_true",
         help="regenerate the precomputed experimental exports",
     )
+    parser.add_argument(
+        "--schema-only",
+        action="store_true",
+        help="skip regeneration of SDK artifacts derived from repository schemas",
+    )
     args = parser.parse_args()
 
     workspace_root = Path(__file__).resolve().parents[2]
@@ -57,7 +62,8 @@ def main() -> None:
 
     # Scratch exports and experimental-only bundles do not update checked-in SDK code.
     if (
-        not args.experimental
+        not args.schema_only
+        and not args.experimental
         and schema_root.resolve() == repository_schema_root.resolve()
     ):
         sdk_root = workspace_root.parent / "sdk" / "python"
