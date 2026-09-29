@@ -390,9 +390,29 @@ impl LocalAgentControl {
         {
             let _ = state.remove_thread(&agent_id).await;
             self.forget_v2_residency(agent_id);
+            self.forget_wait_status(agent_id);
             self.state.release_spawned_thread(agent_id);
         }
         result
+    }
+
+    pub(crate) fn forget_wait_status(&self, agent_id: ThreadId) {
+        if let Some(sender) = self
+            .wait_status_by_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&agent_id)
+        {
+            sender.send_replace(AgentWaitStatus {
+                status: AgentStatus::Shutdown,
+                turn_id: None,
+                logical_terminality: None,
+            });
+        }
+        self.last_terminal_publication_by_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&agent_id);
     }
 
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
