@@ -191,15 +191,15 @@ mod tests {
             goal_id: "goal-1".to_string(),
         };
         assert!(is_active_goal_continuation(&outcome(
-            AgentStatus::Completed("intermediate".to_string()),
+            AgentStatus::Completed(Some("intermediate".to_string())),
             Some(matching.clone()),
         )));
         assert!(!is_active_goal_continuation(&outcome(
-            AgentStatus::Completed("final".to_string()),
+            AgentStatus::Completed(Some("final".to_string())),
             None,
         )));
         assert!(!is_active_goal_continuation(&outcome(
-            AgentStatus::Completed("stale".to_string()),
+            AgentStatus::Completed(Some("stale".to_string())),
             Some(AgentTurnLogicalTerminality {
                 turn_id: "old-turn".to_string(),
                 ..matching.clone()

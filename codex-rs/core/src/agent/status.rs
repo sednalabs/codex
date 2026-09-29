@@ -60,7 +60,7 @@ mod tests {
         logical_turn_id: Option<&str>,
     ) -> AgentWaitStatus {
         AgentWaitStatus {
-            status: AgentStatus::Completed("turn result".to_string()),
+            status: AgentStatus::Completed(Some("turn result".to_string())),
             turn_id: turn_id.map(str::to_owned),
             logical_terminality: logical_turn_id.map(|logical_turn_id| {
                 AgentTurnLogicalTerminality {
@@ -90,7 +90,7 @@ mod tests {
             Some("turn-1")
         )));
         assert!(is_final_for_wait(&AgentWaitStatus {
-            status: AgentStatus::Completed("turn result".to_string()),
+            status: AgentStatus::Completed(Some("turn result".to_string())),
             turn_id: Some(String::new()),
             logical_terminality: Some(AgentTurnLogicalTerminality {
                 turn_id: String::new(),
