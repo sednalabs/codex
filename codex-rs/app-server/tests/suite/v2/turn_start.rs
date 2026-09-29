@@ -55,6 +55,8 @@ use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
@@ -4297,6 +4299,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_name": "researcher",
         "model": REQUESTED_MODEL,
         "reasoning_effort": REQUESTED_REASONING_EFFORT,
     }))?;
@@ -4307,7 +4310,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             responses::ev_response_created("resp-turn1-1"),
             responses::ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                "multi_agent_v1",
+                "multi_agent_v2",
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -4415,6 +4418,25 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         }
     );
 
+    // The activity notification is the producer-to-public-boundary join.
+    // Read it as JSON so this regression remains compile-valid on the
+    // baseline, where the optional identity fields do not yet exist in the
+    // Rust enum.
+    let activity = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                mcp.read_notification("item/completed").await?;
+            if let ThreadItem::SubAgentActivity { .. } = &completed.item {
+                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            }
+        }
+    })
+    .await??;
+    let activity_json = serde_json::to_value(&activity)?;
+    assert_eq!(activity_json["agentPath"], "/root/researcher");
+    assert_eq!(activity_json["model"], REQUESTED_MODEL);
+    assert_eq!(activity_json["reasoningEffort"], "low");
+
     let spawn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed: ItemCompletedNotification =
@@ -4478,6 +4500,21 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     .await??;
     assert_eq!(turn_completed.thread_id, thread.id);
     assert_eq!(turn_completed.turn.id, turn.turn.id);
+
+    // Force persisted cold replay through the public read boundary. The
+    // consumer-side TUI fixture separately renders this exact public item with
+    // an empty metadata cache.
+    let ThreadReadResponse { thread: replayed } = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: true,
+        })
+        .await?;
+    let replay_json = serde_json::to_value(replayed)?;
+    let replay_text = replay_json.to_string();
+    assert!(replay_text.contains("/root/researcher"));
+    assert!(replay_text.contains(REQUESTED_MODEL));
+    assert!(replay_text.contains("low"));
 
     let child_turn_event =
         wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
