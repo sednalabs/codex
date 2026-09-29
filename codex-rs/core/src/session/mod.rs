@@ -4590,6 +4590,7 @@ impl Session {
         response_id: &str,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
+        provider_call_usage: &codex_state::ProviderCallUsageRecord,
     ) {
         self.send_event(
             turn_context,
@@ -4600,6 +4601,18 @@ impl Session {
             }),
         )
         .await;
+        if let Some(state_db) = self.services.state_db.as_ref()
+            && let Err(err) = state_db
+                .record_provider_call_usage(provider_call_usage)
+                .await
+        {
+            tracing::warn!(
+                thread_id = %provider_call_usage.thread_id,
+                response_id,
+                error = %err,
+                "failed to persist completed provider response usage"
+            );
+        }
         let Some(usage) = usage else {
             return;
         };

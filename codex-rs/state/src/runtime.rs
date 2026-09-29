@@ -59,6 +59,7 @@ mod thread_attachments;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
+mod usage;
 pub(crate) mod usage_migration_compat;
 
 pub use configured_identity_provenance::ConfiguredIdentityProvenance;
@@ -81,6 +82,7 @@ pub use recovery::sqlite_error_detail_is_corruption;
 pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
+pub use usage::ProviderCallUsageRecord;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
