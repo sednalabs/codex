@@ -51,6 +51,29 @@
       ],
       "type": "object"
     },
+    "CollabAgentRef": {
+      "properties": {
+        "agentNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "CollabAgentState": {
       "properties": {
         "message": {
@@ -1313,6 +1336,15 @@
                 "null"
               ]
             },
+            "queuedUpdateCount": {
+              "description": "Newly published quiet mailbox updates still queued at completion.",
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
@@ -1323,6 +1355,16 @@
                 }
               ],
               "description": "Reasoning effort requested for the spawned agent, when applicable."
+            },
+            "receiverAgents": {
+              "description": "Receiver identity metadata captured when the wait began.",
+              "items": {
+                "$ref": "#/definitions/CollabAgentRef"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "receiverThreadIds": {
               "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
@@ -1357,6 +1399,17 @@
               ],
               "title": "CollabAgentToolCallThreadItemType",
               "type": "string"
+            },
+            "waitOutcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WaitAgentOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Actual reason a V2 wait call returned, when available."
             }
           },
           "required": [
@@ -1849,6 +1902,21 @@
           "type": "object"
         }
       ]
+    },
+    "WaitAgentOutcome": {
+      "enum": [
+        "targetTerminalAny",
+        "targetTerminalAll",
+        "exactTargetActionableMessage",
+        "targetlessActionableMessage",
+        "unattributedMailboxActivity",
+        "ambiguousMailboxActivity",
+        "terminalCompletion",
+        "operatorSteer",
+        "timeout",
+        "subscriptionLoss"
+      ],
+      "type": "string"
     },
     "WebSearchAction": {
       "oneOf": [
