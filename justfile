@@ -247,12 +247,18 @@ tui-agent-picker-targeted:
 tui-collab-spawn-identity-targeted:
     cargo build --locked -p codex-app-server --bin codex-app-server
     sha256sum target/debug/codex-app-server
-    @log="$(mktemp)"; trap 'rm -f "$log"' 0; if CARGO_BIN_EXE_codex_app_server="{{ justfile_directory() }}/codex-rs/target/debug/codex-app-server" cargo test --locked -p codex-tui chatwidget::tests::app_server::fork_acceptance_spawn_identity_survives_cold_replay --lib -- --exact --test-threads=1 >"$log" 2>&1; then cat "$log"; grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' "$log"; else status=$?; cat "$log"; exit "$status"; fi
-    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_collab_spawn_terminal_uses_only_explicit_effective_identity --lib -- --exact --test-threads=1
-    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective --lib -- --exact --test-threads=1
-    cargo test -p codex-tui chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity --lib -- --exact --test-threads=1
-    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort --lib -- --exact --test-threads=1
-    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata --lib -- --exact --test-threads=1
+    @for test_name in \
+        chatwidget::tests::app_server::fork_acceptance_spawn_identity_survives_cold_replay \
+        chatwidget::tests::app_server::sub_agent_activity_public_item_renders_once \
+        chatwidget::tests::app_server::collab_spawn_end_shows_requested_model_and_effort \
+        chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort; do \
+      log="$(mktemp)"; \
+      if CARGO_BIN_EXE_codex_app_server="{{ justfile_directory() }}/codex-rs/target/debug/codex-app-server" cargo test --locked -p codex-tui "$test_name" --lib -- --exact --test-threads=1 >"$log" 2>&1; then status=0; else status=$?; fi; \
+      cat "$log"; \
+      if [ "$status" -ne 0 ]; then rm -f "$log"; exit "$status"; fi; \
+      if ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' "$log"; then echo "expected exactly one passing test for $test_name" >&2; rm -f "$log"; exit 1; fi; \
+      rm -f "$log"; \
+    done
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
