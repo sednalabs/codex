@@ -783,7 +783,7 @@ mod tests {
             .open_read_write_pool(&sqlite.state_db_path())
             .await
             .expect("database should open");
-        known_good_legacy_migrator(true)
+        known_good_legacy_migrator(/*include_backfill*/ true)
             .run(&pool)
             .await
             .expect("legacy migrations should apply");
@@ -886,7 +886,7 @@ mod tests {
             .open_read_write_pool(&state_path)
             .await
             .expect("database should open");
-        let legacy_without_backfill = known_good_legacy_migrator(false);
+        let legacy_without_backfill = known_good_legacy_migrator(/*include_backfill*/ false);
         legacy_without_backfill
             .run(&pool)
             .await
@@ -922,7 +922,7 @@ INSERT INTO threads (
             .await
             .expect("representative thread should insert");
         }
-        let legacy = known_good_legacy_migrator(true);
+        let legacy = known_good_legacy_migrator(/*include_backfill*/ true);
         legacy
             .run(&pool)
             .await
