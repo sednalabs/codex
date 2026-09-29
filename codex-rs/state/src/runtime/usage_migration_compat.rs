@@ -7,16 +7,18 @@ use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 
-// These are the checksums recorded by the shipped old-main usage database.
-// They are intentionally exact: this is a compatibility map for two known
-// historical variants, not a general SQLx checksum bypass.
+// These are the SHA-384 checksums recorded by the shipped old-main usage
+// database. They are intentionally exact: this is a compatibility map for
+// two known historical variants, not a general SQLx checksum bypass.
 const OLD_MAIN_0001_CHECKSUM: &[u8] = &[
-    0xbc, 0x75, 0x42, 0xf2, 0x22, 0xc1, 0xa7, 0x8d, 0x2b, 0x18, 0xee, 0x26, 0xf0, 0x03, 0x79, 0xd9,
-    0xde, 0x56, 0x32, 0x4c, 0xd6, 0xbb, 0x80, 0x29, 0x2e, 0x9c, 0x49, 0x8a, 0x67, 0xb9, 0xda, 0x5c,
+    0xd5, 0x10, 0x0b, 0x3e, 0x67, 0xe9, 0x8f, 0xac, 0xdf, 0x91, 0xe0, 0x63, 0x34, 0x5e, 0xb8, 0x83,
+    0x0f, 0xc3, 0x1c, 0xde, 0x63, 0x40, 0x7e, 0x8f, 0xa6, 0xe0, 0xc0, 0x20, 0x2d, 0xd2, 0x3d, 0xf7,
+    0xb3, 0xdb, 0x1d, 0x4d, 0xcf, 0x5c, 0xf8, 0x71, 0xf5, 0x5a, 0x6d, 0x20, 0x44, 0x04, 0xd5, 0xa7,
 ];
 const OLD_MAIN_0005_CHECKSUM: &[u8] = &[
-    0x7a, 0x63, 0xe3, 0xcb, 0xca, 0x4d, 0x27, 0x51, 0x23, 0x18, 0xd4, 0xb0, 0x87, 0x4c, 0x64, 0xb9,
-    0x9b, 0x86, 0x7c, 0x7e, 0x72, 0x5c, 0xb1, 0xde, 0x41, 0xa1, 0xb3, 0x4e, 0xa7, 0x59, 0xe9, 0x0c,
+    0x81, 0x7a, 0x9d, 0x40, 0x2e, 0xeb, 0xf0, 0x82, 0x7a, 0x55, 0x82, 0xa6, 0x10, 0xdb, 0xff, 0xdc,
+    0x71, 0xa2, 0x7c, 0xc5, 0x8e, 0xef, 0xe5, 0xfd, 0x36, 0x85, 0xe7, 0x05, 0x80, 0x4a, 0xc1, 0x5e,
+    0x22, 0xea, 0x39, 0x3e, 0xf6, 0x5b, 0xc8, 0xeb, 0x39, 0x36, 0x1e, 0x15, 0xaf, 0x22, 0xe9, 0x8c,
 ];
 
 struct HistoricalVariant {
@@ -137,6 +139,50 @@ mod tests {
             .open_read_write_pool(&codex_home.join("usage.sqlite"))
             .await
             .expect("usage database should open")
+    }
+
+    fn shipped_main_migration(version: i64) -> Migration {
+        let current = USAGE_MIGRATOR
+            .migrations
+            .iter()
+            .find(|migration| migration.version == version)
+            .expect("migration should be embedded");
+        let sql = match version {
+            1 => include_str!("../../usage_migrations/0001_usage_tables.sql").replace(
+                ");\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+                ");\n\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+            ),
+            5 => include_str!("../../usage_migrations/0005_usage_codex_credits.sql")
+                .replace("CASE WHEN p.status = 'ok'\n                  AND", "CASE WHEN")
+                .replace(
+                    "        WHEN status IS NULL\n          OR status <> 'ok'\n          OR total_tokens",
+                    "        WHEN status IS NULL\n          OR total_tokens",
+                )
+                .replace(
+                    "        WHEN status = 'ok'\n         AND matching_policy_count",
+                    "        WHEN matching_policy_count",
+                ),
+            _ => panic!("unsupported historical migration fixture: {version}"),
+        };
+        Migration::new(
+            current.version,
+            current.description.clone(),
+            current.migration_type,
+            Cow::Owned(sql),
+            current.no_tx,
+        )
+    }
+
+    #[test]
+    fn shipped_main_checksums_are_sqlx_sha384_values() {
+        assert_eq!(
+            shipped_main_migration(1).checksum.as_ref(),
+            OLD_MAIN_0001_CHECKSUM
+        );
+        assert_eq!(
+            shipped_main_migration(5).checksum.as_ref(),
+            OLD_MAIN_0005_CHECKSUM
+        );
     }
 
     #[tokio::test]
@@ -349,6 +395,8 @@ mod tests {
     #[tokio::test]
     async fn preserves_known_old_main_checksums_in_memory() {
         let pool = test_pool().await;
+        let old_main_0001 = shipped_main_migration(1);
+        let old_main_0005 = shipped_main_migration(5);
         sqlx::query(
             "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, checksum BLOB NOT NULL)",
         )
@@ -357,9 +405,9 @@ mod tests {
         .expect("migration metadata table should be created");
         sqlx::query("INSERT INTO _sqlx_migrations (version, checksum) VALUES (?, ?), (?, ?)")
             .bind(1_i64)
-            .bind(OLD_MAIN_0001_CHECKSUM)
+            .bind(old_main_0001.checksum.as_ref())
             .bind(5_i64)
-            .bind(OLD_MAIN_0005_CHECKSUM)
+            .bind(old_main_0005.checksum.as_ref())
             .execute(&pool)
             .await
             .expect("known historical checksums should be inserted");
@@ -368,8 +416,8 @@ mod tests {
             .await
             .expect("known variants should be accepted");
         for (version, expected) in [
-            (1_i64, OLD_MAIN_0001_CHECKSUM),
-            (5_i64, OLD_MAIN_0005_CHECKSUM),
+            (1_i64, old_main_0001.checksum.as_ref()),
+            (5_i64, old_main_0005.checksum.as_ref()),
         ] {
             let migration = migrator
                 .iter()
@@ -382,6 +430,7 @@ mod tests {
     #[tokio::test]
     async fn respects_custom_migration_table_name() {
         let pool = test_pool().await;
+        let old_main_0001 = shipped_main_migration(1);
         sqlx::query(
             "CREATE TABLE custom_sqlx_migrations (version BIGINT PRIMARY KEY, checksum BLOB NOT NULL)",
         )
@@ -390,7 +439,7 @@ mod tests {
         .expect("custom migration metadata table should be created");
         sqlx::query("INSERT INTO custom_sqlx_migrations (version, checksum) VALUES (?, ?)")
             .bind(1_i64)
-            .bind(OLD_MAIN_0001_CHECKSUM)
+            .bind(old_main_0001.checksum.as_ref())
             .execute(&pool)
             .await
             .expect("custom historical checksum should be inserted");
@@ -404,7 +453,7 @@ mod tests {
             .iter()
             .find(|migration| migration.version == 1)
             .expect("migration should be embedded");
-        assert_eq!(migration.checksum.as_ref(), OLD_MAIN_0001_CHECKSUM);
+        assert_eq!(migration.checksum.as_ref(), old_main_0001.checksum.as_ref());
     }
 
     #[tokio::test]
@@ -437,6 +486,8 @@ mod tests {
     #[tokio::test]
     async fn upgrades_old_main_views_without_rewriting_history() {
         let pool = test_pool().await;
+        let old_main_0001 = shipped_main_migration(1);
+        let old_main_0005 = shipped_main_migration(5);
         USAGE_MIGRATOR
             .run(&pool)
             .await
@@ -471,12 +522,12 @@ mod tests {
             .await
             .expect("old-main views should be installed");
         sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
-            .bind(OLD_MAIN_0001_CHECKSUM)
+            .bind(old_main_0001.checksum.as_ref())
             .execute(&pool)
             .await
             .expect("old-main 0001 checksum should be recorded");
         sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 5")
-            .bind(OLD_MAIN_0005_CHECKSUM)
+            .bind(old_main_0005.checksum.as_ref())
             .execute(&pool)
             .await
             .expect("old-main 0005 checksum should be recorded");
@@ -566,8 +617,8 @@ mod tests {
         );
 
         for (version, expected) in [
-            (1_i64, OLD_MAIN_0001_CHECKSUM),
-            (5_i64, OLD_MAIN_0005_CHECKSUM),
+            (1_i64, old_main_0001.checksum.as_ref()),
+            (5_i64, old_main_0005.checksum.as_ref()),
         ] {
             let checksum = sqlx::query_scalar::<_, Vec<u8>>(
                 "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
