@@ -3319,8 +3319,7 @@ async fn completed_responses_persist_response_local_usage_rows() {
         "response": {"id": "response-2"}
     });
     second_completed["response"]["end_turn"] = json!(false);
-    let mut third_completed = responses::ev_completed_with_tokens("response-3", 303);
-    third_completed["response"]["end_turn"] = json!(false);
+    let third_completed = responses::ev_completed_with_tokens("response-3", 303);
     let requests = responses::mount_response_sequence(
         &server,
         vec![
