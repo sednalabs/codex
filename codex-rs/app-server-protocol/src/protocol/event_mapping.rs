@@ -220,7 +220,7 @@ pub fn item_event_to_server_notification(
                 .receiver_agents
                 .into_iter()
                 .map(CollabAgentRef::from)
-                .collect();
+                .collect::<Vec<_>>();
             let receiver_agents = (!receiver_agents.is_empty()).then_some(receiver_agents);
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,

@@ -1052,7 +1052,7 @@ impl ThreadHistoryBuilder {
             .iter()
             .cloned()
             .map(CollabAgentRef::from)
-            .collect();
+            .collect::<Vec<_>>();
         let receiver_agents = (!receiver_agents.is_empty()).then_some(receiver_agents);
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -1104,7 +1104,7 @@ impl ThreadHistoryBuilder {
                 agent_nickname: agent.agent_nickname.clone(),
                 agent_role: agent.agent_role.clone(),
             })
-            .collect();
+            .collect::<Vec<_>>();
         let receiver_agents = (!receiver_agents.is_empty()).then_some(receiver_agents);
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),

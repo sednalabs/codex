@@ -3343,7 +3343,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         status: CoreCollabAgentToolCallStatus::Completed,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
-        receiver_agents: None,
+        receiver_agents: Vec::new(),
         wait_outcome: None,
         queued_update_count: None,
         prompt: Some("continue".to_string()),
