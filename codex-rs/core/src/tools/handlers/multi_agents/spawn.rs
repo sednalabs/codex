@@ -199,6 +199,8 @@ async fn handle_spawn_agent(
                 model: Some(effective_model),
                 reasoning_effort: Some(effective_reasoning_effort),
                 agents_states,
+                wait_outcome: None,
+                queued_update_count: None,
             }),
         )
         .await;
