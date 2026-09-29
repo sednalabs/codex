@@ -1436,8 +1436,8 @@ config_file = "./researcher.toml"
     let child_request = timeout(READ_TIMEOUT, async {
         loop {
             if let Some(request) = child_turn.requests().into_iter().find(|request| {
-                let body = String::from_utf8_lossy(&request.body);
-                body.contains(CHILD_PROMPT) && !body.contains(SPAWN_CALL_ID)
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text(SPAWN_CALL_ID)
             }) {
                 return request;
             }
