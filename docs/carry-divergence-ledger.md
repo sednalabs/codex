@@ -38,11 +38,16 @@ records each family, its owner, guardrail lane, and retirement condition. The
 families are retained as one cumulative contract: terminal completion input,
 realtime continuity, usage provenance, phase-two memory attestation,
 configured-identity provenance, dynamic-tool persistence, browser
-computer-use routing, the legacy V1 exact-target wait, RMCP caller cancellation,
-and the merge-queue CodeQL required gate. The downstream V2 exact-target/native
-wait extension is superseded for the reserved V2 tool schema; its historical
-lineage and rationale remain in the registry below. Accepted leaf evidence is
-not reopened absent a concrete candidate defect.
+computer-use routing, native multi-agent wait continuity, RMCP caller
+cancellation, and the merge-queue CodeQL required gate. Only the additional
+input shape on the reserved V2 wait tool is superseded for schema compatibility;
+queue-only filtering, the mailbox-generation boundary, actionable causal wake
+and provenance, terminal-completion wake, turn-reopen semantics, and exact-
+target any/all behavior remain accepted requirements.
+Candidate `a7ac404` has behavioral regressions pending repair. A custom exact-
+target input seam remains unproven until a current V2 model lists and calls it;
+legacy V1 is not exposed in normal V2 sessions and is not a replacement. Early
+model/code-mode acceptance is distinct from full wait acceptance.
 
 ## P7-owned composition
 
@@ -87,7 +92,7 @@ the local repairs remain limited to the named acceptance contracts:
 | Unknown legacy rollout event                        | `deferred-no-equivalent` | Preserve forward-compatible `EventMsg::Unknown` consumption and correct the stale assertion.                           |
 | `codex-rs/code-mode/Cargo.toml` feature exception   | `deferred-no-equivalent` | Remove the stale verifier exception; retain the legitimate V8 POC exception.                                           |
 | Validation planner identity/runner/dispatch receipt | `downstream-governance`  | Enforce nested runner-group/label rejection, allowed labels, dispatch inputs, and exact hosted SHA/tree when supplied. |
-| Reserved `collaboration.wait_agent` V2 schema        | `adopt-reserved-contract` | Restore upstream timeout-only V2 schema and mailbox/steer/timeout handling; supersede V2 exact-target/native arguments. Preserve V1 exact-target wait and TUI turn-reopen behavior. |
+| Reserved `collaboration.wait_agent` V2 input shape  | `adopt-reserved-contract` | Keep the provider-reserved timeout-only shape. Retain queue-only filtering, the generation boundary, actionable causal wake/provenance, terminal-completion wake, turn-reopen, and exact-target any/all behavior. The `a7ac404` regressions remain pending repair; a custom target-input seam needs an actual current V2 model list/call. V1 is not a V2 fallback, and early model/code-mode acceptance is not full wait acceptance. |
 
 The agent-action-provenance and background agent-picker heads remain preserved
 outside this freeze unless they land before the final root cutoff. The current
