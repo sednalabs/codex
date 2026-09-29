@@ -2941,9 +2941,20 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
-                    &provider_call_usage,
                 )
                 .await;
+                if let Some(state_db) = sess.services.state_db.as_ref()
+                    && let Err(err) = state_db
+                        .record_provider_call_usage(&provider_call_usage)
+                        .await
+                {
+                    tracing::warn!(
+                        thread_id = %provider_call_usage.thread_id,
+                        response_id,
+                        error = %err,
+                        "failed to persist completed provider response usage"
+                    );
+                }
                 let budget_result = sess
                     .record_token_usage_info(
                         &turn_context,
