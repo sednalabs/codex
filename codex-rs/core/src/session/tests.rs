@@ -3314,10 +3314,11 @@ async fn completed_responses_persist_response_local_usage_rows() {
     let server = start_mock_server().await;
     let mut first_completed = responses::ev_completed_with_tokens("response-1", 101);
     first_completed["response"]["end_turn"] = json!(false);
-    let second_completed = json!({
+    let mut second_completed = json!({
         "type": "response.completed",
         "response": {"id": "response-2"}
     });
+    second_completed["response"]["end_turn"] = json!(false);
     let mut third_completed = responses::ev_completed_with_tokens("response-3", 303);
     third_completed["response"]["end_turn"] = json!(false);
     let requests = responses::mount_response_sequence(
