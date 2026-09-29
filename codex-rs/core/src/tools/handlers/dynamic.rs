@@ -1,15 +1,11 @@
 use crate::function_tool::FunctionCallError;
-use crate::original_image_detail::can_request_original_image_detail;
-use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
-use crate::tools::handlers::search_text::SearchTextBuilder;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolExposure;
@@ -29,7 +25,6 @@ use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use serde_json::Value;
-use serde_json::json;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::warn;
@@ -42,15 +37,7 @@ pub struct DynamicToolHandler {
 
 impl DynamicToolHandler {
     pub fn new(tool: &DynamicToolFunctionSpec) -> Option<Self> {
-        let namespace = tool
-            .namespace
-            .as_ref()
-            .map(|name| DynamicToolNamespaceSpec {
-                name: name.clone(),
-                description: String::new(),
-                tools: Vec::new(),
-            });
-        Self::from_parts(tool, namespace.as_ref())
+        Self::from_parts(tool, /*namespace*/ None)
     }
 
     pub fn new_in_namespace(
@@ -118,7 +105,10 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -164,14 +154,10 @@ impl DynamicToolHandler {
             content_items,
             success,
         } = response;
-        let mut body = content_items
+        let body = content_items
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        sanitize_original_image_detail(
-            can_request_original_image_detail(&turn.model_info),
-            &mut body,
-        );
         Ok(boxed_tool_output(FunctionToolOutput::from_content(
             body,
             Some(success),

@@ -33,25 +33,31 @@ class GhPrWatchTests(unittest.TestCase):
         self.assertTrue(args.installation_observer)
 
     def test_installation_observer_rejects_retry_before_mutation(self):
-        with mock.patch.object(
-            MODULE.sys,
-            "argv",
-            [
-                "gh_pr_watch.py",
-                "--installation-observer",
-                "--retry-failed-now",
-                "--expected-head-sha",
-                "a" * 40,
-            ],
-        ), self.assertRaises(SystemExit):
+        with (
+            mock.patch.object(
+                MODULE.sys,
+                "argv",
+                [
+                    "gh_pr_watch.py",
+                    "--installation-observer",
+                    "--retry-failed-now",
+                    "--expected-head-sha",
+                    "a" * 40,
+                ],
+            ),
+            self.assertRaises(SystemExit),
+        ):
             MODULE.parse_args()
 
     def test_parse_args_rejects_bare_pr_number_without_repo(self):
-        with mock.patch.object(
-            MODULE.sys,
-            "argv",
-            ["gh_pr_watch.py", "--pr", "554", "--once"],
-        ), self.assertRaises(SystemExit):
+        with (
+            mock.patch.object(
+                MODULE.sys,
+                "argv",
+                ["gh_pr_watch.py", "--pr", "554", "--once"],
+            ),
+            self.assertRaises(SystemExit),
+        ):
             MODULE.parse_args()
 
     def test_parse_args_accepts_bare_pr_number_with_exact_repo(self):
@@ -110,9 +116,12 @@ class GhPrWatchTests(unittest.TestCase):
             "mergeStateStatus": "CLEAN",
             "reviewDecision": "",
         }
-        with mock.patch.object(MODULE, "gh_json", return_value=payload), self.assertRaisesRegex(
-            MODULE.GhCommandError,
-            "base repo sednalabs/codex does not match requested repo sednalabs/mcp-toolkit-rs",
+        with (
+            mock.patch.object(MODULE, "gh_json", return_value=payload),
+            self.assertRaisesRegex(
+                MODULE.GhCommandError,
+                "base repo sednalabs/codex does not match requested repo sednalabs/mcp-toolkit-rs",
+            ),
         ):
             MODULE.resolve_pr("169", repo_override="sednalabs/mcp-toolkit-rs")
 
@@ -148,9 +157,12 @@ class GhPrWatchTests(unittest.TestCase):
             "mergeStateStatus": "CLEAN",
             "reviewDecision": "",
         }
-        with mock.patch.object(MODULE, "gh_json", return_value=payload), self.assertRaisesRegex(
-            MODULE.GhCommandError,
-            "missing a canonical base repository URL",
+        with (
+            mock.patch.object(MODULE, "gh_json", return_value=payload),
+            self.assertRaisesRegex(
+                MODULE.GhCommandError,
+                "missing a canonical base repository URL",
+            ),
         ):
             MODULE.resolve_pr("169", repo_override="sednalabs/mcp-toolkit-rs")
 
@@ -245,7 +257,10 @@ class GhPrWatchTests(unittest.TestCase):
             },
         }
         for name, response in cases.items():
-            with self.subTest(name=name), mock.patch.object(MODULE, "gh_json", side_effect=response):
+            with (
+                self.subTest(name=name),
+                mock.patch.object(MODULE, "gh_json", side_effect=response),
+            ):
                 queue = MODULE.get_merge_queue_entry("sednalabs/agent-ops", 984)
 
             self.assertEqual(
@@ -284,7 +299,9 @@ class GhPrWatchTests(unittest.TestCase):
             },
         )
 
-    def test_parse_args_watch_until_terminal_implies_action_wait_and_terminal_checks(self):
+    def test_parse_args_watch_until_terminal_implies_action_wait_and_terminal_checks(
+        self,
+    ):
         with mock.patch.object(
             MODULE.sys,
             "argv",
@@ -298,8 +315,12 @@ class GhPrWatchTests(unittest.TestCase):
         self.assertFalse(args.once)
 
     def test_actionable_review_bot_login_includes_gemini(self):
-        self.assertTrue(MODULE.is_actionable_review_bot_login("chatgpt-codex-connector[bot]"))
-        self.assertTrue(MODULE.is_actionable_review_bot_login("gemini-code-assist[bot]"))
+        self.assertTrue(
+            MODULE.is_actionable_review_bot_login("chatgpt-codex-connector[bot]")
+        )
+        self.assertTrue(
+            MODULE.is_actionable_review_bot_login("gemini-code-assist[bot]")
+        )
         self.assertFalse(MODULE.is_actionable_review_bot_login("dependabot[bot]"))
 
     def test_quota_notice_issue_comment_is_not_meaningful(self):
@@ -352,7 +373,9 @@ class GhPrWatchTests(unittest.TestCase):
 
         self.assertTrue(MODULE.is_meaningful_review_submission(item))
 
-    def test_fetch_new_review_items_ignores_bot_issue_comments_but_keeps_review_comments(self):
+    def test_fetch_new_review_items_ignores_bot_issue_comments_but_keeps_review_comments(
+        self,
+    ):
         pr = {"repo": "sednalabs/codex", "number": 53}
         state = {
             "seen_issue_comment_ids": [],
@@ -450,13 +473,20 @@ class GhPrWatchTests(unittest.TestCase):
                 "comment_urls": ["https://example.invalid/review-comment/1"],
             }
         ]
-        actionable = MODULE.build_actionable_review_items(pr, new_review_items, active_unresolved_threads)
+        actionable = MODULE.build_actionable_review_items(
+            pr, new_review_items, active_unresolved_threads
+        )
         self.assertEqual(
             [(item["kind"], item["id"]) for item in actionable],
-            [("review_comment", "review-comment-1"), ("review_thread", "thread-current")],
+            [
+                ("review_comment", "review-comment-1"),
+                ("review_thread", "thread-current"),
+            ],
         )
 
-    def test_build_actionable_review_items_ignores_review_comments_without_active_thread(self):
+    def test_build_actionable_review_items_ignores_review_comments_without_active_thread(
+        self,
+    ):
         pr = {
             "review_decision": "",
             "url": "https://example.invalid/pr/519",
@@ -499,10 +529,18 @@ class GhPrWatchTests(unittest.TestCase):
         )
         actions = MODULE.recommend_actions(
             {"closed": False, "merged": False},
-            {"all_terminal": False, "failed_count": 0, "pending_count": 1, "passed_count": 0},
+            {
+                "all_terminal": False,
+                "failed_count": 0,
+                "pending_count": 1,
+                "passed_count": 0,
+            },
             failed_runs=[],
             actionable_review_items=actionable,
-            review_state={"active_unresolved_thread_count": 0, "unresolved_thread_count": 0},
+            review_state={
+                "active_unresolved_thread_count": 0,
+                "unresolved_thread_count": 0,
+            },
             merge_blockers={"is_blocked_for_merge": False, "reason_kinds": []},
             retries_used=0,
             max_retries=3,
@@ -511,7 +549,9 @@ class GhPrWatchTests(unittest.TestCase):
         self.assertEqual(actionable, [])
         self.assertEqual(actions, ["idle"])
 
-    def test_build_actionable_review_items_ignores_no_feedback_bot_review_without_threads(self):
+    def test_build_actionable_review_items_ignores_no_feedback_bot_review_without_threads(
+        self,
+    ):
         pr = {
             "review_decision": "",
             "url": "https://example.invalid/pr/522",
@@ -535,7 +575,9 @@ class GhPrWatchTests(unittest.TestCase):
 
         self.assertEqual(actionable, [])
 
-    def test_build_actionable_review_items_keeps_concrete_bot_review_without_threads(self):
+    def test_build_actionable_review_items_keeps_concrete_bot_review_without_threads(
+        self,
+    ):
         pr = {
             "review_decision": "",
             "head_sha": "current-head",
@@ -716,14 +758,18 @@ class GhPrWatchTests(unittest.TestCase):
             "actions": ["diagnose_ci_failure"],
         }
 
-        with mock.patch.object(
-            MODULE,
-            "collect_snapshot",
-            side_effect=[(idle_snapshot, Path("/tmp/state.json")), (action_snapshot, Path("/tmp/state.json"))],
-        ), mock.patch.object(MODULE.time, "sleep") as sleep, mock.patch.object(
-            MODULE, "print_status"
-        ) as print_status, mock.patch.object(
-            MODULE, "print_json"
+        with (
+            mock.patch.object(
+                MODULE,
+                "collect_snapshot",
+                side_effect=[
+                    (idle_snapshot, Path("/tmp/state.json")),
+                    (action_snapshot, Path("/tmp/state.json")),
+                ],
+            ),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+            mock.patch.object(MODULE, "print_status") as print_status,
+            mock.patch.object(MODULE, "print_json"),
         ):
             rc = MODULE.run_watch_until_action(args)
 
@@ -758,17 +804,18 @@ class GhPrWatchTests(unittest.TestCase):
             "actions": ["diagnose_ci_failure"],
         }
 
-        with mock.patch.object(
-            MODULE,
-            "collect_snapshot",
-            side_effect=[
-                (idle_snapshot, Path("/tmp/state.json")),
-                (action_snapshot, Path("/tmp/state.json")),
-            ],
-        ), mock.patch.object(MODULE.time, "sleep"), mock.patch.object(
-            MODULE, "print_status"
-        ) as print_status, mock.patch.object(
-            MODULE, "print_json"
+        with (
+            mock.patch.object(
+                MODULE,
+                "collect_snapshot",
+                side_effect=[
+                    (idle_snapshot, Path("/tmp/state.json")),
+                    (action_snapshot, Path("/tmp/state.json")),
+                ],
+            ),
+            mock.patch.object(MODULE.time, "sleep"),
+            mock.patch.object(MODULE, "print_status") as print_status,
+            mock.patch.object(MODULE, "print_json"),
         ):
             rc = MODULE.run_watch_until_action(args)
 
@@ -803,18 +850,19 @@ class GhPrWatchTests(unittest.TestCase):
             "actions": ["diagnose_ci_failure"],
         }
 
-        with mock.patch.object(
-            MODULE,
-            "collect_snapshot",
-            side_effect=[
-                (in_progress_failure_snapshot, Path("/tmp/state.json")),
-                (terminal_failure_snapshot, Path("/tmp/state.json")),
-            ],
-        ), mock.patch.object(MODULE.time, "sleep") as sleep, mock.patch.object(
-            MODULE, "print_status"
-        ) as print_status, mock.patch.object(
-            MODULE, "print_json"
-        ) as print_json:
+        with (
+            mock.patch.object(
+                MODULE,
+                "collect_snapshot",
+                side_effect=[
+                    (in_progress_failure_snapshot, Path("/tmp/state.json")),
+                    (terminal_failure_snapshot, Path("/tmp/state.json")),
+                ],
+            ),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+            mock.patch.object(MODULE, "print_status") as print_status,
+            mock.patch.object(MODULE, "print_json") as print_json,
+        ):
             rc = MODULE.run_watch_until_action(args)
 
         self.assertEqual(rc, 0)
@@ -940,11 +988,16 @@ class GhPrWatchTests(unittest.TestCase):
             **base,
             "pr": {
                 **base["pr"],
-                "merge_queue": {**base["pr"]["merge_queue"], "head_sha": "queue-sha-two"},
+                "merge_queue": {
+                    **base["pr"]["merge_queue"],
+                    "head_sha": "queue-sha-two",
+                },
             },
         }
 
-        self.assertNotEqual(MODULE.snapshot_change_key(base), MODULE.snapshot_change_key(successor))
+        self.assertNotEqual(
+            MODULE.snapshot_change_key(base), MODULE.snapshot_change_key(successor)
+        )
 
     def test_build_effective_ci_state_handles_stale_fallback(self):
         ci_context = {
@@ -954,10 +1007,12 @@ class GhPrWatchTests(unittest.TestCase):
             "current_head_checks_signal": False,
             "grace_seconds": MODULE.CURRENT_HEAD_CHECK_GRACE_SECONDS,
         }
-        effective, source, stale_fallback, message, stale_failed_runs = MODULE.build_effective_ci_state(
-            "newer",
-            {"total_count": 0},
-            ci_context,
+        effective, source, stale_fallback, message, stale_failed_runs = (
+            MODULE.build_effective_ci_state(
+                "newer",
+                {"total_count": 0},
+                ci_context,
+            )
         )
         self.assertEqual(stale_fallback, True)
         self.assertEqual(source, "stale_fallback")
@@ -1019,8 +1074,9 @@ class GhPrWatchTests(unittest.TestCase):
             max_flaky_retries=3,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
             state_path.write_text(
@@ -1036,26 +1092,32 @@ class GhPrWatchTests(unittest.TestCase):
             )
             args.state_file = state_path.name
 
-            with mock.patch.object(MODULE, "detect_local_git_context", return_value={}), mock.patch.object(
-                MODULE, "resolve_pr", return_value=pr
-            ), mock.patch.object(MODULE, "validate_pr_resolution"), mock.patch.object(
-                MODULE, "get_pr_checks", return_value=[MODULE.pending_checks_not_reported_item()]
-            ), mock.patch.object(
-                MODULE,
-                "get_workflow_runs_for_sha",
-                side_effect=[[], [stale_run]],
-            ), mock.patch.object(
-                MODULE, "failed_jobs_for_run", return_value=[]
-            ), mock.patch.object(
-                MODULE, "get_authenticated_login", return_value="test-observer"
-            ), mock.patch.object(
-                MODULE, "fetch_new_review_items", return_value=([], [])
-            ), mock.patch.object(
-                MODULE, "get_review_threads", return_value=[]
-            ), mock.patch.object(
-                MODULE.tempfile, "gettempdir", return_value=str(state_path.parent)
-            ), mock.patch.object(
-                MODULE.time, "time", return_value=1_030
+            with (
+                mock.patch.object(MODULE, "detect_local_git_context", return_value={}),
+                mock.patch.object(MODULE, "resolve_pr", return_value=pr),
+                mock.patch.object(MODULE, "validate_pr_resolution"),
+                mock.patch.object(
+                    MODULE,
+                    "get_pr_checks",
+                    return_value=[MODULE.pending_checks_not_reported_item()],
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "get_workflow_runs_for_sha",
+                    side_effect=[[], [stale_run]],
+                ),
+                mock.patch.object(MODULE, "failed_jobs_for_run", return_value=[]),
+                mock.patch.object(
+                    MODULE, "get_authenticated_login", return_value="test-observer"
+                ),
+                mock.patch.object(
+                    MODULE, "fetch_new_review_items", return_value=([], [])
+                ),
+                mock.patch.object(MODULE, "get_review_threads", return_value=[]),
+                mock.patch.object(
+                    MODULE.tempfile, "gettempdir", return_value=str(state_path.parent)
+                ),
+                mock.patch.object(MODULE.time, "time", return_value=1_030),
             ):
                 snapshot, _ = MODULE.collect_snapshot(args)
 
@@ -1070,7 +1132,9 @@ class GhPrWatchTests(unittest.TestCase):
         self.assertNotIn("retry_failed_checks", snapshot["actions"])
         self.assertEqual(saved_state["last_seen_head_sha"], "newhead")
         self.assertEqual(saved_state["last_watch_decision"]["head_sha"], "newhead")
-        self.assertEqual(saved_state["last_watch_decision"]["primary_action"], "diagnose_ci_failure")
+        self.assertEqual(
+            saved_state["last_watch_decision"]["primary_action"], "diagnose_ci_failure"
+        )
 
     def test_merge_queue_active_awaiting_checks_suppresses_ready(self):
         pr = {
@@ -1087,8 +1151,15 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             ),
         }
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         observed = {
             "actions": MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3),
@@ -1124,7 +1195,12 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
             "head_sha": "policy-head",
         }
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 12}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 12,
+        }
         blockers = MODULE.build_merge_blockers(
             pr,
             checks,
@@ -1147,7 +1223,9 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
         checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertIn("merge_conflict_or_dirty_state", blockers["reason_kinds"])
         self.assertNotEqual(
@@ -1164,7 +1242,9 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
         checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertIn("merge_conflict_or_dirty_state", blockers["reason_kinds"])
         self.assertNotIn("merge_policy_blocked", blockers["reason_kinds"])
@@ -1182,10 +1262,14 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
         checks = {"all_terminal": False, "failed_count": 0, "pending_count": 0}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertNotIn("merge_policy_blocked", blockers["reason_kinds"])
-        self.assertEqual(MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3), ["idle"])
+        self.assertEqual(
+            MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3), ["idle"]
+        )
 
     def test_terminal_clean_mergeable_remains_ready(self):
         pr = {
@@ -1196,9 +1280,14 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
         checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
-        self.assertEqual(MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3), ["stop_ready_to_merge"])
+        self.assertEqual(
+            MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3),
+            ["stop_ready_to_merge"],
+        )
 
     def test_merge_policy_action_receipt_preserves_exact_head_and_counts(self):
         snapshot = {
@@ -1225,7 +1314,9 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_blockers": {
                 "is_blocked_for_merge": True,
                 "reason_kinds": ["merge_policy_blocked"],
-                "reasons": [{"kind": "merge_policy_blocked", "head_sha": "policy-head"}],
+                "reasons": [
+                    {"kind": "merge_policy_blocked", "head_sha": "policy-head"}
+                ],
             },
             "actions": [MODULE.ACTION_REQUIRED_MERGE_POLICY_BLOCKED],
         }
@@ -1233,9 +1324,14 @@ class GhPrWatchTests(unittest.TestCase):
         receipt = MODULE.build_watch_decision(snapshot, recorded_at=1234)
 
         self.assertEqual(receipt["decision"], "action_required")
-        self.assertEqual(receipt["primary_action"], MODULE.ACTION_REQUIRED_MERGE_POLICY_BLOCKED)
+        self.assertEqual(
+            receipt["primary_action"], MODULE.ACTION_REQUIRED_MERGE_POLICY_BLOCKED
+        )
         self.assertEqual(receipt["head_sha"], "policy-head")
-        self.assertEqual(receipt["check_counts"], {"total": 13, "passed": 12, "failed": 0, "pending": 0})
+        self.assertEqual(
+            receipt["check_counts"],
+            {"total": 13, "passed": 12, "failed": 0, "pending": 0},
+        )
         self.assertEqual(receipt["review_counts"]["ignored_unresolved"], 1)
         self.assertEqual(receipt["merge_blocker_kinds"], ["merge_policy_blocked"])
 
@@ -1271,7 +1367,9 @@ class GhPrWatchTests(unittest.TestCase):
                 "merge_blockers": {"reason_kinds": ["merge_queue_waiting"]},
             }
             self.assertEqual(
-                MODULE.next_watch_poll_seconds(args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200)[0],
+                MODULE.next_watch_poll_seconds(
+                    args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200
+                )[0],
                 30,
             )
 
@@ -1280,38 +1378,58 @@ class GhPrWatchTests(unittest.TestCase):
         snapshot = {
             "pr": {
                 "head_sha": "queue-head",
-                "merge_queue": {"status": "waiting", "state": "QUEUED", "id": "entry-1", "head_sha": ""},
+                "merge_queue": {
+                    "status": "waiting",
+                    "state": "QUEUED",
+                    "id": "entry-1",
+                    "head_sha": "",
+                },
             },
             "checks": {"all_terminal": True, "failed_count": 0, "pending_count": 0},
         }
         self.assertEqual(
-            MODULE.next_watch_poll_seconds(args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200)[0],
+            MODULE.next_watch_poll_seconds(
+                args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200
+            )[0],
             30,
         )
 
     def test_queue_identity_change_resets_cadence(self):
         args = mock.Mock(poll_seconds=30)
         old = {
-            "pr": {"head_sha": "queue-head", "merge_queue": {"status": "waiting", "state": "QUEUED", "id": "old"}},
+            "pr": {
+                "head_sha": "queue-head",
+                "merge_queue": {"status": "waiting", "state": "QUEUED", "id": "old"},
+            },
             "checks": {"all_terminal": True, "failed_count": 0, "pending_count": 0},
         }
         current = {
-            "pr": {"head_sha": "queue-head", "merge_queue": {"status": "waiting", "state": "QUEUED", "id": "new"}},
+            "pr": {
+                "head_sha": "queue-head",
+                "merge_queue": {"status": "waiting", "state": "QUEUED", "id": "new"},
+            },
             "checks": old["checks"],
         }
         self.assertEqual(
-            MODULE.next_watch_poll_seconds(args, current, MODULE.snapshot_change_key(old), 960, 1200)[0],
+            MODULE.next_watch_poll_seconds(
+                args, current, MODULE.snapshot_change_key(old), 960, 1200
+            )[0],
             30,
         )
 
     def test_nonqueued_green_idle_snapshot_keeps_backoff(self):
         args = mock.Mock(poll_seconds=30)
         snapshot = {
-            "pr": {"head_sha": "idle-head", "merge_queue": {"status": "observed_absent"}},
+            "pr": {
+                "head_sha": "idle-head",
+                "merge_queue": {"status": "observed_absent"},
+            },
             "checks": {"all_terminal": True, "failed_count": 0, "pending_count": 0},
         }
         self.assertEqual(
-            MODULE.next_watch_poll_seconds(args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200)[0],
+            MODULE.next_watch_poll_seconds(
+                args, snapshot, MODULE.snapshot_change_key(snapshot), 960, 1200
+            )[0],
             1200,
         )
 
@@ -1321,11 +1439,14 @@ class GhPrWatchTests(unittest.TestCase):
             "actions": [MODULE.ACTION_REQUIRED_MERGE_POLICY_BLOCKED],
             "merge_blockers": {"reason_kinds": ["merge_policy_blocked"]},
         }
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
-            MODULE.persist_watch_schedule(state_path, snapshot, "watch-until-action", 0, scheduled_at=1234)
+            MODULE.persist_watch_schedule(
+                state_path, snapshot, "watch-until-action", 0, scheduled_at=1234
+            )
             state, _ = MODULE.load_state(state_path)
 
         self.assertEqual(
@@ -1357,17 +1478,28 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             ),
         }
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
 
         self.assertFalse(
-            MODULE.is_pr_ready_to_merge(pr, checks, [], {}, {"is_blocked_for_merge": False})
+            MODULE.is_pr_ready_to_merge(
+                pr, checks, [], {}, {"is_blocked_for_merge": False}
+            )
         )
         self.assertEqual(
-            MODULE.recommend_actions(pr, checks, [], [], {}, {}, retries_used=0, max_retries=3),
+            MODULE.recommend_actions(
+                pr, checks, [], [], {}, {}, retries_used=0, max_retries=3
+            ),
             ["idle"],
         )
 
-    def test_merge_queue_active_keeps_failed_pr_checks_visible_without_interrupting_wait(self):
+    def test_merge_queue_active_keeps_failed_pr_checks_visible_without_interrupting_wait(
+        self,
+    ):
         pr = {
             "closed": False,
             "merged": False,
@@ -1382,7 +1514,12 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             ),
         }
-        checks = {"all_terminal": True, "failed_count": 2, "pending_count": 0, "passed_count": 12}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 2,
+            "pending_count": 0,
+            "passed_count": 12,
+        }
         check_details = {
             "failing": [
                 {"name": "dependency-governance"},
@@ -1418,23 +1555,46 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_state_status": "CLEAN",
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertEqual(
             {
-                "actions": MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3),
+                "actions": MODULE.recommend_actions(
+                    pr, checks, [], [], {}, blockers, 0, 3
+                ),
                 "merge_blockers": blockers,
             },
             {
                 "actions": ["stop_ready_to_merge"],
-                "merge_blockers": {"is_blocked_for_merge": False, "reason_kinds": [], "reasons": []},
+                "merge_blockers": {
+                    "is_blocked_for_merge": False,
+                    "reason_kinds": [],
+                    "reasons": [],
+                },
             },
         )
 
     def test_merge_queue_failed_or_removed_is_an_actionable_stop(self):
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
-        base_pr = {"closed": False, "merged": False, "mergeable": "MERGEABLE", "merge_state_status": "CLEAN"}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
+        base_pr = {
+            "closed": False,
+            "merged": False,
+            "mergeable": "MERGEABLE",
+            "merge_state_status": "CLEAN",
+        }
         cases = {
             "failed": (
                 {
@@ -1467,10 +1627,14 @@ class GhPrWatchTests(unittest.TestCase):
         for name, (queue, action, reason_kind) in cases.items():
             with self.subTest(name=name):
                 pr = {**base_pr, "merge_queue": queue}
-                blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+                blockers = MODULE.build_merge_blockers(
+                    pr, checks, {"failing": [], "pending": []}, {}
+                )
                 self.assertEqual(
                     {
-                        "actions": MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3),
+                        "actions": MODULE.recommend_actions(
+                            pr, checks, [], [], {}, blockers, 0, 3
+                        ),
                         "reason_kinds": blockers["reason_kinds"],
                     },
                     {"actions": [action], "reason_kinds": [reason_kind]},
@@ -1495,15 +1659,26 @@ class GhPrWatchTests(unittest.TestCase):
             "head_sha": "pr-head",
             "mergeable": "MERGEABLE",
             "merge_state_status": "CLEAN",
-            "merge_queue": MODULE.normalize_merge_queue_entry(None, field_present=False),
+            "merge_queue": MODULE.normalize_merge_queue_entry(
+                None, field_present=False
+            ),
         }
         pr["merge_queue"] = MODULE.reconcile_merge_queue_entry(pr, state)
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
-        blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
+        blockers = MODULE.build_merge_blockers(
+            pr, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertEqual(
             {
-                "actions": MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3),
+                "actions": MODULE.recommend_actions(
+                    pr, checks, [], [], {}, blockers, 0, 3
+                ),
                 "queue": pr["merge_queue"],
             },
             {
@@ -1521,11 +1696,20 @@ class GhPrWatchTests(unittest.TestCase):
             },
         )
 
-    def test_terminal_merge_queue_tombstone_survives_restart_until_pr_head_changes(self):
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
+    def test_terminal_merge_queue_tombstone_survives_restart_until_pr_head_changes(
+        self,
+    ):
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
 
         def queue_action(pr):
-            blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+            blockers = MODULE.build_merge_blockers(
+                pr, checks, {"failing": [], "pending": []}, {}
+            )
             return MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3)
 
         base_pr = {
@@ -1548,8 +1732,9 @@ class GhPrWatchTests(unittest.TestCase):
         }
         absent = {**base_pr, "merge_queue": MODULE.normalize_merge_queue_entry(None)}
 
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
@@ -1563,8 +1748,13 @@ class GhPrWatchTests(unittest.TestCase):
             MODULE.save_state(state_path, state)
 
             reloaded, _ = MODULE.load_state(state_path)
-            restarted = {**base_pr, "merge_queue": MODULE.normalize_merge_queue_entry(None)}
-            restarted["merge_queue"] = MODULE.reconcile_merge_queue_entry(restarted, reloaded)
+            restarted = {
+                **base_pr,
+                "merge_queue": MODULE.normalize_merge_queue_entry(None),
+            }
+            restarted["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                restarted, reloaded
+            )
             second = {
                 "actions": queue_action(restarted),
                 "queue": restarted["merge_queue"],
@@ -1576,7 +1766,9 @@ class GhPrWatchTests(unittest.TestCase):
                 "head_sha": "pr-head-two",
                 "merge_queue": MODULE.normalize_merge_queue_entry(None),
             }
-            changed_head["merge_queue"] = MODULE.reconcile_merge_queue_entry(changed_head, reloaded)
+            changed_head["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                changed_head, reloaded
+            )
             third = {
                 "actions": queue_action(changed_head),
                 "queue": changed_head["merge_queue"],
@@ -1593,9 +1785,21 @@ class GhPrWatchTests(unittest.TestCase):
         }
         self.assertEqual(
             {
-                "first": {"actions": first["actions"], "status": first["queue"]["status"], "state": first["state"]},
-                "second": {"actions": second["actions"], "status": second["queue"]["status"], "state": second["state"]},
-                "third": {"actions": third["actions"], "status": third["queue"]["status"], "state": third["state"]},
+                "first": {
+                    "actions": first["actions"],
+                    "status": first["queue"]["status"],
+                    "state": first["state"],
+                },
+                "second": {
+                    "actions": second["actions"],
+                    "status": second["queue"]["status"],
+                    "state": second["state"],
+                },
+                "third": {
+                    "actions": third["actions"],
+                    "status": third["queue"]["status"],
+                    "state": third["state"],
+                },
             },
             {
                 "first": {
@@ -1634,8 +1838,9 @@ class GhPrWatchTests(unittest.TestCase):
             ),
         }
         failed["merge_queue"] = MODULE.reconcile_merge_queue_entry(failed, state)
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
             MODULE.save_state(state_path, state)
@@ -1648,7 +1853,9 @@ class GhPrWatchTests(unittest.TestCase):
                 "merge_state_status": "CLEAN",
                 "merge_queue": MODULE.normalize_merge_queue_entry(None),
             }
-            restarted["merge_queue"] = MODULE.reconcile_merge_queue_entry(restarted, reloaded)
+            restarted["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                restarted, reloaded
+            )
             changed = {
                 "closed": False,
                 "merged": False,
@@ -1657,11 +1864,22 @@ class GhPrWatchTests(unittest.TestCase):
                 "merge_state_status": "CLEAN",
                 "merge_queue": MODULE.normalize_merge_queue_entry(None),
             }
-            changed["merge_queue"] = MODULE.reconcile_merge_queue_entry(changed, reloaded)
+            changed["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                changed, reloaded
+            )
 
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
-        restarted_blockers = MODULE.build_merge_blockers(restarted, checks, {"failing": [], "pending": []}, {})
-        changed_blockers = MODULE.build_merge_blockers(changed, checks, {"failing": [], "pending": []}, {})
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
+        restarted_blockers = MODULE.build_merge_blockers(
+            restarted, checks, {"failing": [], "pending": []}, {}
+        )
+        changed_blockers = MODULE.build_merge_blockers(
+            changed, checks, {"failing": [], "pending": []}, {}
+        )
 
         self.assertEqual(
             {
@@ -1687,10 +1905,17 @@ class GhPrWatchTests(unittest.TestCase):
         )
 
     def test_fresh_different_queue_entry_supersedes_same_head_tombstone(self):
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
 
         def queue_action(pr):
-            blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+            blockers = MODULE.build_merge_blockers(
+                pr, checks, {"failing": [], "pending": []}, {}
+            )
             return MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3)
 
         base_pr = {
@@ -1711,28 +1936,49 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             )
 
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
-            old_active = {**base_pr, "merge_queue": active_queue("MQE_old", "queue-old")}
-            old_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(old_active, state)
-            old_absent = {**base_pr, "merge_queue": MODULE.normalize_merge_queue_entry(None)}
-            old_absent["merge_queue"] = MODULE.reconcile_merge_queue_entry(old_absent, state)
+            old_active = {
+                **base_pr,
+                "merge_queue": active_queue("MQE_old", "queue-old"),
+            }
+            old_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                old_active, state
+            )
+            old_absent = {
+                **base_pr,
+                "merge_queue": MODULE.normalize_merge_queue_entry(None),
+            }
+            old_absent["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                old_absent, state
+            )
             MODULE.save_state(state_path, state)
 
             reloaded, _ = MODULE.load_state(state_path)
-            same_id_active = {**base_pr, "merge_queue": active_queue("MQE_old", "queue-old")}
-            same_id_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(same_id_active, reloaded)
+            same_id_active = {
+                **base_pr,
+                "merge_queue": active_queue("MQE_old", "queue-old"),
+            }
+            same_id_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                same_id_active, reloaded
+            )
             same_id = {
                 "actions": queue_action(same_id_active),
                 "status": same_id_active["merge_queue"]["status"],
                 "state": json.loads(json.dumps(reloaded)),
             }
 
-            new_active = {**base_pr, "merge_queue": active_queue("MQE_new", "queue-new")}
-            new_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(new_active, reloaded)
+            new_active = {
+                **base_pr,
+                "merge_queue": active_queue("MQE_new", "queue-new"),
+            }
+            new_active["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                new_active, reloaded
+            )
             reenqueue = {
                 "actions": queue_action(new_active),
                 "status": new_active["merge_queue"]["status"],
@@ -1740,8 +1986,13 @@ class GhPrWatchTests(unittest.TestCase):
                 "state": json.loads(json.dumps(reloaded)),
             }
 
-            new_absent = {**base_pr, "merge_queue": MODULE.normalize_merge_queue_entry(None)}
-            new_absent["merge_queue"] = MODULE.reconcile_merge_queue_entry(new_absent, reloaded)
+            new_absent = {
+                **base_pr,
+                "merge_queue": MODULE.normalize_merge_queue_entry(None),
+            }
+            new_absent["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                new_absent, reloaded
+            )
             subsequent_null = {
                 "actions": queue_action(new_absent),
                 "status": new_absent["merge_queue"]["status"],
@@ -1807,10 +2058,17 @@ class GhPrWatchTests(unittest.TestCase):
         )
 
     def test_closed_pr_clears_queue_tracking_before_restart_or_reopen(self):
-        checks = {"all_terminal": True, "failed_count": 0, "pending_count": 0, "passed_count": 1}
+        checks = {
+            "all_terminal": True,
+            "failed_count": 0,
+            "pending_count": 0,
+            "passed_count": 1,
+        }
 
         def queue_action(pr):
-            blockers = MODULE.build_merge_blockers(pr, checks, {"failing": [], "pending": []}, {})
+            blockers = MODULE.build_merge_blockers(
+                pr, checks, {"failing": [], "pending": []}, {}
+            )
             return MODULE.recommend_actions(pr, checks, [], [], {}, blockers, 0, 3)
 
         active = {
@@ -1837,8 +2095,9 @@ class GhPrWatchTests(unittest.TestCase):
             "merge_queue": MODULE.normalize_merge_queue_entry(None),
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
-            MODULE.tempfile, "gettempdir", return_value=tmpdir
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(MODULE.tempfile, "gettempdir", return_value=tmpdir),
         ):
             state_path = Path(tmpdir) / "state.json"
             state = {}
@@ -1860,7 +2119,9 @@ class GhPrWatchTests(unittest.TestCase):
                 "merge_state_status": "CLEAN",
                 "merge_queue": MODULE.normalize_merge_queue_entry(None),
             }
-            reopened["merge_queue"] = MODULE.reconcile_merge_queue_entry(reopened, reloaded)
+            reopened["merge_queue"] = MODULE.reconcile_merge_queue_entry(
+                reopened, reloaded
+            )
             reopened_result = {
                 "actions": queue_action(reopened),
                 "queue_status": reopened["merge_queue"]["status"],
@@ -1931,11 +2192,14 @@ class GhPrWatchTests(unittest.TestCase):
             },
         }
 
-        with mock.patch.object(
-            MODULE,
-            "collect_snapshot",
-            return_value=(snapshot, Path("/tmp/state.json")),
-        ), mock.patch.object(MODULE, "gh_text") as gh_text:
+        with (
+            mock.patch.object(
+                MODULE,
+                "collect_snapshot",
+                return_value=(snapshot, Path("/tmp/state.json")),
+            ),
+            mock.patch.object(MODULE, "gh_text") as gh_text,
+        ):
             result = MODULE.retry_failed_now(args)
 
         self.assertFalse(result["rerun_attempted"])
@@ -1966,7 +2230,9 @@ class GhPrWatchTests(unittest.TestCase):
                 }
             ],
         ):
-            failed = MODULE.failed_runs_from_workflow_runs(runs, "abc123", repo="sednalabs/codex")
+            failed = MODULE.failed_runs_from_workflow_runs(
+                runs, "abc123", repo="sednalabs/codex"
+            )
 
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["first_failed_job"]["job_id"], 999)
@@ -2021,7 +2287,10 @@ class GhPrWatchTests(unittest.TestCase):
             failed_runs=[{"run_id": 123}],
             actionable_review_items=[],
             review_state={"active_unresolved_thread_count": 0},
-            merge_blockers={"is_blocked_for_merge": True, "reason_kinds": ["failing_checks"]},
+            merge_blockers={
+                "is_blocked_for_merge": True,
+                "reason_kinds": ["failing_checks"],
+            },
             retries_used=0,
             max_retries=3,
             source="current_head",

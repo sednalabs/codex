@@ -6,10 +6,6 @@ use std::sync::atomic::Ordering;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionStatus;
-use codex_app_server_protocol::ComputerUseCallOutputContentItem;
-use codex_app_server_protocol::ComputerUseCallStatus;
-use codex_app_server_protocol::DynamicToolCallOutputContentItem;
-use codex_app_server_protocol::DynamicToolCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
@@ -17,6 +13,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::WebSearchAction as ApiWebSearchAction;
 use codex_core::config::Config;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::SessionConfiguredEvent;
@@ -33,10 +30,6 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
-use crate::exec_events::ComputerUseCallItem;
-use crate::exec_events::ComputerUseCallStatus as ExecComputerUseCallStatus;
-use crate::exec_events::DynamicToolCallItem;
-use crate::exec_events::DynamicToolCallStatus as ExecDynamicToolCallStatus;
 use crate::exec_events::ErrorItem;
 use crate::exec_events::FileChangeItem;
 use crate::exec_events::FileUpdateChange;
@@ -240,58 +233,6 @@ impl EventProcessorWithJsonOutput {
                     }),
                 }),
             }),
-            ThreadItem::DynamicToolCall {
-                tool,
-                status,
-                arguments,
-                content_items,
-                success,
-                duration_ms,
-                ..
-            } => Some(ExecThreadItem {
-                id: make_id(),
-                details: ThreadItemDetails::DynamicToolCall(DynamicToolCallItem {
-                    tool,
-                    arguments,
-                    status: match status {
-                        DynamicToolCallStatus::InProgress => ExecDynamicToolCallStatus::InProgress,
-                        DynamicToolCallStatus::Completed => ExecDynamicToolCallStatus::Completed,
-                        DynamicToolCallStatus::Failed => ExecDynamicToolCallStatus::Failed,
-                    },
-                    preview: dynamic_tool_preview(content_items.as_deref().unwrap_or_default()),
-                    success,
-                    duration_ms,
-                }),
-            }),
-            ThreadItem::ComputerUseCall {
-                adapter,
-                tool,
-                status,
-                arguments,
-                content_items,
-                success,
-                error,
-                duration_ms,
-                ..
-            } => Some(ExecThreadItem {
-                id: make_id(),
-                details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
-                    adapter,
-                    tool,
-                    arguments,
-                    status: match status {
-                        ComputerUseCallStatus::InProgress => {
-                            ExecComputerUseCallStatus::InProgress
-                        }
-                        ComputerUseCallStatus::Completed => ExecComputerUseCallStatus::Completed,
-                        ComputerUseCallStatus::Failed => ExecComputerUseCallStatus::Failed,
-                    },
-                    preview: computer_use_preview(content_items.as_deref().unwrap_or_default()),
-                    success,
-                    error,
-                    duration_ms,
-                }),
-            }),
             ThreadItem::CollabAgentToolCall {
                 tool,
                 sender_thread_id,
@@ -304,6 +245,10 @@ impl EventProcessorWithJsonOutput {
                 id: make_id(),
                 details: ThreadItemDetails::CollabToolCall(CollabToolCallItem {
                     tool: match tool {
+                        CollabAgentTool::SendMessage
+                        | CollabAgentTool::FollowupTask
+                        | CollabAgentTool::InterruptAgent
+                        | CollabAgentTool::ListAgents => return None,
                         CollabAgentTool::SpawnAgent => CollabTool::SpawnAgent,
                         CollabAgentTool::SendInput => CollabTool::SendInput,
                         CollabAgentTool::ResumeAgent => CollabTool::Wait,
@@ -351,6 +296,7 @@ impl EventProcessorWithJsonOutput {
                         CollabAgentToolCallStatus::InProgress => CollabToolCallStatus::InProgress,
                         CollabAgentToolCallStatus::Completed => CollabToolCallStatus::Completed,
                         CollabAgentToolCallStatus::Failed => CollabToolCallStatus::Failed,
+                        CollabAgentToolCallStatus::Interrupted => return None,
                     },
                 }),
             }),
@@ -360,12 +306,18 @@ impl EventProcessorWithJsonOutput {
                     id: item.id,
                     query: item.query,
                     action: match item.action {
-                        Some(action) => serde_json::from_value(
-                            serde_json::to_value(action).unwrap_or_else(|_| json!("other")),
-                        )
-                        .unwrap_or(WebSearchAction::Other),
-                        None => WebSearchAction::Other,
+                        Some(ApiWebSearchAction::Search { query, queries }) => {
+                            WebSearchAction::Search { query, queries }
+                        }
+                        Some(ApiWebSearchAction::OpenPage { url }) => {
+                            WebSearchAction::OpenPage { url }
+                        }
+                        Some(ApiWebSearchAction::FindInPage { url, pattern }) => {
+                            WebSearchAction::FindInPage { url, pattern }
+                        }
+                        Some(ApiWebSearchAction::Other) | None => WebSearchAction::Other,
                     },
+                    results: item.results,
                 }),
             }),
             _ => None,
@@ -418,8 +370,6 @@ impl EventProcessorWithJsonOutput {
     fn reconcile_unfinished_started_items(
         &mut self,
         turn_items: &[ThreadItem],
-        thread_id: &str,
-        turn_id: &str,
     ) -> Vec<ThreadEvent> {
         turn_items
             .iter()
@@ -428,13 +378,8 @@ impl EventProcessorWithJsonOutput {
                 if !self.raw_to_exec_item_id.contains_key(&raw_id) {
                     return None;
                 }
-                self.map_completed_item_mut(item.clone()).map(|item| {
-                    ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                        thread_id: Some(thread_id.to_string()),
-                        turn_id: Some(turn_id.to_string()),
-                        item,
-                    })
-                })
+                self.map_completed_item_mut(item.clone())
+                    .map(|item| ThreadEvent::ItemCompleted(ItemCompletedEvent { item }))
             })
             .collect()
     }
@@ -464,8 +409,6 @@ impl EventProcessorWithJsonOutput {
     pub fn collect_warning(&mut self, message: String) -> CollectedThreadEvents {
         CollectedThreadEvents {
             events: vec![ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                thread_id: None,
-                turn_id: None,
                 item: ExecThreadItem {
                     id: self.next_item_id(),
                     details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -489,8 +432,6 @@ impl EventProcessorWithJsonOutput {
                     _ => notification.summary,
                 };
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                    thread_id: None,
-                    turn_id: None,
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -510,11 +451,7 @@ impl EventProcessorWithJsonOutput {
                     }
                     _ => notification.error.message,
                 };
-                let error = ThreadErrorEvent {
-                    message,
-                    thread_id: Some(notification.thread_id.clone()),
-                    turn_id: Some(notification.turn_id.clone()),
-                };
+                let error = ThreadErrorEvent { message };
                 self.last_critical_error = Some(error.clone());
                 events.push(ThreadEvent::Error(error));
                 CodexStatus::Running
@@ -527,8 +464,6 @@ impl EventProcessorWithJsonOutput {
                     _ => notification.summary,
                 };
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                    thread_id: None,
-                    turn_id: None,
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem { message }),
@@ -541,13 +476,7 @@ impl EventProcessorWithJsonOutput {
             }
             ServerNotification::ItemStarted(notification) => {
                 if let Some(item) = self.map_started_item(notification.item) {
-                    let thread_id = notification.thread_id;
-                    let turn_id = notification.turn_id;
-                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
-                        thread_id: Some(thread_id),
-                        turn_id: Some(turn_id),
-                        item,
-                    }));
+                    events.push(ThreadEvent::ItemStarted(ItemStartedEvent { item }));
                 }
                 CodexStatus::Running
             }
@@ -558,22 +487,12 @@ impl EventProcessorWithJsonOutput {
                     {
                         self.final_message = Some(text.clone());
                     }
-                    let thread_id = notification.thread_id;
-                    let turn_id = notification.turn_id;
-                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                        thread_id: Some(thread_id),
-                        turn_id: Some(turn_id),
-                        item,
-                    }));
+                    events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent { item }));
                 }
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
-                let thread_id = notification.thread_id;
-                let turn_id = notification.turn_id;
                 events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                    thread_id: Some(thread_id),
-                    turn_id: Some(turn_id),
                     item: ExecThreadItem {
                         id: self.next_item_id(),
                         details: ThreadItemDetails::Error(ErrorItem {
@@ -594,8 +513,6 @@ impl EventProcessorWithJsonOutput {
             ServerNotification::TurnCompleted(notification) => {
                 if let Some(running) = self.running_todo_list.take() {
                     events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
-                        thread_id: Some(notification.thread_id.clone()),
-                        turn_id: Some(notification.turn.id.clone()),
                         item: ExecThreadItem {
                             id: running.item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem {
@@ -604,11 +521,7 @@ impl EventProcessorWithJsonOutput {
                         },
                     }));
                 }
-                events.extend(self.reconcile_unfinished_started_items(
-                    &notification.turn.items,
-                    &notification.thread_id,
-                    &notification.turn.id,
-                ));
+                events.extend(self.reconcile_unfinished_started_items(&notification.turn.items));
                 match notification.turn.status {
                     TurnStatus::Completed => {
                         if let Some(final_message) =
@@ -617,11 +530,7 @@ impl EventProcessorWithJsonOutput {
                             self.final_message = Some(final_message);
                         }
                         self.emit_final_message_on_shutdown = true;
-                        let thread_id = notification.thread_id;
-                        let turn_id = notification.turn.id;
                         events.push(ThreadEvent::TurnCompleted(TurnCompletedEvent {
-                            thread_id,
-                            turn_id,
                             usage: self.usage_from_last_total(),
                         }));
                         CodexStatus::InitiateShutdown
@@ -639,20 +548,12 @@ impl EventProcessorWithJsonOutput {
                                     }
                                     _ => error.message,
                                 },
-                                thread_id: Some(notification.thread_id.clone()),
-                                turn_id: Some(notification.turn.id.clone()),
                             })
                             .or_else(|| self.last_critical_error.clone())
                             .unwrap_or_else(|| ThreadErrorEvent {
                                 message: "turn failed".to_string(),
-                                thread_id: Some(notification.thread_id.clone()),
-                                turn_id: Some(notification.turn.id.clone()),
                             });
-                        events.push(ThreadEvent::TurnFailed(TurnFailedEvent {
-                            thread_id: notification.thread_id.clone(),
-                            turn_id: notification.turn.id.clone(),
-                            error,
-                        }));
+                        events.push(ThreadEvent::TurnFailed(TurnFailedEvent { error }));
                         CodexStatus::InitiateShutdown
                     }
                     TurnStatus::Interrupted => {
@@ -669,11 +570,7 @@ impl EventProcessorWithJsonOutput {
                 if let Some(running) = self.running_todo_list.as_mut() {
                     running.items = items.clone();
                     let item_id = running.item_id.clone();
-                    let thread_id = notification.thread_id;
-                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemUpdated(ItemUpdatedEvent {
-                        thread_id: Some(thread_id),
-                        turn_id: Some(turn_id),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -685,11 +582,7 @@ impl EventProcessorWithJsonOutput {
                         item_id: item_id.clone(),
                         items: items.clone(),
                     });
-                    let thread_id = notification.thread_id;
-                    let turn_id = notification.turn_id;
                     events.push(ThreadEvent::ItemStarted(ItemStartedEvent {
-                        thread_id: Some(thread_id),
-                        turn_id: Some(turn_id),
                         item: ExecThreadItem {
                             id: item_id,
                             details: ThreadItemDetails::TodoList(TodoListItem { items }),
@@ -698,91 +591,14 @@ impl EventProcessorWithJsonOutput {
                 }
                 CodexStatus::Running
             }
-            ServerNotification::TurnStarted(notification) => {
-                let thread_id = notification.thread_id;
-                let turn_id = notification.turn.id;
-                events.push(ThreadEvent::TurnStarted(TurnStartedEvent {
-                    thread_id,
-                    turn_id,
-                }));
+            ServerNotification::TurnStarted(_) => {
+                events.push(ThreadEvent::TurnStarted(TurnStartedEvent {}));
                 CodexStatus::Running
             }
             _ => CodexStatus::Running,
         };
 
         CollectedThreadEvents { events, status }
-    }
-}
-
-fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<String> {
-    let mut text_parts: Vec<&str> = Vec::new();
-    let mut image_count = 0usize;
-    let mut audio_count = 0usize;
-    for item in items {
-        match item {
-            DynamicToolCallOutputContentItem::InputText { text } => {
-                if !text.trim().is_empty() {
-                    text_parts.push(text.as_str());
-                }
-            }
-            DynamicToolCallOutputContentItem::InputImage { .. } => {
-                image_count += 1;
-            }
-            DynamicToolCallOutputContentItem::InputAudio { .. } => {
-                audio_count += 1;
-            }
-        }
-    }
-
-    let mut preview = text_parts.join("\n");
-    if image_count > 0 {
-        let image_summary = if image_count == 1 {
-            "<1 image output>".to_string()
-        } else {
-            format!("<{image_count} image outputs>")
-        };
-        if preview.is_empty() {
-            preview = image_summary;
-        } else {
-            preview.push('\n');
-            preview.push_str(&image_summary);
-        }
-    }
-    if audio_count > 0 {
-        let audio_summary = if audio_count == 1 {
-            "<1 audio output>".to_string()
-        } else {
-            format!("<{audio_count} audio outputs>")
-        };
-        if preview.is_empty() {
-            preview = audio_summary;
-        } else {
-            preview.push('\n');
-            preview.push_str(&audio_summary);
-        }
-    }
-
-    (!preview.is_empty()).then_some(preview)
-}
-
-fn computer_use_preview(items: &[ComputerUseCallOutputContentItem]) -> Option<String> {
-    let mut parts = Vec::new();
-    for item in items {
-        match item {
-            ComputerUseCallOutputContentItem::InputText { text } => {
-                if !text.trim().is_empty() {
-                    parts.push(text.trim().to_string());
-                }
-            }
-            ComputerUseCallOutputContentItem::InputImage { .. } => {
-                parts.push("<native screenshot>".to_string());
-            }
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n"))
     }
 }
 
@@ -823,69 +639,4 @@ impl EventProcessor for EventProcessorWithJsonOutput {
 
 #[cfg(test)]
 #[path = "event_processor_with_jsonl_output_tests.rs"]
-mod event_processor_with_jsonl_output_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-    use tempfile::tempdir;
-
-    #[test]
-    fn failed_turn_does_not_overwrite_output_last_message_file() {
-        let tempdir = tempdir().expect("create tempdir");
-        let output_path = tempdir.path().join("last-message.txt");
-        std::fs::write(&output_path, "keep existing contents").expect("seed output file");
-
-        let mut processor = EventProcessorWithJsonOutput::new(Some(output_path.clone()));
-
-        let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-            codex_app_server_protocol::ItemCompletedNotification {
-                item: ThreadItem::AgentMessage {
-                    id: "msg-1".to_string(),
-                    text: "partial answer".to_string(),
-                    phase: None,
-                    memory_citation: None,
-                },
-                thread_id: "thread-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                completed_at_ms: 0,
-            },
-        ));
-
-        assert_eq!(collected.status, CodexStatus::Running);
-        assert_eq!(processor.final_message(), Some("partial answer"));
-
-        let status = processor.process_server_notification(ServerNotification::TurnCompleted(
-            codex_app_server_protocol::TurnCompletedNotification {
-                thread_id: "thread-1".to_string(),
-                turn: codex_app_server_protocol::Turn {
-                    id: "turn-1".to_string(),
-                    items_view: codex_app_server_protocol::TurnItemsView::Full,
-                    items: Vec::new(),
-                    status: TurnStatus::Failed,
-                    error: Some(codex_app_server_protocol::TurnError {
-                        message: "turn failed".to_string(),
-                        additional_details: None,
-                        codex_error_info: None,
-                    }),
-                    started_at: None,
-                    completed_at: None,
-                    duration_ms: None,
-                },
-                final_model: None,
-                model_snapshot: None,
-            },
-        ));
-
-        assert_eq!(status, CodexStatus::InitiateShutdown);
-        assert_eq!(processor.final_message(), None);
-
-        EventProcessor::print_final_output(&mut processor);
-
-        assert_eq!(
-            std::fs::read_to_string(&output_path).expect("read output file"),
-            "keep existing contents"
-        );
-    }
-}
+mod tests;

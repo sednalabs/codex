@@ -5,7 +5,9 @@ import pytest
 
 
 MODULE_PATH = Path(__file__).with_name("gh_merge_queue_shepherd.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("gh_merge_queue_shepherd", MODULE_PATH)
+MODULE_SPEC = importlib.util.spec_from_file_location(
+    "gh_merge_queue_shepherd", MODULE_PATH
+)
 queue = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
 MODULE_SPEC.loader.exec_module(queue)
@@ -102,7 +104,7 @@ def sample_runs(head_sha=SYNTHETIC_G):
             "status": "completed",
             "conclusion": "success",
             "run_attempt": 1,
-        }
+        },
     ]
 
 
@@ -149,23 +151,38 @@ def test_unrelated_or_empty_workflow_run_fails_closed():
 def test_queue_id_is_not_a_pr_identity_or_queue_ref():
     normalized = queue.normalize_queue_entry({"id": "queue-entry-750"})
     assert normalized["queue_entry_ref"] == ""
-    assert queue.candidate_is_owner(
-        {"queue_entry_id": "queue-entry-750"},
-        {"pr_number": 750, "queue_entry_id": "queue-entry-750"},
-    ) is False
+    assert (
+        queue.candidate_is_owner(
+            {"queue_entry_id": "queue-entry-750"},
+            {"pr_number": 750, "queue_entry_id": "queue-entry-750"},
+        )
+        is False
+    )
 
 
 def test_default_branch_ruleset_token_only_applies_to_declared_default():
-    ruleset = {**sample_ruleset()[0], "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}}}
-    assert queue.normalize_ruleset_readback(
-        [ruleset], base_ref="main", default_branch="main"
-    )["active_ruleset_count"] == 1
-    assert queue.normalize_ruleset_readback(
-        [ruleset], base_ref="release", default_branch="main"
-    )["active_ruleset_count"] == 0
-    assert queue.normalize_ruleset_readback(
-        [ruleset], base_ref="main"
-    )["active_ruleset_count"] == 0
+    ruleset = {
+        **sample_ruleset()[0],
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"]}},
+    }
+    assert (
+        queue.normalize_ruleset_readback(
+            [ruleset], base_ref="main", default_branch="main"
+        )["active_ruleset_count"]
+        == 1
+    )
+    assert (
+        queue.normalize_ruleset_readback(
+            [ruleset], base_ref="release", default_branch="main"
+        )["active_ruleset_count"]
+        == 0
+    )
+    assert (
+        queue.normalize_ruleset_readback([ruleset], base_ref="main")[
+            "active_ruleset_count"
+        ]
+        == 0
+    )
 
 
 def test_missing_structural_ancestry_never_claims_allgreen():
@@ -221,7 +238,10 @@ def test_independent_unmergeable_does_not_interrupt_owner():
         "mergeGroupSha": OTHER_SYNTHETIC_G,
     }
     current = snapshot(
-        candidates=[{**sample_queue()["pullRequests"][0], "state": "AWAITING_CHECKS"}, independent]
+        candidates=[
+            {**sample_queue()["pullRequests"][0], "state": "AWAITING_CHECKS"},
+            independent,
+        ]
     )
     assert current["actions"] == [queue.IDLE_ACTION]
     assert current["disposition"] == "independent_unmergeable_only"
@@ -242,10 +262,15 @@ def test_owner_candidate_author_mismatch_fails_closed():
 
 def test_head_replacement_invalidates_prior_identity_and_runs():
     before = snapshot()
-    after = snapshot(pr=sample_pr(headRefOid="6" * 40), previous_binding=before["binding"])
+    after = snapshot(
+        pr=sample_pr(headRefOid="6" * 40), previous_binding=before["binding"]
+    )
     assert after["actions"] == [queue.HEAD_REPLACED_ACTION]
     assert after["identity"]["comparison"]["head_replaced"] is True
-    assert after["identity"]["comparison"]["invalidated_workflow_run_ids"] == ["1001", "1002"]
+    assert after["identity"]["comparison"]["invalidated_workflow_run_ids"] == [
+        "1001",
+        "1002",
+    ]
 
 
 def test_ruleset_generation_mismatch_fails_closed():
@@ -273,7 +298,9 @@ def test_workflow_run_for_wrong_merge_group_sha_is_not_evidence():
 
 
 def test_workflow_run_without_head_sha_is_not_evidence():
-    current = snapshot(workflow_runs=[{"id": 1001, "status": "completed", "conclusion": "success"}])
+    current = snapshot(
+        workflow_runs=[{"id": 1001, "status": "completed", "conclusion": "success"}]
+    )
     assert current["actions"] == [queue.IDENTITY_MISMATCH_ACTION]
     assert current["disposition"] == "workflow_identity_mismatch"
 
@@ -420,7 +447,12 @@ def test_graphql_queue_adapter_uses_supported_entry_schema_and_keeps_independent
     entry = provider.read_queue_entry()
     assert entry["merge_group_sha"] == SYNTHETIC_G
     assert [row["number"] for row in entry["pullRequests"]] == [750, 754]
-    query = next(value[6:] for command in calls for value in command if value.startswith("query="))
+    query = next(
+        value[6:]
+        for command in calls
+        for value in command
+        if value.startswith("query=")
+    )
     assert "baseCommit { oid }" in query
     assert "headCommit { oid }" in query
     assert "mergeGroup{" not in query
@@ -437,7 +469,9 @@ def test_graphql_errors_fail_closed_before_partial_queue_projection():
         750,
         runner=lambda _command: {"errors": [{"message": "partial data"}], "data": {}},
     )
-    with pytest.raises(queue.QueueObserverError, match="GraphQL response contained errors"):
+    with pytest.raises(
+        queue.QueueObserverError, match="GraphQL response contained errors"
+    ):
         provider.read_queue_entry()
 
 
@@ -467,39 +501,41 @@ def test_provider_projection_leaves_unsupported_queue_evidence_unbound():
     provider = queue.ReadOnlyGitHubProvider(
         "sednalabs/codex",
         750,
-        runner=lambda command: {
-            "number": 750,
-            "user": {"login": "branch-owner"},
-            "head": {"sha": PR_HEAD},
-            "base": {"ref": "main", "sha": BASE_SHA},
-        }
-        if "pulls/750" in command[1]
-        else {
-            "data": {
-                "repository": {
-                    "mergeQueue": {
-                        "entries": {
-                            "nodes": [
-                                {
-                                    "id": "queue-entry-750",
-                                    "position": 1,
-                                    "state": "AWAITING_CHECKS",
-                                    "baseCommit": {"oid": BASE_SHA},
-                                    "headCommit": {"oid": SYNTHETIC_G},
-                                    "pullRequest": {
-                                        "number": 750,
-                                        "author": {"login": "branch-owner"},
-                                        "headRefOid": PR_HEAD,
-                                        "baseRefOid": BASE_SHA,
-                                        "baseRefName": "main",
-                                    },
-                                }
-                            ]
+        runner=lambda command: (
+            {
+                "number": 750,
+                "user": {"login": "branch-owner"},
+                "head": {"sha": PR_HEAD},
+                "base": {"ref": "main", "sha": BASE_SHA},
+            }
+            if "pulls/750" in command[1]
+            else {
+                "data": {
+                    "repository": {
+                        "mergeQueue": {
+                            "entries": {
+                                "nodes": [
+                                    {
+                                        "id": "queue-entry-750",
+                                        "position": 1,
+                                        "state": "AWAITING_CHECKS",
+                                        "baseCommit": {"oid": BASE_SHA},
+                                        "headCommit": {"oid": SYNTHETIC_G},
+                                        "pullRequest": {
+                                            "number": 750,
+                                            "author": {"login": "branch-owner"},
+                                            "headRefOid": PR_HEAD,
+                                            "baseRefOid": BASE_SHA,
+                                            "baseRefName": "main",
+                                        },
+                                    }
+                                ]
+                            }
                         }
                     }
                 }
             }
-        },
+        ),
     )
     entry = provider.read_queue_entry()
     assert "queueEntryRef" not in entry
@@ -564,13 +600,15 @@ def test_unallowlisted_ancestry_source_fails_closed():
 
 
 def test_queue_entry_ref_must_be_distinct_from_provider_queue_id():
-    current = snapshot(queue_entry={**sample_queue(), "queue_entry_ref": "queue-entry-750"})
+    current = snapshot(
+        queue_entry={**sample_queue(), "queue_entry_ref": "queue-entry-750"}
+    )
     assert current["allgreen"] is False
     assert "queue_entry_ref_not_distinct" in current["identity"]["missing"]
 
 
 def test_conflicting_workflow_aliases_are_not_selected():
-    runs = [{**sample_runs()[0], "headSha": OTHER_SYNTHETIC_G} , sample_runs()[1]]
+    runs = [{**sample_runs()[0], "headSha": OTHER_SYNTHETIC_G}, sample_runs()[1]]
     evidence = queue.workflow_evidence(runs, SYNTHETIC_G)
     assert evidence["valid"] is False
     assert "workflow_field_alias_conflict" in evidence["reasons"]
@@ -578,8 +616,12 @@ def test_conflicting_workflow_aliases_are_not_selected():
 
 def test_workflow_provider_requests_complete_pagination():
     provider = queue.ReadOnlyGitHubProvider(
-        "sednalabs/codex", 750,
-        runner=lambda command: [{"workflow_runs": sample_runs()}, {"workflow_runs": []}],
+        "sednalabs/codex",
+        750,
+        runner=lambda command: [
+            {"workflow_runs": sample_runs()},
+            {"workflow_runs": []},
+        ],
     )
     runs = provider.read_workflow_runs(SYNTHETIC_G)
     assert len(runs) == 2
@@ -587,7 +629,8 @@ def test_workflow_provider_requests_complete_pagination():
 
 def test_incomplete_workflow_page_fails_closed():
     provider = queue.ReadOnlyGitHubProvider(
-        "sednalabs/codex", 750,
+        "sednalabs/codex",
+        750,
         runner=lambda command: {"workflow_runs": [], "pagination_complete": False},
     )
     with pytest.raises(queue.QueueObserverError, match="pagination was incomplete"):

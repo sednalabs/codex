@@ -6,4 +6,4 @@ expression: terminal.backend()
 "› /si                                                       "
 "                                                            "
 "                                                            "
-"  /side  start a resumable side conversation                "
+"› /side  start a side conversation in an ephemeral fork     "

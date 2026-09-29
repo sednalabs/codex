@@ -5,4 +5,4 @@
 /**
  * Empty success response for `command/exec/terminate`.
  */
-export type CommandExecTerminateResponse = Record<symbol, never>;
+export type CommandExecTerminateResponse = Record<string, never>;

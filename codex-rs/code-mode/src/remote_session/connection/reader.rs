@@ -1,11 +1,12 @@
+use codex_code_mode_protocol::host::FramedReader;
+use tokio::process::ChildStdout;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::driver::DriverEvent;
-use super::transport::ConnectionReader;
 
 pub(super) async fn drive_reader(
-    mut reader: ConnectionReader,
+    mut reader: FramedReader<ChildStdout>,
     events: mpsc::Sender<DriverEvent>,
     cancellation: CancellationToken,
 ) -> Result<(), String> {

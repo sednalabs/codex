@@ -1,14 +1,11 @@
 {
-  "$defs": {
-    "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
-      "type": "string"
-    },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/$defs/FileSystemSandboxEntry"
+            "$ref": "#/definitions/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -17,7 +14,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1,
+          "minimum": 1.0,
           "type": [
             "integer",
             "null"
@@ -26,7 +23,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -36,7 +33,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -70,17 +67,19 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/LegacyAppPathString"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
-              "const": "path",
+              "enum": [
+                "path"
+              ],
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -91,14 +90,16 @@
               "type": "string"
             },
             "type": {
-              "const": "glob_pattern",
+              "enum": [
+                "glob_pattern"
+              ],
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "pattern"
+            "pattern",
+            "type"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -106,12 +107,14 @@
         {
           "properties": {
             "type": {
-              "const": "special",
+              "enum": [
+                "special"
+              ],
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
+              "$ref": "#/definitions/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -126,15 +129,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
+          "$ref": "#/definitions/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/$defs/FileSystemPath"
+          "$ref": "#/definitions/FileSystemPath"
         }
       },
       "required": [
-        "path",
-        "access"
+        "access",
+        "path"
       ],
       "type": "object"
     },
@@ -143,7 +146,9 @@
         {
           "properties": {
             "kind": {
-              "const": "root",
+              "enum": [
+                "root"
+              ],
               "type": "string"
             }
           },
@@ -156,7 +161,9 @@
         {
           "properties": {
             "kind": {
-              "const": "minimal",
+              "enum": [
+                "minimal"
+              ],
               "type": "string"
             }
           },
@@ -169,13 +176,15 @@
         {
           "properties": {
             "kind": {
-              "const": "project_roots",
+              "enum": [
+                "project_roots"
+              ],
               "type": "string"
             },
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -192,7 +201,9 @@
         {
           "properties": {
             "kind": {
-              "const": "tmpdir",
+              "enum": [
+                "tmpdir"
+              ],
               "type": "string"
             }
           },
@@ -205,7 +216,9 @@
         {
           "properties": {
             "kind": {
-              "const": "slash_tmp",
+              "enum": [
+                "slash_tmp"
+              ],
               "type": "string"
             }
           },
@@ -218,7 +231,9 @@
         {
           "properties": {
             "kind": {
-              "const": "unknown",
+              "enum": [
+                "unknown"
+              ],
               "type": "string"
             },
             "path": {
@@ -227,7 +242,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -252,7 +267,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -262,7 +277,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalNetworkPermissions"
+              "$ref": "#/definitions/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -273,10 +288,9 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "cwd": {
-      "$ref": "#/$defs/AbsolutePathBuf"
+      "$ref": "#/definitions/LegacyAppPathString"
     },
     "environmentId": {
       "default": null,
@@ -289,7 +303,7 @@
       "type": "string"
     },
     "permissions": {
-      "$ref": "#/$defs/RequestPermissionProfile"
+      "$ref": "#/definitions/RequestPermissionProfile"
     },
     "reason": {
       "type": [
@@ -310,12 +324,12 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
-    "itemId",
-    "startedAtMs",
     "cwd",
-    "permissions"
+    "itemId",
+    "permissions",
+    "startedAtMs",
+    "threadId",
+    "turnId"
   ],
   "title": "PermissionsRequestApprovalParams",
   "type": "object"

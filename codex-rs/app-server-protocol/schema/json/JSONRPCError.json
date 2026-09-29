@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "JSONRPCErrorError": {
       "properties": {
         "code": {
@@ -29,14 +30,13 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "A response to a request that indicates an error occurred.",
   "properties": {
     "error": {
-      "$ref": "#/$defs/JSONRPCErrorError"
+      "$ref": "#/definitions/JSONRPCErrorError"
     },
     "id": {
-      "$ref": "#/$defs/RequestId"
+      "$ref": "#/definitions/RequestId"
     }
   },
   "required": [

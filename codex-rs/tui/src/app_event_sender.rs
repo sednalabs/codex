@@ -6,12 +6,12 @@
 use std::path::PathBuf;
 
 use crate::app_command::AppCommand;
+use crate::app_command::UserVerificationResponse;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ReviewTarget;
-use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
 use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
@@ -63,13 +63,6 @@ impl AppEventSender {
         self.send(AppEvent::CodexOp(AppCommand::list_skills(
             cwds,
             force_reload,
-        )));
-    }
-
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub(crate) fn realtime_conversation_audio(&self, audio: ThreadRealtimeAudioChunk) {
-        self.send(AppEvent::CodexOp(AppCommand::realtime_conversation_audio(
-            audio,
         )));
     }
 
@@ -127,6 +120,19 @@ impl AppEventSender {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
             op: AppCommand::resolve_elicitation(server_name, request_id, decision, content, meta),
+        });
+    }
+
+    pub(crate) fn resolve_user_verification(
+        &self,
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: AppServerRequestId,
+        response: UserVerificationResponse,
+    ) {
+        self.send(AppEvent::SubmitThreadOp {
+            thread_id,
+            op: AppCommand::resolve_user_verification(server_name, request_id, response),
         });
     }
 }

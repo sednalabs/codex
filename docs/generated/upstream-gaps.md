@@ -1,39 +1,22 @@
 # Generated upstream gaps
 
-> `status: generated` · `authority: evidence` · `captured: 2026-07-28T13:37:40Z`
->
-> This is a bounded harvest queue, not a claim that every upstream change is
-> safe to apply to the downstream fork.
+> `status: generated` · `authority: evidence` · `captured: 2026-09-24`
 
-## Current gap shape
+This is a bounded next-train queue, not a claim that every newer upstream
+commit is safe to apply to the frozen P7 candidate.
 
-At the captured refs, `upstream/main` is 60 commits ahead of `origin/main`.
-The fork is intentionally carrying substantially more downstream work (2131
-commits ahead by the same comparison). The full commit set belongs in the
-machine-readable audit output; this page records only high-signal candidates
-for the next harvest.
+| Candidate | Decision | Owner | Reason |
+| --- | --- | --- | --- |
+| `b19cebecc0169097bda7539af03c886e03bdeafe` live upstream/main | `track-next-train` | root | Moving tip is recorded only for later harvest; frozen cut remains `392f56a6`. |
+| `f747d23d4bc8a167207fb1c411e221022391fdbb` Bazel lock-check wording | `track` | root | Coupled shell-script change is outside P7 scope. |
+| `a16381c4457e23191d4786968011434c37a04041` Cargo/Bazel debug defaults | `track` | root | Requires MODULE/patch/source changes outside the P7 cutline. |
+| `9c77996cd1c28f683fa800891d502d9bb017e692` release workflow removal | `track` | root | Release-high-consequence behavior is not required here. |
+| `6824dabe0393337a38cb257d5fe75ae5ca168470` release channel guard | `track` | root | Release-channel outcome requires separate protected review. |
+| `1d87af5faa75c2c09785cd088353d3236333673f` network policy source/lock change | `ignore-for-p7` | root | Source and lock are inseparable; no partial lock-only adoption. |
+| `f5960fcc22b918e658bc486e53a80031d64fd41e` shared crate coupling | `ignore-for-p7` | root | Source contract is outside P7 scope. |
+| `5babf441c179fa8f4f36ebabc5233d0630ce9658` sednalabs PR #854 | `preserve-track` | root | Exact old-base head remains preserved; current-base successor is a separate outcome. |
+| gnullvm symlink removal, legacy unknown-event handling, code-mode exception | `deferred-no-equivalent` | root | Focused harvest found no newer upstream equivalent; programme-owned repair is bounded to exact hosted failures and coupled tests. |
 
-| Candidate                                                      | Current decision | Why                                                                                                                                                                                               |
-| -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `829f5b6b59` — separate app and exec RPC ownership             | `track`          | Protocol ownership may affect the downstream app-server carry; inspect with the next app-server code harvest before changing docs or schemas.                                                     |
-| `0a0d09ad21` — clarify docs-folder guidance in `AGENTS.md`     | `port concept`   | The governance rules in [`../sedna-docs-governance.md`](../sedna-docs-governance.md) capture the relevant authority/freshness distinction without importing upstream repository policy wholesale. |
-| `67849d950d` — remove local docs and specs                     | `ignore`         | Downstream carry documentation is an intentional maintenance surface; removal would erase the evidence needed to operate the fork.                                                                |
-| Upstream PR #30866 — reconcile loaded thread history on resume | `track`          | Resume identity and fork lineage are adjacent to the usage/session work, but this docs train does not change app-server behavior.                                                                 |
-| Upstream PR #31487 — installed runtime snapshot API            | `track`          | Potentially useful for release-channel and runtime documentation; wait for a code-level harvest decision.                                                                                         |
-| Upstream PR #31515 — client-only web-search result metadata    | `track`          | App-server protocol surface may change; do not pre-adopt generated schema text.                                                                                                                   |
-
-## Separate priority-0 gap
-
-The current downstream `app-server-daemon` sources still contain upstream
-installer/update-channel references. That is a runtime/code remediation and is
-not silently fixed by this documentation-only train. See the explicit scope
-note in [`../sedna-docs-governance.md`](../sedna-docs-governance.md); update the
-installer guidance only after the corresponding code change has landed and
-hosted validation proves the release channel.
-
-## Regeneration boundary
-
-Recompute this page from the live `upstream/main` and `origin/main` refs after
-each harvest. Keep exact commit IDs and a dated adoption decision in
-[`../upstream-sync/2026-07-28.md`](../upstream-sync/2026-07-28.md), then move
-resolved entries into the next dated snapshot rather than rewriting history.
+No gap is a blocker for the frozen P7 cutline unless a current acceptance
+contract is contradicted. A later train must refresh exact refs and rerun the
+bounded harvest before adopting any tracked item.

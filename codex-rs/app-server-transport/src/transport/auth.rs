@@ -466,7 +466,6 @@ mod tests {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use hmac::Hmac;
-    use hmac::KeyInit;
     use hmac::Mac;
     use serde_json::json;
 

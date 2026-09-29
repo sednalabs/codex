@@ -25,7 +25,7 @@ pub fn add_dir_warning_message(
         return None;
     }
 
-    if file_system_policy.can_write_path_with_cwd(cwd, cwd) {
+    if file_system_policy.can_write_local_path_with_cwd(cwd, cwd) {
         return None;
     }
 
@@ -116,7 +116,11 @@ mod tests {
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Path {
-                            path: "/tmp/writable".try_into().expect("absolute path"),
+                            path: codex_utils_absolute_path::AbsolutePathBuf::try_from(
+                                "/tmp/writable",
+                            )
+                            .expect("absolute path")
+                            .into(),
                         },
                         access: FileSystemAccessMode::Write,
                         missing_path_behavior: None,

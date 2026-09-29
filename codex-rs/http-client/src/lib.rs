@@ -4,10 +4,12 @@ mod client;
 mod client_builder;
 mod custom_ca;
 mod error;
+mod network_policy;
 mod outbound_proxy;
 mod request;
 mod route_aware_client_pool;
 mod route_aware_redirect;
+mod tls_backend_fallback;
 mod transport;
 
 pub use crate::chatgpt_cloudflare_cookies::with_chatgpt_cloudflare_cookie_store;
@@ -30,21 +32,29 @@ pub use crate::custom_ca::build_rustls_client_config_with_custom_ca;
 pub use crate::custom_ca::maybe_build_rustls_client_config_with_custom_ca;
 pub use crate::error::StreamError;
 pub use crate::error::TransportError;
+pub use crate::network_policy::DestinationPolicy;
+pub use crate::network_policy::NetworkPermit;
+pub use crate::network_policy::NetworkPolicy;
+pub use crate::network_policy::NetworkPolicyController;
+pub use crate::network_policy::NetworkPolicyDenied;
+pub use crate::network_policy::NetworkPolicyRevision;
 pub use crate::outbound_proxy::BuildRouteAwareHttpClientError;
 pub use crate::outbound_proxy::ClientRouteClass;
 pub use crate::outbound_proxy::HttpClientFactory;
+#[cfg(target_os = "macos")]
+pub use crate::outbound_proxy::MacosSystemProxyConfiguration;
 pub use crate::outbound_proxy::OutboundProxyPolicy;
 pub use crate::outbound_proxy::OutboundProxyRoute;
 pub use crate::outbound_proxy::RouteFailureClass;
 #[doc(hidden)]
 pub use crate::outbound_proxy::cache_system_proxy_route_for_test;
-pub use crate::request::ClaimedRequestInitiation;
+#[cfg(target_os = "macos")]
+pub use crate::outbound_proxy::macos_system_proxy_configuration;
 pub use crate::request::EncodedJsonBody;
 pub use crate::request::PreparedRequestBody;
 pub use crate::request::Request;
 pub use crate::request::RequestBody;
 pub use crate::request::RequestCompression;
-pub use crate::request::RequestInitiation;
 pub use crate::request::Response;
 pub use crate::route_aware_client_pool::RouteAwareClientPool;
 pub use crate::route_aware_client_pool::RouteAwareClientPoolError;
@@ -54,4 +64,9 @@ pub use crate::transport::ByteStream;
 pub use crate::transport::HttpTransport;
 pub use crate::transport::ReqwestTransport;
 pub use crate::transport::StreamResponse;
-pub use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+
+#[cfg(windows)]
+mod windows_tls;
+
+#[cfg(windows)]
+pub use crate::windows_tls::build_windows_platform_tls_config;

@@ -41,10 +41,49 @@ def just_formatter_group(*, check: bool) -> FormatterGroup:
 
 
 def rust_formatter_group(*, check: bool) -> FormatterGroup:
-    args = ["cargo", "fmt", "--", "--config", "imports_granularity=Item"]
+    repository_files = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.rs",
+        ],
+        cwd=REPO_ROOT,
+    ).split(b"\0")
+    codex_root = REPO_ROOT / "codex-rs"
+    rust_files: list[tuple[str, str]] = []
+    for encoded_path in repository_files:
+        if not encoded_path:
+            continue
+        path = Path(os.fsdecode(encoded_path))
+        absolute_path = REPO_ROOT / path
+        if not absolute_path.is_file():
+            continue
+        rust_files.append(
+            (
+                path.as_posix(),
+                os.path.relpath(absolute_path, codex_root),
+            )
+        )
+    rust_files.sort(key=lambda item: item[0])
+
+    args = [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        str(codex_root / "rustfmt.toml"),
+        "--config",
+        "imports_granularity=Item,skip_children=true",
+    ]
     if check:
         args.append("--check")
-    command = Command(tuple(args), REPO_ROOT / "codex-rs")
+    args.extend(relative_path for _, relative_path in rust_files)
+    command = Command(tuple(args), codex_root)
     return FormatterGroup("Rust", (command,))
 
 
@@ -116,20 +155,10 @@ def python_sdk_formatter_group(*, check: bool) -> FormatterGroup:
 
 
 def python_scripts_formatter_group(*, check: bool) -> FormatterGroup:
-    # The SDK and internal scripts intentionally use separate project roots so
-    # uv and Ruff retain each project's configuration context.
-    args = [
-        "uv",
-        "run",
-        "--frozen",
-        "--project",
-        "scripts",
-        "ruff",
-        "format",
-    ]
+    args = ["uv", "run", "--frozen", "--project", "scripts", "ruff", "format"]
     if check:
         args.append("--check")
-    args.append("scripts")
+    args.append(".")
     return FormatterGroup("Python scripts", (Command(tuple(args)),))
 
 

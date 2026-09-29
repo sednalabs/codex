@@ -1,9 +1,6 @@
-use std::time::Instant;
-
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::mcp_resource_spec::create_read_mcp_resource_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -15,14 +12,11 @@ use rmcp::model::ReadResourceRequestParams;
 
 use super::ReadResourceArgs;
 use super::ReadResourcePayload;
-use super::call_tool_result_from_execution_status;
-use super::emit_tool_call_begin;
-use super::emit_tool_call_end;
 use super::ensure_model_can_access_mcp_server;
 use super::normalize_required_string;
 use super::parse_args;
 use super::parse_arguments;
-use super::serialize_read_resource_output;
+use super::run_resource_operation;
 
 pub struct ReadMcpResourceHandler;
 
@@ -39,7 +33,10 @@ impl ToolExecutor<ToolInvocation> for ReadMcpResourceHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -53,7 +50,6 @@ impl ReadMcpResourceHandler {
             session,
             step_context,
             call_id,
-            source,
             payload,
             ..
         } = invocation;
@@ -81,10 +77,7 @@ impl ReadMcpResourceHandler {
             arguments: arguments.clone(),
         };
 
-        emit_tool_call_begin(&session, turn.as_ref(), &call_id, invocation.clone()).await;
-        let start = Instant::now();
-
-        let payload_result: Result<ReadResourcePayload, FunctionCallError> = async {
+        run_resource_operation(&session, &step_context, &call_id, invocation, async {
             ensure_model_can_access_mcp_server(turn.as_ref(), &server)?;
             let result = mcp
                 .read_resource(&server, ReadResourceRequestParams::new(uri.clone()))
@@ -98,59 +91,8 @@ impl ReadMcpResourceHandler {
                 uri,
                 result,
             })
-        }
-        .await;
-        let truncation_policy = turn.model_info.truncation_policy.into();
-
-        match payload_result {
-            Ok(payload) => match serialize_read_resource_output(payload, truncation_policy) {
-                Ok(output) => {
-                    let content = output.model_content();
-                    let duration = start.elapsed();
-                    emit_tool_call_end(
-                        &session,
-                        turn.as_ref(),
-                        &call_id,
-                        invocation,
-                        duration,
-                        Ok(call_tool_result_from_execution_status(
-                            &content,
-                            output.execution_status_for_source(&source),
-                        )),
-                    )
-                    .await;
-                    Ok(boxed_tool_output(output))
-                }
-                Err(err) => {
-                    let duration = start.elapsed();
-                    let message = err.to_string();
-                    emit_tool_call_end(
-                        &session,
-                        turn.as_ref(),
-                        &call_id,
-                        invocation,
-                        duration,
-                        Err(message.clone()),
-                    )
-                    .await;
-                    Err(err)
-                }
-            },
-            Err(err) => {
-                let duration = start.elapsed();
-                let message = err.to_string();
-                emit_tool_call_end(
-                    &session,
-                    turn.as_ref(),
-                    &call_id,
-                    invocation,
-                    duration,
-                    Err(message.clone()),
-                )
-                .await;
-                Err(err)
-            }
-        }
+        })
+        .await
     }
 }
 

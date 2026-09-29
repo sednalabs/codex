@@ -116,14 +116,15 @@ impl ThreadWatchManager {
 
     pub(crate) async fn loaded_statuses_for_threads(
         &self,
-        thread_ids: Vec<String>,
+        thread_ids: impl IntoIterator<Item = String>,
     ) -> HashMap<String, ThreadStatus> {
         let state = self.state.lock().await;
         thread_ids
             .into_iter()
-            .map(|thread_id| {
-                let status = state.loaded_status_for_thread(&thread_id);
-                (thread_id, status)
+            .filter_map(|thread_id| {
+                state
+                    .status_for(&thread_id)
+                    .map(|status| (thread_id, status))
             })
             .collect()
     }
@@ -223,7 +224,7 @@ impl ThreadWatchManager {
     where
         F: FnOnce(&mut ThreadWatchState) -> Option<ThreadStatusChangedNotification>,
     {
-        let (notification, running_turn_count) = {
+        let notification = {
             let mut state = self.state.lock().await;
             let notification = mutate(&mut state);
             let running_turn_count = state
@@ -231,9 +232,16 @@ impl ThreadWatchManager {
                 .values()
                 .filter(|runtime| runtime.running)
                 .count();
-            (notification, running_turn_count)
+            self.running_turn_count_tx.send_if_modified(|current| {
+                if *current == running_turn_count {
+                    false
+                } else {
+                    *current = running_turn_count;
+                    true
+                }
+            });
+            notification
         };
-        let _ = self.running_turn_count_tx.send(running_turn_count);
 
         if let Some(notification) = notification
             && let Some(outgoing) = &self.outgoing
@@ -641,15 +649,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loaded_statuses_default_to_not_loaded_for_untracked_threads() {
+    async fn loaded_statuses_distinguish_shutdown_from_untracked_threads() {
+        const UNTRACKED_THREAD_ID: &str = "00000000-0000-0000-0000-000000000003";
+
         let manager = ThreadWatchManager::new();
         manager.upsert_thread(INTERACTIVE_THREAD_ID).await;
         manager.note_turn_started(INTERACTIVE_THREAD_ID).await;
+        manager.upsert_thread(NON_INTERACTIVE_THREAD_ID).await;
+        manager
+            .note_thread_shutdown(NON_INTERACTIVE_THREAD_ID)
+            .await;
 
         let statuses = manager
             .loaded_statuses_for_threads(vec![
                 INTERACTIVE_THREAD_ID.to_string(),
                 NON_INTERACTIVE_THREAD_ID.to_string(),
+                UNTRACKED_THREAD_ID.to_string(),
             ])
             .await;
 
@@ -663,6 +678,7 @@ mod tests {
             statuses.get(NON_INTERACTIVE_THREAD_ID),
             Some(&ThreadStatus::NotLoaded),
         );
+        assert_eq!(statuses.get(UNTRACKED_THREAD_ID), None);
     }
 
     #[tokio::test]
@@ -684,6 +700,26 @@ mod tests {
             .note_turn_completed(INTERACTIVE_THREAD_ID, false)
             .await;
         assert_eq!(manager.running_turn_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn running_turn_watch_notifies_only_when_count_changes() {
+        let manager = ThreadWatchManager::new();
+        let mut count = manager.subscribe_running_turn_count();
+
+        manager.upsert_thread(INTERACTIVE_THREAD_ID).await;
+        manager.note_turn_started(INTERACTIVE_THREAD_ID).await;
+        assert!(count.has_changed().expect("watch remains open"));
+        assert_eq!(*count.borrow_and_update(), 1);
+
+        let _permission_guard = manager
+            .note_permission_requested(INTERACTIVE_THREAD_ID)
+            .await;
+        assert!(!count.has_changed().expect("watch remains open"));
+
+        manager.note_thread_shutdown(INTERACTIVE_THREAD_ID).await;
+        assert!(count.has_changed().expect("watch remains open"));
+        assert_eq!(*count.borrow_and_update(), 0);
     }
 
     #[tokio::test]

@@ -21,7 +21,10 @@ impl ToolExecutor<ToolInvocation> for Handler {
         )
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move { handle_close_agent(invocation).await.map(boxed_tool_output) })
     }
 }
@@ -55,12 +58,7 @@ async fn handle_close_agent(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                requested_model: None,
-                requested_reasoning_effort: None,
                 agents_states: Default::default(),
-                wake_notifications: None,
-                completion_reason: None,
-                wake_cause: None,
             }),
         )
         .await;
@@ -95,12 +93,7 @@ async fn handle_close_agent(
                         prompt: None,
                         model: None,
                         reasoning_effort: None,
-                        requested_model: None,
-                        requested_reasoning_effort: None,
                         agents_states: [(agent_id, status)].into_iter().collect(),
-                        wake_notifications: None,
-                        completion_reason: None,
-                        wake_cause: None,
                     }),
                 )
                 .await;
@@ -128,12 +121,7 @@ async fn handle_close_agent(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
-                requested_model: None,
-                requested_reasoning_effort: None,
                 agents_states: [(agent_id, status.clone())].into_iter().collect(),
-                wake_notifications: None,
-                completion_reason: None,
-                wake_cause: None,
             }),
         )
         .await;
@@ -156,7 +144,7 @@ pub(crate) struct CloseAgentResult {
 }
 
 impl ToolOutput for CloseAgentResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "close_agent")
     }
 

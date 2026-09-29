@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "DynamicToolCallOutputContentItem": {
       "oneOf": [
         {
@@ -8,38 +9,36 @@
               "type": "string"
             },
             "type": {
-              "const": "inputText",
+              "enum": [
+                "inputText"
+              ],
               "title": "InputTextDynamicToolCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "text"
+            "text",
+            "type"
           ],
           "title": "InputTextDynamicToolCallOutputContentItem",
           "type": "object"
         },
         {
           "properties": {
-            "detail": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "imageUrl": {
               "type": "string"
             },
             "type": {
-              "const": "inputImage",
+              "enum": [
+                "inputImage"
+              ],
               "title": "InputImageDynamicToolCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "imageUrl"
+            "imageUrl",
+            "type"
           ],
           "title": "InputImageDynamicToolCallOutputContentItem",
           "type": "object"
@@ -50,14 +49,16 @@
               "type": "string"
             },
             "type": {
-              "const": "inputAudio",
+              "enum": [
+                "inputAudio"
+              ],
               "title": "InputAudioDynamicToolCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "audioUrl"
+            "audioUrl",
+            "type"
           ],
           "title": "InputAudioDynamicToolCallOutputContentItem",
           "type": "object"
@@ -65,11 +66,10 @@
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "contentItems": {
       "items": {
-        "$ref": "#/$defs/DynamicToolCallOutputContentItem"
+        "$ref": "#/definitions/DynamicToolCallOutputContentItem"
       },
       "type": "array"
     },

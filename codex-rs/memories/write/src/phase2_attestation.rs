@@ -5,10 +5,11 @@ use crate::stage_two;
 use crate::workspace_diff;
 use anyhow::Context;
 use codex_core::config::Config;
+use codex_protocol::MemoryVersion;
 use codex_protocol::user_input::UserInput;
+use codex_state::MemoryStore;
 use codex_state::Phase2AttestedBaseline;
 use codex_state::Stage1Output;
-use codex_state::StateRuntime;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -53,13 +54,14 @@ pub(super) async fn capture_prepared_context(
 pub(super) async fn validate_completed_run(
     root: &Path,
     context: &Phase2AttestationContext,
+    version: MemoryVersion,
 ) -> anyhow::Result<String> {
     let observed_root_key = memory_root_key(root).await?;
     anyhow::ensure!(
         observed_root_key == context.memory_root_key,
         "memory root changed during phase-2 consolidation"
     );
-    validate_required_outputs(root).await?;
+    validate_required_outputs(root, version).await?;
     current_output_tree_sha256(root).await
 }
 
@@ -68,7 +70,7 @@ pub(super) async fn current_output_tree_sha256(root: &Path) -> anyhow::Result<St
 }
 
 pub(super) async fn matching_attested_baseline_exists(
-    db: &StateRuntime,
+    db: &MemoryStore,
     memory_root_key: &str,
     output_tree_sha256: &str,
 ) -> anyhow::Result<bool> {
@@ -79,7 +81,7 @@ pub(super) async fn matching_attested_baseline_exists(
 }
 
 pub(super) async fn record_completed_baseline(
-    db: &StateRuntime,
+    db: &MemoryStore,
     context: &Phase2AttestationContext,
     output_tree_sha256: String,
     completion_watermark: i64,
@@ -109,17 +111,19 @@ pub(super) async fn memory_root_key(root: &Path) -> anyhow::Result<String> {
     .await?
 }
 
-async fn validate_required_outputs(root: &Path) -> anyhow::Result<()> {
-    let index_path = root.join(MEMORY_INDEX_FILENAME);
-    let summary_path = root.join(MEMORY_SUMMARY_FILENAME);
+async fn validate_required_outputs(root: &Path, version: MemoryVersion) -> anyhow::Result<()> {
+    if version == MemoryVersion::V1 {
+        let index_path = root.join(MEMORY_INDEX_FILENAME);
+        let index = tokio::fs::read_to_string(&index_path)
+            .await
+            .with_context(|| format!("read required memory index {}", index_path.display()))?;
+        anyhow::ensure!(
+            !index.trim().is_empty(),
+            "{MEMORY_INDEX_FILENAME} must not be empty after phase-2 consolidation"
+        );
+    }
 
-    let index = tokio::fs::read_to_string(&index_path)
-        .await
-        .with_context(|| format!("read required memory index {}", index_path.display()))?;
-    anyhow::ensure!(
-        !index.trim().is_empty(),
-        "{MEMORY_INDEX_FILENAME} must not be empty after phase-2 consolidation"
-    );
+    let summary_path = root.join(MEMORY_SUMMARY_FILENAME);
 
     let summary = tokio::fs::read_to_string(&summary_path)
         .await
@@ -316,15 +320,11 @@ fn consolidator_manifest<'a>(
     agent_config: &'a Config,
     prompt: &'a [UserInput],
 ) -> anyhow::Result<ConsolidatorManifest<'a>> {
-    let model = agent_config
-        .model
-        .as_deref()
-        .or(base_config.model.as_deref())
-        .unwrap_or("unknown");
+    let model = agent_config.model.as_deref().unwrap_or(stage_two::MODEL);
     let reasoning_effort = agent_config
         .model_reasoning_effort
-        .as_ref()
-        .unwrap_or(&stage_two::REASONING_EFFORT)
+        .clone()
+        .unwrap_or(stage_two::REASONING_EFFORT)
         .to_string();
     let sandbox_policy = agent_config.legacy_sandbox_policy();
     anyhow::ensure!(
@@ -342,6 +342,7 @@ fn consolidator_manifest<'a>(
         approval_policy: agent_config.permissions.approval_policy.value().to_string(),
         sandbox_policy,
         disabled_features: &[
+            "SpawnCsv",
             "Collab",
             "MemoryTool",
             "Apps",
@@ -359,10 +360,5 @@ fn hash_json(value: &impl Serialize) -> anyhow::Result<String> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut hex, "{byte:02x}");
-    }
-    hex
+    format!("{digest:x}")
 }

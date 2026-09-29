@@ -5,4 +5,4 @@
 /**
  * Successful response for `fs/remove`.
  */
-export type FsRemoveResponse = Record<symbol, never>;
+export type FsRemoveResponse = Record<string, never>;

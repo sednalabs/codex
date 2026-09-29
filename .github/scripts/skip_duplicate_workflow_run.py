@@ -132,7 +132,6 @@ def api_get_bytes(url: str, token: str) -> bytes:
     raise RuntimeError("artifact archive download followed too many redirects")
 
 
-
 def fetch_successful_runs(
     *,
     api_url: str,
@@ -162,7 +161,9 @@ def fetch_run_artifacts(
     return [artifact for artifact in artifacts if isinstance(artifact, dict)]
 
 
-def artifact_by_name(artifacts: Iterable[dict[str, Any]], name: str) -> dict[str, Any] | None:
+def artifact_by_name(
+    artifacts: Iterable[dict[str, Any]], name: str
+) -> dict[str, Any] | None:
     for artifact in artifacts:
         if artifact.get("name") != name:
             continue
@@ -195,7 +196,9 @@ def fetch_summary_artifact_payload(
     artifact_name: str,
     token: str,
 ) -> dict[str, Any] | None:
-    artifacts = fetch_run_artifacts(api_url=api_url, repo=repo, run_id=run_id, token=token)
+    artifacts = fetch_run_artifacts(
+        api_url=api_url, repo=repo, run_id=run_id, token=token
+    )
     artifact = artifact_by_name(artifacts, artifact_name)
     if artifact is None:
         return None
@@ -319,7 +322,9 @@ def main() -> None:
     parser.add_argument("--summary-artifact-name", default="")
     parser.add_argument("--required-planner-fingerprint", default="")
     parser.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
-    parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
+    parser.add_argument(
+        "--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    )
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN", ""))
     args = parser.parse_args()
 

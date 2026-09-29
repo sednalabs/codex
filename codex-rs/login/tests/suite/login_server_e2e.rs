@@ -11,6 +11,8 @@ use base64::Engine;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_http_client::HttpClientBuilder;
 use codex_login::AuthKeyringBackendKind;
+use codex_login::LoginCallbackResult;
+use codex_login::LoginOnboardingEntrypoint;
 use codex_login::LoginSuccessPage;
 use codex_login::LoginSuccessPageBrand;
 use codex_login::ServerOptions;
@@ -149,7 +151,34 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
     let client = HttpClientBuilder::new()
         .without_redirects()
         .build_direct()?;
-    let url = format!("http://127.0.0.1:{login_port}/auth/callback?code=abc&state=test_state_123");
+    // Reject unrecognized metadata before processing codes or provider errors.
+    for state in [
+        "wrong_state.onboarding_entrypoint=life_sciences",
+        "test_state_123.onboarding_entrypoint=unknown",
+        "test_state_123.onboarding_entrypoint=life_sciences.onboarding_entrypoint=life_sciences",
+        "test_state_123.extra=value.onboarding_entrypoint=life_sciences",
+    ] {
+        let response = client
+            .get(format!("http://127.0.0.1:{login_port}/auth/callback"))
+            .query(&[
+                ("state", state),
+                ("code", "untrusted"),
+                ("error", "access_denied"),
+            ])
+            .send()
+            .await?;
+        assert_eq!(response.status(), 400);
+        assert_eq!(response.text().await?, "State mismatch");
+    }
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(
+            codex_home.join("auth.json")
+        )?)?,
+        stale_auth
+    );
+    let url = format!(
+        "http://127.0.0.1:{login_port}/auth/callback?code=abc&state=test_state_123.onboarding_entrypoint=life_sciences"
+    );
     let resp = client.get(&url).send().await?;
     assert_eq!(resp.status(), 302);
     let success_url = resp.headers()["location"].to_str()?;
@@ -161,7 +190,13 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
     assert!(success_resp.status().is_success());
 
     // Wait for server shutdown
-    server.block_until_done().await?;
+    let callback_result = server.block_until_done_with_callback_result().await?;
+    assert_eq!(
+        callback_result,
+        LoginCallbackResult {
+            onboarding_entrypoint: Some(LoginOnboardingEntrypoint::LifeSciences),
+        }
+    );
 
     // Validate auth.json
     let auth_path = codex_home.join("auth.json");

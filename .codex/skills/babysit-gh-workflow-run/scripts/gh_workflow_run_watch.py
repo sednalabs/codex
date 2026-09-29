@@ -18,7 +18,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from github_watch_auth import AuthState, is_auth_failure, is_rate_limited, is_retry_safe, rate_resource, redact, wait_for_reset
+from github_watch_auth import (
+    AuthState,
+    is_auth_failure,
+    is_rate_limited,
+    is_retry_safe,
+    rate_resource,
+    redact,
+    wait_for_reset,
+)
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
@@ -77,7 +85,10 @@ GEMINI_REDACT_PATTERNS = (
         ),
         r"\1\2<redacted>",
     ),
-    (re.compile(r"(?i)\b(postgresql|postgres)(\+\w+)?://[^\s'\"`]+"), "postgresql://<redacted>"),
+    (
+        re.compile(r"(?i)\b(postgresql|postgres)(\+\w+)?://[^\s'\"`]+"),
+        "postgresql://<redacted>",
+    ),
     (re.compile(r"(?i)(set-cookie:\s*)([^\r\n]+)"), r"\1<redacted>"),
     (re.compile(r"(?i)(cookie:\s*)([^\r\n]+)"), r"\1<redacted>"),
 )
@@ -114,7 +125,9 @@ HIGH_SIGNAL_FAILURE_PATTERNS = (
     re.compile(r"##\[error\].*?\bfailed with exit code\s+\d+\b", re.IGNORECASE),
     re.compile(r"\b(?:timed out|timeout exceeded|deadline exceeded)\b", re.IGNORECASE),
 )
-EXACT_TEST_FAILURE_RE = re.compile(r"\btest\s+([A-Za-z0-9_:-]+)\s+\.\.\.\s+FAILED\b", re.IGNORECASE)
+EXACT_TEST_FAILURE_RE = re.compile(
+    r"\btest\s+([A-Za-z0-9_:-]+)\s+\.\.\.\s+FAILED\b", re.IGNORECASE
+)
 NEXTEST_FAILURE_RE = re.compile(r"\bFAIL\b.*?\)\s+(.+)$")
 PANIC_LINE_RE = re.compile(r"thread '([^']+)'.*?\bpanicked at\b\s+(.+)", re.IGNORECASE)
 ASSERTION_LINE_RE = re.compile(r"assertion failed:\s*(.+)", re.IGNORECASE)
@@ -128,7 +141,19 @@ META_JOB_NAME_MARKERS = (
     "aggregate",
 )
 
-CODE_FILE_EXTENSIONS = (".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".toml", ".yaml", ".yml")
+CODE_FILE_EXTENSIONS = (
+    ".py",
+    ".rs",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".toml",
+    ".yaml",
+    ".yml",
+)
 
 CODE_PATH_PATTERNS = (
     re.compile(r'File "([^"]+)", line (\d+)'),
@@ -255,7 +280,12 @@ def parse_args():
         ),
     )
     parser.add_argument("--repo", help="Optional OWNER/REPO override")
-    parser.add_argument("--retry-settle-seconds", type=int, default=90, help="Seconds to allow a same-run automatic retry after terminal failure; 0 disables")
+    parser.add_argument(
+        "--retry-settle-seconds",
+        type=int,
+        default=90,
+        help="Seconds to allow a same-run automatic retry after terminal failure; 0 disables",
+    )
     parser.add_argument(
         "--unassigned-timeout-seconds",
         type=int,
@@ -268,7 +298,9 @@ def parse_args():
         default=[],
         help="Limit unassigned-job observation to this exact required job name; repeatable.",
     )
-    parser.add_argument("--poll-seconds", type=int, default=60, help="Watch poll interval")
+    parser.add_argument(
+        "--poll-seconds", type=int, default=60, help="Watch poll interval"
+    )
     parser.add_argument(
         "--appearance-timeout-seconds",
         type=int,
@@ -285,8 +317,12 @@ def parse_args():
         default=None,
         help="Optional lower bound for workflow/ref watch targets to ignore older matching runs.",
     )
-    parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
-    parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
+    parser.add_argument(
+        "--once", action="store_true", help="Emit one snapshot and exit"
+    )
+    parser.add_argument(
+        "--watch", action="store_true", help="Continuously emit JSONL snapshots"
+    )
     parser.add_argument(
         "--watch-until-action",
         action="store_true",
@@ -370,14 +406,19 @@ def parse_args():
         parser.error("--unassigned-timeout-seconds must be >= 0")
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
-    if args.appearance_timeout_seconds is not None and args.appearance_timeout_seconds < 0:
+    if (
+        args.appearance_timeout_seconds is not None
+        and args.appearance_timeout_seconds < 0
+    ):
         parser.error("--appearance-timeout-seconds must be >= 0")
     if args.gemini_timeout_seconds is not None and args.gemini_timeout_seconds <= 0:
         parser.error("--gemini-timeout-seconds must be > 0")
     if args.min_run_id is not None and args.min_run_id <= 0:
         parser.error("--min-run-id must be > 0")
     watch_mode_enabled = args.watch_until_action or args.watch_until_terminal
-    selected_modes = sum(1 for enabled in (args.once, args.watch, watch_mode_enabled) if enabled)
+    selected_modes = sum(
+        1 for enabled in (args.once, args.watch, watch_mode_enabled) if enabled
+    )
     if selected_modes > 1:
         parser.error(
             "choose only one of --once, --watch, --watch-until-action, or --watch-until-terminal"
@@ -406,7 +447,9 @@ def parse_target_arg(spec):
         if not chunk:
             continue
         if "=" not in chunk:
-            raise GhCommandError(f"Invalid target chunk '{chunk}' in '{raw}'. Use key=value format.")
+            raise GhCommandError(
+                f"Invalid target chunk '{chunk}' in '{raw}'. Use key=value format."
+            )
         key, value = chunk.split("=", 1)
         key = key.strip().lower()
         value = value.strip()
@@ -455,7 +498,9 @@ def parse_target_arg(spec):
         try:
             value = int(run_id)
         except ValueError as err:
-            raise GhCommandError(f"Invalid run-id '{run_id}' in target '{raw}'.") from err
+            raise GhCommandError(
+                f"Invalid run-id '{run_id}' in target '{raw}'."
+            ) from err
         return {
             "kind": TARGET_KIND_RUN_ID,
             "run_id": value,
@@ -493,9 +538,13 @@ def parse_target_arg(spec):
         try:
             min_run_id = int(min_run_id_raw)
         except ValueError as err:
-            raise GhCommandError(f"Invalid min-run-id '{min_run_id_raw}' in target '{raw}'.") from err
+            raise GhCommandError(
+                f"Invalid min-run-id '{min_run_id_raw}' in target '{raw}'."
+            ) from err
         if min_run_id <= 0:
-            raise GhCommandError(f"Invalid min-run-id '{min_run_id_raw}' in target '{raw}'.")
+            raise GhCommandError(
+                f"Invalid min-run-id '{min_run_id_raw}' in target '{raw}'."
+            )
     return {
         "kind": TARGET_KIND_WORKFLOW,
         "workflow": workflow,
@@ -613,7 +662,9 @@ def _ensure_config_dir(env, var):
             return
 
     default_path = _default_gh_dir("config")
-    if default_path and (_is_readable_dir(default_path) or _ensure_writable_dir(default_path)):
+    if default_path and (
+        _is_readable_dir(default_path) or _ensure_writable_dir(default_path)
+    ):
         env[var] = str(default_path)
         return
 
@@ -652,7 +703,9 @@ def _prepare_gh_env(repo=None, force_refresh=False):
 def _format_gh_error(cmd, err):
     stdout = (err.stdout or "").strip()
     stderr = (err.stderr or "").strip()
-    parts = [f"GitHub CLI command failed: {' '.join(cmd)} (auth_source={_GH_AUTH.source})"]
+    parts = [
+        f"GitHub CLI command failed: {' '.join(cmd)} (auth_source={_GH_AUTH.source})"
+    ]
     if stdout:
         parts.append(f"stdout: {redact(stdout, (_GH_AUTH._token,))}")
     if stderr:
@@ -664,12 +717,15 @@ def gh_text(args, repo=None):
     broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
     if broker_socket:
         from github_app_broker_proxy import request
+
         broker_args = list(args)
         if repo and (not broker_args or broker_args[0] != "api"):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError(f"brokered GitHub CLI command failed: {result.get('stderr', '')}")
+            raise GhCommandError(
+                f"brokered GitHub CLI command failed: {result.get('stderr', '')}"
+            )
         return str(result.get("stdout", ""))
     cmd = ["gh"]
     if repo and (not args or args[0] != "api"):
@@ -678,7 +734,14 @@ def gh_text(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
+            proc = subprocess.run(
+                ["gh", *cmd[1:]],
+                shell=False,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
             return proc.stdout
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
@@ -687,7 +750,12 @@ def gh_text(args, repo=None):
             if attempt == 0 and is_retry_safe(args) and is_auth_failure(message):
                 if _GH_AUTH.refresh(env, repo=repo):
                     continue
-            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+            if (
+                attempt == 0
+                and is_retry_safe(args)
+                and is_rate_limited(message)
+                and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args))
+            ):
                 continue
             raise GhCommandError(message) from err
 
@@ -699,19 +767,24 @@ def gh_json(args, repo=None):
     try:
         return json.loads(raw)
     except json.JSONDecodeError as err:
-        raise GhCommandError(f"Failed to parse JSON from gh output for {' '.join(args)}") from err
+        raise GhCommandError(
+            f"Failed to parse JSON from gh output for {' '.join(args)}"
+        ) from err
 
 
 def gh_download(args, repo=None):
     broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
     if broker_socket:
         from github_app_broker_proxy import request
+
         broker_args = list(args)
         if repo and (not broker_args or broker_args[0] != "api"):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError(f"brokered GitHub CLI download failed: {result.get('stderr', '')}")
+            raise GhCommandError(
+                f"brokered GitHub CLI download failed: {result.get('stderr', '')}"
+            )
         return
     cmd = ["gh"]
     if repo and (not args or args[0] != "api"):
@@ -720,15 +793,32 @@ def gh_download(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, text=True, env=env)
+            subprocess.run(
+                ["gh", *cmd[1:]],
+                shell=False,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
             return
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
         except subprocess.CalledProcessError as err:
             message = _format_gh_error(cmd, err)
-            if attempt == 0 and is_retry_safe(args) and is_auth_failure(message) and _GH_AUTH.refresh(env, repo=repo):
+            if (
+                attempt == 0
+                and is_retry_safe(args)
+                and is_auth_failure(message)
+                and _GH_AUTH.refresh(env, repo=repo)
+            ):
                 continue
-            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+            if (
+                attempt == 0
+                and is_retry_safe(args)
+                and is_rate_limited(message)
+                and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args))
+            ):
                 continue
             raise GhCommandError(message) from err
 
@@ -737,12 +827,15 @@ def gh_bytes(args, repo=None):
     broker_socket = os.environ.get("GITHUB_APP_BROKER_SOCKET")
     if broker_socket:
         from github_app_broker_proxy import request
+
         broker_args = list(args)
         if repo and (not broker_args or broker_args[0] != "api"):
             broker_args = ["-R", repo, *broker_args]
         result = request(broker_socket, broker_args, binary=True)
         if int(result.get("returncode", 1)) != 0:
-            raise GhCommandError(f"brokered GitHub CLI binary request failed: {result.get('stderr', '')}")
+            raise GhCommandError(
+                f"brokered GitHub CLI binary request failed: {result.get('stderr', '')}"
+            )
         stdout_bytes = result.get("stdout_bytes")
         if not isinstance(stdout_bytes, bytes):
             raise GhCommandError("brokered GitHub CLI response omitted binary output")
@@ -754,15 +847,27 @@ def gh_bytes(args, repo=None):
     env = _prepare_gh_env(repo=repo)
     for attempt in range(3):
         try:
-            proc = subprocess.run(["gh", *cmd[1:]], shell=False, check=True, capture_output=True, env=env)
+            proc = subprocess.run(
+                ["gh", *cmd[1:]], shell=False, check=True, capture_output=True, env=env
+            )
             return proc.stdout
         except FileNotFoundError as err:
             raise GhCommandError("`gh` command not found") from err
         except subprocess.CalledProcessError as err:
             message = _format_gh_error(cmd, err)
-            if attempt == 0 and is_retry_safe(args) and is_auth_failure(message) and _GH_AUTH.refresh(env, repo=repo):
+            if (
+                attempt == 0
+                and is_retry_safe(args)
+                and is_auth_failure(message)
+                and _GH_AUTH.refresh(env, repo=repo)
+            ):
                 continue
-            if attempt == 0 and is_retry_safe(args) and is_rate_limited(message) and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args)):
+            if (
+                attempt == 0
+                and is_retry_safe(args)
+                and is_rate_limited(message)
+                and wait_for_reset(_GH_AUTH, env, message, resource=rate_resource(args))
+            ):
                 continue
             raise GhCommandError(message) from err
 
@@ -823,8 +928,22 @@ def _load_gemini_api_keys():
                 lines = candidate.read_text(encoding="utf-8").splitlines()
             except OSError:
                 continue
-            keys_line = next((line for line in lines if _parse_env_assignment(line, "GEMINI_API_KEYS")), None)
-            single_line = next((line for line in lines if _parse_env_assignment(line, "GEMINI_API_KEY")), None)
+            keys_line = next(
+                (
+                    line
+                    for line in lines
+                    if _parse_env_assignment(line, "GEMINI_API_KEYS")
+                ),
+                None,
+            )
+            single_line = next(
+                (
+                    line
+                    for line in lines
+                    if _parse_env_assignment(line, "GEMINI_API_KEY")
+                ),
+                None,
+            )
             if keys_line:
                 parsed = _parse_env_assignment(keys_line, "GEMINI_API_KEYS")
                 if parsed:
@@ -945,7 +1064,9 @@ def _list_or_empty(value):
     return value if isinstance(value, list) else []
 
 
-def _derive_validation_mode_context(validation_summary, *, run_view=None, failed_jobs=None):
+def _derive_validation_mode_context(
+    validation_summary, *, run_view=None, failed_jobs=None
+):
     summary_root = _dict_or_empty(validation_summary)
     selection = _dict_or_empty(summary_root.get("selection"))
     summary_branch = _dict_or_empty(summary_root.get("summary"))
@@ -966,7 +1087,9 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         job for job in non_cancelled_jobs if not _is_meta_job_name(job.get("name"))
     ]
     cancelled_job_count = sum(
-        1 for job in (failed_jobs or []) if str(job.get("conclusion") or "") == "cancelled"
+        1
+        for job in (failed_jobs or [])
+        if str(job.get("conclusion") or "") == "cancelled"
     )
 
     if failed_lane_count > 1:
@@ -977,9 +1100,15 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
     elif failed_lane_count == 1:
         failure_structure = "single_blocker"
     elif len(direct_non_meta_jobs) > 1:
-        failure_structure = "independent" if normalized_profile == "frontier" else "cascading"
+        failure_structure = (
+            "independent" if normalized_profile == "frontier" else "cascading"
+        )
     elif len(direct_non_meta_jobs) == 1:
-        failure_structure = "cascading" if cancelled_job_count or len(non_cancelled_jobs) > 1 else "single_blocker"
+        failure_structure = (
+            "cascading"
+            if cancelled_job_count or len(non_cancelled_jobs) > 1
+            else "single_blocker"
+        )
     elif len(non_cancelled_jobs) > 1:
         failure_structure = "cascading"
     elif len(non_cancelled_jobs) == 1:
@@ -1057,9 +1186,18 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
         "first_blocker": first_blocker,
         "candidate_next_slices": summarized_candidates,
         "job_results": {
-            "smoke_gate": str(_dict_or_empty(jobs.get("smoke_gate")).get("result") or "").strip() or None,
-            "downstream_lanes": str(_dict_or_empty(jobs.get("downstream_lanes")).get("result") or "").strip() or None,
-            "artifact": str(_dict_or_empty(jobs.get("artifact")).get("result") or "").strip() or None,
+            "smoke_gate": str(
+                _dict_or_empty(jobs.get("smoke_gate")).get("result") or ""
+            ).strip()
+            or None,
+            "downstream_lanes": str(
+                _dict_or_empty(jobs.get("downstream_lanes")).get("result") or ""
+            ).strip()
+            or None,
+            "artifact": str(
+                _dict_or_empty(jobs.get("artifact")).get("result") or ""
+            ).strip()
+            or None,
         },
     }
 
@@ -1067,12 +1205,18 @@ def _derive_validation_mode_context(validation_summary, *, run_view=None, failed
 def _validation_summary_has_actionable_detail(validation_summary):
     context = _derive_validation_mode_context(validation_summary)
     first_blocker = _dict_or_empty(context.get("first_blocker"))
-    if first_blocker.get("lane_id") or first_blocker.get("job_name") or first_blocker.get("signal"):
+    if (
+        first_blocker.get("lane_id")
+        or first_blocker.get("job_name")
+        or first_blocker.get("signal")
+    ):
         return True
     return bool(context.get("candidate_next_slices"))
 
 
-def _build_diagnosis_status(*, actions, gemini_diagnosis, gemini_error, gemini_disabled):
+def _build_diagnosis_status(
+    *, actions, gemini_diagnosis, gemini_error, gemini_disabled
+):
     action_list = actions or []
     if "diagnose_run_failure" not in action_list:
         return {
@@ -1120,7 +1264,9 @@ def _prepare_gemini_log_sections(log_sources):
         source_text = _redact_text(source.get("text") or "")
         source_truncated = False
         if len(source_text) > per_source_budget:
-            source_text = _excerpt_around_failure(source_text, max_lines=220, context_lines=30)
+            source_text = _excerpt_around_failure(
+                source_text, max_lines=220, context_lines=30
+            )
             source_truncated = True
         source_text = _truncate_middle(source_text, per_source_budget)
         if len(source_text) > per_source_budget:
@@ -1172,12 +1318,16 @@ def parse_repo_from_remote_url(remote_url):
 
 
 def detect_repo():
-    env_repo = (os.environ.get("GH_WORKFLOW_RUN_WATCH_REPO") or os.environ.get("GH_REPO") or "").strip()
+    env_repo = (
+        os.environ.get("GH_WORKFLOW_RUN_WATCH_REPO") or os.environ.get("GH_REPO") or ""
+    ).strip()
     if env_repo:
         return env_repo
 
     for remote_name in ("origin", "upstream"):
-        remote_url = command_text(["git", "config", "--get", f"remote.{remote_name}.url"])
+        remote_url = command_text(
+            ["git", "config", "--get", f"remote.{remote_name}.url"]
+        )
         repo = parse_repo_from_remote_url(remote_url)
         if repo:
             return repo
@@ -1206,7 +1356,9 @@ def detect_ref(ref_value):
     sha = command_text(["git", "rev-parse", "HEAD"])
     if sha:
         return sha
-    raise GhCommandError("Unable to infer current branch or HEAD; pass --ref explicitly")
+    raise GhCommandError(
+        "Unable to infer current branch or HEAD; pass --ref explicitly"
+    )
 
 
 def is_sha_like(value):
@@ -1254,6 +1406,7 @@ def _normalized_head_sha_prefixes(expected_head_sha):
             prefixes.append(normalized)
     return prefixes
 
+
 def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
     observed = str(run_head_sha or "").strip().lower()
     if not observed:
@@ -1262,6 +1415,7 @@ def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
     if not expected_prefixes:
         return True
     return any(observed.startswith(prefix) for prefix in expected_prefixes)
+
 
 def _run_attempt(run_view):
     """Return the API's attempt identity, tolerating older fixture spellings."""
@@ -1274,6 +1428,7 @@ def _run_attempt(run_view):
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
 
 def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
     """Keep terminal waits open briefly for a rerun of the same Actions run.
@@ -1344,7 +1499,9 @@ def _workflow_run_matches_target(
                 return False
         elif branch_filter and head_branch != branch_filter:
             return False
-    if expected_head_sha and not _matches_head_sha_prefix(run_head_sha, expected_head_sha):
+    if expected_head_sha and not _matches_head_sha_prefix(
+        run_head_sha, expected_head_sha
+    ):
         return False
     run_id = int(run.get("databaseId") or 0)
     return minimum_run_id is None or run_id >= int(minimum_run_id)
@@ -1376,8 +1533,12 @@ def _list_workflow_runs_via_actions_api(repo, workflow, branch_filter):
     if branch_filter and not is_sha_like(branch_filter):
         query += f"&branch={urllib.parse.quote(str(branch_filter), safe='-._~/')}"
     payload = gh_json(["api", f"repos/{repo}/actions/runs?{query}"])
-    if not isinstance(payload, dict) or not isinstance(payload.get("workflow_runs"), list):
-        raise GhCommandError("Unexpected workflow-runs payload from the direct Actions API")
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("workflow_runs"), list
+    ):
+        raise GhCommandError(
+            "Unexpected workflow-runs payload from the direct Actions API"
+        )
     return [
         _normalize_actions_api_run(run)
         for run in payload["workflow_runs"]
@@ -1385,7 +1546,9 @@ def _list_workflow_runs_via_actions_api(repo, workflow, branch_filter):
     ]
 
 
-def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None):
+def list_workflow_runs(
+    repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None
+):
     fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
     cmd = ["run", "list", "--workflow", workflow, "--limit", "30", "--json", fields]
     branch_filter = host_ref if host_ref is not None else ref
@@ -1450,11 +1613,17 @@ def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_
 
 
 def _followed_run_relist_interval_seconds(poll_seconds):
-    return max(FOLLOWED_RUN_RELIST_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
+    return max(
+        FOLLOWED_RUN_RELIST_MIN_SECONDS,
+        int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER,
+    )
 
 
 def _host_mismatch_recheck_interval_seconds(poll_seconds):
-    return max(HOST_MISMATCH_RECHECK_MIN_SECONDS, int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER)
+    return max(
+        HOST_MISMATCH_RECHECK_MIN_SECONDS,
+        int(max(1, poll_seconds)) * FOLLOWED_RUN_RELIST_MULTIPLIER,
+    )
 
 
 def view_run(repo, run_id):
@@ -1511,7 +1680,6 @@ def _normalize_actions_api_job(job):
     return normalized
 
 
-
 def _rest_required_text(payload, key, context):
     if key not in payload or not isinstance(payload[key], str):
         raise GhCommandError(f"Malformed GitHub REST {context}: missing string `{key}`")
@@ -1520,11 +1688,13 @@ def _rest_required_text(payload, key, context):
         raise GhCommandError(f"Malformed GitHub REST {context}: empty `{key}`")
     return value
 
+
 def _rest_required_id(payload, key, context):
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
     return value
+
 
 def _rest_optional_timestamp(payload, key, context):
     if key not in payload:
@@ -1533,6 +1703,7 @@ def _rest_optional_timestamp(payload, key, context):
     if value is not None and (not isinstance(value, str) or not value.strip()):
         raise GhCommandError(f"Malformed GitHub REST {context}: invalid `{key}`")
     return value
+
 
 def _normalize_rest_step(step, *, job_index, step_index):
     context = f"job {job_index} step {step_index}"
@@ -1546,9 +1717,15 @@ def _normalize_rest_step(step, *, job_index, step_index):
     conclusion = step["conclusion"]
     if conclusion is not None and not isinstance(conclusion, str):
         raise GhCommandError(f"Malformed GitHub REST {context}: invalid `conclusion`")
-    return {"name": name, "number": number, "status": status, "conclusion": conclusion,
-            "startedAt": _rest_optional_timestamp(step, "started_at", context),
-            "completedAt": _rest_optional_timestamp(step, "completed_at", context)}
+    return {
+        "name": name,
+        "number": number,
+        "status": status,
+        "conclusion": conclusion,
+        "startedAt": _rest_optional_timestamp(step, "started_at", context),
+        "completedAt": _rest_optional_timestamp(step, "completed_at", context),
+    }
+
 
 def _normalize_rest_job(job, *, run_id, job_index):
     context = f"job {job_index}"
@@ -1557,7 +1734,9 @@ def _normalize_rest_job(job, *, run_id, job_index):
     job_id = _rest_required_id(job, "id", context)
     observed_run_id = _rest_required_id(job, "run_id", context)
     if observed_run_id != run_id:
-        raise GhCommandError(f"GitHub REST {context} belongs to run {observed_run_id}, expected {run_id}")
+        raise GhCommandError(
+            f"GitHub REST {context} belongs to run {observed_run_id}, expected {run_id}"
+        )
     name = _rest_required_text(job, "name", context)
     status = _rest_required_text(job, "status", context)
     if "conclusion" not in job:
@@ -1569,17 +1748,26 @@ def _normalize_rest_job(job, *, run_id, job_index):
     steps = job.get("steps")
     if not isinstance(steps, list):
         raise GhCommandError(f"Malformed GitHub REST {context}: missing list `steps`")
-    normalized = {"databaseId": job_id, "name": name, "status": status, "conclusion": conclusion,
-                  "url": html_url, "createdAt": job.get("created_at"),
-                  "startedAt": _rest_optional_timestamp(job, "started_at", context),
-                  "completedAt": _rest_optional_timestamp(job, "completed_at", context),
-                  "steps": [_normalize_rest_step(step, job_index=job_index, step_index=step_index)
-                            for step_index, step in enumerate(steps)]}
+    normalized = {
+        "databaseId": job_id,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "url": html_url,
+        "createdAt": job.get("created_at"),
+        "startedAt": _rest_optional_timestamp(job, "started_at", context),
+        "completedAt": _rest_optional_timestamp(job, "completed_at", context),
+        "steps": [
+            _normalize_rest_step(step, job_index=job_index, step_index=step_index)
+            for step_index, step in enumerate(steps)
+        ],
+    }
     if "runner_name" in job:
         normalized["runnerName"] = job["runner_name"]
     if "runner_id" in job:
         normalized["runnerId"] = job["runner_id"]
     return normalized
+
 
 def _list_run_jobs_rest(repo, run_id):
     jobs, expected_total, seen_job_ids = [], None, set()
@@ -1590,31 +1778,50 @@ def _list_run_jobs_rest(repo, run_id):
         if not isinstance(payload, dict):
             raise GhCommandError(f"Malformed GitHub REST {context}: expected object")
         total_count = payload.get("total_count")
-        if isinstance(total_count, bool) or not isinstance(total_count, int) or total_count < 0:
-            raise GhCommandError(f"Malformed GitHub REST {context}: invalid `total_count`")
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+        ):
+            raise GhCommandError(
+                f"Malformed GitHub REST {context}: invalid `total_count`"
+            )
         if expected_total is None:
             expected_total = total_count
         elif total_count != expected_total:
-            raise GhCommandError(f"GitHub REST {context} changed `total_count` from {expected_total} to {total_count}")
+            raise GhCommandError(
+                f"GitHub REST {context} changed `total_count` from {expected_total} to {total_count}"
+            )
         page_jobs = payload.get("jobs")
         if not isinstance(page_jobs, list):
-            raise GhCommandError(f"Malformed GitHub REST {context}: missing list `jobs`")
+            raise GhCommandError(
+                f"Malformed GitHub REST {context}: missing list `jobs`"
+            )
         page_offset = len(jobs)
         for job_index, job in enumerate(page_jobs):
             normalized = _normalize_rest_job(
                 job, run_id=run_id, job_index=page_offset + job_index
             )
             if normalized["databaseId"] in seen_job_ids:
-                raise GhCommandError(f"GitHub REST {context} repeated job id {normalized['databaseId']}")
+                raise GhCommandError(
+                    f"GitHub REST {context} repeated job id {normalized['databaseId']}"
+                )
             seen_job_ids.add(normalized["databaseId"])
             jobs.append(normalized)
         if len(jobs) > expected_total:
-            raise GhCommandError(f"GitHub REST {context} returned {len(jobs)} jobs, exceeding total_count {expected_total}")
+            raise GhCommandError(
+                f"GitHub REST {context} returned {len(jobs)} jobs, exceeding total_count {expected_total}"
+            )
         if len(jobs) == expected_total:
             return jobs
         if not page_jobs:
-            raise GhCommandError(f"GitHub REST {context} ended at {len(jobs)} jobs, expected {expected_total}")
-    raise GhCommandError(f"GitHub REST jobs pagination exceeded 1000 pages for run {run_id}")
+            raise GhCommandError(
+                f"GitHub REST {context} ended at {len(jobs)} jobs, expected {expected_total}"
+            )
+    raise GhCommandError(
+        f"GitHub REST jobs pagination exceeded 1000 pages for run {run_id}"
+    )
+
 
 def _view_run_via_actions_api(repo, run_id):
     run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"])
@@ -1623,13 +1830,19 @@ def _view_run_via_actions_api(repo, run_id):
     context = f"run {run_id}"
     observed_run_id = _rest_required_id(run, "id", context)
     if observed_run_id != run_id:
-        raise GhCommandError(f"GitHub REST run id {observed_run_id} does not match requested run {run_id}")
+        raise GhCommandError(
+            f"GitHub REST run id {observed_run_id} does not match requested run {run_id}"
+        )
     repository = run.get("repository")
     if not isinstance(repository, dict):
         raise GhCommandError(f"Malformed GitHub REST {context}: missing `repository`")
-    observed_repo = _rest_required_text(repository, "full_name", context).strip().lower()
+    observed_repo = (
+        _rest_required_text(repository, "full_name", context).strip().lower()
+    )
     if observed_repo != str(repo).strip().lower():
-        raise GhCommandError(f"GitHub REST run repository {observed_repo!r} does not match requested {repo!r}")
+        raise GhCommandError(
+            f"GitHub REST run repository {observed_repo!r} does not match requested {repo!r}"
+        )
     workflow_name = _rest_required_text(run, "name", context)
     return {
         "databaseId": observed_run_id,
@@ -1655,7 +1868,15 @@ def _load_run_json_artifact(repo, run_id, artifact_name, filename):
     with tempfile.TemporaryDirectory(prefix="gh-run-download-") as tmpdir:
         try:
             gh_download(
-                ["run", "download", str(run_id), "--name", artifact_name, "--dir", tmpdir],
+                [
+                    "run",
+                    "download",
+                    str(run_id),
+                    "--name",
+                    artifact_name,
+                    "--dir",
+                    tmpdir,
+                ],
                 repo=repo,
             )
         except GhCommandError:
@@ -1700,9 +1921,7 @@ def _select_surface_acceptance_artifact(artifact_names, validation_target_sha):
 
 def _select_heavy_validation_results_artifact(artifact_names):
     candidates = [
-        name
-        for name in artifact_names
-        if name == HEAVY_VALIDATION_RESULTS_ARTIFACT
+        name for name in artifact_names if name == HEAVY_VALIDATION_RESULTS_ARTIFACT
     ]
     return candidates[0] if len(candidates) == 1 else None
 
@@ -1863,7 +2082,9 @@ def _excerpt_around_failure(text, *, max_lines=180, context_lines=30):
     if failure_index is None:
         return _truncate_middle(text, max_lines * 120)
 
-    before_context = 1 if _line_has_high_signal(entries[failure_index]["raw"]) else context_lines
+    before_context = (
+        1 if _line_has_high_signal(entries[failure_index]["raw"]) else context_lines
+    )
     start = max(0, failure_index - before_context)
     end = min(len(entries), failure_index + context_lines + 1)
     excerpt = _render_entry_excerpt(entries, start, end)
@@ -1883,7 +2104,9 @@ def _excerpt_around_terms(text, terms, *, max_lines=180, context_lines=24):
                 end = min(len(entries), idx + context_lines + 1)
                 excerpt = _render_entry_excerpt(entries, start, end)
                 return _truncate_middle(excerpt, max_lines * 120)
-    return _excerpt_around_failure(text, max_lines=max_lines, context_lines=context_lines)
+    return _excerpt_around_failure(
+        text, max_lines=max_lines, context_lines=context_lines
+    )
 
 
 def _collect_failure_highlight_lines(text, *, limit=10):
@@ -1988,7 +2211,11 @@ def _extract_structured_failure_signals(text, *, limit=4):
                 seen_assertions.add(value)
                 assertions.append(value)
 
-        if len(failing_tests) >= limit and len(assertions) >= limit and len(failure_locations) >= limit:
+        if (
+            len(failing_tests) >= limit
+            and len(assertions) >= limit
+            and len(failure_locations) >= limit
+        ):
             break
 
     return {
@@ -2098,7 +2325,9 @@ def _load_job_log_text(repo, job_id):
     for name, text in chunks:
         combined.append(f"=== {name} ===")
         combined.append(text.strip())
-    return "\n".join(combined).strip(), f"gh api /repos/{repo}/actions/jobs/{job_id}/logs"
+    return "\n".join(
+        combined
+    ).strip(), f"gh api /repos/{repo}/actions/jobs/{job_id}/logs"
 
 
 def _failed_step_names(job):
@@ -2164,9 +2393,23 @@ def _job_priority(job):
 
 def _select_jobs_for_gemini_logs(failed_jobs):
     ordered = sorted(failed_jobs, key=_job_priority)
-    direct = [job for job in ordered if job.get("conclusion") != "cancelled" and not _is_meta_job_name(job.get("name"))]
-    meta = [job for job in ordered if job.get("conclusion") != "cancelled" and _is_meta_job_name(job.get("name"))]
-    cancelled = [job for job in ordered if job.get("conclusion") == "cancelled" and not _is_meta_job_name(job.get("name"))]
+    direct = [
+        job
+        for job in ordered
+        if job.get("conclusion") != "cancelled"
+        and not _is_meta_job_name(job.get("name"))
+    ]
+    meta = [
+        job
+        for job in ordered
+        if job.get("conclusion") != "cancelled" and _is_meta_job_name(job.get("name"))
+    ]
+    cancelled = [
+        job
+        for job in ordered
+        if job.get("conclusion") == "cancelled"
+        and not _is_meta_job_name(job.get("name"))
+    ]
 
     selected = []
     selected.extend(direct[:2])
@@ -2194,9 +2437,19 @@ def _render_failed_jobs_overview(failed_jobs, selected_job_ids):
         "Observed non-green jobs, ranked by likely causality.",
         json.dumps(
             {
-                "failure_count": sum(1 for job in ordered if str(job.get("conclusion") or "") != "cancelled"),
-                "cancelled_count": sum(1 for job in ordered if str(job.get("conclusion") or "") == "cancelled"),
-                "selected_job_ids": sorted(int(job_id) for job_id in selected_job_ids if int(job_id) > 0),
+                "failure_count": sum(
+                    1
+                    for job in ordered
+                    if str(job.get("conclusion") or "") != "cancelled"
+                ),
+                "cancelled_count": sum(
+                    1
+                    for job in ordered
+                    if str(job.get("conclusion") or "") == "cancelled"
+                ),
+                "selected_job_ids": sorted(
+                    int(job_id) for job_id in selected_job_ids if int(job_id) > 0
+                ),
             },
             sort_keys=True,
         ),
@@ -2212,7 +2465,8 @@ def _render_failed_jobs_overview(failed_jobs, selected_job_ids):
                     "job_id": job.get("id"),
                     "job_name": job.get("name"),
                     "conclusion": job.get("conclusion"),
-                    "selected_for_detailed_logs": int(job.get("id") or 0) in selected_job_ids,
+                    "selected_for_detailed_logs": int(job.get("id") or 0)
+                    in selected_job_ids,
                 },
                 sort_keys=True,
             )
@@ -2227,7 +2481,9 @@ def _render_failed_jobs_overview(failed_jobs, selected_job_ids):
 def _focus_job_log_text(job, text):
     failed_steps = job.get("failed_steps") or []
     is_meta_job = _is_meta_job_name(job.get("name"))
-    char_budget = GEMINI_META_JOB_CHAR_BUDGET if is_meta_job else GEMINI_PRIMARY_JOB_CHAR_BUDGET
+    char_budget = (
+        GEMINI_META_JOB_CHAR_BUDGET if is_meta_job else GEMINI_PRIMARY_JOB_CHAR_BUDGET
+    )
     if str(job.get("conclusion") or "") == "cancelled":
         char_budget = min(char_budget, GEMINI_SUPPORTING_JOB_CHAR_BUDGET)
     sections = []
@@ -2249,7 +2505,9 @@ def _focus_job_log_text(job, text):
                 )
             if not excerpt:
                 continue
-            if not _signals_have_actionable_detail(_extract_structured_failure_signals(excerpt)):
+            if not _signals_have_actionable_detail(
+                _extract_structured_failure_signals(excerpt)
+            ):
                 continue
             key = excerpt.strip()
             if not key or key in seen:
@@ -2268,17 +2526,26 @@ def _focus_job_log_text(job, text):
     signals = _extract_structured_failure_signals(text)
     signal_lines = []
     if signals.get("failing_tests"):
-        signal_lines.append("failing_tests=" + json.dumps(signals["failing_tests"], ensure_ascii=True))
+        signal_lines.append(
+            "failing_tests=" + json.dumps(signals["failing_tests"], ensure_ascii=True)
+        )
     if signals.get("assertions"):
-        signal_lines.append("assertions=" + json.dumps(signals["assertions"], ensure_ascii=True))
+        signal_lines.append(
+            "assertions=" + json.dumps(signals["assertions"], ensure_ascii=True)
+        )
     if signals.get("failure_locations"):
-        signal_lines.append("failure_locations=" + json.dumps(signals["failure_locations"], ensure_ascii=True))
+        signal_lines.append(
+            "failure_locations="
+            + json.dumps(signals["failure_locations"], ensure_ascii=True)
+        )
     if signal_lines:
         sections.append("== Extracted failure signals ==\n" + "\n".join(signal_lines))
 
     highlights = _collect_failure_highlight_lines(text, limit=5 if is_meta_job else 8)
     if highlights:
-        sections.append("== Failure highlights ==\n" + "\n".join(f"- {line}" for line in highlights))
+        sections.append(
+            "== Failure highlights ==\n" + "\n".join(f"- {line}" for line in highlights)
+        )
 
     if not sections:
         return _excerpt_around_failure(text, max_lines=160, context_lines=26)
@@ -2305,7 +2572,9 @@ def _collect_triage_hints(run_view, log_sources):
     ordered_jobs = sorted(failed_jobs, key=_job_priority)
     primary_job = None
     for job in ordered_jobs:
-        if int(job.get("id") or 0) in selected_job_ids and not _is_meta_job_name(job.get("name")):
+        if int(job.get("id") or 0) in selected_job_ids and not _is_meta_job_name(
+            job.get("name")
+        ):
             primary_job = job
             break
     if primary_job is None:
@@ -2314,11 +2583,15 @@ def _collect_triage_hints(run_view, log_sources):
                 primary_job = job
                 break
 
-    cancelled_jobs = [job for job in ordered_jobs if str(job.get("conclusion") or "") == "cancelled"]
+    cancelled_jobs = [
+        job for job in ordered_jobs if str(job.get("conclusion") or "") == "cancelled"
+    ]
     supporting_jobs = [
         job
         for job in ordered_jobs
-        if int(job.get("id") or 0) in selected_job_ids and primary_job is not None and int(job.get("id") or 0) != int(primary_job.get("id") or 0)
+        if int(job.get("id") or 0) in selected_job_ids
+        and primary_job is not None
+        and int(job.get("id") or 0) != int(primary_job.get("id") or 0)
     ]
 
     highlights = []
@@ -2365,7 +2638,9 @@ def _collect_triage_hints(run_view, log_sources):
             for job in supporting_jobs[:3]
         ],
         "cancelled_job_count": len(cancelled_jobs),
-        "cancelled_job_examples": [job.get("name") for job in cancelled_jobs[:3] if job.get("name")],
+        "cancelled_job_examples": [
+            job.get("name") for job in cancelled_jobs[:3] if job.get("name")
+        ],
         "selected_job_ids": sorted(selected_job_ids),
         "failure_highlights": highlights[:8],
         "referenced_paths": referenced_paths[:6],
@@ -2386,8 +2661,13 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
         failed_jobs=failed_jobs,
     )
     selected_jobs = _select_jobs_for_gemini_logs(failed_jobs)
-    if validation_summary and validation_context.get("profile") in {"frontier", "checkpoint"}:
-        direct_jobs = [job for job in selected_jobs if not _is_meta_job_name(job.get("name"))]
+    if validation_summary and validation_context.get("profile") in {
+        "frontier",
+        "checkpoint",
+    }:
+        direct_jobs = [
+            job for job in selected_jobs if not _is_meta_job_name(job.get("name"))
+        ]
         selected_jobs = direct_jobs[:1] or selected_jobs[:1]
     selected_job_ids = {int(job.get("id") or 0) for job in selected_jobs}
 
@@ -2417,7 +2697,9 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
         )
 
     try:
-        run_failed_log = gh_text(["run", "view", str(run_id), "--log-failed"], repo=repo).strip()
+        run_failed_log = gh_text(
+            ["run", "view", str(run_id), "--log-failed"], repo=repo
+        ).strip()
     except GhCommandError:
         run_failed_log = ""
     if run_failed_log and not selected_jobs:
@@ -2455,7 +2737,9 @@ def _collect_log_sources(repo, run_view, *, validation_summary=None):
                 "job_id": None,
                 "job_name": None,
                 "retrieved_via": "gh run view --log-failed",
-                "text": _excerpt_around_failure(run_failed_log, max_lines=160, context_lines=24),
+                "text": _excerpt_around_failure(
+                    run_failed_log, max_lines=160, context_lines=24
+                ),
             }
         )
 
@@ -2500,10 +2784,16 @@ def _normalize_repo_path(repo_root, candidate):
             parts = list(resolved.parts)
             repo_name = repo_root.name
             for idx in range(len(parts) - 1):
-                if parts[idx] == repo_name and idx + 1 < len(parts) and parts[idx + 1] == repo_name:
+                if (
+                    parts[idx] == repo_name
+                    and idx + 1 < len(parts)
+                    and parts[idx + 1] == repo_name
+                ):
                     suffix = parts[idx + 2 :]
                     if suffix:
-                        candidate_path = (repo_root.joinpath(*suffix)).resolve(strict=False)
+                        candidate_path = (repo_root.joinpath(*suffix)).resolve(
+                            strict=False
+                        )
                         if candidate_path.exists():
                             return candidate_path
         return resolved if resolved.exists() else None
@@ -2520,7 +2810,9 @@ def _normalize_repo_path(repo_root, candidate):
     return None
 
 
-def _read_code_excerpt(repo_root, candidate_path, *, line=None, context_lines=GEMINI_CODE_EXCERPT_CONTEXT):
+def _read_code_excerpt(
+    repo_root, candidate_path, *, line=None, context_lines=GEMINI_CODE_EXCERPT_CONTEXT
+):
     resolved = _normalize_repo_path(repo_root, candidate_path)
     if resolved is None:
         return None
@@ -2587,12 +2879,17 @@ def _collect_code_context(repo_root, log_texts):
                 continue
             contexts.append(excerpt)
             total_chars += len(excerpt["snippet"])
-            if len(contexts) >= GEMINI_CODE_CONTEXT_MAX_FILES or total_chars >= GEMINI_CODE_CONTEXT_CHAR_BUDGET:
+            if (
+                len(contexts) >= GEMINI_CODE_CONTEXT_MAX_FILES
+                or total_chars >= GEMINI_CODE_CONTEXT_CHAR_BUDGET
+            ):
                 return contexts
     return contexts
 
 
-def _build_gemini_prompt(*, repo, run_view, validation_summary, log_sources, code_context):
+def _build_gemini_prompt(
+    *, repo, run_view, validation_summary, log_sources, code_context
+):
     run_id = run_view.get("databaseId")
     triage_hints = _collect_triage_hints(run_view, log_sources)
     validation_context = _derive_validation_mode_context(
@@ -2707,7 +3004,10 @@ def _build_gemini_prompt(*, repo, run_view, validation_summary, log_sources, cod
             lines.extend(
                 [
                     f"### {item['path']}",
-                    json.dumps({"line": item.get("line"), "chars": item.get("chars")}, sort_keys=True),
+                    json.dumps(
+                        {"line": item.get("line"), "chars": item.get("chars")},
+                        sort_keys=True,
+                    ),
                     "```text",
                     item["snippet"],
                     "```",
@@ -2805,8 +3105,12 @@ def _normalize_diagnosis_payload(model, parsed):
         "likely_root_cause": str(parsed.get("likely_root_cause") or "").strip(),
         "confidence": confidence,
         "next_steps": [str(item).strip() for item in next_steps if str(item).strip()],
-        "suspect_paths": [str(item).strip() for item in suspect_paths if str(item).strip()],
-        "evidence_notes": [str(item).strip() for item in evidence_notes if str(item).strip()],
+        "suspect_paths": [
+            str(item).strip() for item in suspect_paths if str(item).strip()
+        ],
+        "evidence_notes": [
+            str(item).strip() for item in evidence_notes if str(item).strip()
+        ],
     }
     for key in (
         "primary_failed_job",
@@ -2844,7 +3148,9 @@ def _normalize_usage_metadata(usage_metadata):
         if value is None:
             continue
         if isinstance(value, list):
-            normalized[target_key] = [dict(item) if isinstance(item, dict) else item for item in value]
+            normalized[target_key] = [
+                dict(item) if isinstance(item, dict) else item for item in value
+            ]
         else:
             normalized[target_key] = value
     return normalized or None
@@ -2939,7 +3245,10 @@ def _call_gemini_diagnosis(*, model, prompt, timeout_seconds):
                 response_id=response_id,
                 model_version=response_model_version,
             )
-            if err.code in {401, 403, 429, 500, 502, 503, 504} and attempt < GEMINI_MAX_REQUEST_RETRIES:
+            if (
+                err.code in {401, 403, 429, 500, 502, 503, 504}
+                and attempt < GEMINI_MAX_REQUEST_RETRIES
+            ):
                 time.sleep(min(2 * attempt, 4))
                 continue
             error = RuntimeError(last_error)
@@ -2986,7 +3295,9 @@ def _build_diagnostic_evidence(
     return {
         "redaction_applied": True,
         "truncated": bool(truncated),
-        "failed_job_count": sum(1 for source in log_sources if source.get("kind") == "failed_job_log"),
+        "failed_job_count": sum(
+            1 for source in log_sources if source.get("kind") == "failed_job_log"
+        ),
         "log_chars_sent": int(log_chars_sent),
         "log_sources": [
             {
@@ -3034,11 +3345,21 @@ def _diagnose_failure(*, repo, run_view, validation_summary, model, timeout_seco
         run_view=run_view,
         failed_jobs=_failed_jobs_from_run_view(run_view),
     )
-    log_sources = _collect_log_sources(repo, run_view, validation_summary=validation_summary)
-    redacted_log_texts = [_redact_text(source.get("text") or "") for source in log_sources if source.get("text")]
+    log_sources = _collect_log_sources(
+        repo, run_view, validation_summary=validation_summary
+    )
+    redacted_log_texts = [
+        _redact_text(source.get("text") or "")
+        for source in log_sources
+        if source.get("text")
+    ]
     code_context = _collect_code_context(repo_root, redacted_log_texts)
-    prompt_log_sections, log_chars_sent, truncated = _prepare_gemini_log_sections(log_sources)
-    structured_failure_signals = _collect_structured_failure_signals(prompt_log_sections)
+    prompt_log_sections, log_chars_sent, truncated = _prepare_gemini_log_sections(
+        log_sources
+    )
+    structured_failure_signals = _collect_structured_failure_signals(
+        prompt_log_sections
+    )
     evidence = _build_diagnostic_evidence(
         log_sources=log_sources,
         code_context=code_context,
@@ -3065,7 +3386,9 @@ def _diagnose_failure(*, repo, run_view, validation_summary, model, timeout_seco
         code_context=code_context,
     )
     try:
-        diagnosis, telemetry = _call_gemini_diagnosis(model=model, prompt=prompt, timeout_seconds=timeout_seconds)
+        diagnosis, telemetry = _call_gemini_diagnosis(
+            model=model, prompt=prompt, timeout_seconds=timeout_seconds
+        )
     except Exception as err:
         raise GeminiDiagnosisError(
             str(err),
@@ -3075,7 +3398,9 @@ def _diagnose_failure(*, repo, run_view, validation_summary, model, timeout_seco
     return diagnosis, evidence, telemetry
 
 
-def _should_attempt_gemini_diagnosis(*, structured_failure_signals, validation_summary, run_view):
+def _should_attempt_gemini_diagnosis(
+    *, structured_failure_signals, validation_summary, run_view
+):
     if _signals_have_actionable_detail(structured_failure_signals):
         return True
     if _validation_summary_has_actionable_detail(validation_summary):
@@ -3090,11 +3415,21 @@ def _collect_failure_evidence(*, repo, run_view, validation_summary):
         run_view=run_view,
         failed_jobs=_failed_jobs_from_run_view(run_view),
     )
-    log_sources = _collect_log_sources(repo, run_view, validation_summary=validation_summary)
-    redacted_log_texts = [_redact_text(source.get("text") or "") for source in log_sources if source.get("text")]
+    log_sources = _collect_log_sources(
+        repo, run_view, validation_summary=validation_summary
+    )
+    redacted_log_texts = [
+        _redact_text(source.get("text") or "")
+        for source in log_sources
+        if source.get("text")
+    ]
     code_context = _collect_code_context(repo_root, redacted_log_texts)
-    prompt_log_sections, log_chars_sent, truncated = _prepare_gemini_log_sections(log_sources)
-    structured_failure_signals = _collect_structured_failure_signals(prompt_log_sections)
+    prompt_log_sections, log_chars_sent, truncated = _prepare_gemini_log_sections(
+        log_sources
+    )
+    structured_failure_signals = _collect_structured_failure_signals(
+        prompt_log_sections
+    )
     evidence = _build_diagnostic_evidence(
         log_sources=log_sources,
         code_context=code_context,
@@ -3143,7 +3478,10 @@ def _unassigned_jobs(run_view, *, timeout_seconds, required_names=None, now=None
         return []
     observed = []
     for job in jobs:
-        if not isinstance(job, dict) or str(job.get("status") or "").lower() != "queued":
+        if (
+            not isinstance(job, dict)
+            or str(job.get("status") or "").lower() != "queued"
+        ):
             continue
         name = str(job.get("name") or "")
         if required_names and name not in required_names:
@@ -3247,14 +3585,18 @@ def _detect_dispatch_host_branch_mismatch(repo, target, resolved_ref):
     return None
 
 
-def _maybe_detect_dispatch_host_branch_mismatch(repo, target, resolved_ref, state, poll_seconds):
+def _maybe_detect_dispatch_host_branch_mismatch(
+    repo, target, resolved_ref, state, poll_seconds
+):
     now = int(time.time())
     last_checked_at = int(state.get("dispatch_host_mismatch_last_checked_at") or 0)
     recheck_after = _host_mismatch_recheck_interval_seconds(poll_seconds)
     if last_checked_at and now - last_checked_at < recheck_after:
         return state.get("dispatch_host_mismatch_last_result")
 
-    dispatch_host_mismatch = _detect_dispatch_host_branch_mismatch(repo, target, resolved_ref)
+    dispatch_host_mismatch = _detect_dispatch_host_branch_mismatch(
+        repo, target, resolved_ref
+    )
     state["dispatch_host_mismatch_last_checked_at"] = now
     state["dispatch_host_mismatch_last_result"] = dispatch_host_mismatch
     return dispatch_host_mismatch
@@ -3378,9 +3720,7 @@ def _extract_validation_target_evidence(validation_summary):
             source=f"validation_summary.ci_proof_v1.{ci_proof_sha_field}",
         )
 
-    surface_receipt = _dict_or_empty(
-        summary.get("ops_mcp_surface_acceptance_receipt")
-    )
+    surface_receipt = _dict_or_empty(summary.get("ops_mcp_surface_acceptance_receipt"))
     if surface_receipt:
         _append_identity_evidence(
             evidence,
@@ -3487,7 +3827,11 @@ def _build_proof_identity(*, target, run_view, resolved_ref, validation_summary)
                 "validation_target_sources": ["github_run"],
             }
         )
-        return {key: value for key, value in identity.items() if value not in (None, "", [], {})}
+        return {
+            key: value
+            for key, value in identity.items()
+            if value not in (None, "", [], {})
+        }
 
     expected_ref = str(target.get("validation_target_ref") or "").strip()
     if not expected_ref and target.get("kind") == TARGET_KIND_WORKFLOW:
@@ -3499,7 +3843,9 @@ def _build_proof_identity(*, target, run_view, resolved_ref, validation_summary)
 
     mismatch = bool(conflicts)
     if expected_ref and observed_ref:
-        mismatch = mismatch or _normalized_ref(expected_ref) != _normalized_ref(observed_ref)
+        mismatch = mismatch or _normalized_ref(expected_ref) != _normalized_ref(
+            observed_ref
+        )
     if expected_sha and observed_sha:
         mismatch = mismatch or not _shas_match(expected_sha, observed_sha)
 
@@ -3530,7 +3876,9 @@ def _build_proof_identity(*, target, run_view, resolved_ref, validation_summary)
             "validation_target_conflicts": conflicts or None,
         }
     )
-    return {key: value for key, value in identity.items() if value not in (None, "", [], {})}
+    return {
+        key: value for key, value in identity.items() if value not in (None, "", [], {})
+    }
 
 
 def normalize_snapshot(
@@ -3622,7 +3970,9 @@ def normalize_snapshot(
             "number": run_view.get("number"),
             "attempt": _run_attempt(run_view),
             "name": str(run_view.get("displayTitle") or run_view.get("name") or ""),
-            "workflow_name": str(run_view.get("workflowName") or target.get("workflow", "")),
+            "workflow_name": str(
+                run_view.get("workflowName") or target.get("workflow", "")
+            ),
             "url": str(run_view.get("url") or ""),
             "head_branch": str(run_view.get("headBranch") or ""),
             "head_sha": str(run_view.get("headSha") or ""),
@@ -3666,13 +4016,22 @@ def _action_descriptors_for_snapshot(snapshot):
             primary_job = _dict_or_empty(failed_jobs[0] if failed_jobs else {})
             job_id = primary_job.get("id")
             run_status = str(run.get("status") or "")
-            failure_phase = "terminal_failure" if run_status == "completed" else "in_progress_failed_job"
+            failure_phase = (
+                "terminal_failure"
+                if run_status == "completed"
+                else "in_progress_failed_job"
+            )
             logs_available = any(
-                source.get("kind") == "failed_job_log" and (job_id is None or source.get("job_id") == job_id)
+                source.get("kind") == "failed_job_log"
+                and (job_id is None or source.get("job_id") == job_id)
                 for source in log_sources
                 if isinstance(source, dict)
             )
-            fingerprint_parts = [action, f"run:{run_id or 'unknown'}", f"phase:{failure_phase}"]
+            fingerprint_parts = [
+                action,
+                f"run:{run_id or 'unknown'}",
+                f"phase:{failure_phase}",
+            ]
             if job_id:
                 fingerprint_parts.append(f"job:{job_id}")
             descriptors.append(
@@ -3729,7 +4088,9 @@ def _action_descriptors_for_snapshot(snapshot):
 
 
 def _apply_acknowledged_actions(snapshot, acknowledged):
-    acknowledged_set = {str(item).strip() for item in _list_or_empty(acknowledged) if str(item).strip()}
+    acknowledged_set = {
+        str(item).strip() for item in _list_or_empty(acknowledged) if str(item).strip()
+    }
     descriptors = _action_descriptors_for_snapshot(snapshot)
     remaining_descriptors = []
     suppressed = []
@@ -3741,13 +4102,19 @@ def _apply_acknowledged_actions(snapshot, acknowledged):
         remaining_descriptors.append(descriptor)
 
     if remaining_descriptors:
-        actions = merge_ordered_unique([item.get("action") for item in remaining_descriptors if item.get("action")])
+        actions = merge_ordered_unique(
+            [item.get("action") for item in remaining_descriptors if item.get("action")]
+        )
     else:
         actions = ["idle"]
 
     snapshot["actions"] = actions
     snapshot["action_triggers"] = remaining_descriptors
-    snapshot["action_fingerprints"] = [item.get("fingerprint") for item in remaining_descriptors if item.get("fingerprint")]
+    snapshot["action_fingerprints"] = [
+        item.get("fingerprint")
+        for item in remaining_descriptors
+        if item.get("fingerprint")
+    ]
     snapshot["suppressed_action_fingerprints"] = suppressed
     return snapshot
 
@@ -3758,7 +4125,11 @@ def _record_unassigned_observation(run_view, state):
         return
     run_key = ":".join(
         str(value or "unknown")
-        for value in (run_view.get("databaseId"), _run_attempt(run_view), run_view.get("headSha"))
+        for value in (
+            run_view.get("databaseId"),
+            _run_attempt(run_view),
+            run_view.get("headSha"),
+        )
     )
     observations = state.setdefault("unassigned_observations", {})
     for identity in list(observations):
@@ -3850,7 +4221,13 @@ def _compact_failed_jobs(failed_jobs):
             "name": job.get("name"),
             "conclusion": job.get("conclusion"),
         }
-        compact_jobs.append({key: value for key, value in compact.items() if value not in (None, "", [])})
+        compact_jobs.append(
+            {
+                key: value
+                for key, value in compact.items()
+                if value not in (None, "", [])
+            }
+        )
     return compact_jobs
 
 
@@ -3868,7 +4245,15 @@ def _compact_appearance_wait(appearance_wait):
     if dispatch_host_mismatch:
         compact["dispatch_host_mismatch"] = {
             key: dispatch_host_mismatch.get(key)
-            for key in ("run_id", "run_url", "host_branch", "event", "head_sha", "message", "suggested_target")
+            for key in (
+                "run_id",
+                "run_url",
+                "host_branch",
+                "event",
+                "head_sha",
+                "message",
+                "suggested_target",
+            )
             if dispatch_host_mismatch.get(key) not in (None, "", [])
         }
     return compact
@@ -3886,7 +4271,9 @@ def _compact_validation_context(validation_context):
         "candidate_next_slices": context.get("candidate_next_slices"),
         "failed_lane_count": context.get("failed_lane_count"),
     }
-    return {key: value for key, value in compact.items() if value not in (None, [], {}, "")} or None
+    return {
+        key: value for key, value in compact.items() if value not in (None, [], {}, "")
+    } or None
 
 
 def _compact_proof_identity(proof_identity):
@@ -3938,8 +4325,12 @@ def _compact_snapshot(snapshot, *, verbose_details):
     compact["run"] = _compact_run_payload(compact.get("run"))
     compact["proof_identity"] = _compact_proof_identity(compact.get("proof_identity"))
     compact["failed_jobs"] = _compact_failed_jobs(compact.get("failed_jobs"))
-    compact["appearance_wait"] = _compact_appearance_wait(compact.get("appearance_wait"))
-    compact["validation_context"] = _compact_validation_context(compact.get("validation_context"))
+    compact["appearance_wait"] = _compact_appearance_wait(
+        compact.get("appearance_wait")
+    )
+    compact["validation_context"] = _compact_validation_context(
+        compact.get("validation_context")
+    )
     diagnosis_status = _dict_or_empty(compact.get("diagnosis_status"))
     if diagnosis_status:
         compact["diagnosis_status"] = {"state": diagnosis_status.get("state")}
@@ -3963,13 +4354,17 @@ def target_state_from_target(args, target, repo, remembered):
             target=target,
             repo=repo,
             followed_newer_run=False,
-            resolved_ref=str(run_view.get("headBranch") or str(target.get("ref") or "")),
+            resolved_ref=str(
+                run_view.get("headBranch") or str(target.get("ref") or "")
+            ),
             gemini_disabled=args.no_gemini_diagnosis,
             unassigned_timeout_seconds=getattr(args, "unassigned_timeout_seconds", 0),
             unassigned_job_names=getattr(args, "unassigned_job_name", []),
         )
         expected_head = target.get("head_sha")
-        if expected_head and not _matches_head_sha_prefix(run_view.get("headSha"), expected_head):
+        if expected_head and not _matches_head_sha_prefix(
+            run_view.get("headSha"), expected_head
+        ):
             snapshot["actions"] = ["stop_run_head_mismatch"]
             return snapshot
         state["last_run_id"] = int(run_view.get("databaseId") or target["run_id"])
@@ -3986,7 +4381,10 @@ def target_state_from_target(args, target, repo, remembered):
                     cached = {
                         "gemini_diagnosis": None,
                         "gemini_error": None,
-                        "diagnostic_evidence": _dict_or_empty(evidence_bundle).get("evidence") or {},
+                        "diagnostic_evidence": _dict_or_empty(evidence_bundle).get(
+                            "evidence"
+                        )
+                        or {},
                         "gemini_telemetry": None,
                     }
                 else:
@@ -4112,7 +4510,9 @@ def target_state_from_target(args, target, repo, remembered):
                 "actions": actions,
                 "ts": now,
             }
-            return _apply_acknowledged_actions(snapshot, getattr(args, "ack_action", []))
+            return _apply_acknowledged_actions(
+                snapshot, getattr(args, "ack_action", [])
+            )
 
         latest = matching_runs[0]
         _GH_AUTH.deadline = None
@@ -4151,7 +4551,10 @@ def target_state_from_target(args, target, repo, remembered):
                 cached = {
                     "gemini_diagnosis": None,
                     "gemini_error": None,
-                    "diagnostic_evidence": _dict_or_empty(evidence_bundle).get("evidence") or {},
+                    "diagnostic_evidence": _dict_or_empty(evidence_bundle).get(
+                        "evidence"
+                    )
+                    or {},
                     "gemini_telemetry": None,
                 }
             else:
@@ -4231,7 +4634,9 @@ def evaluate_targets(args, repo, targets, remembered):
         appearance_wait = snapshot.get("appearance_wait") or {}
         if appearance_wait.get("waiting_for_match"):
             summary["targets_waiting_for_match"] += 1
-        snapshots.append(_compact_snapshot(snapshot, verbose_details=args.verbose_details))
+        snapshots.append(
+            _compact_snapshot(snapshot, verbose_details=args.verbose_details)
+        )
 
     if not aggregate_actions:
         aggregate_actions = ["idle"]
@@ -4339,7 +4744,9 @@ def watch_until_action(args, repo):
             time.sleep(args.poll_seconds)
             continue
         if getattr(args, "watch_until_terminal", False):
-            if _payload_has_terminal_wait_blocker(payload) or _payload_all_targets_terminal(payload):
+            if _payload_has_terminal_wait_blocker(
+                payload
+            ) or _payload_all_targets_terminal(payload):
                 emit(payload)
                 return
             time.sleep(args.poll_seconds)
@@ -4394,5 +4801,11 @@ if __name__ == "__main__":
     try:
         main()
     except GhCommandError as err:
-        emit({"error": str(err), "actions": ["stop_operator_help_required"], "ts": int(time.time())})
+        emit(
+            {
+                "error": str(err),
+                "actions": ["stop_operator_help_required"],
+                "ts": int(time.time()),
+            }
+        )
         sys.exit(1)

@@ -1,64 +1,5 @@
 # Rust/codex-rs
 
-## Fork Branch Policy
-
-This repository uses a two-branch public fork flow:
-
-- `origin/main` is the maintained downstream branch and the only public PR target.
-- `origin/upstream-main` is the exact mirror of `upstream/main` and stays fast-forward-only.
-
-Do not push feature commits directly to `origin/upstream-main`.
-
-Recommended commands:
-
-- `git fetch origin --prune` refreshes the downstream and mirror branch tips.
-- use the `sedna-sync-upstream` workflow (or an equivalent fast-forward push) to update `upstream-main` from `upstream/main`.
-- downstream syncs are merge-based (`upstream-main` -> `main`), not shared-branch rebases.
-- avoid force-push on `main` during normal sync; use `--force-with-lease` only for exceptional repair operations.
-- Finished feature, bugfix, docs, or cleanup work on a branch must be committed, pushed, and raised as a pull request targeting `origin/main` before handoff. Do not leave completed branch work as local-only changes.
-
-Branch tracking should remain:
-
-- `main` tracks `origin/main`.
-- `upstream-main` tracks `origin/upstream-main`.
-
-## Upstream Integration Philosophy
-
-- Prefer upstream behavior by default. When syncing `main` with `upstream-main`, treat downstream carry as a cost that must justify itself.
-- The ideal downstream state is: minimal fork-specific behavior in hot core files, with as much downstream customization as possible moved behind explicit extension seams or plugin-like layers.
-- When an integration or conflict forces a choice, prefer:
-  1. taking upstream unchanged,
-  2. re-expressing downstream behavior behind an existing seam or a new narrow internal seam,
-  3. only then carrying a direct fork patch in a hot upstream file.
-- If downstream behavior can be dropped temporarily and re-implemented more cleanly behind an extension point with lower long-term maintenance cost, prefer that over preserving a messy carry patch.
-- Favor internal extensibility over repeated fork edits:
-  - app-server behavior should prefer hook-style seams such as `extensions.rs`
-  - plugin/app augmentation should prefer narrow extension boundaries over processor-file carry
-  - TUI carry should be extracted into small dedicated modules before adding more logic to `app.rs`, `chatwidget.rs`, or other high-churn orchestration files
-- Treat work that reduces future upstream-sync pain as first-class engineering value, even when the immediate feature could be patched faster in place.
-- Do not invent broad dynamic plugin systems during conflict resolution unless explicitly requested. Prefer small, static, upstream-shaped seams that let downstream behavior plug in without changing public contracts.
-- Preserve important downstream product behavior intentionally. For this fork, do not casually drop realtime, voice, or realtime-text behavior during sync just to make merges easier.
-
-## Downstream Carry Documentation
-
-- Any change that introduces, preserves, or materially reshapes intentional
-  downstream carry must update the carry documentation in the same branch
-  before it is considered ready to land.
-- At minimum, update `docs/divergences/index.yaml` with the carry id, behavior,
-  primary files, owner, upstream-equivalence status, guardrail lane, tests, and
-  the rule for preserving or dropping the carry during future upstream syncs.
-- For live carries, also update the human-readable
-  `docs/carry-divergence-ledger.md` section and map the expected validation
-  surface in `docs/downstream-regression-matrix.md`.
-- If the carry changes a public or agent-facing surface, update the relevant
-  domain document as well, such as `docs/downstream.md`,
-  `docs/downstream-tool-surface-matrix.md`, `docs/native-computer-use.md`, or
-  another focused downstream doc.
-- Treat missing carry docs as incomplete work, not as optional follow-up. If an
-  intentional carry is accidentally landed without those docs, make the
-  docs-only follow-up immediately and keep it tied to the merge commit that
-  introduced the carry.
-
 In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`. For example, the `core` folder's crate is named `codex-core`
@@ -75,7 +16,8 @@ In the codex-rs folder where the rust code lives:
   - Use an exact `/*param_name*/` comment before opaque literal arguments such as `None`, booleans, and numeric literals when passing them by position.
   - A method's sole non-self argument is exempt when the method and parameter names match, such as `.enabled(false)` for `fn enabled(&self, enabled: bool)`.
   - Do not add these comments for string or char literals unless the comment adds real clarity; those literals are intentionally exempt from the lint.
-  - If you add one of these comments, the parameter name must exactly match the callee signature.
+  - The parameter name in the comment must exactly match the callee signature.
+  - You can run `just argument-comment-lint` to run the lint check locally. This is powered by Bazel, so running it the first time can be slow if Bazel is not warmed up, though incremental invocations should take <15s. Most of the time, it is best to update the PR and let CI take responsibility for checking this (or run it asynchronously in the background after submitting the PR). Note CI checks all three platforms, which the local run does not.
 - When possible, make `match` statements exhaustive and avoid wildcard arms.
 - Newly added traits should include doc comments that explain their role and how implementations are expected to use them.
 - Discourage both `#[async_trait]` and `#[allow(async_fn_in_trait)]` in Rust traits.
@@ -89,12 +31,6 @@ In the codex-rs folder where the rust code lives:
 - Do not add negative tests for logic that was removed.
 - Do not add general product or user-facing documentation to the `docs/` folder. The official Codex documentation lives elsewhere. The exception is app-server API documentation, which is covered by the app-server guidance below.
 - Prefer private modules and explicitly exported public crate API.
-- Keep native computer-use runtime work behind provider seams:
-  - Codex owns the canonical tool schema, protocol events, app-server bridge, TUI projection, rollout, and native image-output contract.
-  - Runtime backends own Android sessions, browser sessions, screenshots or viewport capture, UI digests, and input execution.
-  - Route TUI browser backend work through `codex-rs/tui/src/browser_computer_use_provider.rs`, `codex-rs/tui/src/browser_playwright_provider.mjs`, or the command-provider interface. Do not add provider-specific browser automation to hot app-server/core dispatch paths.
-  - Successful visual observe/step responses must include native `inputImage` content. Text-only summaries, local artifact paths, or provider diagnostics are not a substitute for model-visible pixels.
-  - When changing native computer-use behavior, update `docs/native-computer-use.md`, `docs/downstream-tool-surface-matrix.md`, `docs/downstream-regression-matrix.md`, `docs/divergences/index.yaml`, and the focused just recipes when their scope changes.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - When working with MCP tool calls, prefer using `codex-rs/codex-mcp/src/mcp_connection_manager.rs` to handle mutation of tools and tool calls. Aim to minimize the footprint of changes and leverage existing abstractions rather than plumbing code through multiple levels of function calls.
 - Do not call `reset_client_session` unnecessarily; let the incremental check logic decide whether to reuse the previous request.
@@ -123,42 +59,28 @@ In the codex-rs folder where the rust code lives:
     the new implementation so the invariants stay close to the code that owns them.
   - Avoid adding new standalone methods to `codex-rs/tui/src/chatwidget.rs` unless the change is
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
-- When any Rust command is already running because the user explicitly approved local compute or a closer downstream instruction file required it, be patient with the command and never try to kill it using the PID. Rust lock can make execution slow; this is expected.
+- When running Rust commands (e.g. `just fix` or `just test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
-## Compute and Validation Policy
+Run `just fmt` (in the `codex-rs` directory) automatically after you have finished making code changes anywhere in this repository; do not ask for approval to run it. Additionally, run the tests:
 
-- Treat all build, test, check, lint, format, snapshot-update, codegen, schema-generation, release, and other CPU-heavy validation work as remote by default.
-- Do not run local compute for validation or cleanup unless the user specifically asks for local execution in the current conversation, or a closer downstream `AGENTS.md`, `GEMINI.md`, `CONTRIBUTING.md`, or equivalent file explicitly overrides this section for the paths being touched.
-- This default applies even to commands that may look small, targeted, already-warm, or useful for a quick sanity check. Examples that still require explicit user approval or downstream override before local execution include `cargo check`, `cargo test`, `cargo build`, `cargo clippy`, `cargo fmt`, `just fmt`, `just fix`, `just test`, `just argument-comment-lint`, `cargo insta`, `just write-config-schema`, `just bazel-lock-update`, and `just bazel-lock-check`.
-- Lightweight non-compute inspection is allowed without approval: reading files, `rg`, `sed`, `ls`, `git status`, `git diff`, `git diff --check`, `git diff --stat`, `git log`, `git show`, `git rev-parse`, `git fetch`, conflict-marker scans, committing, and pushing requested changes.
-- When validation is needed, commit and push the relevant work, then use GitHub Actions, branch-build workflows, validation-lab, or another configured hosted runner. Report the remote workflow, run id, artifact, or log that proves the result.
-- If local compute would materially help, ask the user first with the exact command and reason. Do not start the command until the user explicitly authorizes local compute.
-- If a downstream instruction file overrides this section, follow that closer instruction only for its scope and state that override when reporting validation.
+1. Do not run `cargo test` directly. Use `just test` so test execution follows the repo defaults.
+2. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `just test -p codex-tui`.
+3. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `just test`. Avoid `--all-features` for routine local runs because it expands the build matrix and can significantly increase `target/` disk usage; use it only when you specifically need full feature coverage. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
-## Bug Investigation Workflow
+Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
 
-- For bug reports or regression investigations that concern core Codex behavior rather than clearly downstream-only behavior in this fork, use this workflow by default:
-  1. Check whether `upstream/main` already contains a fix that is not present locally. Prefer targeted commit/path inspection before doing deep local debugging.
-  2. If no upstream fix is present, check for related open GitHub issues or PRs in `openai/codex` so local investigation starts with known context and avoids duplicate diagnosis.
-  3. If neither an upstream fix nor a clearly matching issue exists, trace the problem locally in this repo and identify the failing path, gate, or state transition before proposing a change.
-- Treat “downstream-only behavior” as behavior introduced by fork-specific patches, branch policy, local wrappers, or local environment glue that does not exist in `openai/codex`.
-- When a regression appears to be upstream/core until proven otherwise, bias toward the upstream-fix -> upstream-issue -> local-trace order above.
+## The `codex-core` crate
 
-Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace-wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+Over time, the `codex-core` crate (defined in `codex-rs/core/`) has become bloated because it is the largest crate, so it is often easier to add something new to `codex-core` rather than refactor out the library code you need so your new code neither takes a dependency on, nor contributes to the size of, `codex-core`.
 
-Also run `just argument-comment-lint` to ensure the codebase is clean of comment lint errors.
+To that end: **resist adding code to codex-core**!
 
-## CI Offload Policy
+Particularly when introducing a new concept/feature/API, before adding to `codex-core`, consider whether:
 
-- Treat GitHub Actions as the default factory for remote seam validation, preview binaries, heavy Rust tests, and official releases.
-- Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
-- Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
-- Downstream release support includes Linux `x86_64` and Linux Arm64 GNU. Public release artifacts and native release verification must cover both architectures; heavyweight checkpoint workflows and routine remote validation may remain target-specific when their owning contract does not require the release matrix. Intel macOS remains an explicitly selected release mode, while other platforms require a deliberate support-contract change with matching docs and workflows.
-- Configured helper presets remain a good narrow local lane for smoke checks, formatting, and targeted validation.
-- Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive local validation when the same work can be offloaded to GitHub CI.
-- Heavy remote CI only starts after the relevant work is committed and pushed.
-- Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
-- Preview artifacts are disposable and non-release. Only the protected Sedna release workflow produces public release artifacts.
+- There is an existing crate other than `codex-core` that is an appropriate place for your new code to live.
+- It is time to introduce a new crate to the Cargo workspace for your new functionality. Refactor existing code as necessary to make this happen.
+
+Likewise, when reviewing code, do not hesitate to push back on PRs that would unnecessarily add code to `codex-core`.
 
 ## Code Review Rules
 
@@ -214,14 +136,12 @@ See `codex-rs/tui/styles.md`.
 
 ## TUI code conventions
 
-- When a change lands in `codex-rs/tui` and `codex-rs/tui_app_server` has a parallel implementation of the same behavior, reflect the change in `codex-rs/tui_app_server` too unless there is a documented reason not to.
-
 - Use concise styling helpers from ratatui’s Stylize trait.
   - Basic spans: use "text".into()
   - Styled spans: use "text".red(), "text".green(), "text".magenta(), "text".dim(), etc.
   - Prefer these over constructing styles with `Span::styled` and `Style` directly.
   - Example: patch summary file lines
-    - Desired: vec![" └ ".into(), "M".red(), " ".dim(), "tui/src/app.rs".dim()]
+    - Desired: vec!["  └ ".into(), "M".red(), " ".dim(), "tui/src/app.rs".dim()]
 
 ### TUI Styling (ratatui)
 
@@ -343,7 +263,6 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 - `app-server-protocol/src/protocol/common.rs`
 - `app-server-protocol/src/protocol/v2.rs`
-- `app-server/README.md`
 
 ### Core Rules
 
@@ -377,7 +296,6 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 ### Development Workflow
 
-- Update app-server docs/examples when API behavior changes (at minimum `app-server/README.md`).
 - Regenerate schema fixtures when API shapes change:
   `just write-app-server-schema`
   (and `just write-app-server-schema --experimental` when experimental API fixtures are affected).

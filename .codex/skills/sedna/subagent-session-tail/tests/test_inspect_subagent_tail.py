@@ -18,7 +18,9 @@ class TimestampParsingTest(unittest.TestCase):
     def test_parse_timestamp_ignores_non_strings(self) -> None:
         self.assertIsNone(inspect_subagent_tail.parse_timestamp(None))
         self.assertIsNone(inspect_subagent_tail.parse_timestamp(123))
-        self.assertIsNone(inspect_subagent_tail.parse_timestamp({"timestamp": "2026-01-01T00:00:00Z"}))
+        self.assertIsNone(
+            inspect_subagent_tail.parse_timestamp({"timestamp": "2026-01-01T00:00:00Z"})
+        )
 
     def test_time_since_subtracts_aware_datetimes_directly(self) -> None:
         now = datetime(2026, 1, 1, 0, 2, 3, tzinfo=timezone.utc)
@@ -34,7 +36,10 @@ class OutputSummarizationTest(unittest.TestCase):
         cases = [
             ("first\nsecond", "first"),
             (["first", "second"], "[first]"),
-            ([{"type": "text", "text": "ready"}], '[{"type": "text", "text": "ready"}]'),
+            (
+                [{"type": "text", "text": "ready"}],
+                '[{"type": "text", "text": "ready"}]',
+            ),
             ({"success": True}, '{"success": true}'),
             (7, "7"),
             (None, "None"),
@@ -42,7 +47,9 @@ class OutputSummarizationTest(unittest.TestCase):
 
         for output, expected in cases:
             with self.subTest(output=output):
-                self.assertEqual(inspect_subagent_tail.summarize_output(output), expected)
+                self.assertEqual(
+                    inspect_subagent_tail.summarize_output(output), expected
+                )
 
 
 if __name__ == "__main__":

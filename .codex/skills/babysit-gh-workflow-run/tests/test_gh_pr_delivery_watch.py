@@ -1212,7 +1212,6 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         )
         self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
 
-
     def test_blocking_watcher_invocation_uses_the_existing_terminal_helper(self):
         args = make_args()
         output = json.dumps({"targets": []}) + "\n"
