@@ -7,6 +7,8 @@ use crate::agent::child_config::build_agent_spawn_config;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::PermissionProfileSnapshot;
+use crate::context::TerminalCompletionNotification;
+use crate::context::TerminalCompletionStatus;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
@@ -3523,6 +3525,120 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     .await
     .expect("already queued mail should complete wait_agent immediately")
     .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_returns_for_pending_terminal_completion() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    session
+        .input_queue
+        .enqueue_terminal_completion(TerminalCompletionNotification {
+            process_id: 42,
+            instance_id: uuid::Uuid::nil(),
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        })
+        .await;
+
+    let output = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({"timeout_ms": 10_000})),
+        ))
+        .await
+        .expect("pending terminal completion should complete wait_agent");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_wakes_on_terminal_completion() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"timeout_ms": 10_000})),
+                ))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    session
+        .input_queue
+        .enqueue_terminal_completion(TerminalCompletionNotification {
+            process_id: 42,
+            instance_id: uuid::Uuid::nil(),
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        })
+        .await;
+
+    let output = wait_task
+        .await
+        .expect("wait task should join")
+        .expect("terminal completion should complete wait_agent");
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
