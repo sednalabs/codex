@@ -501,10 +501,20 @@ app-server-collab-spawn-identity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
 
-# Focused analytics and usage consumer slice for collab-spawn requested identity.
+# Focused analytics and protocol consumer slice for collab-spawn requested identity.
 collab-spawn-identity-consumers-targeted:
-    cargo test --locked -p codex-analytics analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-state runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity --lib -- --exact --test-threads=1
+    @for test_spec in \
+        'codex-analytics|tests::suite::events::turn_event_counts_completed_tool_items' \
+        'codex-app-server-protocol|protocol::v2::tests::sub_agent_activity_legacy_wire_shape_keeps_identity_optional'; do \
+      package="${test_spec%%|*}"; \
+      test_name="${test_spec#*|}"; \
+      log="$(mktemp)"; \
+      if cargo test --locked -p "$package" "$test_name" --lib -- --exact --test-threads=1 >"$log" 2>&1; then status=0; else status=$?; fi; \
+      cat "$log"; \
+      if [ "$status" -ne 0 ]; then rm -f "$log"; exit "$status"; fi; \
+      if ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' "$log"; then echo "expected exactly one passing test for $test_name" >&2; rm -f "$log"; exit 1; fi; \
+      rm -f "$log"; \
+    done
 
 # Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:
