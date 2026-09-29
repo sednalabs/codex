@@ -44,8 +44,8 @@ fi
 cat "$rust_test_output"
 
 matching_test_count="$(grep -Fxc 'test tests::hosted_native_browser_tool_flow ... ok' "$rust_test_output" || true)"
-if [[ "$matching_test_count" != "1" ]] \
-  || ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out$' "$rust_test_output"; then
+matching_summary_count="$(grep -Ecx '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out(; finished in [0-9.]+s)?$' "$rust_test_output" || true)"
+if [[ "$matching_test_count" != "1" || "$matching_summary_count" != "1" ]]; then
   echo "native-browser-evidence: expected exactly one passing hosted_native_browser_tool_flow test" >&2
   exit 1
 fi
