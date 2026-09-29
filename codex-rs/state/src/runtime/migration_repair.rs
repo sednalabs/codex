@@ -708,7 +708,9 @@ async fn ensure_migrations_table(pool: &SqlitePool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SHIFTED_STATE_MIGRATION_MOVES, repair_state_migrations, temporary_repair_version};
+    use super::SHIFTED_STATE_MIGRATION_MOVES;
+    use super::repair_state_migrations;
+    use super::temporary_repair_version;
     use crate::migrations::STATE_MIGRATOR;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
