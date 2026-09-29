@@ -174,11 +174,16 @@ jobs:
           MANIFEST_PATH: ${{ runner.temp }}/app-server-schema-generation.json
           PATHS_PATH: ${{ runner.temp }}/app-server-schema-paths.txt
         run: |
-          set -uo pipefail
-          just write-app-server-schema
-          generator_exit=$?
+          set -euo pipefail
+          generator_exit=0
+          if just write-app-server-schema; then
+            generator_exit=0
+          else
+            generator_exit=$?
+          fi
 
-          GENERATOR_EXIT="${generator_exit}" PATHS_PATH="${PATHS_PATH}" python3 - <<'PY'
+          path_validation_exit=0
+          if PATHS_PATH="${PATHS_PATH}" python3 - <<'PY'
           import os
           import subprocess
           from pathlib import Path
@@ -216,12 +221,26 @@ jobs:
               "".join(f"{path}\n" for path in changed_paths), encoding="utf-8"
           )
           PY
-          path_validation_exit=$?
+          then
+            path_validation_exit=0
+          else
+            path_validation_exit=$?
+          fi
 
+          patch_materialization_exit=0
           if [[ "${path_validation_exit}" -eq 0 ]]; then
-            git add -N -- codex-rs/app-server-protocol/schema
-            git diff --binary --full-index -- \
-              codex-rs/app-server-protocol/schema > "${PATCH_PATH}"
+            if git add -N -- codex-rs/app-server-protocol/schema; then
+              if git diff --binary --full-index -- \
+                codex-rs/app-server-protocol/schema > "${PATCH_PATH}"
+              then
+                patch_materialization_exit=0
+              else
+                patch_materialization_exit=$?
+              fi
+            else
+              patch_materialization_exit=$?
+              : > "${PATCH_PATH}"
+            fi
           else
             : > "${PATCH_PATH}"
           fi
@@ -230,6 +249,7 @@ jobs:
           patch_bytes="$(wc -c < "${PATCH_PATH}" | tr -d '[:space:]')"
           GENERATOR_EXIT="${generator_exit}" \
           PATH_VALIDATION_EXIT="${path_validation_exit}" \
+          PATCH_MATERIALIZATION_EXIT="${patch_materialization_exit}" \
           PATCH_SHA256="${patch_sha256}" \
           PATCH_BYTES="${patch_bytes}" \
           python3 - <<'PY'
@@ -253,6 +273,9 @@ jobs:
               "base_sha": os.environ["MATERIALIZED_BASE_SHA"],
               "generator_exit_code": int(os.environ["GENERATOR_EXIT"]),
               "path_validation_exit_code": int(os.environ["PATH_VALIDATION_EXIT"]),
+              "patch_materialization_exit_code": int(
+                  os.environ["PATCH_MATERIALIZATION_EXIT"]
+              ),
               "changed_paths": changed_paths,
               "patch_bytes": int(os.environ["PATCH_BYTES"]),
               "patch_sha256": os.environ["PATCH_SHA256"],
@@ -270,9 +293,62 @@ jobs:
           if [[ "${path_validation_exit}" -ne 0 ]]; then
             exit "${path_validation_exit}"
           fi
+          if [[ "${patch_materialization_exit}" -ne 0 ]]; then
+            exit "${patch_materialization_exit}"
+          fi
+
+      - name: Verify app-server schema generation evidence
+        if: ${{ always() && inputs.generate_app_server_schema_patch }}
+        id: app_server_schema_evidence
+        shell: bash
+        env:
+          PATCH_PATH: ${{ runner.temp }}/app-server-schema.patch
+          MANIFEST_PATH: ${{ runner.temp }}/app-server-schema-generation.json
+        run: |
+          set -euo pipefail
+          test -f "${PATCH_PATH}"
+          test -s "${MANIFEST_PATH}"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          patch_path = Path(os.environ["PATCH_PATH"])
+          manifest_path = Path(os.environ["MANIFEST_PATH"])
+          patch = patch_path.read_bytes()
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          required = {
+              "schema_version",
+              "command",
+              "workflow_host_sha",
+              "requested_target_sha",
+              "materialized_target_sha",
+              "base_ref",
+              "base_sha",
+              "generator_exit_code",
+              "path_validation_exit_code",
+              "patch_materialization_exit_code",
+              "changed_paths",
+              "patch_bytes",
+              "patch_sha256",
+          }
+          missing = sorted(required - manifest.keys())
+          if missing:
+              raise SystemExit(f"schema evidence manifest missing fields: {missing}")
+          if manifest["command"] != ["just", "write-app-server-schema"]:
+              raise SystemExit("schema evidence command identity is invalid")
+          if manifest["requested_target_sha"] != manifest["materialized_target_sha"]:
+              raise SystemExit("schema evidence target identity mismatch")
+          if manifest["patch_bytes"] != len(patch):
+              raise SystemExit("schema evidence patch byte count mismatch")
+          digest = hashlib.sha256(patch).hexdigest()
+          if manifest["patch_sha256"] != digest:
+              raise SystemExit("schema evidence patch digest mismatch")
+          PY
 
       - name: Upload app-server schema generation evidence
-        if: ${{ always() && inputs.generate_app_server_schema_patch }}
+        if: ${{ always() && inputs.generate_app_server_schema_patch && steps.app_server_schema_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: app-server-schema-generation-${{ github.run_id }}
