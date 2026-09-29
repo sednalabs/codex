@@ -505,7 +505,7 @@ app-server-collab-spawn-identity-targeted:
 [unix]
 collab-spawn-identity-consumers-targeted:
     @for test_spec in \
-        'codex-analytics|tests::suite::events::turn_event_counts_completed_tool_items' \
+        'codex-analytics|tests::suite::turns::events::turn_event_counts_completed_tool_items' \
         'codex-app-server-protocol|protocol::v2::tests::sub_agent_activity_legacy_wire_shape_keeps_identity_optional'; do \
       package="${test_spec%%|*}"; \
       test_name="${test_spec#*|}"; \
