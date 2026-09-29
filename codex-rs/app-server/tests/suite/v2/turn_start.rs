@@ -4308,7 +4308,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             responses::ev_response_created("resp-turn1-1"),
             responses::ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                "multi_agent_v2",
+                "collaboration",
                 "spawn_agent",
                 &spawn_args,
             ),

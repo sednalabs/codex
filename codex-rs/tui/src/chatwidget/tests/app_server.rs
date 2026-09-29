@@ -1315,7 +1315,7 @@ async fn fork_acceptance_spawn_identity_survives_cold_replay() -> anyhow::Result
             responses::ev_response_created("fork-acceptance-parent-1"),
             responses::ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                "multi_agent_v2",
+                "collaboration",
                 "spawn_agent",
                 &spawn_args,
             ),
