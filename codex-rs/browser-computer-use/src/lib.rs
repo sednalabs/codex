@@ -1252,4 +1252,557 @@ JSON
         assert!(response.success);
         assert!(response_includes_native_image(&response));
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn playwright_provider_preserves_state_roots_and_thread_profiles() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::Component;
+
+        let temp = tempfile::tempdir().expect("temporary fixture root");
+        let codex_home = temp.path().join("codex-home");
+        let node_path = temp.path().join("node-modules");
+        std::fs::create_dir(&codex_home).expect("Codex home");
+        std::fs::create_dir_all(node_path.join("playwright")).expect("fake Playwright module");
+        std::fs::write(
+            node_path.join("playwright/index.js"),
+            r#"
+let currentUrl = "about:blank";
+const page = {
+  isClosed: () => false,
+  url: () => currentUrl,
+  goto: async (url) => { currentUrl = url; },
+  waitForLoadState: async () => {},
+  screenshot: async () => Buffer.from("fixture-image"),
+  title: async () => "fixture page",
+  viewportSize: () => ({ width: 1280, height: 720 }),
+};
+exports.chromium = {
+  launchPersistentContext: async (stateDir) => {
+    require("node:fs").mkdirSync(stateDir, { recursive: true });
+    return {
+      pages: () => [],
+      newPage: async () => page,
+      close: async () => {},
+    };
+  },
+};
+"#,
+        )
+        .expect("fake Playwright module source");
+
+        let write_node_wrapper = |name: &str, unset_state_dir: bool| {
+            let node_wrapper = temp.path().join(name);
+            let unset = if unset_state_dir {
+                "unset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR CODEX_BROWSER_PLAYWRIGHT_ISOLATION"
+            } else {
+                "unset CODEX_BROWSER_PLAYWRIGHT_ISOLATION"
+            };
+            let script = format!(
+                "#!/bin/sh\n{unset}\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
+                codex_home.display(),
+            );
+            std::fs::write(&node_wrapper, script).expect("write Node wrapper");
+            std::fs::set_permissions(&node_wrapper, std::fs::Permissions::from_mode(0o700))
+                .expect("make Node wrapper executable");
+            node_wrapper
+        };
+        let node_wrapper = write_node_wrapper("node-wrapper", false);
+        let default_node_wrapper = write_node_wrapper("default-node-wrapper", true);
+
+        let run = |state_dir: Option<String>, thread_id: &str| {
+            let node_path = node_path.to_string_lossy().to_string();
+            let node = if state_dir.is_some() {
+                node_wrapper.to_string_lossy().to_string()
+            } else {
+                default_node_wrapper.to_string_lossy().to_string()
+            };
+            let thread_id = thread_id.to_string();
+            async move {
+                let config = PlaywrightProviderConfig {
+                    node,
+                    node_path: Some(node_path),
+                    state_dir,
+                    headless: Some(true),
+                    executable_path: None,
+                    channel: None,
+                    display: None,
+                    capture_mode: None,
+                    viewport_width: None,
+                    viewport_height: None,
+                };
+                let params = ComputerUseCallParams {
+                    thread_id,
+                    turn_id: "turn-fixture".to_string(),
+                    call_id: "call-fixture".to_string(),
+                    environment_id: Some("environment-fixture".to_string()),
+                    adapter: "browser".to_string(),
+                    tool: TOOL_BROWSER_OBSERVE.to_string(),
+                    arguments: json!({}),
+                };
+                run_playwright_provider(&params, &config).await
+            }
+        };
+
+        let absolute_root = temp.path().join("custom-state");
+        let absolute = absolute_root.to_string_lossy().to_string();
+        for thread_id in ["same-thread", "same-thread", "different-thread"] {
+            let response = run(Some(absolute.clone()), thread_id)
+                .await
+                .expect("actual Rust-to-embedded-MJS provider call");
+            assert!(response.success);
+            assert!(response_includes_native_image(&response));
+        }
+        let absolute_profiles = std::fs::read_dir(absolute_root.join("profiles"))
+            .expect("absolute-root profiles")
+            .map(|entry| {
+                entry
+                    .expect("profile entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(absolute_profiles.len(), 2);
+        assert!(
+            absolute_profiles
+                .iter()
+                .any(|name| name == "same-thread-d2c13f2a0d21")
+        );
+        assert!(
+            absolute_profiles
+                .iter()
+                .any(|name| name == "different-thread-a51f589e498c")
+        );
+        assert!(
+            absolute_root
+                .join("profiles/same-thread-d2c13f2a0d21/state.json")
+                .is_file()
+        );
+        assert!(
+            absolute_root
+                .join("profiles/different-thread-a51f589e498c/state.json")
+                .is_file()
+        );
+
+        let relative_root = temp.path().join("legacy-state");
+        let provider_cwd = std::env::current_dir().expect("inherited provider cwd");
+        let from = provider_cwd.components().collect::<Vec<_>>();
+        let to = relative_root.components().collect::<Vec<_>>();
+        let common = from
+            .iter()
+            .zip(&to)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let mut relative_state_dir = std::path::PathBuf::new();
+        for component in from.iter().skip(common) {
+            if matches!(component, Component::Normal(_)) {
+                relative_state_dir.push("..");
+            }
+        }
+        for component in to.iter().skip(common) {
+            relative_state_dir.push(component.as_os_str());
+        }
+        let response = run(
+            Some(relative_state_dir.to_string_lossy().to_string()),
+            "relative-thread",
+        )
+        .await
+        .expect("legacy relative root resolves against inherited provider cwd");
+        assert!(response.success);
+        assert!(response_includes_native_image(&response));
+        assert_eq!(
+            std::fs::read_dir(relative_root.join("profiles"))
+                .expect("relative-root profiles")
+                .count(),
+            1
+        );
+
+        let default_root = codex_home.join("browser-computer-use-playwright");
+        let response = run(None, "default-thread")
+            .await
+            .expect("default root follows active CODEX_HOME");
+        assert!(response.success);
+        assert!(response_includes_native_image(&response));
+        assert!(default_root.join("profiles").is_dir());
+
+        let symlink_target = temp.path().join("symlink-target");
+        std::fs::create_dir(&symlink_target).expect("symlink target");
+        let symlink_root = temp.path().join("symlink-state");
+        std::os::unix::fs::symlink(&symlink_target, &symlink_root).expect("state-root symlink");
+        let response = run(
+            Some(symlink_root.to_string_lossy().to_string()),
+            "symlink-thread",
+        )
+        .await
+        .expect("provider reports unsafe state-root configuration");
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("expected actionable state-path error");
+        };
+        assert!(text.contains("must not be a symlink"));
+
+        let writable_parent = temp.path().join("writable-parent");
+        std::fs::create_dir(&writable_parent).expect("writable parent");
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o777))
+            .expect("make parent writable for other users");
+        let response = run(
+            Some(writable_parent.join("state").to_string_lossy().to_string()),
+            "writable-parent-thread",
+        )
+        .await
+        .expect("provider reports unsafe writable ancestor");
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("expected actionable state-path error");
+        };
+        assert!(text.contains("writable by untrusted users"));
+
+        let response = run(Some(absolute), "")
+            .await
+            .expect("provider rejects missing thread id without fallback");
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("expected actionable thread-isolation error");
+        };
+        assert!(text.contains("requires a non-empty threadId"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires the hosted native-browser-evidence lane with real Chromium"]
+    async fn hosted_native_browser_tool_flow() {
+        use std::ffi::OsString;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::Component;
+
+        struct RestoreEnvironment(Vec<(&'static str, Option<OsString>)>);
+
+        impl RestoreEnvironment {
+            fn clear(&mut self, key: &'static str) {
+                self.0.push((key, std::env::var_os(key)));
+                unsafe { std::env::remove_var(key) };
+            }
+
+            fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+                self.0.push((key, std::env::var_os(key)));
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                for (key, value) in self.0.drain(..).rev() {
+                    match value {
+                        Some(value) => unsafe { std::env::set_var(key, value) },
+                        None => unsafe { std::env::remove_var(key) },
+                    }
+                }
+            }
+        }
+
+        fn write_config(codex_home: &Path, state_dir: Option<&str>) {
+            let mut config = json!({
+                "provider": "playwright",
+                "headless": true,
+                "timeout_secs": 45
+            });
+            if let Some(state_dir) = state_dir {
+                config["state_dir"] = json!(state_dir);
+            }
+            std::fs::write(
+                codex_home.join("browser-computer-use.json"),
+                serde_json::to_vec(&config).expect("serialize provider configuration"),
+            )
+            .expect("write provider configuration");
+        }
+
+        async fn invoke(
+            codex_home: &Path,
+            thread_id: &str,
+            tool: &str,
+            arguments: Value,
+        ) -> ComputerUseCallResponse {
+            let params = ComputerUseCallParams {
+                thread_id: thread_id.to_string(),
+                turn_id: "hosted-native-browser-turn".to_string(),
+                call_id: format!("hosted-native-browser-{thread_id}-{tool}"),
+                environment_id: None,
+                adapter: "browser".to_string(),
+                tool: tool.to_string(),
+                arguments,
+            };
+            let BrowserComputerUseOutcome::Handled(response) =
+                handle_browser_computer_use_for_codex_home(&params, codex_home).await
+            else {
+                panic!("configured native browser provider did not handle the request");
+            };
+            response
+        }
+
+        fn assert_image_and_summary(
+            response: ComputerUseCallResponse,
+            expected_url: &str,
+            expected_title: Option<&str>,
+        ) -> String {
+            assert!(response.success, "native browser call failed");
+            assert_eq!(
+                response
+                    .content_items
+                    .iter()
+                    .filter(|item| matches!(
+                        item,
+                        ComputerUseCallOutputContentItem::InputImage { .. }
+                    ))
+                    .count(),
+                1,
+                "each successful native browser call returns exactly one image"
+            );
+            let summary = response
+                .content_items
+                .iter()
+                .find_map(|item| match item {
+                    ComputerUseCallOutputContentItem::InputText { text } => Some(text.clone()),
+                    ComputerUseCallOutputContentItem::InputImage { .. } => None,
+                })
+                .expect("native browser text summary");
+            assert!(
+                summary.contains(&format!("url: {expected_url}")),
+                "{summary}"
+            );
+            if let Some(expected_title) = expected_title {
+                assert!(
+                    summary.contains(&format!("title: {expected_title}")),
+                    "{summary}"
+                );
+            }
+            summary
+        }
+
+        let fixture = tempfile::tempdir().expect("temporary real-browser fixture");
+        let codex_home = fixture.path().join("codex-home");
+        std::fs::create_dir(&codex_home).expect("isolated Codex home");
+
+        let _environment = {
+            let mut restore = RestoreEnvironment(Vec::new());
+            for key in [
+                ENV_COMMAND,
+                ENV_NODE,
+                ENV_PLAYWRIGHT_STATE_DIR,
+                ENV_PLAYWRIGHT_HEADLESS,
+                ENV_PLAYWRIGHT_NODE_PATH,
+                ENV_PLAYWRIGHT_EXECUTABLE_PATH,
+                ENV_PLAYWRIGHT_CHANNEL,
+                ENV_PLAYWRIGHT_DISPLAY,
+                ENV_PLAYWRIGHT_CAPTURE_MODE,
+                ENV_PLAYWRIGHT_VIEWPORT_WIDTH,
+                ENV_PLAYWRIGHT_VIEWPORT_HEIGHT,
+                ENV_TIMEOUT_SECS,
+            ] {
+                restore.clear(key);
+            }
+            restore.set(ENV_PROVIDER, PROVIDER_PLAYWRIGHT);
+            restore.set("CODEX_HOME", &codex_home);
+            restore
+        };
+
+        let custom_root = fixture.path().join("custom-state");
+        write_config(
+            &codex_home,
+            Some(custom_root.to_str().expect("UTF-8 custom state path")),
+        );
+
+        let thread_a_url = "data:text/html,%3Ctitle%3Ethread-a%3C%2Ftitle%3E%3Cbutton%20id%3D%22go%22%20onclick%3D%22document.title%3D%27thread-a-clicked%27%22%3Eclick%3C%2Fbutton%3E";
+        let thread_b_url = "data:text/html,%3Ctitle%3Ethread-b%3C%2Ftitle%3E%3Cbutton%20id%3D%22go%22%20onclick%3D%22document.title%3D%27thread-b-clicked%27%22%3Eclick%3C%2Fbutton%3E";
+
+        let response = invoke(
+            &codex_home,
+            "thread-a",
+            TOOL_BROWSER_STEP,
+            json!({"actions": [
+                {"type": "navigate", "url": thread_a_url},
+                {"type": "click", "selector": "#go"}
+            ]}),
+        )
+        .await;
+        assert_image_and_summary(response, thread_a_url, Some("thread-a-clicked"));
+
+        let response = invoke(&codex_home, "thread-b", TOOL_BROWSER_OBSERVE, json!({})).await;
+        assert_image_and_summary(response, "about:blank", None);
+
+        let response = invoke(
+            &codex_home,
+            "thread-b",
+            TOOL_BROWSER_STEP,
+            json!({"actions": [
+                {"type": "navigate", "url": thread_b_url},
+                {"type": "click", "selector": "#go"}
+            ]}),
+        )
+        .await;
+        assert_image_and_summary(response, thread_b_url, Some("thread-b-clicked"));
+
+        for (thread_id, url, title) in [
+            ("thread-a", thread_a_url, "thread-a"),
+            ("thread-b", thread_b_url, "thread-b"),
+        ] {
+            let response = invoke(&codex_home, thread_id, TOOL_BROWSER_OBSERVE, json!({})).await;
+            assert_image_and_summary(response, url, Some(title));
+        }
+
+        let custom_profiles = custom_root.join("profiles");
+        assert_eq!(
+            std::fs::read_dir(&custom_profiles)
+                .expect("custom profiles")
+                .count(),
+            2
+        );
+        let state_a = custom_profiles.join("thread-a-8b983fb92d2e/state.json");
+        let state_b = custom_profiles.join("thread-b-fd470a2df359/state.json");
+        assert!(
+            state_a.is_file(),
+            "historical thread-A profile name is preserved"
+        );
+        assert!(
+            state_b.is_file(),
+            "historical thread-B profile name is preserved"
+        );
+        assert!(
+            std::fs::read_to_string(&state_a)
+                .expect("thread A state")
+                .contains(thread_a_url)
+        );
+        assert!(
+            std::fs::read_to_string(&state_b)
+                .expect("thread B state")
+                .contains(thread_b_url)
+        );
+
+        let relative_root = fixture.path().join("relative-state");
+        let provider_cwd = std::env::current_dir().expect("provider inherited cwd");
+        let from = provider_cwd.components().collect::<Vec<_>>();
+        let to = relative_root.components().collect::<Vec<_>>();
+        let common = from
+            .iter()
+            .zip(&to)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let mut relative_state_dir = PathBuf::new();
+        for component in from.iter().skip(common) {
+            if matches!(component, Component::Normal(_)) {
+                relative_state_dir.push("..");
+            }
+        }
+        for component in to.iter().skip(common) {
+            relative_state_dir.push(component.as_os_str());
+        }
+        write_config(
+            &codex_home,
+            Some(
+                relative_state_dir
+                    .to_str()
+                    .expect("UTF-8 relative state path"),
+            ),
+        );
+        let response = invoke(
+            &codex_home,
+            "relative-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
+        assert_image_and_summary(response, "about:blank", None);
+        assert!(relative_root.join("profiles").is_dir());
+
+        write_config(&codex_home, None);
+        let default_root = codex_home.join("browser-computer-use-playwright");
+        let response = invoke(
+            &codex_home,
+            "default-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
+        assert_image_and_summary(response, "about:blank", None);
+        assert!(default_root.join("profiles").is_dir());
+        assert_eq!(
+            std::fs::read_dir(default_root.join("profiles"))
+                .expect("default CODEX_HOME profile")
+                .count(),
+            1
+        );
+
+        let symlink_target = fixture.path().join("symlink-target");
+        std::fs::create_dir(&symlink_target).expect("symlink target");
+        let symlink_root = fixture.path().join("symlink-state");
+        std::os::unix::fs::symlink(&symlink_target, &symlink_root).expect("state root symlink");
+        write_config(
+            &codex_home,
+            Some(symlink_root.to_str().expect("UTF-8 symlink path")),
+        );
+        let response = invoke(
+            &codex_home,
+            "symlink-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("unsafe symlink path must return actionable text");
+        };
+        assert!(text.contains("must not be a symlink"), "{text}");
+        assert_eq!(
+            std::fs::read_dir(&symlink_target)
+                .expect("symlink target remains empty")
+                .count(),
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(default_root.join("profiles"))
+                .expect("default profile remains isolated")
+                .count(),
+            1,
+            "an invalid custom path must not fall back to the default root"
+        );
+
+        let writable_parent = fixture.path().join("writable-parent");
+        std::fs::create_dir(&writable_parent).expect("writable parent");
+        std::fs::set_permissions(&writable_parent, std::fs::Permissions::from_mode(0o777))
+            .expect("make parent writable by other users");
+        write_config(
+            &codex_home,
+            Some(
+                writable_parent
+                    .join("state")
+                    .to_str()
+                    .expect("UTF-8 writable path"),
+            ),
+        );
+        let response = invoke(
+            &codex_home,
+            "writable-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("unsafe writable ancestor must return actionable text");
+        };
+        assert!(text.contains("writable by untrusted users"), "{text}");
+        assert!(!writable_parent.join("state").exists());
+        assert_eq!(
+            std::fs::read_dir(default_root.join("profiles"))
+                .expect("default profile remains isolated after rejection")
+                .count(),
+            1,
+            "an invalid writable path must not fall back to the default root"
+        );
+    }
 }
