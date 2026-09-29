@@ -1226,12 +1226,20 @@ async fn live_app_server_command_output_delta_transcript_snapshot() {
 #[tokio::test]
 async fn live_app_server_sub_agent_activity_renders_once() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let activity = AppServerThreadItem::SubAgentActivity {
-        id: "activity-1".to_string(),
-        kind: codex_app_server_protocol::SubAgentActivityKind::Completed,
-        agent_thread_id: ThreadId::new().to_string(),
-        agent_path: "/root/researcher".to_string(),
-    };
+    // Build the public item at the JSON boundary so this detector remains
+    // compile-valid on the known-bad baseline, where identity fields are not
+    // yet present in the Rust enum. The repaired candidate must preserve the
+    // fields through decoding and render them without metadata cache help.
+    let activity: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "subAgentActivity",
+        "id": "activity-1",
+        "kind": "completed",
+        "agentThreadId": ThreadId::new().to_string(),
+        "agentPath": "/root/researcher",
+        "model": "configured-child-model",
+        "reasoningEffort": "high"
+    }))
+    .expect("public activity item should decode");
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -1255,7 +1263,28 @@ async fn live_app_server_sub_agent_activity_renders_once() {
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("/root/researcher"));
+    assert!(rendered.contains("configured-child-model"));
+    assert!(rendered.contains("high"));
     assert_chatwidget_snapshot!("app_server_sub_agent_activity_renders_once", rendered);
+
+    // Re-feed the persisted public item after the metadata cache remains
+    // empty. This is the cold replay leg of the joined acceptance case.
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: activity,
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+    let replay_cells = drain_insert_history(&mut rx);
+    assert_eq!(replay_cells.len(), 1);
+    let replayed = lines_to_single_string(&replay_cells[0]);
+    assert!(replayed.contains("/root/researcher"));
+    assert!(replayed.contains("configured-child-model"));
+    assert!(replayed.contains("high"));
 }
 
 #[tokio::test]
