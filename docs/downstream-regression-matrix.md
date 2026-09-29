@@ -145,6 +145,26 @@ Unsupported targets, prereleases, and macOS are automatic no-ops. The
 activation. Manual `--allow-prerelease` and `--macos-preview` are explicit
 operator modes and do not broaden automatic discovery.
 
+For preview source preparation, derive the expected release track from the
+clean pre-stamp source commit and upstream ref using the existing resolver.
+Run `.github/scripts/prepare_codex_build_version.py` with `--write` and commit
+the result. For example:
+
+```sh
+python3 .github/scripts/prepare_codex_build_version.py \
+  --source-commit <pre-stamp-full-sha> --upstream-ref <upstream-ref> \
+  --expected-track <resolved-version> --write
+```
+
+The helper reports the merge base, selected release tag and tag commit, updates
+only the workspace version and matching source-free local Cargo.lock entries,
+and follows both explicit workspace members and implicit in-workspace path
+dependencies. It requires `HEAD` to match the supplied SHA and the checkout to
+be clean. After committing, run the same command with `--check` and the final
+frozen source SHA before `cargo build --locked`. Its fixtures are
+discovered by the existing `.github/workflows/code-coverage.yml` `test_*.py`
+loop.
+
 Focused references:
 
 - `scripts/install/test_sedna_release_lower_bound.py`
