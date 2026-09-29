@@ -1840,6 +1840,13 @@ exports.chromium = {
         )
         .await;
         assert!(!response.success);
+        assert!(
+            response.content_items.iter().all(|item| !matches!(
+                item,
+                ComputerUseCallOutputContentItem::InputImage { .. }
+            )),
+            "unsupported Windows platform must not produce a browser image"
+        );
         let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("unsupported Windows platform must return actionable text");
