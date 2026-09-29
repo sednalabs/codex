@@ -19,14 +19,28 @@ export PLAYWRIGHT_BROWSERS_PATH="${RUNNER_TEMP}/native-browser-browsers"
 export NATIVE_BROWSER_EVIDENCE_DIR="$native_browser_evidence_dir"
 
 test_files=(codex-rs/browser-computer-use/src/*_test.mjs)
-if ((${#test_files[@]} == 0)) || [[ ! -e "${test_files[0]}" ]]; then
-  echo "native-browser-evidence: no browser test files found" >&2
-  exit 1
+if ((${#test_files[@]} > 0)) && [[ -e "${test_files[0]}" ]]; then
+  node --test "${test_files[@]}"
+else
+  echo "native-browser-evidence: no Node browser test files; continuing to hosted Rust provider test"
 fi
-node --test "${test_files[@]}"
 
 python3 -m venv "$playwright_venv"
 "$playwright_venv/bin/pip" install --quiet 'PyYAML==6.0.2'
 "$playwright_venv/bin/python" \
   codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py \
   .codex/skills/use-native-browser
+
+rust_test_output="$native_browser_evidence_dir/hosted-native-browser-test.log"
+if ! cargo test --locked -p codex-browser-computer-use --lib tests::hosted_native_browser_tool_flow -- --exact --ignored --test-threads=1 >"$rust_test_output" 2>&1; then
+  cat "$rust_test_output"
+  exit 1
+fi
+cat "$rust_test_output"
+
+matching_test_count="$(grep -Fxc 'test tests::hosted_native_browser_tool_flow ... ok' "$rust_test_output" || true)"
+if [[ "$matching_test_count" != "1" ]] \
+  || ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out$' "$rust_test_output"; then
+  echo "native-browser-evidence: expected exactly one passing hosted_native_browser_tool_flow test" >&2
+  exit 1
+fi
