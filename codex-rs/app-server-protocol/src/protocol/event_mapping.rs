@@ -269,7 +269,7 @@ pub fn item_event_to_server_notification(
                     agent_nickname: agent.agent_nickname,
                     agent_role: agent.agent_role,
                 })
-                .collect();
+                .collect::<Vec<_>>();
             let receiver_agents = (!receiver_agents.is_empty()).then_some(receiver_agents);
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
