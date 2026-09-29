@@ -37,7 +37,7 @@ else
 fi
 
 rust_test_output="$native_browser_evidence_dir/hosted-native-browser-test.log"
-if ! cargo test --locked -p codex-browser-computer-use --lib tests::hosted_native_browser_tool_flow -- --exact --ignored --test-threads=1 >"$rust_test_output" 2>&1; then
+if ! cargo test --locked --manifest-path codex-rs/Cargo.toml -p codex-browser-computer-use --lib tests::hosted_native_browser_tool_flow -- --exact --ignored --test-threads=1 >"$rust_test_output" 2>&1; then
   cat "$rust_test_output"
   exit 1
 fi
