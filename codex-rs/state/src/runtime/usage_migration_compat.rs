@@ -126,8 +126,10 @@ mod tests {
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
     use sqlx::SqlitePool;
+    use sqlx::migrate::Migration;
     use sqlx::raw_sql;
     use std::collections::BTreeSet;
+    use std::borrow::Cow;
 
     async fn test_pool() -> SqlitePool {
         let codex_home = unique_temp_dir();
