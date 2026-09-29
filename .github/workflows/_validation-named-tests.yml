@@ -26,6 +26,10 @@ on:
         required: false
         type: string
         default: validation-named-tests
+      generate_app_server_schema_patch:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -135,6 +139,148 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: x86_64-unknown-linux-gnu
+
+      - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2
+        if: ${{ inputs.generate_app_server_schema_patch }}
+        with:
+          tool: just
+
+      - name: Materialize clean app-server schema generation target
+        if: ${{ inputs.generate_app_server_schema_patch }}
+        working-directory: .workflow-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach \
+            "${GITHUB_WORKSPACE}/schema-generation-target" \
+            "${MATERIALIZED_TARGET_SHA}"
+          actual_sha="$(git -C "${GITHUB_WORKSPACE}/schema-generation-target" rev-parse HEAD)"
+          if [[ "${actual_sha}" != "${VALIDATION_TARGET_SHA}" ]]; then
+            echo "schema generation checkout does not match requested target SHA" >&2
+            exit 1
+          fi
+          if [[ -n "$(git -C "${GITHUB_WORKSPACE}/schema-generation-target" status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "schema generation checkout must start clean" >&2
+            exit 1
+          fi
+
+      - name: Generate canonical app-server schema patch
+        if: ${{ inputs.generate_app_server_schema_patch }}
+        id: app_server_schema
+        working-directory: schema-generation-target
+        shell: bash
+        env:
+          PATCH_PATH: ${{ runner.temp }}/app-server-schema.patch
+          MANIFEST_PATH: ${{ runner.temp }}/app-server-schema-generation.json
+          PATHS_PATH: ${{ runner.temp }}/app-server-schema-paths.txt
+        run: |
+          set -uo pipefail
+          just write-app-server-schema
+          generator_exit=$?
+
+          GENERATOR_EXIT="${generator_exit}" PATHS_PATH="${PATHS_PATH}" python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          schema_root = "codex-rs/app-server-protocol/schema/"
+          raw = subprocess.check_output(
+              ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"]
+          )
+          fields = raw.decode("utf-8", errors="strict").split("\0")
+          paths = []
+          index = 0
+          while index < len(fields):
+              field = fields[index]
+              index += 1
+              if not field:
+                  continue
+              if len(field) < 4:
+                  raise SystemExit(f"malformed git status entry: {field!r}")
+              status = field[:2]
+              paths.append(field[3:])
+              if "R" in status or "C" in status:
+                  if index >= len(fields) or not fields[index]:
+                      raise SystemExit("malformed rename/copy status entry")
+                  paths.append(fields[index])
+                  index += 1
+
+          changed_paths = sorted(set(paths))
+          outside = [path for path in changed_paths if not path.startswith(schema_root)]
+          if outside:
+              print("generator changed paths outside the schema root:", file=os.sys.stderr)
+              for path in outside:
+                  print(path, file=os.sys.stderr)
+              raise SystemExit(1)
+          Path(os.environ["PATHS_PATH"]).write_text(
+              "".join(f"{path}\n" for path in changed_paths), encoding="utf-8"
+          )
+          PY
+          path_validation_exit=$?
+
+          if [[ "${path_validation_exit}" -eq 0 ]]; then
+            git add -N -- codex-rs/app-server-protocol/schema
+            git diff --binary --full-index -- \
+              codex-rs/app-server-protocol/schema > "${PATCH_PATH}"
+          else
+            : > "${PATCH_PATH}"
+          fi
+
+          patch_sha256="$(sha256sum "${PATCH_PATH}" | awk '{print $1}')"
+          patch_bytes="$(wc -c < "${PATCH_PATH}" | tr -d '[:space:]')"
+          GENERATOR_EXIT="${generator_exit}" \
+          PATH_VALIDATION_EXIT="${path_validation_exit}" \
+          PATCH_SHA256="${patch_sha256}" \
+          PATCH_BYTES="${patch_bytes}" \
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          paths_path = Path(os.environ["PATHS_PATH"])
+          changed_paths = (
+              paths_path.read_text(encoding="utf-8").splitlines()
+              if paths_path.exists()
+              else []
+          )
+          payload = {
+              "schema_version": "app-server-schema-generation-v1",
+              "command": ["just", "write-app-server-schema"],
+              "workflow_host_sha": os.environ["VALIDATION_HARNESS_SHA"],
+              "requested_target_sha": os.environ["VALIDATION_TARGET_SHA"],
+              "materialized_target_sha": os.environ["MATERIALIZED_TARGET_SHA"],
+              "base_ref": os.environ["VALIDATION_BASE_REF"],
+              "base_sha": os.environ["MATERIALIZED_BASE_SHA"],
+              "generator_exit_code": int(os.environ["GENERATOR_EXIT"]),
+              "path_validation_exit_code": int(os.environ["PATH_VALIDATION_EXIT"]),
+              "changed_paths": changed_paths,
+              "patch_bytes": int(os.environ["PATCH_BYTES"]),
+              "patch_sha256": os.environ["PATCH_SHA256"],
+          }
+          Path(os.environ["MANIFEST_PATH"]).write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          if [[ "${generator_exit}" -ne 0 ]]; then
+            echo "just write-app-server-schema failed with exit ${generator_exit}" >&2
+            exit "${generator_exit}"
+          fi
+          if [[ "${path_validation_exit}" -ne 0 ]]; then
+            exit "${path_validation_exit}"
+          fi
+
+      - name: Upload app-server schema generation evidence
+        if: ${{ always() && inputs.generate_app_server_schema_patch }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-server-schema-generation-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/app-server-schema.patch
+            ${{ runner.temp }}/app-server-schema-generation.json
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Inventory and run exact named tests
         id: named_tests

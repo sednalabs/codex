@@ -27,6 +27,11 @@ on:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
         required: true
         type: string
+      generate_app_server_schema_patch:
+        description: Generate and upload the canonical app-server schema patch
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
@@ -45,3 +50,4 @@ jobs:
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
+      generate_app_server_schema_patch: ${{ inputs.generate_app_server_schema_patch }}
