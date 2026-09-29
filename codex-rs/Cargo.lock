@@ -416,7 +416,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app_test_support"
-version = "0.0.0"
+version = "0.156.0-alpha.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "codex-chatgpt"
-version = "0.0.0"
+version = "0.156.0-alpha.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -4046,7 +4046,7 @@ dependencies = [
 
 [[package]]
 name = "codex-message-history"
-version = "0.0.0"
+version = "0.156.0-alpha.8"
 dependencies = [
  "codex-config",
  "memchr",
@@ -5288,7 +5288,7 @@ dependencies = [
 
 [[package]]
 name = "codex-windows-sandbox"
-version = "0.0.0"
+version = "0.156.0-alpha.8"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5586,7 +5586,7 @@ dependencies = [
 
 [[package]]
 name = "core_test_support"
-version = "0.0.0"
+version = "0.156.0-alpha.8"
 dependencies = [
  "anyhow",
  "assert_cmd",
