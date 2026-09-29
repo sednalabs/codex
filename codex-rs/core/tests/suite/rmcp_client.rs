@@ -1347,7 +1347,7 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors() ->
     ] {
         let server = responses::start_mock_server().await;
         let call_id = format!("sync-{protocol}");
-        let namespace = format!("mcp__paginated-{protocol}");
+        let namespace = format!("mcp__paginated_{protocol}");
         let response = mount_sse_once(
             &server,
             responses::sse(vec![
@@ -1388,7 +1388,7 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors() ->
                 for (server_kind, pagination) in
                     [("paginated", "two-pages"), ("rejected", "oversized-cursor")]
                 {
-                    let server_name = format!("{server_kind}-{protocol}");
+                    let server_name = format!("{server_kind}_{protocol}");
                     insert_mcp_server(
                         config,
                         &server_name,
@@ -1426,12 +1426,12 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors() ->
             startup
                 .ready
                 .iter()
-                .any(|name| name == &format!("paginated-{protocol}"))
+                .any(|name| name == &format!("paginated_{protocol}"))
         );
         let failure = startup
             .failed
             .iter()
-            .find(|failure| failure.server == format!("rejected-{protocol}"))
+            .find(|failure| failure.server == format!("rejected_{protocol}"))
             .expect("oversized cursor should reject only its MCP server");
         assert!(
             failure
@@ -1467,7 +1467,7 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors() ->
             serde_json::from_str(split_wall_time_wrapped_output(&output_text))?;
         assert_eq!(output_json, json!({"result": "ok"}));
         assert!(
-            responses::namespace_child_tool(&body, &format!("mcp__rejected-{protocol}"), "echo")
+            responses::namespace_child_tool(&body, &format!("mcp__rejected_{protocol}"), "echo")
                 .is_none(),
             "a rejected {protocol} MCP catalog must not reach the model"
         );
