@@ -396,7 +396,11 @@ pub enum ThreadItem {
         agent_thread_id: String,
         agent_path: String,
         /// Effective child model and reasoning selected at spawn time, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         reasoning_effort: Option<ReasoningEffort>,
     },
     WebSearch(WebSearchItem),
