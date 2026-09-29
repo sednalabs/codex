@@ -35,6 +35,7 @@ impl LocalAgentControl {
         else {
             return;
         };
+        let is_quiet_continuation = is_active_goal_continuation(&outcome);
         let parent_thread_id = *parent_thread_id;
         let status = outcome.status;
         let Some(parent_agent_path) = child_agent_path
@@ -94,6 +95,9 @@ impl LocalAgentControl {
         ) else {
             return;
         };
+        if is_quiet_continuation {
+            return;
+        }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());
@@ -129,5 +133,77 @@ impl LocalAgentControl {
                 },
             );
         }
+    }
+}
+
+fn is_active_goal_continuation(outcome: &AgentTurnOutcome) -> bool {
+    matches!(outcome.status, AgentStatus::Completed(_))
+        && outcome
+            .logical_terminality
+            .as_ref()
+            .is_some_and(|terminality| {
+                !terminality.goal_id.is_empty()
+                    && terminality.turn_id == outcome.turn_id
+                    && !terminality.turn_id.is_empty()
+            })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_active_goal_continuation;
+    use crate::agent::api::AgentTurnLogicalTerminality;
+    use crate::agent::api::AgentTurnOutcome;
+    use codex_protocol::AgentPath;
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::AgentStatus;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+
+    fn outcome(
+        status: AgentStatus,
+        terminality: Option<AgentTurnLogicalTerminality>,
+    ) -> AgentTurnOutcome {
+        AgentTurnOutcome {
+            thread_id: ThreadId::default(),
+            turn_id: "turn-1".to_string(),
+            source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::default(),
+                depth: 1,
+                agent_path: Some(AgentPath::root()),
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            parent_turn_id: None,
+            initiating_agent_path: None,
+            status,
+            logical_terminality: terminality,
+        }
+    }
+
+    #[test]
+    fn only_matching_successful_goal_turn_is_quiet() {
+        let matching = AgentTurnLogicalTerminality {
+            turn_id: "turn-1".to_string(),
+            goal_id: "goal-1".to_string(),
+        };
+        assert!(is_active_goal_continuation(&outcome(
+            AgentStatus::Completed("intermediate".to_string()),
+            Some(matching.clone()),
+        )));
+        assert!(!is_active_goal_continuation(&outcome(
+            AgentStatus::Completed("final".to_string()),
+            None,
+        )));
+        assert!(!is_active_goal_continuation(&outcome(
+            AgentStatus::Completed("stale".to_string()),
+            Some(AgentTurnLogicalTerminality {
+                turn_id: "old-turn".to_string(),
+                ..matching.clone()
+            }),
+        )));
+        assert!(!is_active_goal_continuation(&outcome(
+            AgentStatus::Errored("error".to_string()),
+            Some(matching),
+        )));
     }
 }

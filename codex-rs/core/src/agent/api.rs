@@ -238,6 +238,33 @@ pub struct AgentTurnOutcome {
     pub parent_turn_id: Option<String>,
     pub initiating_agent_path: Option<AgentPath>,
     pub status: AgentStatus,
+    /// Present only when a trusted goal owner says this successful turn is an
+    /// intermediate step in the same active persisted goal. Absence is the
+    /// fail-open/default terminal handback behavior.
+    pub logical_terminality: Option<AgentTurnLogicalTerminality>,
+}
+
+/// Producer-owned proof that a successful per-turn completion is not yet the
+/// logical completion of the child thread.
+///
+/// The turn and goal IDs bind suppression to one exact continuation generation;
+/// consumers must ignore this value when it does not match the turn they are
+/// handling. Raw per-turn status remains available independently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentTurnLogicalTerminality {
+    pub turn_id: String,
+    pub goal_id: String,
+}
+
+/// Atomic status observation for native wait consumers.
+///
+/// This keeps raw per-turn status intact while carrying the producer's optional
+/// logical-terminal decision in the same watch value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentWaitStatus {
+    pub status: AgentStatus,
+    pub turn_id: Option<String>,
+    pub logical_terminality: Option<AgentTurnLogicalTerminality>,
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

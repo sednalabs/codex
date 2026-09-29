@@ -2,6 +2,8 @@ use crate::TurnInputRequest;
 use crate::TurnInputSubmission;
 use crate::TurnStartOptions;
 use crate::agent::AgentStatus;
+use crate::agent::api::AgentTurnLogicalTerminality;
+use crate::agent::api::AgentWaitStatus;
 use crate::agent::registry::AgentRegistry;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
@@ -60,6 +62,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 use tokio::sync::watch;
@@ -108,6 +111,8 @@ pub(crate) struct LocalAgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    /// Atomic raw-status/logical-terminal observations for native wait consumers.
+    wait_status_by_thread: Arc<Mutex<HashMap<ThreadId, watch::Sender<AgentWaitStatus>>>>,
     /// The user-selected root routing tier, shared by the entire agent tree.
     root_service_tier: Arc<ArcSwapOption<String>>,
     /// Retains the root's opt-in instruction provider even when the root is unloaded.
@@ -139,6 +144,7 @@ impl LocalAgentControl {
             v2_residency: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
+            wait_status_by_thread: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
             shared_thread_instructions_provider: Arc::default(),
         };
@@ -409,6 +415,52 @@ impl LocalAgentControl {
 
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    /// Publish raw status and producer eligibility atomically to native wait consumers.
+    pub(crate) fn update_wait_status(
+        &self,
+        agent_id: ThreadId,
+        status: AgentStatus,
+        turn_id: Option<String>,
+        terminality: Option<AgentTurnLogicalTerminality>,
+    ) {
+        let statuses = self
+            .wait_status_by_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let value = AgentWaitStatus {
+            status,
+            turn_id,
+            logical_terminality: terminality,
+        };
+        if let Some(sender) = statuses.get(&agent_id) {
+            sender.send_replace(value);
+        } else {
+            statuses.insert(agent_id, watch::channel(value).0);
+        }
+    }
+
+    /// Subscribe to the latest atomic status/terminality projection for one thread.
+    pub(crate) async fn subscribe_wait_status(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<watch::Receiver<AgentWaitStatus>> {
+        let raw_status = self.subscribe_status(agent_id).await?;
+        let mut statuses = self
+            .wait_status_by_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(sender) = statuses.get(&agent_id) {
+            return Ok(sender.subscribe());
+        }
+        let (sender, receiver) = watch::channel(AgentWaitStatus {
+            status: raw_status.borrow().clone(),
+            turn_id: None,
+            logical_terminality: None,
+        });
+        statuses.insert(agent_id, sender);
+        Ok(receiver)
     }
 
     pub(crate) fn ensure_agent_known(&self, agent_id: ThreadId) -> CodexResult<AgentMetadata> {

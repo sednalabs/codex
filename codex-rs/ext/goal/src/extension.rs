@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_core::AgentTurnLogicalTerminality;
 use codex_core::ThreadManager;
 use codex_core::TurnStartOptions;
 use codex_extension_api::ConfigContributor;
@@ -230,6 +231,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            input.thread_store.remove::<AgentTurnLogicalTerminality>();
             if !runtime.is_enabled() {
                 return;
             }
@@ -347,9 +349,29 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            if accounting
-                .current_active_goal_id_for_turn(turn_id)
-                .is_some()
+            let active_goal_id = accounting.current_active_goal_id_for_turn(turn_id);
+            let continuation_goal_id = if let Some(expected_goal_id) = active_goal_id.as_ref() {
+                self.state_dbs
+                    .thread_goals()
+                    .get_thread_goal(runtime.thread_id())
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|goal| {
+                        goal.goal_id == *expected_goal_id
+                            && goal.status == codex_state::ThreadGoalStatus::Active
+                    })
+                    .map(|goal| goal.goal_id)
+            } else {
+                None
+            };
+            if let Some(goal_id) = continuation_goal_id {
+                input.thread_store.insert(AgentTurnLogicalTerminality {
+                    turn_id: turn_id.to_string(),
+                    goal_id,
+                });
+            }
+            if active_goal_id.is_some()
                 && let Some(options) = input.thread_store.get::<TurnStartOptions>()
             {
                 input.thread_store.insert_if(
@@ -369,6 +391,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            input.thread_store.remove::<AgentTurnLogicalTerminality>();
             runtime.accounting_state().reset_empty_responses();
             if !runtime.is_enabled() {
                 return;
@@ -399,6 +422,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            input.thread_store.remove::<AgentTurnLogicalTerminality>();
 
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
@@ -459,6 +483,7 @@ where
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
+            input.thread_store.remove::<AgentTurnLogicalTerminality>();
             if !runtime.is_enabled() {
                 return;
             }

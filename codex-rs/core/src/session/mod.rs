@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentStatus;
 use crate::agent::LocalAgentControl;
 use crate::agent::agent_status_from_event;
+use crate::agent::api::AgentTurnLogicalTerminality;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
@@ -1389,7 +1390,30 @@ impl Session {
     }
 
     pub(crate) fn mark_interrupted(&self) {
-        self.agent_status.send_replace(AgentStatus::Interrupted);
+        self.publish_agent_status(AgentStatus::Interrupted, None);
+    }
+
+    fn publish_agent_status(&self, status: AgentStatus, turn_id: Option<&str>) {
+        let logical_terminality = if matches!(status, AgentStatus::Completed(_)) {
+            turn_id.and_then(|turn_id| {
+                self.services
+                    .thread_extension_data
+                    .get::<AgentTurnLogicalTerminality>()
+                    .filter(|terminality| terminality.turn_id == turn_id)
+                    .map(|terminality| terminality.as_ref().clone())
+            })
+        } else {
+            None
+        };
+        // Publish before the raw status watch: native waiters that observe this
+        // per-turn terminal status must see the matching logical outcome.
+        self.services.agent_control.update_wait_status(
+            self.thread_id,
+            status.clone(),
+            turn_id.map(str::to_owned),
+            logical_terminality,
+        );
+        self.agent_status.send_replace(status);
     }
 
     pub(crate) fn is_interrupted(&self) -> bool {
@@ -1592,7 +1616,7 @@ impl Session {
                     }),
                     Some(AgentStatus::Interrupted)
                 ) {
-                    self.agent_status.send_replace(AgentStatus::Interrupted);
+                    self.publish_agent_status(AgentStatus::Interrupted, None);
                 }
                 let previous_turn_settings = self
                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
@@ -2434,7 +2458,7 @@ impl Session {
         let status = match turn_context.terminal_error.lock().await.take() {
             Some(error) => {
                 let status = AgentStatus::Errored(error.message);
-                self.agent_status.send_replace(status.clone());
+                self.publish_agent_status(status.clone(), Some(turn_context.sub_id.as_str()));
                 status
             }
             None => {
@@ -2461,6 +2485,12 @@ impl Session {
                         .initiating_agent_path()
                         .cloned(),
                     status,
+                    logical_terminality: self
+                        .services
+                        .thread_extension_data
+                        .get::<AgentTurnLogicalTerminality>()
+                        .filter(|terminality| terminality.turn_id == turn_context.sub_id)
+                        .map(|terminality| terminality.as_ref().clone()),
                 },
                 &self.services.rollout_thread_trace,
             )
@@ -2593,7 +2623,7 @@ impl Session {
     async fn deliver_event_raw(&self, event: Event) {
         // Record the last known agent status.
         if let Some(status) = agent_status_from_event(&event.msg) {
-            self.agent_status.send_replace(status);
+            self.publish_agent_status(status, Some(event.id.as_str()));
         }
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
