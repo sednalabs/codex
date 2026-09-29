@@ -1291,18 +1291,32 @@ exports.chromium = {
         )
         .expect("fake Playwright module source");
 
-        let node_wrapper = temp.path().join("node-wrapper");
-        let script = format!(
-            "#!/bin/sh\nunset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR CODEX_BROWSER_PLAYWRIGHT_ISOLATION\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
-            codex_home.display(),
-        );
-        std::fs::write(&node_wrapper, script).expect("write Node wrapper");
-        std::fs::set_permissions(&node_wrapper, std::fs::Permissions::from_mode(0o700))
-            .expect("make Node wrapper executable");
+        let write_node_wrapper = |name: &str, unset_state_dir: bool| {
+            let node_wrapper = temp.path().join(name);
+            let unset = if unset_state_dir {
+                "unset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR CODEX_BROWSER_PLAYWRIGHT_ISOLATION"
+            } else {
+                "unset CODEX_BROWSER_PLAYWRIGHT_ISOLATION"
+            };
+            let script = format!(
+                "#!/bin/sh\n{unset}\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
+                codex_home.display(),
+            );
+            std::fs::write(&node_wrapper, script).expect("write Node wrapper");
+            std::fs::set_permissions(&node_wrapper, std::fs::Permissions::from_mode(0o700))
+                .expect("make Node wrapper executable");
+            node_wrapper
+        };
+        let node_wrapper = write_node_wrapper("node-wrapper", false);
+        let default_node_wrapper = write_node_wrapper("default-node-wrapper", true);
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
-            let node = node_wrapper.to_string_lossy().to_string();
+            let node = if state_dir.is_some() {
+                node_wrapper.to_string_lossy().to_string()
+            } else {
+                default_node_wrapper.to_string_lossy().to_string()
+            };
             let thread_id = thread_id.to_string();
             async move {
                 let config = PlaywrightProviderConfig {
