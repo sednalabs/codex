@@ -123,6 +123,9 @@ mod tests {
     use crate::migrations::runtime_usage_migrator;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
+    use sqlx::migrate::Migration;
+    use sqlx::AssertSqlSafe;
+    use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
     use sqlx::raw_sql;
     use std::collections::BTreeSet;
@@ -137,6 +140,50 @@ mod tests {
             .open_read_write_pool(&codex_home.join("usage.sqlite"))
             .await
             .expect("usage database should open")
+    }
+
+    fn shipped_main_migration(version: i64) -> Migration {
+        let current = USAGE_MIGRATOR
+            .migrations
+            .iter()
+            .find(|migration| migration.version == version)
+            .expect("migration should be embedded");
+        let sql = match version {
+            1 => include_str!("../../usage_migrations/0001_usage_tables.sql").replace(
+                ");\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+                ");\n\nCREATE TABLE IF NOT EXISTS usage_spawn_requests",
+            ),
+            5 => include_str!("../../usage_migrations/0005_usage_codex_credits.sql")
+                .replace("CASE WHEN p.status = 'ok'\n                  AND", "CASE WHEN")
+                .replace(
+                    "        WHEN status IS NULL\n          OR status <> 'ok'\n          OR total_tokens",
+                    "        WHEN status IS NULL\n          OR total_tokens",
+                )
+                .replace(
+                    "        WHEN status = 'ok'\n         AND matching_policy_count",
+                    "        WHEN matching_policy_count",
+                ),
+            _ => panic!("unsupported historical migration fixture: {version}"),
+        };
+        Migration::new(
+            current.version,
+            current.description.clone(),
+            current.migration_type,
+            AssertSqlSafe(sql).into_sql_str(),
+            current.no_tx,
+        )
+    }
+
+    #[test]
+    fn shipped_main_checksums_are_sqlx_sha384_values() {
+        assert_eq!(
+            shipped_main_migration(1).checksum.as_ref(),
+            OLD_MAIN_0001_CHECKSUM
+        );
+        assert_eq!(
+            shipped_main_migration(5).checksum.as_ref(),
+            OLD_MAIN_0005_CHECKSUM
+        );
     }
 
     #[tokio::test]
