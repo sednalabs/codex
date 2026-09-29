@@ -2830,6 +2830,8 @@
       ],
       "files": [
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/prepare_codex_build_version.py",
+        ".github/scripts/test_prepare_codex_build_version.py",
         ".github/scripts/isolate_workflow_paths_from_provenance.sh",
         ".github/scripts/resolve_sedna_release_version.py",
         ".github/scripts/validation-lanes/artifact-build.sh",
@@ -2870,9 +2872,10 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity; codex.workflow-ci-sanity; GitHub blocking-ci repo-checks",
+      "guardrail_lane": "code-coverage.yml Python test_*.py discovery; codex.build-policy-sanity; codex.workflow-ci-sanity; GitHub blocking-ci repo-checks",
       "tests": [
         "resolve_sedna_release_version.py tests",
+        "test_prepare_codex_build_version.py",
         "scripts/resolve_sedna_release_version --help",
         "update prompt and version tests",
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
@@ -2901,6 +2904,7 @@
       "boundary_type": "release-update-routing",
       "hotspot_files": [
         "codex-rs/app-server-daemon/src/update_loop.rs",
+        ".github/scripts/prepare_codex_build_version.py",
         "codex-rs/tui/src/update_versions.rs",
         ".github/workflows/_sedna-linux-rust.yml",
         ".github/workflows/sedna-release.yml",
