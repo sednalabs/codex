@@ -101,6 +101,7 @@ jobs:
             printf '%s\n' "${source_status}" >&2
             exit 1
           fi
+          source ../.github/scripts/validation-lanes/setup-rusty-v8.sh x86_64-unknown-linux-gnu
           cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex-code-mode-host
           mkdir -p ../dist
 

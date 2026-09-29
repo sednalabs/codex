@@ -3723,5 +3723,8 @@ The `sedna-branch-build` workflow has an opt-in `host_only=true` dispatch for
 `--help` before uploading a separate archive. The artifact metadata records the
 exact source commit and workflow commit; adjacent SHA-256 files cover both the
 binary and archive. The default preview dispatch continues to build the CLI and
-responses API proxy. Use the host-only artifact only with companion binaries
-built from the same source commit.
+responses API proxy. Before Cargo runs, the host-only path sources the target's
+existing `setup-rusty-v8.sh` helper, which downloads the matching Codex release
+archive and binding and verifies them against the target's pinned checksum
+manifest. Use the host-only artifact only with companion binaries built from
+the same source commit.

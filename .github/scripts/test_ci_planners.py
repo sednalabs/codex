@@ -4883,6 +4883,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         build_job = (payload.get("jobs") or {}).get("build-linux-x86_64") or {}
         run_command = (build_job.get("with") or {}).get("run_command") or ""
         self.assertIn("${{ inputs.host_only }}", run_command)
+        v8_setup = (
+            "source ../.github/scripts/validation-lanes/setup-rusty-v8.sh "
+            "x86_64-unknown-linux-gnu"
+        )
+        host_build = (
+            "cargo build --locked --target x86_64-unknown-linux-gnu --release "
+            "--bin codex-code-mode-host"
+        )
+        self.assertIn(v8_setup, run_command)
+        self.assertLess(run_command.index(v8_setup), run_command.index(host_build))
         result = subprocess.run(
             ["bash", "-n"],
             input=run_command.replace("${{ inputs.host_only }}", "true"),
