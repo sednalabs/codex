@@ -81,7 +81,6 @@ use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::ResponseItemId;
-use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ServiceTier;
@@ -2481,51 +2480,7 @@ async fn try_run_sampling_request(
         turn_context.provider.info().name.as_str(),
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
-    let provider = turn_context.config.model_provider_id.clone();
-    let requested_model = step_context.settings.model_info.slug.clone();
     let requested_service_tier = step_context.settings.service_tier.clone();
-    let actual_service_tier = if provider == "openai" {
-        step_context
-            .settings
-            .model_info
-            .service_tier_for_request(requested_service_tier.clone())
-    } else {
-        None
-    };
-    let actual_service_tier_source = actual_service_tier
-        .as_ref()
-        .map(|_| "runtime_contract".to_string());
-    let auth_mode = sess.services.auth_manager.auth_mode();
-    let billing_surface = match (provider.as_str(), auth_mode) {
-        ("openai", Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens)) => {
-            Some("chatgpt_credits".to_string())
-        }
-        ("openai", Some(AuthMode::ApiKey)) => Some("api_tokens".to_string()),
-        _ => None,
-    };
-    let account_plan = if billing_surface.as_deref() == Some("chatgpt_credits") {
-        sess.services
-            .auth_manager
-            .auth_cached()
-            .and_then(|auth| auth.account_plan_type())
-            .and_then(|plan| serde_json::to_value(plan).ok())
-            .and_then(|plan| plan.as_str().map(str::to_owned))
-            .filter(|plan| plan != "unknown")
-    } else {
-        None
-    };
-    let fast_mode_requested = Some(
-        requested_service_tier
-            .as_deref()
-            .is_some_and(|tier| matches!(tier, "priority" | "fast")),
-    );
-    let fast_mode_used = match billing_surface.as_deref() {
-        Some("chatgpt_credits") => actual_service_tier
-            .as_deref()
-            .map(|tier| matches!(tier, "priority" | "fast")),
-        Some("api_tokens") => Some(false),
-        _ => None,
-    };
     let provider_call_started_at = Utc::now().to_rfc3339();
     let provider_call_id = uuid::Uuid::now_v7().to_string();
     let uses_sequential_cutoff_reasoning_summaries = turn_context
@@ -2894,41 +2849,6 @@ async fn try_run_sampling_request(
                             tool_call_ids: std::mem::take(&mut analytics_tool_call_ids),
                         },
                     );
-                let completed_at = Utc::now().to_rfc3339();
-                let provider_call_usage = codex_state::ProviderCallUsageRecord {
-                    provider_call_id: provider_call_id.clone(),
-                    thread_id: sess.thread_id.to_string(),
-                    turn_id: turn_context.sub_id.clone(),
-                    provider: provider.clone(),
-                    requested_model: requested_model.clone(),
-                    actual_model_used: actual_model_used.clone(),
-                    response_id: response_id.clone(),
-                    requested_service_tier: requested_service_tier.clone(),
-                    actual_service_tier: actual_service_tier.clone(),
-                    actual_service_tier_source: actual_service_tier_source.clone(),
-                    fast_mode_requested,
-                    fast_mode_used,
-                    billing_surface: billing_surface.clone(),
-                    account_plan: account_plan.clone(),
-                    started_at: provider_call_started_at.clone(),
-                    completed_at,
-                    input_tokens_uncached: token_usage
-                        .as_ref()
-                        .map(|usage| (usage.input_tokens - usage.cached_input_tokens).max(0)),
-                    input_tokens_cached: token_usage
-                        .as_ref()
-                        .map(|usage| usage.cached_input_tokens),
-                    input_tokens_cache_write: token_usage
-                        .as_ref()
-                        .map(|usage| usage.cache_write_input_tokens),
-                    output_tokens: token_usage.as_ref().map(|usage| usage.output_tokens),
-                    total_tokens: token_usage.as_ref().map(|usage| usage.total_tokens),
-                    status: if token_usage.is_some() {
-                        "ok"
-                    } else {
-                        "provider_usage_missing"
-                    },
-                };
                 flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
@@ -2943,18 +2863,17 @@ async fn try_run_sampling_request(
                     usage_metadata.as_ref(),
                 )
                 .await;
-                if let Some(state_db) = sess.services.state_db.as_ref()
-                    && let Err(err) = state_db
-                        .record_provider_call_usage(&provider_call_usage)
-                        .await
-                {
-                    tracing::warn!(
-                        thread_id = %provider_call_usage.thread_id,
-                        response_id,
-                        error = %err,
-                        "failed to persist completed provider response usage"
-                    );
-                }
+                sess.record_provider_call_usage_for_response(
+                    &turn_context,
+                    &step_context.settings.model_info,
+                    requested_service_tier.clone(),
+                    provider_call_id.clone(),
+                    provider_call_started_at.clone(),
+                    &response_id,
+                    actual_model_used.clone(),
+                    token_usage.as_ref(),
+                )
+                .await;
                 let budget_result = sess
                     .record_token_usage_info(
                         &turn_context,

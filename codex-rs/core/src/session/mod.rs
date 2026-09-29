@@ -102,6 +102,7 @@ use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -4616,6 +4617,103 @@ impl Session {
         );
         self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
             .await;
+    }
+
+    pub(crate) async fn record_provider_call_usage_for_response(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        requested_service_tier: Option<String>,
+        provider_call_id: String,
+        started_at: String,
+        response_id: &str,
+        actual_model_used: Option<String>,
+        token_usage: Option<&TokenUsage>,
+    ) {
+        let Some(state_db) = self.services.state_db.as_ref() else {
+            return;
+        };
+
+        let provider = turn_context.config.model_provider_id.clone();
+        let actual_service_tier = if provider == "openai" {
+            model_info.service_tier_for_request(requested_service_tier.clone())
+        } else {
+            None
+        };
+        let actual_service_tier_source = actual_service_tier
+            .as_ref()
+            .map(|_| "runtime_contract".to_string());
+        let auth_mode = self.services.auth_manager.auth_mode();
+        let billing_surface = match (provider.as_str(), auth_mode) {
+            ("openai", Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens)) => {
+                Some("chatgpt_credits".to_string())
+            }
+            ("openai", Some(AuthMode::ApiKey)) => Some("api_tokens".to_string()),
+            _ => None,
+        };
+        let account_plan = if billing_surface.as_deref() == Some("chatgpt_credits") {
+            self.services
+                .auth_manager
+                .auth_cached()
+                .and_then(|auth| auth.account_plan_type())
+                .and_then(|plan| serde_json::to_value(plan).ok())
+                .and_then(|plan| plan.as_str().map(str::to_owned))
+                .filter(|plan| plan != "unknown")
+        } else {
+            None
+        };
+        let fast_mode_requested = Some(
+            requested_service_tier
+                .as_deref()
+                .is_some_and(|tier| matches!(tier, "priority" | "fast")),
+        );
+        let fast_mode_used = match billing_surface.as_deref() {
+            Some("chatgpt_credits") => actual_service_tier
+                .as_deref()
+                .map(|tier| matches!(tier, "priority" | "fast")),
+            Some("api_tokens") => Some(false),
+            _ => None,
+        };
+        let provider_call_usage = codex_state::ProviderCallUsageRecord {
+            provider_call_id,
+            thread_id: self.thread_id.to_string(),
+            turn_id: turn_context.sub_id.clone(),
+            provider,
+            requested_model: model_info.slug.clone(),
+            actual_model_used,
+            response_id: response_id.to_string(),
+            requested_service_tier,
+            actual_service_tier,
+            actual_service_tier_source,
+            fast_mode_requested,
+            fast_mode_used,
+            billing_surface,
+            account_plan,
+            started_at,
+            completed_at: Utc::now().to_rfc3339(),
+            input_tokens_uncached: token_usage
+                .map(|usage| (usage.input_tokens - usage.cached_input_tokens).max(0)),
+            input_tokens_cached: token_usage.map(|usage| usage.cached_input_tokens),
+            input_tokens_cache_write: token_usage.map(|usage| usage.cache_write_input_tokens),
+            output_tokens: token_usage.map(|usage| usage.output_tokens),
+            total_tokens: token_usage.map(|usage| usage.total_tokens),
+            status: if token_usage.is_some() {
+                "ok"
+            } else {
+                "provider_usage_missing"
+            },
+        };
+        if let Err(err) = state_db
+            .record_provider_call_usage(&provider_call_usage)
+            .await
+        {
+            tracing::warn!(
+                thread_id = %provider_call_usage.thread_id,
+                response_id,
+                error = %err,
+                "failed to persist completed provider response usage"
+            );
+        }
     }
 
     pub(crate) async fn record_token_usage_info(

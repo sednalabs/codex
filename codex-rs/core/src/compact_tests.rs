@@ -199,6 +199,77 @@ async fn local_compaction_respects_tool_metadata_state(
     Ok(())
 }
 
+#[tokio::test]
+async fn local_compaction_completion_persists_exact_provider_usage() -> anyhow::Result<()> {
+    let server = responses::start_mock_server().await;
+    let (mut session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        move |config| {
+            config.model = Some("gpt-6-sol".to_string());
+            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+        },
+    )
+    .await;
+
+    let ledger_home = tempfile::tempdir().expect("create isolated usage home");
+    let sqlite = codex_state::SqliteConfig::new_for_testing(ledger_home.path().abs());
+    let state_db = codex_state::StateRuntime::init(sqlite.clone(), "openai".to_string())
+        .await
+        .expect("initialize isolated usage database");
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned before dispatch")
+        .services
+        .state_db = Some(Arc::clone(&state_db));
+
+    let request = responses::sse_response(responses::sse(vec![
+        responses::ev_assistant_message("summary", "The earlier thread is summarized."),
+        responses::ev_completed_with_tokens("local-compaction-response", 505),
+    ]))
+    .insert_header("OpenAI-Model", "gpt-6-luna");
+    responses::mount_sse_once(&server, request).await;
+    run_compact_task(
+        Arc::clone(&session),
+        turn,
+        vec![UserInput::Text {
+            text: "Summarize the conversation.".to_string(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await?;
+
+    let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<i64>, Option<i64>, String)>(
+        "SELECT provider_call_id, request_id, requested_model, actual_model_used, input_tokens_uncached, output_tokens, status FROM usage_provider_calls WHERE thread_id = ?",
+    )
+    .bind(session.thread_id.to_string())
+    .fetch_one(state_db.usage_pool().as_ref())
+    .await
+    .expect("read durable row from local compaction completion");
+    assert_eq!(row.1, "local-compaction-response");
+    assert_eq!(row.2, "gpt-6-sol");
+    assert_eq!(row.3.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(row.4, Some(505));
+    assert_eq!(row.5, Some(0));
+    assert_eq!(row.6, "ok");
+
+    state_db.close().await;
+    drop(state_db);
+    let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string())
+        .await
+        .expect("reopen usage database after local compaction completion");
+    let summary = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+        "SELECT provider_call_count, priced_call_count, unpriced_call_count, partial FROM usage_thread_credit_summary WHERE thread_id = ?",
+    )
+    .bind(session.thread_id.to_string())
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await
+    .expect("read local compaction credit summary after reopen");
+    assert_eq!(summary.0, 1);
+    assert_eq!(summary.1 + summary.2, 1);
+    reopened.close().await;
+    Ok(())
+}
+
 fn annotated(items: Vec<ResponseItem>) -> Vec<ResponseItemEnvelope> {
     items.into_iter().map(ResponseItemEnvelope::new).collect()
 }

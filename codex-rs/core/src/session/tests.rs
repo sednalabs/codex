@@ -3318,6 +3318,8 @@ async fn completed_responses_persist_response_local_usage_rows() {
         "type": "response.completed",
         "response": {"id": "response-2"}
     });
+    let mut third_completed = responses::ev_completed_with_tokens("response-3", 303);
+    third_completed["response"]["end_turn"] = json!(false);
     let requests = responses::mount_response_sequence(
         &server,
         vec![
@@ -3331,6 +3333,10 @@ async fn completed_responses_persist_response_local_usage_rows() {
                 second_completed,
             ]))
             .insert_header("OpenAI-Model", "gpt-6-sol"),
+            responses::sse_response(sse(vec![
+                ev_response_created("response-3"),
+                third_completed,
+            ])),
         ],
     )
     .await;
@@ -3362,7 +3368,7 @@ async fn completed_responses_persist_response_local_usage_rows() {
     let input = vec![TurnInput::UserInput {
         acceptance_order: None,
         content: vec![UserInput::Text {
-            text: "record both responses".to_string(),
+            text: "record all responses".to_string(),
             text_elements: Vec::new(),
         }],
         client_id: None,
@@ -3371,7 +3377,7 @@ async fn completed_responses_persist_response_local_usage_rows() {
         .spawn_task(Arc::clone(&turn), input, crate::tasks::RegularTask::new())
         .await;
     recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
-    assert_eq!(requests.requests().len(), 2);
+    assert_eq!(requests.requests().len(), 3);
 
     let rows = sqlx::query_as::<
         _,
@@ -3387,15 +3393,16 @@ async fn completed_responses_persist_response_local_usage_rows() {
             Option<i64>,
             Option<i64>,
             Option<i64>,
+            String,
         ),
     >(
-        "SELECT provider_call_id, request_id, requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, input_tokens_uncached, input_tokens_cached, output_tokens, total_tokens, input_tokens_cache_write FROM usage_provider_calls WHERE thread_id = ? ORDER BY rowid",
+        "SELECT provider_call_id, request_id, requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, input_tokens_uncached, input_tokens_cached, output_tokens, total_tokens, input_tokens_cache_write, status FROM usage_provider_calls WHERE thread_id = ? ORDER BY rowid",
     )
     .bind(session.thread_id.to_string())
     .fetch_all(state_db.usage_pool().as_ref())
     .await
     .expect("read rows written by the real completed-response path");
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     assert_ne!(rows[0].0, rows[1].0, "each local call needs its own ID");
     assert_eq!(rows[0].1.as_deref(), Some("response-1"));
     assert_eq!(rows[1].1.as_deref(), Some("response-2"));
@@ -3408,6 +3415,15 @@ async fn completed_responses_persist_response_local_usage_rows() {
         (None, None, None, None, None),
         "a completed response without provider usage must retain NULL token fields"
     );
+    assert_eq!(rows[1].11, "provider_usage_missing");
+    assert_eq!(rows[2].1.as_deref(), Some("response-3"));
+    assert_eq!(rows[2].3, None, "missing same-response model stays NULL");
+    assert_eq!(
+        (rows[2].6, rows[2].7, rows[2].8, rows[2].9),
+        (Some(303), Some(0), Some(303), Some(303)),
+        "reported usage remains exact when actual model identity is absent"
+    );
+    assert_eq!(rows[2].11, "ok");
 
     state_db.close().await;
     drop(state_db);
@@ -3421,7 +3437,7 @@ async fn completed_responses_persist_response_local_usage_rows() {
     .fetch_one(reopened.usage_pool().as_ref())
     .await
     .expect("read thread credit summary after reopen");
-    assert_eq!(summary, (2, 0, 2, 1, None));
+    assert_eq!(summary, (3, 0, 3, 1, None));
     let missing_status = sqlx::query_scalar::<_, String>(
         "SELECT pricing_status FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
     )
