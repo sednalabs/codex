@@ -1407,7 +1407,7 @@ impl Session {
         };
         // Publish before the raw status watch: native waiters that observe this
         // per-turn terminal status must see the matching logical outcome.
-        if self.multi_agent_version == Some(MultiAgentVersion::V2) {
+        if self.multi_agent_version.get() == Some(&MultiAgentVersion::V2) {
             self.services.agent_control.update_wait_status(
                 self.thread_id,
                 status.clone(),

@@ -152,6 +152,7 @@ impl V2Residency {
                 .state
                 .save_evicted_environments(candidate_thread_id, environments);
             let _ = manager.remove_thread(&candidate_thread_id).await;
+            self.forget_wait_status(candidate_thread_id);
             return true;
         }
         false

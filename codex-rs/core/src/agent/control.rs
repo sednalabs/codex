@@ -466,7 +466,7 @@ impl LocalAgentControl {
         turn_id: Option<String>,
         terminality: Option<AgentTurnLogicalTerminality>,
     ) {
-        let statuses = self
+        let mut statuses = self
             .wait_status_by_thread
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
