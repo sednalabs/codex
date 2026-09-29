@@ -1430,6 +1430,7 @@ config_file = "./researcher.toml"
             "live activity should render {expected:?} exactly once: {live_rendered:?}",
         );
     }
+    assert!(!live_rendered.contains(REQUESTED_MODEL));
     assert!(!live_rendered.contains(REQUESTED_EFFORT));
 
     let child_request = timeout(READ_TIMEOUT, async {
@@ -1510,6 +1511,7 @@ config_file = "./researcher.toml"
             "cold replay should render {expected:?} exactly once: {replayed_rendered:?}",
         );
     }
+    assert!(!replayed_rendered.contains(REQUESTED_MODEL));
     assert!(!replayed_rendered.contains(REQUESTED_EFFORT));
 
     Ok(())
