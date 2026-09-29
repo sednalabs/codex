@@ -1,9 +1,6 @@
 ---
-source: tui/src/chatwidget/tests/exec_flow.rs
+source: tui/src/chatwidget/tests.rs
 expression: snapshot
 ---
-cells=2
-• Waiting · primitive: write_stdin(empty stdin poll) · just fix
-
-
+cells=1
 ■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.

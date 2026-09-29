@@ -2,7 +2,11 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_core::StartThreadOptions;
+use codex_core::TurnInputRequest;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -74,19 +78,22 @@ async fn dynamic_tool_audio_exceeding_the_output_budget_is_omitted() -> Result<(
         model_info.truncation_policy = TruncationPolicyConfig::tokens(/*limit*/ 50);
     });
     let base_test = builder.build_with_auto_env(&server).await?;
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some("codex_app".to_string()),
-        name: tool_name.to_string(),
-        description: "Returns a recording.".to_string(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false,
-        }),
-        defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
+    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: "codex_app".to_string(),
+        description: "Audio tools.".to_string(),
+        tools: vec![DynamicToolNamespaceTool::Function(
+            DynamicToolFunctionSpec {
+                name: tool_name.to_string(),
+                description: "Returns a recording.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+            },
+        )],
+    });
     let new_thread = base_test
         .thread_manager
         .start_thread(StartThreadOptions {
@@ -99,16 +106,10 @@ async fn dynamic_tool_audio_exceeding_the_output_budget_is_omitted() -> Result<(
     test.session_configured = new_thread.session_configured;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Return a recording".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Return a recording".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
     let EventMsg::DynamicToolCallRequest(request) = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::DynamicToolCallRequest(_))

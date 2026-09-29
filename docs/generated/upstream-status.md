@@ -1,48 +1,41 @@
 # Generated upstream status
 
-> `status: generated` · `authority: evidence` · `captured: 2026-07-28T13:37:40Z`
->
-> This checked-in page is a current-state projection. Regenerate it after each
-> upstream refresh; it is not a substitute for the registry or a release note.
+> `status: generated` · `authority: evidence` · `captured: 2026-09-27`
 
-## Snapshot
+This page is the exact P7 composition receipt for the frozen candidate. Hosted
+proof and semantic review remain pending on this exact product head.
 
-| Field                             | Value                                                                |
-| --------------------------------- | -------------------------------------------------------------------- |
-| Downstream ref                    | `origin/main` at `bff348fd68a99e1996d00dce1d46ba8ed9d37be3`          |
-| Live upstream ref                 | `upstream/main` at `7cde2323f3712999e9ab98b16287e08b7735d52f`        |
-| Maintained mirror ref             | `origin/upstream-main` at `3418498f01422f5f650ea645d4bd19e05c3a9616` |
-| Merge base                        | `a4535884169be8da2f81b8a4debecbd4dc11aa97`                           |
-| Downstream vs live upstream       | `2131` downstream-ahead, `60` upstream-ahead commits                 |
-| Downstream-only non-merge commits | `1800` unique, `0` patch-equivalent                                  |
-| Mirror vs live upstream           | `0` mirror-ahead, `14` upstream-ahead (`stale_ff_only`)              |
+| Field | Value |
+| --- | --- |
+| Product repository | `sednalabs/codex` |
+| Accepted composition source | `e5c9b3e870f861af898ac7a8f7c704743d551d89` |
+| Accepted composition source tree | `83417286656d9a368ef0abfea32a125cfd5bb998` |
+| Frozen upstream | `openai/codex` at `392f56a611c412b9b2eb1d9d4e59a3b42bee483a` |
+| Frozen upstream tree | `ac81df5b0332908409b60a0addc7e967eed868ea` |
+| Accepted RMCP cancellation final | `3f888b0380b99d7629315ddcaddc15bd39ebce92` (exact final-tree delta from `93800c2ba427bc4727010edd29080f5c6dc00c3b`) |
+| Accepted usage compatibility final | `ee3d56ab613875319193852ce4be5159702d507a` (exact final-tree delta from `93800c2ba427bc4727010edd29080f5c6dc00c3b`) |
+| Final candidate SHA/tree | `external exact-delivery receipt; rehydrate before proof or landing` |
+| Candidate ancestry | `must remain rooted at frozen upstream; old origin/main is unrelated` |
+| Live origin/main | `8e4b1a7eb6a21417a444e0752f749bc0d5a1cb0a` |
+| Live upstream/main | `67a709665ac7b50311b93e32612c9a8281684787` (next train only) |
+| Hosted proof | `required on the final exact product head from the external delivery receipt; accepted leaf runs remain evidence only for unchanged leaf invariants` |
+| Semantic review | `Luna-high causal review required for newly composed shared interactions; accepted leaf reviews are retained` |
+| Root cutover | `not performed; root-owned` |
 
-The mirror is therefore not an exact comparison baseline today. The current
-projection uses the live upstream ref and records the mirror lag explicitly.
+## Divergence evidence
 
-## Audit receipt
+The frozen upstream is an ancestor of the accepted composition source with
+divergence `0` upstream-ahead and `127` downstream-ahead commits. The live origin/main and
+upstream histories have no merge base after sanitation; their old count is not
+a product-candidate acceptance metric. Do not import that old lineage.
 
-The registry-backed audit was run with:
+## Path and preservation boundary
 
-```text
-python3 scripts/downstream-divergence-audit.py --repo . \
-  --downstream-ref origin/main --mirror-ref upstream/main \
-  --upstream-remote upstream --upstream-branch main \
-  --registry-path docs/divergences/index.yaml \
-  --output-dir /tmp/sedna-divergence-audit-current \
-  --format both --code-only --enforce-registry
-```
-
-Before this documentation update, the receipt identified one uncovered live
-code path: `scripts/pyproject.toml`. The registry now assigns that path to the
-existing `ci-workflow-automation` carry; rerun the command above to produce the
-post-change receipt and confirm a zero uncovered-path count.
-
-## Related projections
-
-- [`upstream-gaps.md`](upstream-gaps.md) lists the bounded upstream-only work
-  that needs a later harvest decision.
-- [`app-server-protocol-delta.md`](app-server-protocol-delta.md) records the
-  protocol-specific snapshot and regeneration boundary.
-- [`../sedna-docs-governance.md`](../sedna-docs-governance.md) defines the
-  authority and refresh rules.
+P7 product paths include the accepted cumulative carry, exact accepted RMCP and
+usage final-tree deltas, required current-main model/wait/privacy behavior,
+`.github/**`, `justfile`, validation configuration, permitted Cargo/Bazel
+locks, and the divergence/status evidence families named in w14079. PR #854,
+unlanded agent-observability heads, foreign dirty paths, proof overlays, and old
+origin/main are preserved with explicit track/owner dispositions. Windows
+expansion remains outside this cutline; this page does not waive any active
+protected rule.

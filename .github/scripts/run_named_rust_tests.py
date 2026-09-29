@@ -38,7 +38,9 @@ TEST_RESULT_RE = re.compile(
     r"(?P<measured>\d+) measured;\s+"
     r"(?P<filtered>\d+) filtered out"
 )
-TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+TEST_OUTCOME_RE = re.compile(
+    r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$"
+)
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -117,7 +119,10 @@ def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]
         payload = json.loads(manifest_path(repo_root).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"named-test command manifest is unavailable: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION
+    ):
         raise ValueError("named-test command manifest schema is unsupported")
     rows = payload.get("targets")
     if not isinstance(rows, list) or not rows:
@@ -155,7 +160,9 @@ def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]
             or not isinstance(execution_argv, list)
             or not inventory_argv
             or not execution_argv
-            or not all(isinstance(value, str) for value in [*inventory_argv, *execution_argv])
+            or not all(
+                isinstance(value, str) for value in [*inventory_argv, *execution_argv]
+            )
         ):
             raise ValueError("manifest commands must be complete argv string lists")
         expected_inventory, expected_execution = expected_commands(
@@ -185,11 +192,17 @@ def select_target(
     package = request.get("package")
     target_kind = request.get("target_kind")
     target = request.get("target", "")
-    if not isinstance(package, str) or not isinstance(target_kind, str) or not isinstance(target, str):
+    if (
+        not isinstance(package, str)
+        or not isinstance(target_kind, str)
+        or not isinstance(target, str)
+    ):
         raise ValueError("request target selector is incomplete")
     record = manifest.get(target_key(package, target_kind, target))
     if record is None:
-        raise ValueError("request target selector is not in the committed command catalog")
+        raise ValueError(
+            "request target selector is not in the committed command catalog"
+        )
     profile = request.get("profile")
     if profile not in record["profiles"]:
         raise ValueError("request profile is not enabled for the selected target")
@@ -203,7 +216,9 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return None, fail("request_invalid_json", f"request could not be decoded: {exc}")
+        return None, fail(
+            "request_invalid_json", f"request could not be decoded: {exc}"
+        )
     if not isinstance(payload, dict):
         return None, fail("request_not_object", "request must be a JSON object")
     if payload.get("schema_version") != SCHEMA_VERSION:
@@ -214,23 +229,35 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     profile = payload.get("profile")
     tests = payload.get("tests")
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
-        return None, fail("package_invalid", "package must be a safe Cargo package name")
+        return None, fail(
+            "package_invalid", "package must be a safe Cargo package name"
+        )
     if target_kind not in ALLOWED_TARGET_KINDS:
-        return None, fail("target_kind_invalid", "target_kind must be lib or integration")
+        return None, fail(
+            "target_kind_invalid", "target_kind must be lib or integration"
+        )
     if target_kind == "integration":
         if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-            return None, fail("target_invalid", "integration target must be a safe Cargo target name")
+            return None, fail(
+                "target_invalid", "integration target must be a safe Cargo target name"
+            )
     elif target not in ("", None, "lib"):
-        return None, fail("target_invalid", "lib requests must not name an integration target")
+        return None, fail(
+            "target_invalid", "lib requests must not name an integration target"
+        )
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
-        return None, fail("profile_mismatch", "request profile does not match workflow profile")
+        return None, fail(
+            "profile_mismatch", "request profile does not match workflow profile"
+        )
     if not isinstance(tests, list) or not tests or len(tests) > MAX_TESTS:
         return None, fail("tests_invalid", f"tests must contain 1..{MAX_TESTS} names")
     if any(not isinstance(name, str) or not TEST_RE.fullmatch(name) for name in tests):
-        return None, fail("test_name_invalid", "test names must be fully-qualified safe names")
+        return None, fail(
+            "test_name_invalid", "test names must be fully-qualified safe names"
+        )
     if len(set(tests)) != len(tests):
         return None, fail("test_names_duplicate", "test names must be unique")
     normalized = {
@@ -267,7 +294,9 @@ def cargo_args(
         record = select_target(request, load_manifest(manifest_root))
     key = "inventory_argv" if list_only else "execution_argv"
     command = record.get(key)
-    if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
+    if not isinstance(command, tuple) or not all(
+        isinstance(value, str) for value in command
+    ):
         raise ValueError("command catalog entry is not a complete argv tuple")
     return list(command)
 
@@ -359,9 +388,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         return result
     # Run the complete immutable target command.  This keeps the command
     # surface closed while the requested names remain exact post-run selectors.
-    test_command = cargo_args(
-        request, list_only=False, command_record=command_record
-    )
+    test_command = cargo_args(request, list_only=False, command_record=command_record)
     completed = subprocess.run(
         test_command,
         cwd=manifest_root,
@@ -371,9 +398,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         check=False,
         shell=False,
     )
-    output = "\n".join(
-        value for value in (completed.stdout, completed.stderr) if value
-    )
+    output = "\n".join(value for value in (completed.stdout, completed.stderr) if value)
     counts = test_result_counts(output)
     outcomes = test_outcomes(output)
     for name in request["tests"]:
@@ -446,7 +471,10 @@ def main() -> int:
     )
     print(
         json.dumps(
-            {"status": result.get("status"), "failure_code": result.get("failure_code", "")},
+            {
+                "status": result.get("status"),
+                "failure_code": result.get("failure_code", ""),
+            },
             sort_keys=True,
         )
     )

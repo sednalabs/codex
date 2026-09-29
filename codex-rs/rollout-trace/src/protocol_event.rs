@@ -11,8 +11,6 @@
 //! variants a compile-time prompt to decide whether the trace should capture
 //! them.
 
-use codex_protocol::computer_use::ComputerUseCallRequest;
-use codex_protocol::protocol::ComputerUseCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandBeginEvent;
 use codex_protocol::protocol::ExecCommandEndEvent;
@@ -24,6 +22,7 @@ use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
 use codex_protocol::protocol::PatchApplyStatus;
 use codex_protocol::protocol::SubAgentActivityEvent;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::TurnAbortReason;
 use serde::Serialize;
 use std::time::Duration;
@@ -106,8 +105,6 @@ pub(crate) enum ToolRuntimePayload<'a> {
     PatchApplyEnd(&'a PatchApplyEndEvent),
     McpToolCallBegin(&'a McpToolCallBeginEvent),
     McpToolCallEnd(&'a McpToolCallEndEvent),
-    ComputerUseCallRequest(&'a ComputerUseCallRequest),
-    ComputerUseCallResponse(&'a ComputerUseCallResponseEvent),
     CollabAgentSpawnBegin(&'a codex_protocol::protocol::CollabAgentSpawnBeginEvent),
     CollabAgentSpawnEnd(&'a codex_protocol::protocol::CollabAgentSpawnEndEvent),
     CollabAgentInteractionBegin(&'a codex_protocol::protocol::CollabAgentInteractionBeginEvent),
@@ -135,8 +132,6 @@ impl Serialize for ToolRuntimePayload<'_> {
             ToolRuntimePayload::PatchApplyEnd(event) => event.serialize(serializer),
             ToolRuntimePayload::McpToolCallBegin(event) => event.serialize(serializer),
             ToolRuntimePayload::McpToolCallEnd(event) => event.serialize(serializer),
-            ToolRuntimePayload::ComputerUseCallRequest(event) => event.serialize(serializer),
-            ToolRuntimePayload::ComputerUseCallResponse(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentSpawnBegin(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentSpawnEnd(event) => event.serialize(serializer),
             ToolRuntimePayload::CollabAgentInteractionBegin(event) => event.serialize(serializer),
@@ -187,7 +182,6 @@ impl<'a> From<&'a ExecCommandBeginEvent> for ExecCommandBeginTracePayload<'a> {
             parsed_cmd,
             source,
             interaction_input,
-            ..
         } = event;
         Self {
             call_id,
@@ -256,7 +250,6 @@ impl<'a> From<&'a ExecCommandEndEvent> for ExecCommandEndTracePayload<'a> {
             duration,
             formatted_output,
             status,
-            ..
         } = event;
         Self {
             call_id,
@@ -318,19 +311,6 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
             },
             payload: ToolRuntimePayload::McpToolCallEnd(event),
         }),
-        EventMsg::ComputerUseCallRequest(event) => Some(ToolRuntimeTraceEvent::Started {
-            tool_call_id: &event.call_id,
-            payload: ToolRuntimePayload::ComputerUseCallRequest(event),
-        }),
-        EventMsg::ComputerUseCallResponse(event) => Some(ToolRuntimeTraceEvent::Ended {
-            tool_call_id: &event.call_id,
-            status: if event.success {
-                ExecutionStatus::Completed
-            } else {
-                ExecutionStatus::Failed
-            },
-            payload: ToolRuntimePayload::ComputerUseCallResponse(event),
-        }),
         EventMsg::CollabAgentSpawnBegin(event) => Some(ToolRuntimeTraceEvent::Started {
             tool_call_id: &event.call_id,
             payload: ToolRuntimePayload::CollabAgentSpawnBegin(event),
@@ -373,13 +353,18 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
             status: ExecutionStatus::Completed,
             payload: ToolRuntimePayload::CollabCloseEnd(event),
         }),
-        EventMsg::SubAgentActivity(event) => Some(ToolRuntimeTraceEvent::Ended {
-            tool_call_id: &event.event_id,
-            status: ExecutionStatus::Completed,
-            payload: ToolRuntimePayload::SubAgentActivity(event),
-        }),
+        EventMsg::SubAgentActivity(event) if event.kind != SubAgentActivityKind::Completed => {
+            Some(ToolRuntimeTraceEvent::Ended {
+                tool_call_id: &event.event_id,
+                status: ExecutionStatus::Completed,
+                payload: ToolRuntimePayload::SubAgentActivity(event),
+            })
+        }
+        EventMsg::SubAgentActivity(_) => None,
         EventMsg::Error(_)
         | EventMsg::Warning(_)
+        | EventMsg::AuthRecoveryStarted(_)
+        | EventMsg::AuthRecoveryCompleted(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::SafetyBuffering(_)
         | EventMsg::RealtimeConversationStarted(_)
@@ -392,6 +377,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ContextCompacted(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::ThreadGoalUpdated(_)
+        | EventMsg::ThreadQueueChanged(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::TurnComplete(_)
@@ -436,6 +422,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::InferenceCall(_)
+        | EventMsg::Unknown
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)
@@ -445,8 +432,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ReasoningContentDelta(_)
         | EventMsg::ReasoningRawContentDelta(_)
         | EventMsg::CollabResumeBegin(_)
-        | EventMsg::CollabResumeEnd(_)
-        | EventMsg::Unknown => None,
+        | EventMsg::CollabResumeEnd(_) => None,
     }
 }
 
@@ -460,7 +446,9 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         EventMsg::Error(_) => Some("error"),
         EventMsg::Warning(_) => Some("warning"),
         EventMsg::ShutdownComplete => Some("shutdown_complete"),
-        EventMsg::GuardianWarning(_)
+        EventMsg::AuthRecoveryStarted(_)
+        | EventMsg::AuthRecoveryCompleted(_)
+        | EventMsg::GuardianWarning(_)
         | EventMsg::SafetyBuffering(_)
         | EventMsg::RealtimeConversationStarted(_)
         | EventMsg::RealtimeConversationRealtime(_)
@@ -480,12 +468,11 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::ThreadGoalUpdated(_)
+        | EventMsg::ThreadQueueChanged(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::McpToolCallEnd(_)
-        | EventMsg::ComputerUseCallRequest(_)
-        | EventMsg::ComputerUseCallResponse(_)
         | EventMsg::WebSearchBegin(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationBegin(_)
@@ -516,6 +503,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::InferenceCall(_)
+        | EventMsg::Unknown
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)
@@ -534,8 +522,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::CollabResumeEnd(_)
-        | EventMsg::SubAgentActivity(_)
-        | EventMsg::Unknown => None,
+        | EventMsg::SubAgentActivity(_) => None,
     }
 }
 

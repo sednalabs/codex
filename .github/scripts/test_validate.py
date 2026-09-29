@@ -52,7 +52,9 @@ class ValidateArgvTests(TestCase):
     def test_safe_values_remain_separate_argv_values(self) -> None:
         command = VALIDATE.gh_command(self.args(), self.request())
 
-        self.assertEqual(command[:4], ["gh", "workflow", "run", "validation-named-tests.yml"])
+        self.assertEqual(
+            command[:4], ["gh", "workflow", "run", "validation-named-tests.yml"]
+        )
         self.assertEqual(command[4], "--repo")
         self.assertEqual(command[5], "sednalabs/codex")
         self.assertNotIn(";", "".join(command))
@@ -106,7 +108,9 @@ class ValidateArgvTests(TestCase):
         ):
             with self.subTest(overrides=overrides):
                 with self.assertRaises(SystemExit):
-                    VALIDATE.normalize_request(self.request(**overrides), "rust_minimal")
+                    VALIDATE.normalize_request(
+                        self.request(**overrides), "rust_minimal"
+                    )
 
 
 if __name__ == "__main__":

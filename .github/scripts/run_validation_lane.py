@@ -11,10 +11,10 @@ from resolve_validation_plan import resolve_repo_relative_path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--repo-root', required=True)
-    parser.add_argument('--working-directory', required=True)
-    parser.add_argument('--script-path', required=True)
-    parser.add_argument('--script-args-json', default='[]')
+    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--working-directory", required=True)
+    parser.add_argument("--script-path", required=True)
+    parser.add_argument("--script-args-json", default="[]")
     return parser.parse_args()
 
 
@@ -33,12 +33,14 @@ def main() -> int:
         label="validation lane script_path",
         must_be_file=True,
     )
-    script_args = json.loads(args.script_args_json or '[]')
-    if not isinstance(script_args, list) or not all(isinstance(item, str) for item in script_args):
-        raise SystemExit('script args must decode to a JSON array of strings')
-    proc = subprocess.run(['bash', str(script_path), *script_args], cwd=cwd)
+    script_args = json.loads(args.script_args_json or "[]")
+    if not isinstance(script_args, list) or not all(
+        isinstance(item, str) for item in script_args
+    ):
+        raise SystemExit("script args must decode to a JSON array of strings")
+    proc = subprocess.run(["bash", str(script_path), *script_args], cwd=cwd)
     return proc.returncode
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

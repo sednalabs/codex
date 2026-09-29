@@ -1,21 +1,22 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "ActivePermissionProfile": {
       "properties": {
         "extends": {
           "default": null,
-          "description": "Parent profile identifier from the selected permissions profile's\n`extends` setting, when present.",
+          "description": "Parent profile identifier from the selected permissions profile's `extends` setting, when present.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Identifier from `default_permissions` or the implicit built-in default,\nsuch as `:workspace` or a user-defined `[permissions.<id>]` profile.",
+          "description": "Identifier from `default_permissions` or the implicit built-in default, such as `:workspace` or a user-defined `[permissions.<id>]` profile.",
           "type": "string"
         }
       },
@@ -67,9 +68,9 @@
                 }
               },
               "required": [
-                "sandbox_approval",
+                "mcp_elicitations",
                 "rules",
-                "mcp_elicitations"
+                "sandbox_approval"
               ],
               "type": "object"
             }
@@ -86,10 +87,10 @@
       "description": "Collaboration mode for a Codex session.",
       "properties": {
         "mode": {
-          "$ref": "#/$defs/ModeKind"
+          "$ref": "#/definitions/ModeKind"
         },
         "settings": {
-          "$ref": "#/$defs/Settings"
+          "$ref": "#/definitions/Settings"
         }
       },
       "required": [
@@ -107,7 +108,7 @@
       "type": "string"
     },
     "MultiAgentMode": {
-      "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the\nconfigured mode hint defines the policy instead of a built-in policy.",
+      "description": "Controls the effective multi-agent delegation instructions for a turn. `custom` means the configured mode hint defines the policy instead of a built-in policy.",
       "oneOf": [
         {
           "enum": [
@@ -139,6 +140,7 @@
       "type": "string"
     },
     "Personality": {
+      "description": "Deprecated: `friendly` and `pragmatic` no longer select a style.",
       "enum": [
         "none",
         "friendly",
@@ -152,7 +154,7 @@
       "type": "string"
     },
     "ReasoningSummary": {
-      "description": "A summary of the reasoning performed by the model. This can be useful for\ndebugging and understanding the model's reasoning process.\nSee https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
+      "description": "A summary of the reasoning performed by the model. This can be useful for debugging and understanding the model's reasoning process. See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#reasoning-summaries",
       "oneOf": [
         {
           "enum": [
@@ -163,8 +165,10 @@
           "type": "string"
         },
         {
-          "const": "none",
           "description": "Option to disable reasoning summaries.",
+          "enum": [
+            "none"
+          ],
           "type": "string"
         }
       ]
@@ -174,7 +178,9 @@
         {
           "properties": {
             "type": {
-              "const": "dangerFullAccess",
+              "enum": [
+                "dangerFullAccess"
+              ],
               "title": "DangerFullAccessSandboxPolicyType",
               "type": "string"
             }
@@ -192,7 +198,9 @@
               "type": "boolean"
             },
             "type": {
-              "const": "readOnly",
+              "enum": [
+                "readOnly"
+              ],
               "title": "ReadOnlySandboxPolicyType",
               "type": "string"
             }
@@ -206,11 +214,17 @@
         {
           "properties": {
             "networkAccess": {
-              "$ref": "#/$defs/NetworkAccess",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/NetworkAccess"
+                }
+              ],
               "default": "restricted"
             },
             "type": {
-              "const": "externalSandbox",
+              "enum": [
+                "externalSandbox"
+              ],
               "title": "ExternalSandboxSandboxPolicyType",
               "type": "string"
             }
@@ -236,14 +250,16 @@
               "type": "boolean"
             },
             "type": {
-              "const": "workspaceWrite",
+              "enum": [
+                "workspaceWrite"
+              ],
               "title": "WorkspaceWriteSandboxPolicyType",
               "type": "string"
             },
             "writableRoots": {
               "default": [],
               "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
+                "$ref": "#/definitions/AbsolutePathBuf"
               },
               "type": "array"
             }
@@ -271,7 +287,7 @@
         "reasoning_effort": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReasoningEffort"
+              "$ref": "#/definitions/ReasoningEffort"
             },
             {
               "type": "null"
@@ -289,7 +305,7 @@
         "activePermissionProfile": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ActivePermissionProfile"
+              "$ref": "#/definitions/ActivePermissionProfile"
             },
             {
               "type": "null"
@@ -297,21 +313,29 @@
           ]
         },
         "approvalPolicy": {
-          "$ref": "#/$defs/AskForApproval"
+          "$ref": "#/definitions/AskForApproval"
         },
         "approvalsReviewer": {
-          "$ref": "#/$defs/ApprovalsReviewer"
+          "$ref": "#/definitions/ApprovalsReviewer"
         },
         "collaborationMode": {
-          "$ref": "#/$defs/CollaborationMode"
+          "$ref": "#/definitions/CollaborationMode"
         },
         "cwd": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "disabledPluginIds": {
+          "default": [],
+          "description": "Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "effort": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReasoningEffort"
+              "$ref": "#/definitions/ReasoningEffort"
             },
             {
               "type": "null"
@@ -324,23 +348,19 @@
         "modelProvider": {
           "type": "string"
         },
-        "multiAgentMode": {
-          "$ref": "#/$defs/MultiAgentMode",
-          "default": "explicitRequestOnly",
-          "description": "@deprecated Always `explicitRequestOnly`. Use `effort` for Ultra behavior."
-        },
         "personality": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Personality"
+              "$ref": "#/definitions/Personality"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "@deprecated Reports the saved setting; `friendly` and `pragmatic` no longer select a style."
         },
         "sandboxPolicy": {
-          "$ref": "#/$defs/SandboxPolicy"
+          "$ref": "#/definitions/SandboxPolicy"
         },
         "serviceTier": {
           "type": [
@@ -351,7 +371,7 @@
         "summary": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReasoningSummary"
+              "$ref": "#/definitions/ReasoningSummary"
             },
             {
               "type": "null"
@@ -360,24 +380,23 @@
         }
       },
       "required": [
-        "cwd",
         "approvalPolicy",
         "approvalsReviewer",
-        "sandboxPolicy",
+        "collaborationMode",
+        "cwd",
         "model",
         "modelProvider",
-        "collaborationMode"
+        "sandboxPolicy"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "threadId": {
       "type": "string"
     },
     "threadSettings": {
-      "$ref": "#/$defs/ThreadSettings"
+      "$ref": "#/definitions/ThreadSettings"
     }
   },
   "required": [

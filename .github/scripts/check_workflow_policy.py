@@ -431,9 +431,9 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
                     "the release environment."
                 )
             if uses_app_token:
-                if job_uses_action(job, "actions/download-artifact") and not grants_permission(
-                    permissions, "actions", "read"
-                ):
+                if job_uses_action(
+                    job, "actions/download-artifact"
+                ) and not grants_permission(permissions, "actions", "read"):
                     violations.append(
                         f"{relative_path}: job '{job_id}' creates a GitHub release with "
                         "a GitHub App token without actions: read for artifact download."

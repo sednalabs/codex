@@ -9,7 +9,15 @@ from collections import OrderedDict
 from json import JSONDecodeError
 from pathlib import Path
 
-FAILED_OUTCOMES = {"failure", "cancelled", "missing", "timed_out", "action_required", "startup_failure", "stale"}
+FAILED_OUTCOMES = {
+    "failure",
+    "cancelled",
+    "missing",
+    "timed_out",
+    "action_required",
+    "startup_failure",
+    "stale",
+}
 SUCCESS_OUTCOMES = {"success", "neutral", "skipped"}
 BLOCKER_OUTCOMES = {"failure", "cancelled", "missing"}
 OUTCOME_PRIORITY = {"failure": 0, "cancelled": 1, "missing": 2}
@@ -293,7 +301,9 @@ def combined_result(*job_results: str) -> str:
     return "skipped"
 
 
-def expected_lane_order(planned_matrix: list[dict], selected_lane_ids: list[str]) -> list[str]:
+def expected_lane_order(
+    planned_matrix: list[dict], selected_lane_ids: list[str]
+) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
     for lane in planned_matrix:
@@ -385,7 +395,9 @@ def build_results(
         else:
             lane.update(payload)
             lane.setdefault("status_class", lane.get("status_class", "active"))
-            lane.setdefault("frontier_default", bool(lane.get("frontier_default", False)))
+            lane.setdefault(
+                "frontier_default", bool(lane.get("frontier_default", False))
+            )
             lane.setdefault("setup_class", lane.get("setup_class", "rust_minimal"))
             lane.setdefault("frontier_role", lane.get("frontier_role", "sentinel"))
             lane.setdefault("summary_family", lane.get("summary_family", lane_id))
@@ -394,7 +406,9 @@ def build_results(
     return results
 
 
-def setup_class_rows(results: list[dict], setup_class_results: dict[str, str]) -> list[dict]:
+def setup_class_rows(
+    results: list[dict], setup_class_results: dict[str, str]
+) -> list[dict]:
     rows: list[dict] = []
     ordered_classes: list[str] = []
     for lane in results:
@@ -503,7 +517,10 @@ def derive_primary_and_secondary(
     for lane in results:
         if lane["outcome"] not in BLOCKER_OUTCOMES:
             continue
-        if lane.get("lane_phase") == "downstream_lanes" and lane["setup_class"] in setup_blocked_classes:
+        if (
+            lane.get("lane_phase") == "downstream_lanes"
+            and lane["setup_class"] in setup_blocked_classes
+        ):
             continue
         if lane["lane_id"] in primary_lane_ids:
             continue
@@ -581,13 +598,20 @@ def summarize_runtime(
         total_duration_ms,
         dict(sorted(phase_runtime_ms.items(), key=lambda item: item[1], reverse=True)),
         timing_breakdown_ms,
-        sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[:10],
-        sorted(batches.values(), key=lambda batch: batch["duration_ms"], reverse=True)[:10],
+        sorted(lanes_with_runtime, key=lambda lane: lane["duration_ms"], reverse=True)[
+            :10
+        ],
+        sorted(batches.values(), key=lambda batch: batch["duration_ms"], reverse=True)[
+            :10
+        ],
     )
 
 
 def overall_conclusion(
-    primary: list[dict], secondary: list[dict], downstream_result: str, args: argparse.Namespace
+    primary: list[dict],
+    secondary: list[dict],
+    downstream_result: str,
+    args: argparse.Namespace,
 ) -> str:
     if parse_bool(args.dedupe_should_skip):
         return "success" if args.dedupe_matched_run_url else "unknown"
@@ -616,14 +640,18 @@ def shas_match(left: str, right: str) -> bool:
     right_normalized = normalized_sha(right)
     if not left_normalized or not right_normalized:
         return False
-    return left_normalized.startswith(right_normalized) or right_normalized.startswith(left_normalized)
+    return left_normalized.startswith(right_normalized) or right_normalized.startswith(
+        left_normalized
+    )
 
 
 def blocker_result(item: dict) -> str:
     return str(item.get("outcome") or item.get("job_result") or "").strip()
 
 
-def candidate_rerun_lane_ids(candidate_next_slices: list[dict], *, limit: int = 5) -> list[str]:
+def candidate_rerun_lane_ids(
+    candidate_next_slices: list[dict], *, limit: int = 5
+) -> list[str]:
     lane_ids: list[str] = []
     seen: set[str] = set()
     for candidate in candidate_next_slices:
@@ -654,7 +682,9 @@ def classify_head_freshness(
     run_head_sha = normalized_sha(args.head_sha)
     latest_head_sha = normalized_sha(getattr(args, "latest_head_sha", ""))
     if run_head_sha and latest_head_sha:
-        run_head_status = "current" if shas_match(run_head_sha, latest_head_sha) else "stale"
+        run_head_status = (
+            "current" if shas_match(run_head_sha, latest_head_sha) else "stale"
+        )
     else:
         run_head_status = "unknown"
 
@@ -735,7 +765,9 @@ def main() -> None:
     selected_lane_ids = (
         selected_lane_ids_payload if isinstance(selected_lane_ids_payload, list) else []
     )
-    explicit_lanes = [lane.strip() for lane in args.explicit_lanes.split(",") if lane.strip()]
+    explicit_lanes = [
+        lane.strip() for lane in args.explicit_lanes.split(",") if lane.strip()
+    ]
     raw_job_results = load_job_results(args.job_results_json_file)
     job_result_reconciliation = reconcile_job_results(raw_job_results)
 
@@ -779,7 +811,9 @@ def main() -> None:
                 "lane_id": "validation-plan",
                 "job_result": "failure",
                 "signal": "; ".join(summary_input_signals),
-                "failure_diagnostic": synthetic_diagnostic("unknown", "planner_input_malformed"),
+                "failure_diagnostic": synthetic_diagnostic(
+                    "unknown", "planner_input_malformed"
+                ),
             }
         ]
         secondary = []
@@ -805,11 +839,17 @@ def main() -> None:
     )
 
     lane_count = len(results)
-    successful_lane_count = sum(1 for lane in results if lane["outcome"] in SUCCESS_OUTCOMES)
-    raw_failed_lane_count = sum(1 for lane in results if lane["outcome"] in BLOCKER_OUTCOMES)
+    successful_lane_count = sum(
+        1 for lane in results if lane["outcome"] in SUCCESS_OUTCOMES
+    )
+    raw_failed_lane_count = sum(
+        1 for lane in results if lane["outcome"] in BLOCKER_OUTCOMES
+    )
     other_lane_count = lane_count - successful_lane_count - raw_failed_lane_count
     batched_lane_count = sum(1 for lane in results if lane.get("batch_id"))
-    batch_count = len({lane.get("batch_id") for lane in results if lane.get("batch_id")})
+    batch_count = len(
+        {lane.get("batch_id") for lane in results if lane.get("batch_id")}
+    )
 
     candidate_next_slices: list[dict] = []
     for item in queue[:20]:
@@ -882,7 +922,9 @@ def main() -> None:
         "secondary_findings": secondary,
         "candidate_next_slices": candidate_next_slices,
         "head_freshness": head_freshness,
-        "overall_conclusion": overall_conclusion(primary, secondary, downstream_result, args),
+        "overall_conclusion": overall_conclusion(
+            primary, secondary, downstream_result, args
+        ),
     }
 
     payload = {
@@ -926,11 +968,15 @@ def main() -> None:
                 "result": args.smoke_gate_result,
             },
             "workflow_lanes": {
-                "planned": any(lane.get("setup_class") == "workflow" for lane in planned_matrix),
+                "planned": any(
+                    lane.get("setup_class") == "workflow" for lane in planned_matrix
+                ),
                 "result": args.workflow_result,
             },
             "node_lanes": {
-                "planned": any(lane.get("setup_class") == "node" for lane in planned_matrix),
+                "planned": any(
+                    lane.get("setup_class") == "node" for lane in planned_matrix
+                ),
                 "result": args.node_result,
             },
             "rust_minimal_lanes": {
@@ -941,12 +987,15 @@ def main() -> None:
             },
             "rust_integration_lanes": {
                 "planned": any(
-                    lane.get("setup_class") == "rust_integration" for lane in planned_matrix
+                    lane.get("setup_class") == "rust_integration"
+                    for lane in planned_matrix
                 ),
                 "result": args.rust_integration_result,
             },
             "release_lanes": {
-                "planned": any(lane.get("setup_class") == "release" for lane in planned_matrix),
+                "planned": any(
+                    lane.get("setup_class") == "release" for lane in planned_matrix
+                ),
                 "result": args.release_result,
             },
             "downstream_lanes": {
@@ -1003,7 +1052,9 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ source: tui/src/status/tests.rs
 expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\")"
 ---
 before:
- Transcript: verbose ───────────────────────────────────────────────────────────
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 /status
 
 ╭──────────────────────────────────────────────────────────────────────────╮
@@ -18,7 +18,7 @@ before:
 │  Agents.md:     <none>                                                   │
 │                                                                          │
 │  Token usage:   0 total  (0 input + 0 output)                            │
-│  Limits:        refreshing limits...                                     │
+│  Limits:        refresh requested; run /status again shortly.            │
 ╰──────────────────────────────────────────────────────────────────────────╯
 ~
 ~
@@ -29,13 +29,13 @@ before:
 ~
 ~
 ~
-───────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
- ↑/↓ scroll   ←/→ prompts   pgup/pgdn page   home/end jump
- q quit   ctrl + o copy   ⌥ + r raw render   v compact view   esc/← prev
+───────────────────────────────────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ q close   esc to edit prev
 
 
 after:
- Transcript: verbose ───────────────────────────────────────────────────────────
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 /status
 
 ╭───────────────────────────────────────────────────────────────────────────╮
@@ -61,6 +61,6 @@ next message
 ~
 ~
 ~
-───────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
- ↑/↓ scroll   ←/→ prompts   pgup/pgdn page   home/end jump
- q quit   ctrl + o copy   ⌥ + r raw render   v compact view   esc/← prev
+───────────────────────────────────────────────────────────────────────── 100% ─
+ ↑/↓ to scroll   pgup/pgdn to page   home/end to jump
+ q close   esc to edit prev

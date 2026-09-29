@@ -107,9 +107,19 @@ def resolve_commit(repo: Path, ref: str) -> str:
     return git(repo, "rev-parse", f"{ref}^{{commit}}")
 
 
-def require_ancestor(repo: Path, ancestor: str, descendant_ref: str, description: str) -> None:
+def require_ancestor(
+    repo: Path, ancestor: str, descendant_ref: str, description: str
+) -> None:
     proc = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant_ref],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant_ref,
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -214,7 +224,9 @@ def github_release_tags(repository: str, mode: str) -> set[str]:
     gh = shutil.which("gh")
     if gh is None:
         if mode == "required":
-            raise ReleaseVersionError("gh is required to check existing GitHub releases")
+            raise ReleaseVersionError(
+                "gh is required to check existing GitHub releases"
+            )
         print("warning: gh not found; skipping remote release check", file=sys.stderr)
         return set()
     proc = subprocess.run(
@@ -247,7 +259,8 @@ def next_sedna_ordinal(existing_tags: Iterable[str], upstream_track: str) -> int
     ordinals = [
         parsed.ordinal
         for tag in existing_tags
-        if (parsed := parse_sedna_tag(tag)) is not None and parsed.track == upstream_track
+        if (parsed := parse_sedna_tag(tag)) is not None
+        and parsed.track == upstream_track
     ]
     return max(ordinals, default=0) + 1
 
@@ -277,7 +290,15 @@ def local_release_boundary(
 
 def is_ancestor(repo: Path, ancestor: str, descendant_ref: str) -> bool:
     proc = subprocess.run(
-        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant_ref],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant_ref,
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -302,9 +323,13 @@ def first_parent_release_index(
     boundary_commit: str | None,
 ) -> int:
     rev_range = (
-        target_commit if boundary_commit is None else f"{boundary_commit}..{target_commit}"
+        target_commit
+        if boundary_commit is None
+        else f"{boundary_commit}..{target_commit}"
     )
-    commits = git(repo, "rev-list", "--first-parent", "--reverse", rev_range).splitlines()
+    commits = git(
+        repo, "rev-list", "--first-parent", "--reverse", rev_range
+    ).splitlines()
     release_commits: list[str] = []
     for commit in commits:
         marker = release_marker_channel(commit_message(repo, commit))
@@ -380,9 +405,11 @@ def resolve_release(
     if effective_channel not in {"stable", "prerelease", "auto"}:
         raise ReleaseVersionError("release channel must be stable, prerelease, or auto")
 
-    upstream_base_commit = git(repo, "merge-base", target_commit, upstream_ref).split()[0]
-    upstream_version, upstream_tag, upstream_distance, upstream_exact = select_upstream_tag(
-        repo, upstream_base_commit, upstream_base_commit
+    upstream_base_commit = git(repo, "merge-base", target_commit, upstream_ref).split()[
+        0
+    ]
+    upstream_version, upstream_tag, upstream_distance, upstream_exact = (
+        select_upstream_tag(repo, upstream_base_commit, upstream_base_commit)
     )
     upstream_track = str(upstream_version)
 
@@ -408,7 +435,9 @@ def resolve_release(
     if current_release_tag:
         existing_tags.discard(current_release_tag)
     if marker is not None:
-        ordinal = max_sedna_ordinal(existing_tags, upstream_track) + first_parent_release_index(
+        ordinal = max_sedna_ordinal(
+            existing_tags, upstream_track
+        ) + first_parent_release_index(
             repo,
             target_commit=target_commit,
             upstream_ref=upstream_ref,
@@ -435,7 +464,9 @@ def resolve_release(
                 f"supplied release tag {release_tag} does not match computed tag {computed_release_tag}"
             )
     elif computed_release_tag in existing_tags:
-        raise ReleaseVersionError(f"computed release tag already exists: {computed_release_tag}")
+        raise ReleaseVersionError(
+            f"computed release tag already exists: {computed_release_tag}"
+        )
 
     release_version = computed_release_tag.removeprefix("v")
     downstream_short = git(repo, "rev-parse", "--short=8", target_commit)

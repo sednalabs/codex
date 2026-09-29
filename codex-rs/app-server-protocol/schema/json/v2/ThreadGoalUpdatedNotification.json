@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ThreadGoal": {
       "properties": {
         "createdAt": {
@@ -10,7 +11,7 @@
           "type": "string"
         },
         "status": {
-          "$ref": "#/$defs/ThreadGoalStatus"
+          "$ref": "#/definitions/ThreadGoalStatus"
         },
         "threadId": {
           "type": "string"
@@ -36,12 +37,12 @@
         }
       },
       "required": [
-        "threadId",
+        "createdAt",
         "objective",
         "status",
-        "tokensUsed",
+        "threadId",
         "timeUsedSeconds",
-        "createdAt",
+        "tokensUsed",
         "updatedAt"
       ],
       "type": "object"
@@ -58,10 +59,9 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "goal": {
-      "$ref": "#/$defs/ThreadGoal"
+      "$ref": "#/definitions/ThreadGoal"
     },
     "threadId": {
       "type": "string"
@@ -74,8 +74,8 @@
     }
   },
   "required": [
-    "threadId",
-    "goal"
+    "goal",
+    "threadId"
   ],
   "title": "ThreadGoalUpdatedNotification",
   "type": "object"

@@ -96,12 +96,18 @@ def plan_fingerprint_payload(
             "run_smoke_gate": selection_value(selection_meta, "run_smoke_gate", False),
             "smoke_gate_kind": selection_value(selection_meta, "smoke_gate_kind", ""),
             "run_artifact": selection_value(selection_meta, "run_artifact", False),
-            "matrix_fail_fast": selection_value(selection_meta, "matrix_fail_fast", False),
-            "matrix_max_parallel": selection_value(selection_meta, "matrix_max_parallel", 1),
+            "matrix_fail_fast": selection_value(
+                selection_meta, "matrix_fail_fast", False
+            ),
+            "matrix_max_parallel": selection_value(
+                selection_meta, "matrix_max_parallel", 1
+            ),
             "workflow_max_parallel": selection_value(
                 selection_meta, "workflow_max_parallel", 1
             ),
-            "node_max_parallel": selection_value(selection_meta, "node_max_parallel", 1),
+            "node_max_parallel": selection_value(
+                selection_meta, "node_max_parallel", 1
+            ),
             "rust_minimal_max_parallel": selection_value(
                 selection_meta, "rust_minimal_max_parallel", 1
             ),
@@ -117,7 +123,9 @@ def plan_fingerprint_payload(
             "selected_setup_classes": selection_value(
                 selection_meta, "selected_setup_classes", []
             ),
-            "selected_lane_ids": selection_value(selection_meta, "selected_lane_ids", []),
+            "selected_lane_ids": selection_value(
+                selection_meta, "selected_lane_ids", []
+            ),
             "planned_matrix": selection_value(selection_meta, "planned_matrix", {}),
             "smoke_matrix": selection_value(selection_meta, "smoke_matrix", {}),
             "selected_matrix": selection_value(selection_meta, "selected_matrix", {}),
@@ -168,7 +176,9 @@ def main() -> None:
     else:
         selection_meta_raw = os.environ.get(args.selection_meta_env)
         if selection_meta_raw is None:
-            raise SystemExit(f"missing selection metadata env: {args.selection_meta_env}")
+            raise SystemExit(
+                f"missing selection metadata env: {args.selection_meta_env}"
+            )
     selection_meta = json.loads(selection_meta_raw)
     payload = plan_fingerprint_payload(
         selection_meta=selection_meta,
@@ -189,7 +199,9 @@ def main() -> None:
     )
     fingerprint = fingerprint_payload(payload)
     if args.json:
-        print(json.dumps({"fingerprint": fingerprint, "payload": payload}, sort_keys=True))
+        print(
+            json.dumps({"fingerprint": fingerprint, "payload": payload}, sort_keys=True)
+        )
     else:
         print(fingerprint)
 

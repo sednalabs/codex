@@ -1,7 +1,9 @@
 use serde::Serialize;
 
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItemKind;
 
+/// The terminal lifecycle outcome reported to the next model input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TerminalCompletionStatus {
@@ -12,6 +14,7 @@ pub(crate) enum TerminalCompletionStatus {
     Pruned,
 }
 
+/// Metadata-only notification for an opted-in background unified-exec process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TerminalCompletionNotification {
     pub(crate) process_id: i32,
@@ -26,8 +29,8 @@ impl TerminalCompletionNotification {
     pub(crate) fn coalesce(&mut self, older: Self) {
         match older.status {
             TerminalCompletionStatus::Exited => self.coalesced_exited += 1,
-            TerminalCompletionStatus::Failed => self.coalesced_failed += 1,
-            TerminalCompletionStatus::Terminated
+            TerminalCompletionStatus::Failed
+            | TerminalCompletionStatus::Terminated
             | TerminalCompletionStatus::SessionShutdown
             | TerminalCompletionStatus::Pruned => self.coalesced_failed += 1,
         }
@@ -37,6 +40,10 @@ impl TerminalCompletionNotification {
 }
 
 impl ContextualUserFragment for TerminalCompletionNotification {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("unified_exec.terminal_completion_notification".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "user"
     }
@@ -68,3 +75,7 @@ impl ContextualUserFragment for TerminalCompletionNotification {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_completion_notification_tests.rs"]
+mod tests;

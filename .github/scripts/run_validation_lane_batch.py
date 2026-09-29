@@ -21,7 +21,9 @@ RETRY_CARGO_REGISTRY_TRANSPORT_RES = (
     re.compile(r"unable to update registry [`']crates-io[`']", re.IGNORECASE),
     re.compile(r"download of .+ failed", re.IGNORECASE),
     re.compile(r"curl failed", re.IGNORECASE),
-    re.compile(r"Error in the HTTP2 framing layer|unexpected eof while reading", re.IGNORECASE),
+    re.compile(
+        r"Error in the HTTP2 framing layer|unexpected eof while reading", re.IGNORECASE
+    ),
 )
 DISK_HEADROOM_FLOOR_BYTES = 12 * 1024 * 1024 * 1024
 
@@ -44,17 +46,27 @@ def slugify(value: str) -> str:
 
 def load_catalog(workflow_src: Path, catalog_root: Path) -> dict[str, dict[str, Any]]:
     planner_path = workflow_src / ".github" / "scripts" / "resolve_validation_plan.py"
-    spec = importlib.util.spec_from_file_location("resolve_validation_plan_for_batch", planner_path)
+    spec = importlib.util.spec_from_file_location(
+        "resolve_validation_plan_for_batch", planner_path
+    )
     if spec is None or spec.loader is None:
         raise SystemExit(f"unable to load validation planner: {planner_path}")
     planner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(planner)
-    catalog = planner.normalize_catalog(planner.load_catalog(catalog_root / ".github" / "validation-lanes.json"))
+    catalog = planner.normalize_catalog(
+        planner.load_catalog(catalog_root / ".github" / "validation-lanes.json")
+    )
     planner.validate_catalog(catalog)
-    return {str(lane.get("lane_id")): lane for lane in catalog["lanes"] if lane.get("lane_id")}
+    return {
+        str(lane.get("lane_id")): lane
+        for lane in catalog["lanes"]
+        if lane.get("lane_id")
+    }
 
 
-def lane_payload(catalog_by_id: dict[str, dict[str, Any]], lane_id: str) -> dict[str, Any]:
+def lane_payload(
+    catalog_by_id: dict[str, dict[str, Any]], lane_id: str
+) -> dict[str, Any]:
     lane = catalog_by_id.get(lane_id)
     if lane is None:
         raise SystemExit(f"unknown lane id in batch: {lane_id}")
@@ -70,7 +82,9 @@ def lane_payload(catalog_by_id: dict[str, dict[str, Any]], lane_id: str) -> dict
         "working_directory": lane["working_directory"],
         "script_path": lane["script_path"],
         "script_args": lane.get("script_args") or [],
-        "batch_group": str(lane.get("batch_group") or "+".join(lane.get("groups") or []) or "default"),
+        "batch_group": str(
+            lane.get("batch_group") or "+".join(lane.get("groups") or []) or "default"
+        ),
         "batch_weight_seconds": int(lane.get("batch_weight_seconds") or 360),
     }
 
@@ -155,7 +169,13 @@ def reclaim_batch_disk_headroom(repo_root: Path, lane_id: str) -> None:
     )
 
 
-def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[str, Any], index: int) -> dict[str, Any]:
+def run_lane(
+    repo_root: Path,
+    workflow_src: Path,
+    output_dir: Path,
+    lane: dict[str, Any],
+    index: int,
+) -> dict[str, Any]:
     lane_id = lane["lane_id"]
     lane_slug = slugify(lane_id)
     log_path = output_dir / f"validation-lane-{index + 1:02d}-{lane_slug}.log"
@@ -170,7 +190,9 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
         if attempt > 1:
             with log_path.open("a", encoding="utf-8") as log:
                 log.write(f"\n=== retry attempt {attempt}/{max_attempts} ===\n")
-            print(f"::warning title=Retrying transient validation dependency fetch::{lane_id} hit a retryable dependency download error; retrying once.")
+            print(
+                f"::warning title=Retrying transient validation dependency fetch::{lane_id} hit a retryable dependency download error; retrying once."
+            )
         cmd = [
             "python3",
             str(workflow_src / ".github" / "scripts" / "run_validation_lane.py"),
@@ -194,7 +216,9 @@ def run_lane(repo_root: Path, workflow_src: Path, output_dir: Path, lane: dict[s
     finished_at_ms = int(time.time() * 1000)
     outcome = "success" if exit_code == 0 else "failure"
     if exit_code != 0:
-        print(f"::error title=Downstream lane failed::{lane_id} failed (exit {exit_code}). Public summary omits raw commands and log excerpts; inspect the job log for detailed runner context.")
+        print(
+            f"::error title=Downstream lane failed::{lane_id} failed (exit {exit_code}). Public summary omits raw commands and log excerpts; inspect the job log for detailed runner context."
+        )
     return {
         **lane,
         "outcome": outcome,
@@ -214,7 +238,9 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     catalog_by_id = load_catalog(workflow_src, repo_root)
     lane_ids = json.loads(args.lane_ids_json or "[]")
-    if not isinstance(lane_ids, list) or not all(isinstance(item, str) for item in lane_ids):
+    if not isinstance(lane_ids, list) or not all(
+        isinstance(item, str) for item in lane_ids
+    ):
         raise SystemExit("lane ids must decode to a JSON array of strings")
 
     results = []
@@ -227,7 +253,13 @@ def main() -> int:
         results.append(run_lane(repo_root, workflow_src, output_dir, lane, index))
 
     result_path = output_dir / "batch-results.json"
-    result_path.write_text(json.dumps({"batch_id": args.batch_id, "results": results}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    result_path.write_text(
+        json.dumps(
+            {"batch_id": args.batch_id, "results": results}, indent=2, sort_keys=True
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return 1 if any(result["exit_code"] != 0 for result in results) else 0
 
 

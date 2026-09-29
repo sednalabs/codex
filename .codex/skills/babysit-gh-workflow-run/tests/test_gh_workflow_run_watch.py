@@ -16,7 +16,9 @@ from unittest.mock import Mock, patch
 MODULE_PATH = Path(
     os.environ.get(
         "GH_WORKFLOW_RUN_WATCH_MODULE_PATH",
-        str(Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch.py"),
+        str(
+            Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch.py"
+        ),
     )
 )
 SPEC = importlib.util.spec_from_file_location("gh_workflow_run_watch", MODULE_PATH)
@@ -38,11 +40,22 @@ def temp_cwd(path):
 class GhProcessBoundaryTests(unittest.TestCase):
     def test_gh_helpers_pin_executable_and_never_enable_shell(self):
         for helper_name in ("gh_text", "gh_download", "gh_bytes"):
-            with self.subTest(helper=helper_name), patch.dict(os.environ, {}, clear=True), patch.object(
-                MODULE, "_prepare_gh_env", return_value={}
-            ), patch.object(MODULE.subprocess, "run", return_value=types.SimpleNamespace(stdout="{}")) as run:
-                getattr(MODULE, helper_name)(["api", "repos/owner/repo/actions/runs/42"], repo="owner/repo")
-            self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo/actions/runs/42"])
+            with (
+                self.subTest(helper=helper_name),
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(MODULE, "_prepare_gh_env", return_value={}),
+                patch.object(
+                    MODULE.subprocess,
+                    "run",
+                    return_value=types.SimpleNamespace(stdout="{}"),
+                ) as run,
+            ):
+                getattr(MODULE, helper_name)(
+                    ["api", "repos/owner/repo/actions/runs/42"], repo="owner/repo"
+                )
+            self.assertEqual(
+                run.call_args.args[0], ["gh", "api", "repos/owner/repo/actions/runs/42"]
+            )
             self.assertIs(run.call_args.kwargs["shell"], False)
 
 
@@ -90,11 +103,14 @@ class ProofIdentityTests(unittest.TestCase):
         self.assertEqual(filtered[0]["databaseId"], 100)
 
     def test_parse_args_rejects_negative_retry_settle_seconds(self):
-        with patch.object(
-            sys,
-            "argv",
-            ["gh_workflow_run_watch.py", "--retry-settle-seconds", "-1"],
-        ), self.assertRaises(SystemExit):
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["gh_workflow_run_watch.py", "--retry-settle-seconds", "-1"],
+            ),
+            self.assertRaises(SystemExit),
+        ):
             MODULE.parse_args()
 
     def test_retry_settle_tracks_run_attempt_and_clears_when_retry_starts(self):
@@ -179,9 +195,7 @@ class ProofIdentityTests(unittest.TestCase):
                 }
             ]
         }
-        self.assertTrue(
-            MODULE._payload_has_pending_retry_settle(payload, {}, 90)
-        )
+        self.assertTrue(MODULE._payload_has_pending_retry_settle(payload, {}, 90))
 
     def test_watch_until_terminal_waits_for_a_retry_of_the_same_run(self):
         args = types.SimpleNamespace(
@@ -200,7 +214,12 @@ class ProofIdentityTests(unittest.TestCase):
                 {
                     "target": target,
                     "actions": ["diagnose_run_failure"],
-                    "run": {"id": 42, "attempt": 1, "status": "completed", "conclusion": "failure"},
+                    "run": {
+                        "id": 42,
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
                 }
             ],
         }
@@ -211,7 +230,12 @@ class ProofIdentityTests(unittest.TestCase):
                 {
                     "target": target,
                     "actions": ["diagnose_run_failure"],
-                    "run": {"id": 42, "attempt": 2, "status": "in_progress", "conclusion": ""},
+                    "run": {
+                        "id": 42,
+                        "attempt": 2,
+                        "status": "in_progress",
+                        "conclusion": "",
+                    },
                 }
             ],
         }
@@ -222,32 +246,48 @@ class ProofIdentityTests(unittest.TestCase):
                 {
                     "target": target,
                     "actions": ["stop_run_succeeded"],
-                    "run": {"id": 42, "attempt": 2, "status": "completed", "conclusion": "success"},
+                    "run": {
+                        "id": 42,
+                        "attempt": 2,
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
                 }
             ],
         }
 
-        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[failed_attempt, retry_running, retry_success],
-        ), patch.object(MODULE, "emit") as emit, patch.object(
-            MODULE.time, "monotonic", return_value=100.0
-        ), patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(MODULE, "build_targets", return_value=[target]),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[failed_attempt, retry_running, retry_success],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "monotonic", return_value=100.0),
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(retry_success)
         self.assertEqual(sleep.call_count, 2)
 
     def test_exact_run_rejects_wrong_host_head_before_diagnosis(self):
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "head_sha": "deadbeef"}
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+            "head_sha": "deadbeef",
+        }
         args = types.SimpleNamespace(no_gemini_diagnosis=True)
-        with patch.object(MODULE, "view_run", return_value=self._run_view()), patch.object(
-            MODULE, "load_validation_summary", return_value=None
+        with (
+            patch.object(MODULE, "view_run", return_value=self._run_view()),
+            patch.object(MODULE, "load_validation_summary", return_value=None),
         ):
             snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
         self.assertEqual(snapshot["actions"], ["stop_run_head_mismatch"])
-        self.assertTrue(MODULE._payload_has_terminal_wait_blocker({"actions": snapshot["actions"]}))
+        self.assertTrue(
+            MODULE._payload_has_terminal_wait_blocker({"actions": snapshot["actions"]})
+        )
 
     def _run_view(self, *, status="completed", conclusion="success"):
         return {
@@ -331,9 +371,7 @@ class ProofIdentityTests(unittest.TestCase):
 
         self.assertEqual(snapshot["actions"], ["stop_run_waiting_for_approval"])
         self.assertTrue(
-            MODULE._payload_has_terminal_wait_blocker(
-                {"actions": snapshot["actions"]}
-            )
+            MODULE._payload_has_terminal_wait_blocker({"actions": snapshot["actions"]})
         )
 
     def test_cross_ref_target_uses_authoritative_summary_not_run_head(self):
@@ -394,18 +432,23 @@ class ProofIdentityTests(unittest.TestCase):
             }
         }
 
-        with patch.object(MODULE, "detect_ref", return_value="candidate/exact"), patch.object(
-            MODULE,
-            "list_workflow_runs",
-            return_value=[listed_run],
-        ) as list_runs, patch.object(
-            MODULE,
-            "view_run",
-            return_value=run_view,
-        ), patch.object(
-            MODULE,
-            "load_validation_summary",
-            return_value=summary,
+        with (
+            patch.object(MODULE, "detect_ref", return_value="candidate/exact"),
+            patch.object(
+                MODULE,
+                "list_workflow_runs",
+                return_value=[listed_run],
+            ) as list_runs,
+            patch.object(
+                MODULE,
+                "view_run",
+                return_value=run_view,
+            ),
+            patch.object(
+                MODULE,
+                "load_validation_summary",
+                return_value=summary,
+            ),
         ):
             snapshot = MODULE.target_state_from_target(
                 args,
@@ -471,7 +514,7 @@ class ProofIdentityTests(unittest.TestCase):
                         }
                     ],
                 }
-            ]
+            ],
         }
         with patch.object(
             MODULE,
@@ -552,19 +595,35 @@ class ProofIdentityTests(unittest.TestCase):
             "completed_at": None,
             "steps": [],
         }
-        run = {"databaseId": 42, "attempt": 1, "headSha": "a" * 40, "jobs": [{"databaseId": 501, "status": "queued"}]}
+        run = {
+            "databaseId": 42,
+            "attempt": 1,
+            "headSha": "a" * 40,
+            "jobs": [{"databaseId": 501, "status": "queued"}],
+        }
         for field in ("runner_name", "runner_id"):
             state = {}
             complete = {**base, "runner_name": None, "runner_id": None}
-            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[MODULE._normalize_rest_job(complete, run_id=42, job_index=0)]):
+            with patch.object(
+                MODULE,
+                "_list_run_jobs_rest",
+                return_value=[
+                    MODULE._normalize_rest_job(complete, run_id=42, job_index=0)
+                ],
+            ):
                 enriched = MODULE._enrich_job_assignment_fields("owner/repo", run)
             with patch.object(MODULE.time, "time", return_value=0):
                 MODULE._record_unassigned_observation(enriched, state)
             self.assertTrue(state["unassigned_observations"])
             partial = {**base, field: None}
             partial_job = MODULE._normalize_rest_job(partial, run_id=42, job_index=0)
-            with patch.object(MODULE, "_list_run_jobs_rest", return_value=[partial_job]):
-                interrupted = MODULE._enrich_job_assignment_fields("owner/repo", {**run, "jobs": [{"databaseId": 501, "status": "queued"}]})
+            with patch.object(
+                MODULE, "_list_run_jobs_rest", return_value=[partial_job]
+            ):
+                interrupted = MODULE._enrich_job_assignment_fields(
+                    "owner/repo",
+                    {**run, "jobs": [{"databaseId": 501, "status": "queued"}]},
+                )
             with patch.object(MODULE.time, "time", return_value=10):
                 MODULE._record_unassigned_observation(interrupted, state)
             self.assertEqual(state["unassigned_observations"], {})
@@ -588,7 +647,9 @@ class ProofIdentityTests(unittest.TestCase):
         self.assertTrue(MODULE._payload_has_unassigned_job(payload))
 
     def test_cross_ref_target_is_unknown_when_summary_has_no_identity_evidence(self):
-        with patch.object(MODULE, "load_validation_summary", return_value={"summary": {}}):
+        with patch.object(
+            MODULE, "load_validation_summary", return_value={"summary": {}}
+        ):
             snapshot = MODULE.normalize_snapshot(
                 self._run_view(),
                 target=self._cross_ref_target(),
@@ -717,9 +778,13 @@ class ProofIdentityTests(unittest.TestCase):
                 resolved_ref="candidate/exact",
             )
 
-        self.assertEqual(snapshot["proof_identity"]["validation_target_status"], "mismatch")
+        self.assertEqual(
+            snapshot["proof_identity"]["validation_target_status"], "mismatch"
+        )
         self.assertEqual(snapshot["proof_identity"]["validation_target_sha"], "3" * 40)
-        self.assertEqual(snapshot["actions"], ["stop_validation_target_identity_mismatch"])
+        self.assertEqual(
+            snapshot["actions"], ["stop_validation_target_identity_mismatch"]
+        )
 
     def test_cross_ref_target_malformed_heavy_validation_results_stays_unknown(self):
         summary = {
@@ -860,7 +925,9 @@ class ProofIdentityTests(unittest.TestCase):
                 resolved_ref="candidate/exact",
             )
 
-        self.assertEqual(snapshot["proof_identity"]["validation_target_status"], "verified")
+        self.assertEqual(
+            snapshot["proof_identity"]["validation_target_status"], "verified"
+        )
         self.assertEqual(snapshot["actions"], ["diagnose_run_failure"])
 
     def test_compact_identity_output_is_bounded_and_field_disciplined(self):
@@ -1012,7 +1079,13 @@ class GeminiWatcherTests(unittest.TestCase):
             },
         ]
         with patch.object(MODULE, "gh_json", return_value=runs):
-            filtered = MODULE.list_workflow_runs("owner/repo", "validation-lab", "integration/test", "abc123", minimum_run_id=150)
+            filtered = MODULE.list_workflow_runs(
+                "owner/repo",
+                "validation-lab",
+                "integration/test",
+                "abc123",
+                minimum_run_id=150,
+            )
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["databaseId"], 200)
@@ -1120,17 +1193,20 @@ class GeminiWatcherTests(unittest.TestCase):
                 "ops-mcp-contract-surface",
             ],
         }
-        with patch.object(
-            MODULE,
-            "_load_run_json_artifact",
-            side_effect=[{"validation": "summary"}, receipt],
-        ) as load_artifact, patch.object(
-            MODULE,
-            "_list_run_artifact_names",
-            return_value=[
-                "unrelated",
-                "ops-mcp-surface-acceptance-abc123def456",
-            ],
+        with (
+            patch.object(
+                MODULE,
+                "_load_run_json_artifact",
+                side_effect=[{"validation": "summary"}, receipt],
+            ) as load_artifact,
+            patch.object(
+                MODULE,
+                "_list_run_artifact_names",
+                return_value=[
+                    "unrelated",
+                    "ops-mcp-surface-acceptance-abc123def456",
+                ],
+            ),
         ):
             summary = MODULE.load_validation_summary(
                 "owner/repo",
@@ -1155,14 +1231,17 @@ class GeminiWatcherTests(unittest.TestCase):
             "target_sha": "2222222222222222222222222222222222222222",
             "outcome": "success",
         }
-        with patch.object(
-            MODULE,
-            "_load_run_json_artifact",
-            side_effect=[None, heavy_results],
-        ) as load_artifact, patch.object(
-            MODULE,
-            "_list_run_artifact_names",
-            return_value=["heavy-validation-results"],
+        with (
+            patch.object(
+                MODULE,
+                "_load_run_json_artifact",
+                side_effect=[None, heavy_results],
+            ) as load_artifact,
+            patch.object(
+                MODULE,
+                "_list_run_artifact_names",
+                return_value=["heavy-validation-results"],
+            ),
         ):
             summary = MODULE.load_validation_summary(
                 "owner/repo",
@@ -1209,10 +1288,15 @@ class GeminiWatcherTests(unittest.TestCase):
             "url": "https://github.com/sednalabs/codex/actions/runs/23950570058",
         }
 
-        with patch.object(MODULE, "detect_ref", return_value=target["ref"]), patch.object(
-            MODULE, "list_workflow_runs", side_effect=[[], [mismatch_run]]
+        with (
+            patch.object(MODULE, "detect_ref", return_value=target["ref"]),
+            patch.object(
+                MODULE, "list_workflow_runs", side_effect=[[], [mismatch_run]]
+            ),
         ):
-            snapshot = MODULE.target_state_from_target(args, target, "sednalabs/codex", {})
+            snapshot = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", {}
+            )
 
         self.assertEqual(snapshot["actions"], ["stop_dispatch_host_branch_mismatch"])
         mismatch = snapshot["appearance_wait"]["dispatch_host_mismatch"]
@@ -1263,17 +1347,35 @@ class GeminiWatcherTests(unittest.TestCase):
         }
 
         remembered = {}
-        with patch.object(MODULE, "detect_ref", return_value=target["ref"]), patch.object(
-            MODULE,
-            "list_workflow_runs",
-            side_effect=[[{"databaseId": 101, "headBranch": "feature/branch", "headSha": "abcdef123456"}], [newer_run]],
-        ) as list_mock, patch.object(MODULE, "view_run", return_value=run_view) as view_mock, patch.object(
-            MODULE.time,
-            "time",
-            side_effect=[100, 100, 110, 110],
+        with (
+            patch.object(MODULE, "detect_ref", return_value=target["ref"]),
+            patch.object(
+                MODULE,
+                "list_workflow_runs",
+                side_effect=[
+                    [
+                        {
+                            "databaseId": 101,
+                            "headBranch": "feature/branch",
+                            "headSha": "abcdef123456",
+                        }
+                    ],
+                    [newer_run],
+                ],
+            ) as list_mock,
+            patch.object(MODULE, "view_run", return_value=run_view) as view_mock,
+            patch.object(
+                MODULE.time,
+                "time",
+                side_effect=[100, 100, 110, 110],
+            ),
         ):
-            snapshot1 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
-            snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
+            snapshot1 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
+            snapshot2 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
 
         self.assertEqual(list_mock.call_count, 1)
         self.assertEqual(view_mock.call_args_list[0].args[1], 101)
@@ -1325,34 +1427,43 @@ class GeminiWatcherTests(unittest.TestCase):
         }
 
         remembered = {}
-        with patch.object(MODULE, "detect_ref", return_value=target["ref"]), patch.object(
-            MODULE,
-            "list_workflow_runs",
-            side_effect=[[initial_run], [newer_run_view]],
-        ) as list_mock, patch.object(
-            MODULE,
-            "view_run",
-            side_effect=[
-                {
-                    "databaseId": 101,
-                    "number": 7,
-                    "displayTitle": "workflow run",
-                    "workflowName": "validation-lab.yml",
-                    "url": "https://example.invalid/run/101",
-                    "headBranch": "feature/branch",
-                    "headSha": "abcdef123456",
-                    "event": "push",
-                    "status": "in_progress",
-                    "conclusion": "",
-                    "createdAt": "2026-03-31T00:00:00Z",
-                    "updatedAt": "2026-03-31T00:05:00Z",
-                    "jobs": [],
-                },
-                newer_run_view,
-            ],
-        ) as view_mock, patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]):
-            snapshot1 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
-            snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
+        with (
+            patch.object(MODULE, "detect_ref", return_value=target["ref"]),
+            patch.object(
+                MODULE,
+                "list_workflow_runs",
+                side_effect=[[initial_run], [newer_run_view]],
+            ) as list_mock,
+            patch.object(
+                MODULE,
+                "view_run",
+                side_effect=[
+                    {
+                        "databaseId": 101,
+                        "number": 7,
+                        "displayTitle": "workflow run",
+                        "workflowName": "validation-lab.yml",
+                        "url": "https://example.invalid/run/101",
+                        "headBranch": "feature/branch",
+                        "headSha": "abcdef123456",
+                        "event": "push",
+                        "status": "in_progress",
+                        "conclusion": "",
+                        "createdAt": "2026-03-31T00:00:00Z",
+                        "updatedAt": "2026-03-31T00:05:00Z",
+                        "jobs": [],
+                    },
+                    newer_run_view,
+                ],
+            ) as view_mock,
+            patch.object(MODULE.time, "time", side_effect=[100, 100, 170, 170]),
+        ):
+            snapshot1 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
+            snapshot2 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
 
         self.assertEqual(list_mock.call_count, 2)
         self.assertEqual(snapshot1["run"]["id"], 101)
@@ -1388,19 +1499,32 @@ class GeminiWatcherTests(unittest.TestCase):
         }
 
         remembered = {}
-        with patch.object(MODULE, "detect_ref", return_value=target["ref"]), patch.object(
-            MODULE, "list_workflow_runs", side_effect=[[], [mismatch_run], []]
-        ) as list_mock, patch.object(MODULE.time, "time", side_effect=[100, 100, 110, 110]):
-            snapshot1 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
-            snapshot2 = MODULE.target_state_from_target(args, target, "sednalabs/codex", remembered)
+        with (
+            patch.object(MODULE, "detect_ref", return_value=target["ref"]),
+            patch.object(
+                MODULE, "list_workflow_runs", side_effect=[[], [mismatch_run], []]
+            ) as list_mock,
+            patch.object(MODULE.time, "time", side_effect=[100, 100, 110, 110]),
+        ):
+            snapshot1 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
+            snapshot2 = MODULE.target_state_from_target(
+                args, target, "sednalabs/codex", remembered
+            )
 
         self.assertEqual(list_mock.call_count, 3)
         self.assertEqual(snapshot1["actions"], ["stop_dispatch_host_branch_mismatch"])
         self.assertEqual(snapshot2["actions"], ["stop_dispatch_host_branch_mismatch"])
-        self.assertEqual(snapshot2["appearance_wait"]["dispatch_host_mismatch"]["run_id"], 23950570058)
+        self.assertEqual(
+            snapshot2["appearance_wait"]["dispatch_host_mismatch"]["run_id"],
+            23950570058,
+        )
 
     def test_launcher_runs_without_path_when_python_override_is_set(self):
-        launcher = Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch"
+        launcher = (
+            Path(__file__).resolve().parents[1] / "scripts" / "gh_workflow_run_watch"
+        )
         env = {"PATH": "", "GH_WORKFLOW_RUN_WATCH_PYTHON": sys.executable}
         result = subprocess.run(
             [str(launcher), "--help"],
@@ -1413,12 +1537,14 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertIn("usage:", result.stdout)
 
     def test_detect_repo_respects_watch_repo_env(self):
-        with patch.dict(
-            os.environ,
-            {"GH_WORKFLOW_RUN_WATCH_REPO": "sednalabs/solar-gravity-lab"},
-            clear=True,
-        ), patch.object(MODULE, "command_text", return_value=None), patch.object(
-            MODULE, "gh_json", return_value=None
+        with (
+            patch.dict(
+                os.environ,
+                {"GH_WORKFLOW_RUN_WATCH_REPO": "sednalabs/solar-gravity-lab"},
+                clear=True,
+            ),
+            patch.object(MODULE, "command_text", return_value=None),
+            patch.object(MODULE, "gh_json", return_value=None),
         ):
             repo = MODULE.detect_repo()
         self.assertEqual(repo, "sednalabs/solar-gravity-lab")
@@ -1489,7 +1615,12 @@ class GeminiWatcherTests(unittest.TestCase):
         with patch.object(
             sys,
             "argv",
-            ["gh_workflow_run_watch.py", "--watch-until-terminal", "--wait-for", "first_action"],
+            [
+                "gh_workflow_run_watch.py",
+                "--watch-until-terminal",
+                "--wait-for",
+                "first_action",
+            ],
         ):
             args = MODULE.parse_args()
         self.assertTrue(args.watch_until_terminal)
@@ -1526,7 +1657,11 @@ class GeminiWatcherTests(unittest.TestCase):
         }
         snapshot = MODULE.normalize_snapshot(
             run_view,
-            target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "spec": "run-id=42"},
+            target={
+                "kind": MODULE.TARGET_KIND_RUN_ID,
+                "run_id": 42,
+                "spec": "run-id=42",
+            },
             repo="sednalabs/codex",
             followed_newer_run=False,
             resolved_ref="integration/test",
@@ -1544,7 +1679,9 @@ class GeminiWatcherTests(unittest.TestCase):
         }
         snapshot = MODULE._apply_acknowledged_actions(snapshot, [])
         self.assertEqual(snapshot["actions"], ["diagnose_run_failure"])
-        self.assertEqual(snapshot["action_triggers"][0]["failure_phase"], "in_progress_failed_job")
+        self.assertEqual(
+            snapshot["action_triggers"][0]["failure_phase"], "in_progress_failed_job"
+        )
         self.assertEqual(snapshot["action_triggers"][0]["job_id"], 501)
         self.assertTrue(snapshot["action_triggers"][0]["logs_available"])
 
@@ -1556,7 +1693,12 @@ class GeminiWatcherTests(unittest.TestCase):
             "headSha": "a" * 40,
             "status": "in_progress",
             "jobs": [
-                {"databaseId": 501, "name": "nested", "status": "completed", "conclusion": "success"},
+                {
+                    "databaseId": 501,
+                    "name": "nested",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
                 {
                     "databaseId": 502,
                     "name": "required",
@@ -1581,14 +1723,22 @@ class GeminiWatcherTests(unittest.TestCase):
         snapshot = MODULE._apply_acknowledged_actions(snapshot, [])
         self.assertEqual(snapshot["actions"], ["stop_run_unassigned_job"])
         trigger = snapshot["action_triggers"][0]
-        self.assertIn(":attempt:3:head:" + "a" * 40 + ":job:502", trigger["fingerprint"])
+        self.assertIn(
+            ":attempt:3:head:" + "a" * 40 + ":job:502", trigger["fingerprint"]
+        )
         self.assertEqual(trigger["assignment"]["runner_name"], None)
 
     def test_unassigned_unknown_or_assigned_jobs_stay_idle(self):
         base = {"databaseId": 42, "status": "in_progress", "jobs": []}
         for job in (
             {"databaseId": 1, "name": "required", "status": "queued"},
-            {"databaseId": 2, "name": "required", "status": "queued", "runnerName": "host-1", "runnerId": 7},
+            {
+                "databaseId": 2,
+                "name": "required",
+                "status": "queued",
+                "runnerName": "host-1",
+                "runnerId": 7,
+            },
         ):
             snapshot = MODULE.normalize_snapshot(
                 {**base, "jobs": [{**job, "unassignedSince": 0}]},
@@ -1610,8 +1760,20 @@ class GeminiWatcherTests(unittest.TestCase):
                 "headSha": "a" * 40,
                 "status": "in_progress",
                 "jobs": [
-                    {"databaseId": 501, "name": "failed", "status": "completed", "conclusion": "failure"},
-                    {"databaseId": 502, "name": "required", "status": "queued", "runnerName": None, "runnerId": None, "unassignedSince": now - 10},
+                    {
+                        "databaseId": 501,
+                        "name": "failed",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                    {
+                        "databaseId": 502,
+                        "name": "required",
+                        "status": "queued",
+                        "runnerName": None,
+                        "runnerId": None,
+                        "unassignedSince": now - 10,
+                    },
                 ],
             },
             target={"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
@@ -1621,7 +1783,9 @@ class GeminiWatcherTests(unittest.TestCase):
             unassigned_timeout_seconds=1,
             unassigned_now=now,
         )
-        self.assertEqual(snapshot["actions"], ["diagnose_run_failure", "stop_run_unassigned_job"])
+        self.assertEqual(
+            snapshot["actions"], ["diagnose_run_failure", "stop_run_unassigned_job"]
+        )
 
     def test_unassigned_ack_is_bound_to_attempt_head_and_job(self):
         base = {
@@ -1631,7 +1795,9 @@ class GeminiWatcherTests(unittest.TestCase):
             "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42},
         }
         snapshot = dict(base)
-        fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0]["fingerprint"]
+        fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0][
+            "fingerprint"
+        ]
         acknowledged = MODULE._apply_acknowledged_actions(snapshot, [fingerprint])
         self.assertEqual(acknowledged["actions"], ["idle"])
         for changed_run, changed_job in (
@@ -1639,14 +1805,24 @@ class GeminiWatcherTests(unittest.TestCase):
             ({**base["run"], "head_sha": "b" * 40}, 502),
             ({**base["run"]}, 503),
         ):
-            changed = {**base, "run": changed_run, "unassigned_jobs": [{"id": changed_job, "name": "required", "status": "queued"}]}
+            changed = {
+                **base,
+                "run": changed_run,
+                "unassigned_jobs": [
+                    {"id": changed_job, "name": "required", "status": "queued"}
+                ],
+            }
             changed = MODULE._apply_acknowledged_actions(changed, [fingerprint])
             self.assertEqual(changed["actions"], ["stop_run_unassigned_job"])
 
     def test_ack_action_suppresses_repeat_failure(self):
         snapshot = {
             "actions": ["diagnose_run_failure"],
-            "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "spec": "run-id=42"},
+            "target": {
+                "kind": MODULE.TARGET_KIND_RUN_ID,
+                "run_id": 42,
+                "spec": "run-id=42",
+            },
             "run": {
                 "id": 42,
                 "url": "https://example.invalid/runs/42",
@@ -1663,7 +1839,9 @@ class GeminiWatcherTests(unittest.TestCase):
             "appearance_wait": None,
             "diagnostic_evidence": {"log_sources": []},
         }
-        fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0]["fingerprint"]
+        fingerprint = MODULE._action_descriptors_for_snapshot(snapshot)[0][
+            "fingerprint"
+        ]
         snapshot = MODULE._apply_acknowledged_actions(snapshot, [fingerprint])
         self.assertEqual(snapshot["actions"], ["idle"])
         self.assertEqual(snapshot["suppressed_action_fingerprints"], [fingerprint])
@@ -1675,11 +1853,15 @@ class GeminiWatcherTests(unittest.TestCase):
             gemini_error="Skipped Gemini diagnosis to avoid low-value token spend.",
             gemini_disabled=False,
         )
-        alerts = MODULE._gemini_failure_alert("Skipped Gemini diagnosis to avoid low-value token spend.")
+        alerts = MODULE._gemini_failure_alert(
+            "Skipped Gemini diagnosis to avoid low-value token spend."
+        )
         self.assertEqual(status["state"], "skipped")
         self.assertEqual(alerts, [])
 
-    def test_extract_structured_failure_signals_keeps_timeout_exit_code_as_weak_signal(self):
+    def test_extract_structured_failure_signals_keeps_timeout_exit_code_as_weak_signal(
+        self,
+    ):
         text = """
 2026-04-12T00:46:07Z ##[error]The process '/usr/bin/sh' failed with exit code 124
 2026-04-12T00:46:07Z step timed out while waiting for connectedDebugAndroidTest
@@ -1687,11 +1869,23 @@ class GeminiWatcherTests(unittest.TestCase):
 
         signals = MODULE._extract_structured_failure_signals(text)
 
-        self.assertTrue(any("failed with exit code 124" in line for line in signals["evidence_lines"]))
-        self.assertTrue(any("timed out while waiting for connectedDebugAndroidTest" in line for line in signals["evidence_lines"]))
+        self.assertTrue(
+            any(
+                "failed with exit code 124" in line
+                for line in signals["evidence_lines"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "timed out while waiting for connectedDebugAndroidTest" in line
+                for line in signals["evidence_lines"]
+            )
+        )
         self.assertTrue(MODULE._signals_have_actionable_detail(signals))
 
-    def test_should_attempt_gemini_diagnosis_when_failed_job_exists_without_exact_test_signal(self):
+    def test_should_attempt_gemini_diagnosis_when_failed_job_exists_without_exact_test_signal(
+        self,
+    ):
         run_view = {
             "jobs": [
                 {
@@ -1771,11 +1965,16 @@ class GeminiWatcherTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[early_payload, terminal_payload],
-        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[early_payload, terminal_payload],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(terminal_payload)
@@ -1854,17 +2053,24 @@ class GeminiWatcherTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[early_payload, ready_payload],
-        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[early_payload, ready_payload],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(ready_payload)
         sleep.assert_called_once_with(1)
 
-    def test_watch_until_action_all_done_does_not_keep_polling_after_terminal_failure_without_logs(self):
+    def test_watch_until_action_all_done_does_not_keep_polling_after_terminal_failure_without_logs(
+        self,
+    ):
         args = types.SimpleNamespace(
             require_terminal_run=False,
             wait_for="all_done",
@@ -1905,11 +2111,16 @@ class GeminiWatcherTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            return_value=terminal_payload_without_logs,
-        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                return_value=terminal_payload_without_logs,
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(terminal_payload_without_logs)
@@ -1959,17 +2170,24 @@ class GeminiWatcherTests(unittest.TestCase):
                 },
             ],
         }
-        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[early_payload, terminal_payload],
-        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}]),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[early_payload, terminal_payload],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(terminal_payload)
         sleep.assert_called_once_with(1)
 
-    def test_watch_until_terminal_multi_target_ignores_single_success_until_all_terminal(self):
+    def test_watch_until_terminal_multi_target_ignores_single_success_until_all_terminal(
+        self,
+    ):
         with patch.object(
             sys,
             "argv",
@@ -2020,17 +2238,28 @@ class GeminiWatcherTests(unittest.TestCase):
                 },
             ],
         }
-        with patch.object(MODULE, "build_targets", return_value=[{"kind": "dummy"}, {"kind": "dummy"}]), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[early_payload, terminal_payload],
-        ), patch.object(MODULE, "emit") as emit, patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+        with (
+            patch.object(
+                MODULE,
+                "build_targets",
+                return_value=[{"kind": "dummy"}, {"kind": "dummy"}],
+            ),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[early_payload, terminal_payload],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(MODULE.time, "sleep", return_value=None) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(terminal_payload)
         sleep.assert_called_once_with(1)
 
-    def test_watch_until_terminal_all_done_ignores_terminal_action_while_target_runs(self):
+    def test_watch_until_terminal_all_done_ignores_terminal_action_while_target_runs(
+        self,
+    ):
         with patch.object(
             sys,
             "argv",
@@ -2100,31 +2329,35 @@ class GeminiWatcherTests(unittest.TestCase):
                 },
             ],
         }
-        with patch.object(
-            MODULE,
-            "build_targets",
-            return_value=[{"kind": "dummy"}] * 4,
-        ), patch.object(
-            MODULE,
-            "resolve_snapshot",
-            side_effect=[early_payload, final_payload],
-        ), patch.object(MODULE, "emit") as emit, patch.object(
-            MODULE.time,
-            "sleep",
-            return_value=None,
-        ) as sleep:
+        with (
+            patch.object(
+                MODULE,
+                "build_targets",
+                return_value=[{"kind": "dummy"}] * 4,
+            ),
+            patch.object(
+                MODULE,
+                "resolve_snapshot",
+                side_effect=[early_payload, final_payload],
+            ),
+            patch.object(MODULE, "emit") as emit,
+            patch.object(
+                MODULE.time,
+                "sleep",
+                return_value=None,
+            ) as sleep,
+        ):
             MODULE.watch_until_action(args, "sednalabs/codex")
 
         emit.assert_called_once_with(final_payload)
         sleep.assert_called_once_with(1)
-
 
     def test_redaction_and_runner_path_mapping(self):
         with tempfile.TemporaryDirectory(prefix="repo-") as tmpdir:
             repo_root = Path(tmpdir) / "repo"
             (repo_root / "src").mkdir(parents=True)
             (repo_root / "src" / "lib.rs").write_text(
-                "fn main() {}\nlet answer = 42;\npanic!(\"boom\");\n",
+                'fn main() {}\nlet answer = 42;\npanic!("boom");\n',
                 encoding="utf-8",
             )
             (repo_root / "src" / "main.py").write_text(
@@ -2215,10 +2448,18 @@ class GeminiWatcherTests(unittest.TestCase):
                 )
             return FakeResponse(json.dumps(gemini_response).encode("utf-8"))
 
-        with patch.dict(os.environ, {"GEMINI_API_KEYS": "bad-key, good-key"}, clear=True):
-            with patch.object(MODULE.urllib.request, "urlopen", side_effect=fake_urlopen), patch.object(
-                MODULE.time, "sleep", return_value=None
-            ), patch.object(MODULE.time, "perf_counter", side_effect=[100.0, 100.05, 100.125]):
+        with patch.dict(
+            os.environ, {"GEMINI_API_KEYS": "bad-key, good-key"}, clear=True
+        ):
+            with (
+                patch.object(
+                    MODULE.urllib.request, "urlopen", side_effect=fake_urlopen
+                ),
+                patch.object(MODULE.time, "sleep", return_value=None),
+                patch.object(
+                    MODULE.time, "perf_counter", side_effect=[100.0, 100.05, 100.125]
+                ),
+            ):
                 diagnosis, telemetry = MODULE._call_gemini_diagnosis(
                     model=MODULE.GEMINI_DEFAULT_MODEL,
                     prompt="diagnose me",
@@ -2226,7 +2467,11 @@ class GeminiWatcherTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(calls), 2)
-        self.assertTrue(calls[0][0].endswith(f"/models/{MODULE.GEMINI_DEFAULT_MODEL}:generateContent"))
+        self.assertTrue(
+            calls[0][0].endswith(
+                f"/models/{MODULE.GEMINI_DEFAULT_MODEL}:generateContent"
+            )
+        )
         self.assertEqual(calls[0][1], "bad-key")
         self.assertEqual(calls[1][1], "good-key")
         self.assertEqual(diagnosis["model"], MODULE.GEMINI_DEFAULT_MODEL)
@@ -2236,12 +2481,16 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(telemetry["attempts"], 2)
         self.assertEqual(telemetry["latency_ms"], 125)
         self.assertEqual(telemetry["response_id"], "resp-123")
-        self.assertEqual(telemetry["model_version"], "gemini-3.1-flash-lite-preview-001")
+        self.assertEqual(
+            telemetry["model_version"], "gemini-3.1-flash-lite-preview-001"
+        )
         self.assertEqual(telemetry["usage_metadata"]["prompt_token_count"], 111)
         self.assertEqual(telemetry["usage_metadata"]["candidates_token_count"], 22)
         self.assertEqual(telemetry["usage_metadata"]["total_token_count"], 133)
 
-    def test_collect_log_sources_focuses_primary_failure_and_skips_cancelled_log_spam(self):
+    def test_collect_log_sources_focuses_primary_failure_and_skips_cancelled_log_spam(
+        self,
+    ):
         run_view = {
             "databaseId": 321,
             "jobs": [
@@ -2295,14 +2544,26 @@ class GeminiWatcherTests(unittest.TestCase):
                 "mocked",
             )
 
-        with patch.object(MODULE, "gh_text", return_value="workflow log failure tail"), patch.object(
-            MODULE, "_load_job_log_text", side_effect=fake_load_job_log_text
+        with (
+            patch.object(MODULE, "gh_text", return_value="workflow log failure tail"),
+            patch.object(
+                MODULE, "_load_job_log_text", side_effect=fake_load_job_log_text
+            ),
         ):
-            sources = MODULE._collect_log_sources("owner/repo", run_view, validation_summary=None)
+            sources = MODULE._collect_log_sources(
+                "owner/repo", run_view, validation_summary=None
+            )
 
         self.assertEqual(load_calls, [10, 11])
         self.assertEqual(sources[0]["kind"], "failed_jobs_overview")
-        self.assertNotIn(12, [source.get("job_id") for source in sources if source.get("job_id") is not None])
+        self.assertNotIn(
+            12,
+            [
+                source.get("job_id")
+                for source in sources
+                if source.get("job_id") is not None
+            ],
+        )
 
     def test_no_gemini_mode_keeps_diagnostic_evidence_bundle(self):
         args = types.SimpleNamespace(
@@ -2311,7 +2572,11 @@ class GeminiWatcherTests(unittest.TestCase):
             gemini_timeout_seconds=MODULE.GEMINI_DEFAULT_TIMEOUT_SECONDS,
             appearance_timeout_seconds=0,
         )
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 321, "spec": "run-id=321"}
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 321,
+            "spec": "run-id=321",
+        }
         run_view = {
             "databaseId": 321,
             "status": "completed",
@@ -2329,18 +2594,29 @@ class GeminiWatcherTests(unittest.TestCase):
             ],
         }
 
-        with patch.object(MODULE, "view_run", return_value=run_view), patch.object(
-            MODULE, "normalize_snapshot",
-            return_value={
-                "actions": ["diagnose_run_failure"],
-                "validation_summary": None,
-                "failed_jobs": [{"id": 10, "name": "Tests - ubuntu"}],
-            },
-        ), patch.object(
-            MODULE,
-            "_collect_failure_evidence",
-            return_value={"evidence": {"failed_job_count": 1, "structured_failure_signals": ["panic"]}},
-        ), patch.object(MODULE, "_diagnose_failure") as diagnose_failure:
+        with (
+            patch.object(MODULE, "view_run", return_value=run_view),
+            patch.object(
+                MODULE,
+                "normalize_snapshot",
+                return_value={
+                    "actions": ["diagnose_run_failure"],
+                    "validation_summary": None,
+                    "failed_jobs": [{"id": 10, "name": "Tests - ubuntu"}],
+                },
+            ),
+            patch.object(
+                MODULE,
+                "_collect_failure_evidence",
+                return_value={
+                    "evidence": {
+                        "failed_job_count": 1,
+                        "structured_failure_signals": ["panic"],
+                    }
+                },
+            ),
+            patch.object(MODULE, "_diagnose_failure") as diagnose_failure,
+        ):
             snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
 
         diagnose_failure.assert_not_called()
@@ -2376,14 +2652,22 @@ class GeminiWatcherTests(unittest.TestCase):
             "summary": {
                 "failed_lane_count": 2,
                 "first_failure": {"lane_id": "lane-a", "signal": "thread panicked"},
-                "candidate_next_slices": [{"lane_id": "lane-a", "signal": "thread panicked"}],
+                "candidate_next_slices": [
+                    {"lane_id": "lane-a", "signal": "thread panicked"}
+                ],
             },
         }
 
-        with patch.object(MODULE, "gh_text", return_value="workflow log failure tail"), patch.object(
-            MODULE,
-            "_load_job_log_text",
-            side_effect=lambda repo, job_id: (f"job {job_id}\nthread 'x' panicked at src/main.rs:10:5", "mocked"),
+        with (
+            patch.object(MODULE, "gh_text", return_value="workflow log failure tail"),
+            patch.object(
+                MODULE,
+                "_load_job_log_text",
+                side_effect=lambda repo, job_id: (
+                    f"job {job_id}\nthread 'x' panicked at src/main.rs:10:5",
+                    "mocked",
+                ),
+            ),
         ):
             sources = MODULE._collect_log_sources(
                 "owner/repo",
@@ -2393,7 +2677,9 @@ class GeminiWatcherTests(unittest.TestCase):
 
         self.assertEqual(sources[0]["kind"], "failed_jobs_overview")
         self.assertEqual(sources[1]["kind"], "validation_summary")
-        detailed_logs = [source for source in sources if source["kind"] == "failed_job_log"]
+        detailed_logs = [
+            source for source in sources if source["kind"] == "failed_job_log"
+        ]
         self.assertEqual([source["job_id"] for source in detailed_logs], [10])
 
     def test_focus_job_log_text_includes_step_context_and_highlights(self):
@@ -2420,7 +2706,9 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertIn("== Failure highlights ==", focused)
         self.assertIn("assertion failed", focused)
 
-    def test_focus_job_log_text_prefers_exact_failed_step_signal_over_early_step_noise(self):
+    def test_focus_job_log_text_prefers_exact_failed_step_signal_over_early_step_noise(
+        self,
+    ):
         job = {
             "id": 10,
             "name": "Tests - ubuntu",
@@ -2433,13 +2721,15 @@ class GeminiWatcherTests(unittest.TestCase):
                 "Tests - ubuntu\ttests\t2026-03-31T21:00:01Z\tsetup still running",
                 "Tests - ubuntu\ttests\t2026-03-31T21:03:00Z\ttest suite::v2::review::review_start_runs_review_turn_and_emits_code_review_item ... FAILED",
                 "Tests - ubuntu\ttests\t2026-03-31T21:03:01Z\tthread 'suite::v2::review::review_start_runs_review_turn_and_emits_code_review_item' panicked at app-server/tests/suite/v2/review.rs:140:5:",
-                "Tests - ubuntu\ttests\t2026-03-31T21:03:02Z\tassertion failed: review.contains(\"Token usage: unavailable\")",
+                'Tests - ubuntu\ttests\t2026-03-31T21:03:02Z\tassertion failed: review.contains("Token usage: unavailable")',
             ]
         )
 
         focused = MODULE._focus_job_log_text(job, log_text)
 
-        self.assertIn("review_start_runs_review_turn_and_emits_code_review_item", focused)
+        self.assertIn(
+            "review_start_runs_review_turn_and_emits_code_review_item", focused
+        )
         self.assertIn("Token usage: unavailable", focused)
         self.assertNotIn("Current runner version", focused)
 
@@ -2448,7 +2738,7 @@ class GeminiWatcherTests(unittest.TestCase):
             [
                 "Tests - ubuntu\ttests\t2026-03-31T21:03:00Z\ttest suite::v2::review::review_start_runs_review_turn_and_emits_code_review_item ... FAILED",
                 "Tests - ubuntu\ttests\t2026-03-31T21:03:01Z\tthread 'suite::v2::review::review_start_runs_review_turn_and_emits_code_review_item' panicked at app-server/tests/suite/v2/review.rs:140:5:",
-                "Tests - ubuntu\ttests\t2026-03-31T21:03:02Z\tassertion failed: review.contains(\"Token usage: unavailable\")",
+                'Tests - ubuntu\ttests\t2026-03-31T21:03:02Z\tassertion failed: review.contains("Token usage: unavailable")',
             ]
         )
 
@@ -2459,7 +2749,9 @@ class GeminiWatcherTests(unittest.TestCase):
             signals["failing_tests"][0],
         )
         self.assertIn("Token usage: unavailable", signals["assertions"][0])
-        self.assertIn("app-server/tests/suite/v2/review.rs:140", signals["failure_locations"][0])
+        self.assertIn(
+            "app-server/tests/suite/v2/review.rs:140", signals["failure_locations"][0]
+        )
 
     def test_build_gemini_prompt_calls_out_causal_analysis_rules(self):
         prompt = MODULE._build_gemini_prompt(
@@ -2548,7 +2840,9 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertEqual(context["recommended_follow_up"], "frontier_harvest")
         self.assertEqual(context["first_blocker"]["lane_id"], "lane-a")
 
-    def test_derive_validation_mode_context_prefers_targeted_repair_for_one_direct_failure(self):
+    def test_derive_validation_mode_context_prefers_targeted_repair_for_one_direct_failure(
+        self,
+    ):
         context = MODULE._derive_validation_mode_context(
             None,
             failed_jobs=[
@@ -2621,17 +2915,32 @@ class GeminiWatcherTests(unittest.TestCase):
             "log_chars_sent": 123,
             "log_sources": [],
             "code_context_paths": ["src/main.rs"],
-            "structured_failure_signals": {"failing_tests": ["suite::x"], "assertions": [], "failure_locations": [], "evidence_lines": []},
+            "structured_failure_signals": {
+                "failing_tests": ["suite::x"],
+                "assertions": [],
+                "failure_locations": [],
+                "evidence_lines": [],
+            },
             "validation_context": {"profile": "targeted"},
         }
 
         diagnose = Mock(return_value=(diagnosis, evidence, telemetry))
-        with patch.object(MODULE, "view_run", return_value=run_view), patch.object(
-            MODULE, "load_validation_summary", return_value={"validation": "summary"}
-        ), patch.object(MODULE, "_diagnose_failure", diagnose):
+        with (
+            patch.object(MODULE, "view_run", return_value=run_view),
+            patch.object(
+                MODULE,
+                "load_validation_summary",
+                return_value={"validation": "summary"},
+            ),
+            patch.object(MODULE, "_diagnose_failure", diagnose),
+        ):
             remembered = {}
-            snapshot1 = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
-            snapshot2 = MODULE.target_state_from_target(args, target, "owner/repo", remembered)
+            snapshot1 = MODULE.target_state_from_target(
+                args, target, "owner/repo", remembered
+            )
+            snapshot2 = MODULE.target_state_from_target(
+                args, target, "owner/repo", remembered
+            )
 
         self.assertEqual(diagnose.call_count, 1)
         self.assertEqual(snapshot1["actions"], ["diagnose_run_failure"])
@@ -2675,14 +2984,25 @@ class GeminiWatcherTests(unittest.TestCase):
             "suspect_paths": [".github/scripts/run_validation_android_shell_smoke.sh"],
             "evidence_notes": ["exit code 124 in failed job log"],
         }
-        telemetry = {"model": MODULE.GEMINI_DEFAULT_MODEL, "attempts": 1, "latency_ms": 11, "usage_metadata": None}
+        telemetry = {
+            "model": MODULE.GEMINI_DEFAULT_MODEL,
+            "attempts": 1,
+            "latency_ms": 11,
+            "usage_metadata": None,
+        }
 
-        with patch.object(MODULE, "_resolve_repo_root", return_value=None), patch.object(
-            MODULE, "_derive_validation_mode_context", return_value={"failure_structure": "single_blocker"}
-        ), patch.object(MODULE, "_collect_log_sources", return_value=log_sources), patch.object(
-            MODULE, "_collect_code_context", return_value=[]
-        ), patch.object(
-            MODULE, "_call_gemini_diagnosis", return_value=(diagnosis, telemetry)
+        with (
+            patch.object(MODULE, "_resolve_repo_root", return_value=None),
+            patch.object(
+                MODULE,
+                "_derive_validation_mode_context",
+                return_value={"failure_structure": "single_blocker"},
+            ),
+            patch.object(MODULE, "_collect_log_sources", return_value=log_sources),
+            patch.object(MODULE, "_collect_code_context", return_value=[]),
+            patch.object(
+                MODULE, "_call_gemini_diagnosis", return_value=(diagnosis, telemetry)
+            ),
         ):
             got_diagnosis, evidence, got_telemetry = MODULE._diagnose_failure(
                 repo="owner/repo",
@@ -2725,9 +3045,11 @@ class GeminiWatcherTests(unittest.TestCase):
             appearance_timeout_seconds=0,
             wait_for="first_action",
         )
-        with patch.object(MODULE, "view_run", return_value=run_view), patch.object(
-            MODULE, "load_validation_summary", return_value=None
-        ), patch.object(MODULE, "_diagnose_failure") as diagnose:
+        with (
+            patch.object(MODULE, "view_run", return_value=run_view),
+            patch.object(MODULE, "load_validation_summary", return_value=None),
+            patch.object(MODULE, "_diagnose_failure") as diagnose,
+        ):
             snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
 
         diagnose.assert_not_called()
@@ -2753,7 +3075,11 @@ class GeminiWatcherTests(unittest.TestCase):
             "updatedAt": "2026-03-31T00:05:00Z",
             "jobs": [],
         }
-        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 100, "spec": "run-id=100"}
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 100,
+            "spec": "run-id=100",
+        }
         args = types.SimpleNamespace(
             no_gemini_diagnosis=False,
             gemini_model=MODULE.GEMINI_DEFAULT_MODEL,
@@ -2768,7 +3094,12 @@ class GeminiWatcherTests(unittest.TestCase):
             "log_chars_sent": 0,
             "log_sources": [],
             "code_context_paths": [],
-            "structured_failure_signals": {"failing_tests": [], "assertions": [], "failure_locations": [], "evidence_lines": []},
+            "structured_failure_signals": {
+                "failing_tests": [],
+                "assertions": [],
+                "failure_locations": [],
+                "evidence_lines": [],
+            },
             "validation_context": {"profile": "checkpoint"},
         }
         telemetry = {
@@ -2778,12 +3109,16 @@ class GeminiWatcherTests(unittest.TestCase):
             "usage_metadata": None,
         }
 
-        with patch.object(MODULE, "view_run", return_value=run_view), patch.object(
-            MODULE, "load_validation_summary", return_value=None
-        ), patch.object(
-            MODULE,
-            "_diagnose_failure",
-            side_effect=MODULE.GeminiDiagnosisError("Gemini down", evidence=evidence, telemetry=telemetry),
+        with (
+            patch.object(MODULE, "view_run", return_value=run_view),
+            patch.object(MODULE, "load_validation_summary", return_value=None),
+            patch.object(
+                MODULE,
+                "_diagnose_failure",
+                side_effect=MODULE.GeminiDiagnosisError(
+                    "Gemini down", evidence=evidence, telemetry=telemetry
+                ),
+            ),
         ):
             snapshot = MODULE.target_state_from_target(args, target, "owner/repo", {})
 
@@ -2834,7 +3169,10 @@ class GeminiWatcherTests(unittest.TestCase):
             "followed_newer_run": False,
             "gemini_diagnosis": None,
             "gemini_error": None,
-            "diagnostic_evidence": {"failed_job_count": 1, "structured_failure_signals": {"failing_tests": ["x"]}},
+            "diagnostic_evidence": {
+                "failed_job_count": 1,
+                "structured_failure_signals": {"failing_tests": ["x"]},
+            },
             "gemini_telemetry": None,
             "validation_context": {
                 "profile": "targeted",
@@ -2845,7 +3183,10 @@ class GeminiWatcherTests(unittest.TestCase):
                 "failed_lane_count": 1,
                 "lane_set": "subagents",
             },
-            "diagnosis_status": {"state": "disabled", "summary": "Gemini diagnosis disabled"},
+            "diagnosis_status": {
+                "state": "disabled",
+                "summary": "Gemini diagnosis disabled",
+            },
             "alerts": [],
             "actions": ["diagnose_run_failure"],
             "ts": 123,
@@ -2856,7 +3197,10 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertNotIn("repo", compact)
         self.assertNotIn("validation_summary", compact)
         self.assertEqual(compact["diagnosis_status"], {"state": "disabled"})
-        self.assertEqual(compact["failed_jobs"], [{"id": 501, "name": "Tests", "conclusion": "failure"}])
+        self.assertEqual(
+            compact["failed_jobs"],
+            [{"id": 501, "name": "Tests", "conclusion": "failure"}],
+        )
         self.assertEqual(compact["run"]["id"], 99)
         self.assertNotIn("name", compact["run"])
         self.assertEqual(compact["diagnostic_evidence"]["failed_job_count"], 1)
@@ -2866,8 +3210,17 @@ class GeminiWatcherTests(unittest.TestCase):
     def test_compact_snapshot_verbose_details_passthrough(self):
         snapshot = {
             "repo": "sednalabs/codex",
-            "target": {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42, "spec": "run-id=42"},
-            "run": {"id": 42, "name": "full name", "status": "completed", "conclusion": "success"},
+            "target": {
+                "kind": MODULE.TARGET_KIND_RUN_ID,
+                "run_id": 42,
+                "spec": "run-id=42",
+            },
+            "run": {
+                "id": 42,
+                "name": "full name",
+                "status": "completed",
+                "conclusion": "success",
+            },
             "failed_jobs": [],
             "validation_summary": {"large": "payload"},
             "diagnosis_status": {"state": "not_needed", "summary": "ok"},

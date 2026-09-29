@@ -55,11 +55,11 @@ impl StateRuntime {
 
     /// Atomically advance configured-identity provenance to known absent.
     ///
-    /// Returns the resulting stored state, or `None` when the thread row is missing.
+    /// Returns `true` only when the stored state advanced.
     pub async fn mark_configured_identity_known_absent(
         &self,
         thread_id: ThreadId,
-    ) -> anyhow::Result<Option<ConfiguredIdentityProvenance>> {
+    ) -> anyhow::Result<bool> {
         self.advance_configured_identity_provenance(
             thread_id,
             ConfiguredIdentityProvenance::KnownAbsent,
@@ -69,11 +69,11 @@ impl StateRuntime {
 
     /// Atomically advance configured-identity provenance to present.
     ///
-    /// Returns the resulting stored state, or `None` when the thread row is missing.
+    /// Returns `true` only when the stored state advanced.
     pub async fn mark_configured_identity_present(
         &self,
         thread_id: ThreadId,
-    ) -> anyhow::Result<Option<ConfiguredIdentityProvenance>> {
+    ) -> anyhow::Result<bool> {
         self.advance_configured_identity_provenance(
             thread_id,
             ConfiguredIdentityProvenance::Present,
@@ -85,23 +85,21 @@ impl StateRuntime {
         &self,
         thread_id: ThreadId,
         target: ConfiguredIdentityProvenance,
-    ) -> anyhow::Result<Option<ConfiguredIdentityProvenance>> {
+    ) -> anyhow::Result<bool> {
         let target = target.as_i64();
-        let value = sqlx::query_scalar::<_, i64>(
+        let result = sqlx::query(
             r#"
 UPDATE threads
-SET configured_identity_provenance = MAX(configured_identity_provenance, ?)
-WHERE id = ?
-RETURNING configured_identity_provenance
+SET configured_identity_provenance = ?
+WHERE id = ? AND configured_identity_provenance < ?
             "#,
         )
         .bind(target)
         .bind(thread_id.to_string())
-        .fetch_optional(self.pool.as_ref())
+        .bind(target)
+        .execute(self.pool.as_ref())
         .await?;
-        value
-            .map(ConfiguredIdentityProvenance::try_from)
-            .transpose()
+        Ok(result.rows_affected() == 1)
     }
 }
 

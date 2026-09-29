@@ -14,7 +14,9 @@ USAGE_DB = Path.home() / ".codex" / "usage_1.sqlite"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Inspect a subagent's recent session tail and usage heartbeat.")
+    parser = argparse.ArgumentParser(
+        description="Inspect a subagent's recent session tail and usage heartbeat."
+    )
     parser.add_argument("--child-thread-id")
     parser.add_argument("--parent-thread-id")
     parser.add_argument("--agent-path")
@@ -23,12 +25,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-usage", action="store_true")
     args = parser.parse_args()
     if not args.child_thread_id and not (args.parent_thread_id and args.agent_path):
-        parser.error("provide --child-thread-id, or both --parent-thread-id and --agent-path")
+        parser.error(
+            "provide --child-thread-id, or both --parent-thread-id and --agent-path"
+        )
     return args
 
 
 def recent_day_dirs(days: int) -> list[Path]:
-    day_dirs = sorted([p for p in SESSIONS_ROOT.glob("*/*/*") if p.is_dir()], reverse=True)
+    day_dirs = sorted(
+        [p for p in SESSIONS_ROOT.glob("*/*/*") if p.is_dir()], reverse=True
+    )
     return day_dirs[:days]
 
 
@@ -54,7 +60,9 @@ def parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        normalized = value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+        normalized = (
+            value.removesuffix("Z") + "+00:00" if value.endswith("Z") else value
+        )
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
         return None
@@ -200,7 +208,8 @@ def inspect_session(path: Path, tail: int) -> dict[str, Any]:
     session_state = "unknown"
     if last_task_started and (
         not last_terminal
-        or (last_task_started.get("timestamp") or "") > (last_terminal.get("timestamp") or "")
+        or (last_task_started.get("timestamp") or "")
+        > (last_terminal.get("timestamp") or "")
     ):
         session_state = "active"
     elif last_terminal:
@@ -222,7 +231,11 @@ def inspect_session(path: Path, tail: int) -> dict[str, Any]:
 def session_sort_key(info: dict[str, Any]) -> tuple[str, int, str]:
     state = info.get("session_state")
     active_rank = 1 if state == "active" else 0
-    return (str(info.get("last_timestamp") or ""), active_rank, str(info.get("path") or ""))
+    return (
+        str(info.get("last_timestamp") or ""),
+        active_rank,
+        str(info.get("path") or ""),
+    )
 
 
 def select_best_session(infos: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
@@ -232,7 +245,9 @@ def select_best_session(infos: Iterable[dict[str, Any]]) -> dict[str, Any] | Non
     return max(materialized, key=session_sort_key)
 
 
-def find_by_child_thread_id(child_thread_id: str, tail: int) -> tuple[dict[str, Any] | None, int]:
+def find_by_child_thread_id(
+    child_thread_id: str, tail: int
+) -> tuple[dict[str, Any] | None, int]:
     matches = []
     for path in sorted(SESSIONS_ROOT.rglob(f"rollout-*{child_thread_id}.jsonl")):
         info = inspect_session(path, tail)
@@ -242,7 +257,9 @@ def find_by_child_thread_id(child_thread_id: str, tail: int) -> tuple[dict[str, 
     return select_best_session(matches), len(matches)
 
 
-def find_by_parent_and_agent(parent_thread_id: str, agent_path: str, days: int, tail: int) -> tuple[dict[str, Any] | None, int]:
+def find_by_parent_and_agent(
+    parent_thread_id: str, agent_path: str, days: int, tail: int
+) -> tuple[dict[str, Any] | None, int]:
     matches: list[dict[str, Any]] = []
     for day_dir in recent_day_dirs(days):
         for path_str in glob.glob(str(day_dir / "rollout-*.jsonl")):
@@ -254,7 +271,10 @@ def find_by_parent_and_agent(parent_thread_id: str, agent_path: str, days: int, 
             spawn = ensure_dict(subagent.get("thread_spawn"))
             if spawn.get("parent_thread_id") != parent_thread_id:
                 continue
-            if payload.get("agent_path") != agent_path and spawn.get("agent_path") != agent_path:
+            if (
+                payload.get("agent_path") != agent_path
+                and spawn.get("agent_path") != agent_path
+            ):
                 continue
             matches.append(info)
     return select_best_session(matches), len(matches)
@@ -314,7 +334,9 @@ def main() -> None:
     session_info = None
     match_count = 0
     if args.child_thread_id:
-        session_info, match_count = find_by_child_thread_id(args.child_thread_id, args.tail)
+        session_info, match_count = find_by_child_thread_id(
+            args.child_thread_id, args.tail
+        )
     if session_info is None:
         session_info, match_count = find_by_parent_and_agent(
             args.parent_thread_id,

@@ -1,10 +1,11 @@
 use crate::error::ApiError;
+use codex_client::Request;
 use codex_client::RequestTelemetry;
 use codex_client::Response;
 use codex_client::RetryPolicy;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
-use codex_client::run_with_retry_attempt;
+use codex_client::run_with_retry;
 use http::StatusCode;
 use std::future::Future;
 use std::sync::Arc;
@@ -64,22 +65,25 @@ impl WithStatus for StreamResponse {
     }
 }
 
-pub(crate) async fn run_with_attempt_telemetry<T, F, Fut>(
+pub(crate) async fn run_with_request_telemetry<T, F, Fut>(
     policy: RetryPolicy,
     telemetry: Option<Arc<dyn RequestTelemetry>>,
-    mut send: F,
+    make_request: impl FnMut() -> Request,
+    send: F,
 ) -> Result<T, TransportError>
 where
     T: WithStatus,
-    F: FnMut(u64) -> Fut,
+    F: Clone + Fn(Request) -> Fut,
     Fut: Future<Output = Result<T, TransportError>>,
 {
-    run_with_retry_attempt(policy, move |attempt| {
+    // Wraps `run_with_retry` to attach per-attempt request telemetry for both
+    // unary and streaming HTTP calls.
+    run_with_retry(policy, make_request, move |req, attempt| {
         let telemetry = telemetry.clone();
-        let future = send(attempt);
+        let send = send.clone();
         async move {
             let start = Instant::now();
-            let result = future.await;
+            let result = send(req).await;
             if let Some(t) = telemetry.as_ref() {
                 let (status, err) = match &result {
                     Ok(resp) => (Some(resp.status()), None),

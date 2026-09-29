@@ -1,14 +1,12 @@
 //! Fork-owned instruction adjustments applied after provider catalog composition.
 //!
-//! This deliberately does not modify the bundled `models.json` source.  The
-//! provider marker is supplied only by the OpenAI-compatible manager, so static
-//! catalogs and other consumers remain authoritative and untouched.
+//! The bundled catalog remains provider-owned.  This overlay is applied only
+//! to exact OpenAI model descriptors after they have been selected from a
+//! remote, cached, or configured static catalog.
 
 use codex_protocol::openai_models::ModelInfo;
 
 const TARGET_SLUGS: &[&str] = &[
-    "gpt-6-sol",
-    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -28,18 +26,17 @@ pub(crate) enum OverlayOutcome {
     TargetMatchedSentenceAbsent,
 }
 
-/// Apply the fork overlay to one fully composed OpenAI-compatible model.
+/// Apply the exact fork overlay to one fully composed OpenAI model.
 pub(crate) fn apply_openai_compatible(model: &mut ModelInfo) -> OverlayOutcome {
     if !TARGET_SLUGS.contains(&model.slug.as_str()) {
         return OverlayOutcome::NotApplicable;
     }
 
-    let mut applied = transform(&mut model.base_instructions);
-    if let Some(messages) = model.model_messages.as_mut()
-        && let Some(template) = messages.instructions_template.as_mut()
-    {
-        applied |= transform(template);
-    }
+    let applied = model
+        .model_messages
+        .as_mut()
+        .and_then(|messages| messages.instructions_template.as_mut())
+        .is_some_and(transform);
     let outcome = if applied {
         OverlayOutcome::Applied
     } else {
@@ -67,7 +64,7 @@ mod tests {
     use super::*;
     use codex_protocol::openai_models::ModelMessages;
 
-    fn model(slug: &str, base: &str, template: Option<&str>) -> ModelInfo {
+    fn model(slug: &str, template: Option<&str>) -> ModelInfo {
         let mut model = crate::bundled_models_response()
             .expect("bundled models should parse")
             .models
@@ -75,57 +72,28 @@ mod tests {
             .next()
             .expect("bundled models should contain a model");
         model.slug = slug.to_string();
-        model.base_instructions = base.to_string();
         model.model_messages = template.map(|template| ModelMessages {
             instructions_template: Some(template.to_string()),
-            instructions_variables: None,
-            approvals: None,
-            auto_review: None,
-            permissions: None,
+            ..Default::default()
         });
         model
     }
 
     #[test]
-    fn exact_openai_model_is_transformed_in_both_instruction_sources() {
+    fn exact_target_transforms_canonical_instruction_source() {
         let source = format!(
             "before {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} after; a deliberate short timeout of 5 seconds remains allowed"
         );
-        let mut model = model("codex-auto-review", &source, Some(&source));
+        let mut model = model("codex-auto-review", Some(&source));
         assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
-        assert_eq!(
-            model.base_instructions,
-            format!(
-                "before {COMMENTARY_CADENCE_REPLACEMENT} middle  after; a deliberate short timeout of 5 seconds remains allowed"
-            )
-        );
-        assert_eq!(
-            model.model_messages.as_ref().unwrap().instructions_template,
-            Some(format!(
-                "before {COMMENTARY_CADENCE_REPLACEMENT} middle  after; a deliberate short timeout of 5 seconds remains allowed"
-            ))
-        );
-
-        assert!(
-            model
-                .base_instructions
-                .contains(COMMENTARY_CADENCE_REPLACEMENT)
-        );
-        assert!(
-            model
-                .base_instructions
-                .contains("active work is progressing")
-        );
-        assert!(model.base_instructions.contains(
-            "passive waits that remain interruptible by mailbox, user steer, or cancellation"
-        ));
-        assert!(
-            model
-                .base_instructions
-                .contains("deliberate short timeout of 5 seconds remains allowed")
-        );
-        assert!(!model.base_instructions.contains(COMMENTARY_CADENCE_LITERAL));
-        assert!(!model.base_instructions.contains(BLOCKING_WAIT_LITERAL));
+        let instructions = model
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref())
+            .expect("canonical instructions template");
+        assert!(instructions.contains(COMMENTARY_CADENCE_REPLACEMENT));
+        assert!(!instructions.contains(COMMENTARY_CADENCE_LITERAL));
+        assert!(!instructions.contains(BLOCKING_WAIT_LITERAL));
 
         let transformed = model.clone();
         assert_eq!(
@@ -136,33 +104,18 @@ mod tests {
     }
 
     #[test]
-    fn all_target_slugs_transform_both_fields_and_astra_shape() {
+    fn all_exact_targets_transform_and_namespaced_variants_do_not() {
         let source = format!("{COMMENTARY_CADENCE_LITERAL}\n{BLOCKING_WAIT_LITERAL}");
         for slug in TARGET_SLUGS {
-            let mut model = model(slug, &source, Some(&source));
-            assert_eq!(
-                apply_openai_compatible(&mut model),
-                OverlayOutcome::Applied,
-                "{slug}"
-            );
-            assert!(!model.base_instructions.contains(COMMENTARY_CADENCE_LITERAL));
-            assert!(!model.base_instructions.contains(BLOCKING_WAIT_LITERAL));
-            let template = model.model_messages.unwrap().instructions_template.unwrap();
-            assert!(!template.contains(COMMENTARY_CADENCE_LITERAL));
-            assert!(!template.contains(BLOCKING_WAIT_LITERAL));
+            let mut model = model(slug, Some(&source));
+            assert_eq!(apply_openai_compatible(&mut model), OverlayOutcome::Applied);
         }
-
-        let mut astra = model("gpt-6-astra", "", Some(&source));
-        assert_eq!(apply_openai_compatible(&mut astra), OverlayOutcome::Applied);
-        assert_eq!(astra.base_instructions, "");
-    }
-
-    #[test]
-    fn missing_marker_or_non_exact_slug_is_unchanged() {
-        let source =
-            format!("before {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} after");
-        for (slug,) in [("custom",), ("codex-auto-review-v2",)] {
-            let mut model = model(slug, &source, Some(&source));
+        for slug in [
+            "custom",
+            "codex-auto-review-v2",
+            "openai-codex/codex-auto-review",
+        ] {
+            let mut model = model(slug, Some(&source));
             let original = model.clone();
             assert_eq!(
                 apply_openai_compatible(&mut model),
@@ -173,25 +126,8 @@ mod tests {
     }
 
     #[test]
-    fn non_target_preserves_provider_literals_byte_for_byte() {
-        let source =
-            format!("prefix {COMMENTARY_CADENCE_LITERAL} middle {BLOCKING_WAIT_LITERAL} suffix");
-        let mut model = model("gpt-5.5", &source, Some(&source));
-        let original = model.clone();
-        assert_eq!(
-            apply_openai_compatible(&mut model),
-            OverlayOutcome::NotApplicable
-        );
-        assert_eq!(model, original);
-    }
-
-    #[test]
-    fn exact_target_without_sentence_reports_drift() {
-        let mut model = model("codex-auto-review", "already clean", Some("also clean"));
-        assert_eq!(
-            apply_openai_compatible(&mut model),
-            OverlayOutcome::TargetMatchedSentenceAbsent
-        );
+    fn exact_target_without_marker_reports_drift() {
+        let mut model = model("codex-auto-review", Some("also clean"));
         assert_eq!(
             apply_openai_compatible(&mut model),
             OverlayOutcome::TargetMatchedSentenceAbsent

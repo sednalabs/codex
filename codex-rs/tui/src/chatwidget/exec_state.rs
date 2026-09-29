@@ -1,7 +1,6 @@
 //! Unified exec bookkeeping state and helpers for `ChatWidget`.
 
 use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
-use codex_app_server_protocol::TerminalWaitInfo;
 use codex_protocol::parse_command::ParsedCommand;
 
 use crate::exec_command::split_command_string;
@@ -10,7 +9,6 @@ pub(super) struct RunningCommand {
     pub(super) command: Vec<String>,
     pub(super) parsed_cmd: Vec<ParsedCommand>,
     pub(super) source: ExecCommandSource,
-    pub(super) terminal_wait: Option<TerminalWaitInfo>,
 }
 
 pub(super) struct UnifiedExecProcessSummary {
@@ -38,19 +36,13 @@ impl UnifiedExecWaitState {
 pub(super) struct UnifiedExecWaitStreak {
     pub(super) process_id: String,
     pub(super) command_display: Option<String>,
-    pub(super) terminal_wait: TerminalWaitInfo,
 }
 
 impl UnifiedExecWaitStreak {
-    pub(super) fn new(
-        process_id: String,
-        command_display: Option<String>,
-        terminal_wait: TerminalWaitInfo,
-    ) -> Self {
+    pub(super) fn new(process_id: String, command_display: Option<String>) -> Self {
         Self {
             process_id,
             command_display: command_display.filter(|display| !display.is_empty()),
-            terminal_wait,
         }
     }
 

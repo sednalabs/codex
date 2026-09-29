@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 //! Write-path implementation for Codex memories.
 //!
 //! This crate owns the startup memory pipeline, file-backed memory artifact
@@ -11,9 +9,11 @@ mod extensions;
 mod guard;
 mod metrics;
 mod phase1;
+mod phase1_output;
 mod phase2;
 mod phase2_attestation;
 mod prompts;
+mod rollout_input;
 mod runtime;
 mod start;
 mod storage;
@@ -105,6 +105,7 @@ mod stage_one {
 }
 
 mod stage_two {
+    pub(super) const MODEL: &str = "gpt-5.5";
     pub(super) const REASONING_EFFORT: codex_protocol::openai_models::ReasoningEffort =
         codex_protocol::openai_models::ReasoningEffort::Medium;
     pub(super) const JOB_LEASE_SECONDS: i64 = 3_600;
@@ -135,5 +136,65 @@ pub fn raw_memories_file(root: &Path) -> PathBuf {
 }
 
 pub async fn ensure_layout(root: &Path) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(root).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "memory root must not be a symbolic link: {}",
+                    root.display()
+                ),
+            ));
+        }
+        Ok(_) => {
+            remove_memory_symlinks(root).await?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
     tokio::fs::create_dir_all(rollout_summaries_dir(root)).await
+}
+
+pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut removed = 0;
+
+    while let Some(directory) = directories.pop() {
+        let mut entries = tokio::fs::read_dir(directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_symlink() {
+                #[cfg(windows)]
+                remove_windows_symlink(&path).await?;
+                #[cfg(not(windows))]
+                tokio::fs::remove_file(&path).await?;
+                tracing::warn!(
+                    "removed symbolic link from memory workspace: {}",
+                    path.display()
+                );
+                removed += 1;
+            } else if file_type.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+#[cfg(windows)]
+async fn remove_windows_symlink(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir(path).await {
+        Ok(()) => Ok(()),
+        Err(remove_dir_error) => match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(remove_file_error)
+                if remove_file_error.kind() == std::io::ErrorKind::NotADirectory =>
+            {
+                Err(remove_dir_error)
+            }
+            Err(remove_file_error) => Err(remove_file_error),
+        },
+    }
 }

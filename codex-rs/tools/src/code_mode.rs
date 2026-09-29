@@ -1,5 +1,6 @@
 use crate::ResponsesApiNamespaceTool;
 use crate::ToolName;
+use crate::ToolOutputSchema;
 use crate::ToolSpec;
 use codex_code_mode::CodeModeToolKind;
 use codex_code_mode::ToolDefinition as CodeModeToolDefinition;
@@ -31,17 +32,30 @@ pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
                     ResponsesApiNamespaceTool::Function(tool) => {
                         let tool_name =
                             ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                        let (all_tools_name, all_tools_module) =
-                            all_tools_metadata_for_tool_name(&tool_name);
                         let definition = CodeModeToolDefinition {
                             name: code_mode_name_for_tool_name(&tool_name),
                             tool_name,
-                            all_tools_name,
-                            all_tools_module,
                             description: tool.description.clone(),
                             kind: CodeModeToolKind::Function,
                             input_schema: serde_json::to_value(&tool.parameters).ok(),
-                            output_schema: tool.output_schema.clone(),
+                            output_schema: tool
+                                .output_schema
+                                .as_ref()
+                                .map(ToolOutputSchema::to_value),
+                        };
+                        tool.description =
+                            codex_code_mode::augment_tool_definition(definition).description;
+                    }
+                    ResponsesApiNamespaceTool::Custom(tool) => {
+                        let tool_name =
+                            ToolName::namespaced(namespace.name.clone(), tool.name.clone());
+                        let definition = CodeModeToolDefinition {
+                            name: code_mode_name_for_tool_name(&tool_name),
+                            tool_name,
+                            description: tool.description.clone(),
+                            kind: CodeModeToolKind::Freeform,
+                            input_schema: None,
+                            output_schema: None,
                         };
                         tool.description =
                             codex_code_mode::augment_tool_definition(definition).description;
@@ -115,26 +129,20 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
     match spec {
         ToolSpec::Function(tool) => {
             let name = tool.name.clone();
-            let (all_tools_name, all_tools_module) = all_tools_metadata_for_name(&name);
             vec![CodeModeToolDefinition {
                 tool_name: ToolName::plain(name.clone()),
                 name,
-                all_tools_name,
-                all_tools_module,
                 description: tool.description.clone(),
                 kind: CodeModeToolKind::Function,
                 input_schema: serde_json::to_value(&tool.parameters).ok(),
-                output_schema: tool.output_schema.clone(),
+                output_schema: tool.output_schema.as_ref().map(ToolOutputSchema::to_value),
             }]
         }
         ToolSpec::Freeform(tool) => {
             let name = tool.name.clone();
-            let (all_tools_name, all_tools_module) = all_tools_metadata_for_name(&name);
             vec![CodeModeToolDefinition {
                 tool_name: ToolName::plain(name.clone()),
                 name,
-                all_tools_name,
-                all_tools_module,
                 description: tool.description.clone(),
                 kind: CodeModeToolKind::Freeform,
                 input_schema: None,
@@ -147,17 +155,24 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
             .map(|tool| match tool {
                 ResponsesApiNamespaceTool::Function(tool) => {
                     let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
-                    let (all_tools_name, all_tools_module) =
-                        all_tools_metadata_for_tool_name(&tool_name);
                     CodeModeToolDefinition {
                         name: code_mode_name_for_tool_name(&tool_name),
                         tool_name,
-                        all_tools_name,
-                        all_tools_module,
                         description: tool.description.clone(),
                         kind: CodeModeToolKind::Function,
                         input_schema: serde_json::to_value(&tool.parameters).ok(),
-                        output_schema: tool.output_schema.clone(),
+                        output_schema: tool.output_schema.as_ref().map(ToolOutputSchema::to_value),
+                    }
+                }
+                ResponsesApiNamespaceTool::Custom(tool) => {
+                    let tool_name = ToolName::namespaced(namespace.name.clone(), tool.name.clone());
+                    CodeModeToolDefinition {
+                        name: code_mode_name_for_tool_name(&tool_name),
+                        tool_name,
+                        description: tool.description.clone(),
+                        kind: CodeModeToolKind::Freeform,
+                        input_schema: None,
+                        output_schema: None,
                     }
                 }
             })
@@ -166,28 +181,11 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
     }
 }
 
-fn all_tools_metadata_for_tool_name(tool_name: &ToolName) -> (Option<String>, Option<String>) {
-    all_tools_metadata_for_name(&code_mode_name_for_tool_name(tool_name))
-}
-
-fn all_tools_metadata_for_name(tool_name: &str) -> (Option<String>, Option<String>) {
-    let Some(rest) = tool_name.strip_prefix("mcp__") else {
-        return (None, None);
-    };
-    let Some((server, nested_name)) = rest.split_once("__") else {
-        return (None, None);
-    };
-    if server.is_empty() || nested_name.is_empty() {
-        return (None, None);
+pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
+    if tool_name.is_default_namespace() {
+        return tool_name.name.clone();
     }
 
-    (
-        Some(nested_name.to_string()),
-        Some(format!("tools/mcp/{server}.js")),
-    )
-}
-
-pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
     match tool_name.namespace.as_deref() {
         Some(namespace) if namespace.ends_with('_') || tool_name.name.starts_with('_') => {
             format!("{namespace}{}", tool_name.name)

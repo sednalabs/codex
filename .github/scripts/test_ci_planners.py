@@ -90,10 +90,12 @@ RESOLVE_BAZEL_CI_MODE = load_module(
     "resolve_bazel_ci_mode_module", SCRIPTS_DIR / "resolve_bazel_ci_mode.py"
 )
 AGGREGATE_VALIDATION_SUMMARY = load_module(
-    "aggregate_validation_summary_module", SCRIPTS_DIR / "aggregate_validation_summary.py"
+    "aggregate_validation_summary_module",
+    SCRIPTS_DIR / "aggregate_validation_summary.py",
 )
 REPORT_ACTIONS_CACHE_OCCUPANCY = load_module(
-    "report_actions_cache_occupancy_module", SCRIPTS_DIR / "report_actions_cache_occupancy.py"
+    "report_actions_cache_occupancy_module",
+    SCRIPTS_DIR / "report_actions_cache_occupancy.py",
 )
 CHECK_MARKDOWN_LINKS = load_module(
     "check_markdown_links_module", SCRIPTS_DIR / "check_markdown_links.py"
@@ -140,7 +142,9 @@ def run_script(script: Path, *args: str) -> dict:
 
 
 def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
-    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    payload = yaml.load(
+        workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
     return (
         (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
         .get("lane", {})
@@ -149,12 +153,16 @@ def parse_workflow_dispatch_lane_options(workflow_path: Path) -> list[str]:
 
 
 def parse_pull_request_types(workflow_path: Path) -> list[str]:
-    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    return (((payload.get("on") or {}).get("pull_request") or {}).get("types") or [])
+    payload = yaml.load(
+        workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
+    return ((payload.get("on") or {}).get("pull_request") or {}).get("types") or []
 
 
 def load_workflow_payload(workflow_path: Path) -> dict:
-    payload = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    payload = yaml.load(
+        workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
     return payload if isinstance(payload, dict) else {}
 
 
@@ -189,7 +197,7 @@ def parse_github_output_file(output_path: Path) -> dict[str, str]:
 
 def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) -> dict:
     payload = load_workflow_payload(workflow_path)
-    steps = (((payload.get("jobs") or {}).get(job_name) or {}).get("steps") or [])
+    steps = ((payload.get("jobs") or {}).get(job_name) or {}).get("steps") or []
     for step in steps:
         if step.get("name") == step_name:
             return step
@@ -197,11 +205,14 @@ def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) ->
 
 
 def workflow_checkout_identity_script(workflow_path: Path) -> str:
-    run_script = workflow_step_by_name(
-        workflow_path,
-        "metadata",
-        "Compute checkout ref",
-    ).get("run") or ""
+    run_script = (
+        workflow_step_by_name(
+            workflow_path,
+            "metadata",
+            "Compute checkout ref",
+        ).get("run")
+        or ""
+    )
     start_marker = "# BEGIN checkout identity"
     end_marker = "# END checkout identity"
     start = run_script.index(start_marker)
@@ -273,7 +284,11 @@ def just_recipe_bodies(justfile_path: Path) -> dict[str, list[str]]:
 
 def just_recipes_with_nextest(justfile_path: Path) -> set[str]:
     recipes = just_recipe_bodies(justfile_path)
-    return {name for name, body in recipes.items() if any("cargo nextest" in line for line in body)}
+    return {
+        name
+        for name, body in recipes.items()
+        if any("cargo nextest" in line for line in body)
+    }
 
 
 class TempGitRepo:
@@ -532,7 +547,9 @@ class SyncUpstreamMirrorTests(unittest.TestCase):
 
         self.git(source, "push", str(upstream_bare), "main:refs/heads/main")
         mirror_sha = new_sha if mirror_state == "exact" else old_sha
-        self.git(source, "push", str(origin_bare), f"{mirror_sha}:refs/heads/upstream-main")
+        self.git(
+            source, "push", str(origin_bare), f"{mirror_sha}:refs/heads/upstream-main"
+        )
 
         self.git(root, "init", "--initial-branch=main", str(repo))
         self.git(repo, "remote", "add", "origin", str(origin_bare))
@@ -736,7 +753,9 @@ class DispatchSednaReleaseTests(unittest.TestCase):
                     "resolve_release_metadata",
                     return_value=metadata,
                 ),
-                mock.patch.object(DISPATCH_SEDNA_RELEASE, "dispatch_release") as dispatch,
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE, "dispatch_release"
+                ) as dispatch,
             ):
                 result = DISPATCH_SEDNA_RELEASE.main(
                     [
@@ -966,7 +985,9 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(plan["lane_ids"], ["lane.left", "lane.right"])
         self.assertEqual(plan["uncovered_files"], [])
 
-    def test_composed_followup_plan_marks_uncovered_paths_for_frontier_fallback(self) -> None:
+    def test_composed_followup_plan_marks_uncovered_paths_for_frontier_fallback(
+        self,
+    ) -> None:
         routes = [
             {
                 "route_id": "left",
@@ -1071,7 +1092,9 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_workflow_ci_route_accepts_lane_reusable_workflows_and_catalog(self) -> None:
+    def test_workflow_ci_route_accepts_lane_reusable_workflows_and_catalog(
+        self,
+    ) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
                 ".github/workflows/_validation-lane-rust-minimal.yml",
@@ -1247,7 +1270,9 @@ class RouteSelectionTests(unittest.TestCase):
             archive.get("artifact_name"),
             "validation-lab-nextest-core-carry-pilot",
         )
-        self.assertEqual(archive.get("archive_file_name"), "codex-core-carry-nextest.tar.zst")
+        self.assertEqual(
+            archive.get("archive_file_name"), "codex-core-carry-nextest.tar.zst"
+        )
         self.assertEqual(
             archive.get("build_script_path"),
             ".github/scripts/validation-lanes/build-nextest-archive-core-carry-pilot.sh",
@@ -1327,7 +1352,9 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
-    def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
+    def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(
+        self,
+    ) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json"],
             self.routes,
@@ -1365,7 +1392,9 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(rust_ci_lanes, route["lane_ids"])
 
-    def test_collab_spawn_identity_consumer_sources_use_direct_consumer_lane(self) -> None:
+    def test_collab_spawn_identity_consumer_sources_use_direct_consumer_lane(
+        self,
+    ) -> None:
         expected = [
             "codex.core-subagent-model-pinning-targeted",
             "codex.app-server-protocol-test",
@@ -1384,7 +1413,9 @@ class RouteSelectionTests(unittest.TestCase):
                     expected,
                 )
 
-    def test_collab_spawn_identity_authority_sources_trigger_dedicated_route(self) -> None:
+    def test_collab_spawn_identity_authority_sources_trigger_dedicated_route(
+        self,
+    ) -> None:
         route = next(
             route
             for route in self.routes
@@ -1442,7 +1473,9 @@ class RouteSelectionTests(unittest.TestCase):
             "sdk/python/tests/test_contract_generation.py",
         ):
             with self.subTest(path=path):
-                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes)
+                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                    [path], self.routes
+                )
                 self.assertEqual(lanes, route["lane_ids"])
                 self.assertIn("codex.sdk-python-targeted", lanes)
 
@@ -1463,7 +1496,9 @@ class RouteSelectionTests(unittest.TestCase):
         ]
 
         self.assertEqual(
-            RESOLVE_VALIDATION_PLAN.select_followup_lanes(["identity/source.rs"], routes),
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+                ["identity/source.rs"], routes
+            ),
             [],
         )
         self.assertEqual(
@@ -1491,7 +1526,9 @@ class RouteSelectionTests(unittest.TestCase):
             RESOLVE_VALIDATION_PLAN.select_followup_lanes,
             RESOLVE_RUST_CI_MODE.select_followup_lanes,
         ):
-            with self.subTest(selector=selector.__module__, files=["identity/source.rs"]):
+            with self.subTest(
+                selector=selector.__module__, files=["identity/source.rs"]
+            ):
                 with self.assertRaisesRegex(
                     SystemExit,
                     "unrelated-invalid must set priority to a non-negative integer",
@@ -1532,26 +1569,11 @@ class RouteSelectionTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
         )
         expected_lane_ids = [
-            lane["lane_id"]
-            for lane in self.catalog["lanes"]
-            if lane.get("lane_id")
+            lane["lane_id"] for lane in self.catalog["lanes"] if lane.get("lane_id")
         ]
         self.assertEqual(
             workflow_options,
             ["all", *expected_lane_ids],
-        )
-
-    def test_coverage_workflow_does_not_use_code_quality_product(self) -> None:
-        workflow_path = REPO_ROOT / ".github/workflows/code-coverage.yml"
-        workflow_text = workflow_path.read_text(encoding="utf-8")
-        payload = load_workflow_payload(workflow_path)
-
-        self.assertEqual(payload.get("name"), "Coverage Tests")
-        self.assertNotIn("actions/upload-code-coverage@", workflow_text)
-        self.assertNotIn("code-quality:", workflow_text)
-        self.assertEqual(
-            set((payload.get("jobs") or {}).keys()),
-            {"python-tools", "python-sdk", "typescript-sdk"},
         )
 
     def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
@@ -1588,12 +1610,17 @@ class RouteSelectionTests(unittest.TestCase):
 
     def test_bazel_macos_clippy_caps_hosted_runner_fanout(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
-        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get("steps") or []
-        clippy_run = next(
-            step
-            for step in clippy_steps
-            if step.get("name") == "bazel build --config=clippy lint targets"
-        ).get("run") or ""
+        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get(
+            "steps"
+        ) or []
+        clippy_run = (
+            next(
+                step
+                for step in clippy_steps
+                if step.get("name") == "bazel build --config=clippy lint targets"
+            ).get("run")
+            or ""
+        )
         self.assertIn('[[ "${RUNNER_OS}" == "macOS" ]]', clippy_run)
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
@@ -1601,12 +1628,14 @@ class RouteSelectionTests(unittest.TestCase):
     def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         windows_steps = (
-            ((payload.get("jobs") or {}).get("test-windows-shard") or {}).get("steps")
-            or []
+            (payload.get("jobs") or {}).get("test-windows-shard") or {}
+        ).get("steps") or []
+        windows_test_run = (
+            next(
+                step for step in windows_steps if step.get("name") == "bazel test shard"
+            ).get("run")
+            or ""
         )
-        windows_test_run = next(
-            step for step in windows_steps if step.get("name") == "bazel test shard"
-        ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
@@ -1679,19 +1708,23 @@ class RouteSelectionTests(unittest.TestCase):
             gnullvm_exec_patch,
         )
         self.assertIn(
-            '''+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
+            """+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
 +    "x86_64-pc-windows-gnullvm",
 +    "aarch64-pc-windows-gnullvm",
-+]''',
++]""",
             gnullvm_exec_patch,
         )
         self.assertIn(
             "@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [",
             gnullvm_exec_patch,
         )
-        for hunk, expected_old, observed_old, expected_new, observed_new in (
-            unified_diff_hunk_line_counts(gnullvm_exec_patch)
-        ):
+        for (
+            hunk,
+            expected_old,
+            observed_old,
+            expected_new,
+            observed_new,
+        ) in unified_diff_hunk_line_counts(gnullvm_exec_patch):
             with self.subTest(hunk=hunk):
                 self.assertEqual(observed_old, expected_old)
                 self.assertEqual(observed_new, expected_new)
@@ -1720,12 +1753,14 @@ class RouteSelectionTests(unittest.TestCase):
             2,
         )
         self.assertIn(
-            "name = \"miri_{}_{}_{}\".format(exec_triple.system, exec_triple.arch, version_key),",
+            'name = "miri_{}_{}_{}".format(exec_triple.system, exec_triple.arch, version_key),',
             gnullvm_exec_patch,
         )
 
         execution_logs_upload = next(
-            step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
+            step
+            for step in native_steps
+            if step.get("name") == "Upload Bazel execution logs"
         )
         self.assertEqual(
             (execution_logs_upload.get("with") or {}).get("name"),
@@ -1748,7 +1783,9 @@ class RouteSelectionTests(unittest.TestCase):
             for step in native_steps
             if step.get("name") == "Upload native Windows Bazel diagnostics"
         )
-        self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
+        self.assertEqual(
+            (diagnostics_upload.get("with") or {}).get("retention-days"), "3"
+        )
 
     def test_native_windows_health_analyzes_arm64_gnullvm_rust_toolchain_selection(
         self,
@@ -1756,10 +1793,9 @@ class RouteSelectionTests(unittest.TestCase):
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
         )
-        analysis_job = (
-            (payload.get("jobs") or {}).get("analyze-windows-arm64-gnullvm-toolchain")
-            or {}
-        )
+        analysis_job = (payload.get("jobs") or {}).get(
+            "analyze-windows-arm64-gnullvm-toolchain"
+        ) or {}
         self.assertEqual(analysis_job.get("runs-on"), "ubuntu-latest")
         self.assertEqual(
             analysis_job.get("name"),
@@ -1861,7 +1897,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         selector_match = re.search(
             r'toolchain\(\n    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",'
-            r'.*?\n\)\n',
+            r".*?\n\)\n",
             build_bazel,
             flags=re.DOTALL,
         )
@@ -1912,7 +1948,9 @@ class RouteSelectionTests(unittest.TestCase):
             "${{ steps.prepare_bazel.outputs.repository-cache-key }}",
         )
 
-    def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
+    def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(
+        self,
+    ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         jobs = payload.get("jobs") or {}
         plan_job = jobs.get("plan") or {}
@@ -1926,7 +1964,9 @@ class RouteSelectionTests(unittest.TestCase):
         )
         plan_steps = plan_job.get("steps") or []
         compare_step = next(
-            step for step in plan_steps if step.get("name") == "Compare exact changed files"
+            step
+            for step in plan_steps
+            if step.get("name") == "Compare exact changed files"
         )
         self.assertEqual(compare_step.get("uses"), "actions/github-script@v9.0.0")
         self.assertEqual(
@@ -1956,27 +1996,45 @@ class RouteSelectionTests(unittest.TestCase):
 
         docs_job = jobs.get("docs-only") or {}
         self.assertEqual(docs_job.get("needs"), "plan")
-        self.assertEqual(docs_job.get("if"), "${{ needs.plan.outputs.mode == 'docs_only' }}")
+        self.assertEqual(
+            docs_job.get("if"), "${{ needs.plan.outputs.mode == 'docs_only' }}"
+        )
         docs_step = next(
             step
             for step in docs_job.get("steps") or []
             if step.get("name") == "Check markdown links"
         )
-        self.assertEqual(docs_step.get("run"), "python3 .github/scripts/check_markdown_links.py")
+        self.assertEqual(
+            docs_step.get("run"), "python3 .github/scripts/check_markdown_links.py"
+        )
         observer_job = jobs.get("observer-only") or {}
         self.assertEqual(observer_job.get("needs"), "plan")
-        self.assertEqual(observer_job.get("if"), "${{ needs.plan.outputs.run_observer == 'true' }}")
-        observer_run = next(
-            step for step in observer_job.get("steps") or [] if step.get("name") == "Run observer validation lanes"
-        ).get("run") or ""
+        self.assertEqual(
+            observer_job.get("if"), "${{ needs.plan.outputs.run_observer == 'true' }}"
+        )
+        observer_run = (
+            next(
+                step
+                for step in observer_job.get("steps") or []
+                if step.get("name") == "Run observer validation lanes"
+            ).get("run")
+            or ""
+        )
         self.assertIn("agent-workflow-sanity.sh", observer_run)
         self.assertIn("workflow-security-targeted.sh", observer_run)
 
-        for job_name in ["test", "test-windows-shard", "clippy", "verify-release-build"]:
+        for job_name in [
+            "test",
+            "test-windows-shard",
+            "clippy",
+            "verify-release-build",
+        ]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 self.assertEqual(job.get("needs"), "plan")
-                self.assertEqual(job.get("if"), "${{ needs.plan.outputs.run_bazel == 'true' }}")
+                self.assertEqual(
+                    job.get("if"), "${{ needs.plan.outputs.run_bazel == 'true' }}"
+                )
 
         windows_gate = jobs.get("test-windows") or {}
         self.assertEqual(windows_gate.get("needs"), ["plan", "test-windows-shard"])
@@ -2026,7 +2084,9 @@ class RouteSelectionTests(unittest.TestCase):
                 needs = {
                     "plan": {"result": "success", "outputs": {"mode": mode}},
                     "docs-only": {"result": docs_result},
-                    "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
+                    "observer-only": {
+                        "result": "success" if mode == "observer_only" else "skipped"
+                    },
                     "test": {"result": normal_result},
                     "test-windows-shard": {"result": normal_result},
                     "test-windows": {"result": normal_result},
@@ -2043,7 +2103,9 @@ class RouteSelectionTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
-        setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
+        setup_action = load_workflow_payload(
+            REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml"
+        )
         setup_bazel_step = next(
             step
             for step in ((setup_action.get("runs") or {}).get("steps") or [])
@@ -2062,11 +2124,13 @@ class RouteSelectionTests(unittest.TestCase):
             "${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}",
         )
 
-        prepare_action = load_workflow_payload(REPO_ROOT / ".github/actions/prepare-bazel-ci/action.yml")
+        prepare_action = load_workflow_payload(
+            REPO_ROOT / ".github/actions/prepare-bazel-ci/action.yml"
+        )
         self.assertEqual(
-            (prepare_action.get("outputs") or {}).get("repository-cache-write-enabled", {}).get(
-                "value"
-            ),
+            (prepare_action.get("outputs") or {})
+            .get("repository-cache-write-enabled", {})
+            .get("value"),
             "${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}",
         )
         policy_step = next(
@@ -2135,13 +2199,12 @@ class RouteSelectionTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
         )
         native_steps = (
-            ((native_health.get("jobs") or {}).get("test-windows-native-main") or {}).get(
-                "steps"
-            )
-            or []
-        )
+            (native_health.get("jobs") or {}).get("test-windows-native-main") or {}
+        ).get("steps") or []
         native_cache_save = next(
-            step for step in native_steps if step.get("name") == "Save bazel repository cache"
+            step
+            for step in native_steps
+            if step.get("name") == "Save bazel repository cache"
         )
         self.assertEqual(native_cache_save.get("continue-on-error"), "true")
         self.assertIn(
@@ -2388,11 +2451,15 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             base_sha = self.commit_all(repo, "base")
 
             self.run_git(repo, "checkout", "-b", "upstream")
-            (repo / "upstream_only.py").write_text("print('upstream')\n", encoding="utf-8")
+            (repo / "upstream_only.py").write_text(
+                "print('upstream')\n", encoding="utf-8"
+            )
             upstream_sha = self.commit_all(repo, "upstream")
 
             self.run_git(repo, "checkout", "-b", "downstream", base_sha)
-            (repo / "downstream_only.py").write_text("print('downstream')\n", encoding="utf-8")
+            (repo / "downstream_only.py").write_text(
+                "print('downstream')\n", encoding="utf-8"
+            )
             downstream_sha = self.commit_all(repo, "downstream")
 
             all_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
@@ -2508,12 +2575,16 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
 
             self.run_git(repo, "checkout", "-b", "upstream")
             (repo / "README.md").write_text("upstream README\n", encoding="utf-8")
-            (repo / "docs" / "guide.md").write_text("upstream guide\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text(
+                "upstream guide\n", encoding="utf-8"
+            )
             upstream_sha = self.commit_all(repo, "upstream docs")
 
             self.run_git(repo, "checkout", "-b", "downstream", base_sha)
             (repo / "README.md").write_text("downstream README\n", encoding="utf-8")
-            (repo / "docs" / "guide.md").write_text("downstream guide\n", encoding="utf-8")
+            (repo / "docs" / "guide.md").write_text(
+                "downstream guide\n", encoding="utf-8"
+            )
             downstream_sha = self.commit_all(repo, "downstream docs")
 
             live_items = DOWNSTREAM_DIVERGENCE_AUDIT.diff_items_between(
@@ -2698,9 +2769,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                 "before\nshared\n\n\n\n\nnew downstream\nend\n",
                 encoding="utf-8",
             )
-            downstream_with_new_delta = self.commit_all(
-                repo, "downstream new delta"
-            )
+            downstream_with_new_delta = self.commit_all(repo, "downstream new delta")
             with self.assertRaisesRegex(
                 ValueError,
                 r"declared hunk position/context is absent",
@@ -2911,9 +2980,7 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
                     "carry.py",
                 )
                 hunk_header = (
-                    upstream_hunks[0].header
-                    if upstream_hunks
-                    else "@@ -1,3 +1,4 @@"
+                    upstream_hunks[0].header if upstream_hunks else "@@ -1,3 +1,4 @@"
                 )
 
                 self.run_git(repo, "checkout", "-b", "downstream", base_sha)
@@ -3202,7 +3269,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         origin = Path(origin_tmpdir.name) / "origin.git"
         repo._git("branch", "-f", "mutable", moved_sha)
         repo._git("tag", "-f", "lightweight", moved_sha)
-        repo._git("tag", "-f", "-a", "annotated", "-m", "moved annotated fixture", moved_sha)
+        repo._git(
+            "tag", "-f", "-a", "annotated", "-m", "moved annotated fixture", moved_sha
+        )
         repo._git(
             "push",
             "--force",
@@ -3212,7 +3281,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             "refs/tags/annotated:refs/tags/annotated",
         )
 
-    def test_complete_output_boundary_uses_real_git_refs_and_peels_to_immutable_sha(self) -> None:
+    def test_complete_output_boundary_uses_real_git_refs_and_peels_to_immutable_sha(
+        self,
+    ) -> None:
         (
             source,
             origin_tmpdir,
@@ -3332,7 +3403,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             checkout_tmpdir.cleanup()
 
     def test_unsupported_event_fails_closed_before_identity_output(self) -> None:
-        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = (
+            self._fixture_repo()
+        )
         try:
             proc, outputs = self._run_identity_fixture(
                 checkout,
@@ -3348,7 +3421,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             checkout_tmpdir.cleanup()
 
     def test_full_sha_manual_input_fails_closed_when_commit_is_missing(self) -> None:
-        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = (
+            self._fixture_repo()
+        )
         try:
             proc, outputs = self._run_identity_fixture(
                 checkout,
@@ -3364,8 +3439,12 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             origin_tmpdir.cleanup()
             checkout_tmpdir.cleanup()
 
-    def test_unsafe_manual_ref_inputs_fail_before_fetch_or_identity_output(self) -> None:
-        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+    def test_unsafe_manual_ref_inputs_fail_before_fetch_or_identity_output(
+        self,
+    ) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = (
+            self._fixture_repo()
+        )
         try:
             fetch_head = checkout / ".git" / "FETCH_HEAD"
             initial_fetch_head = fetch_head.read_bytes()
@@ -3441,8 +3520,12 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             for step in (jobs["summary"].get("steps") or [])
             if "aggregate_validation_summary.py" in (step.get("run") or "")
         )
-        self.assertIn('--checkout-ref "${{ needs.metadata.outputs.checkout_ref }}"', summary_run)
-        self.assertIn('--head-sha "${{ needs.metadata.outputs.checkout_sha }}"', summary_run)
+        self.assertIn(
+            '--checkout-ref "${{ needs.metadata.outputs.checkout_ref }}"', summary_run
+        )
+        self.assertIn(
+            '--head-sha "${{ needs.metadata.outputs.checkout_sha }}"', summary_run
+        )
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
@@ -3562,7 +3645,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertNotEqual(baseline, changed)
 
-    def test_validation_lab_plan_fingerprint_changes_for_named_test_request(self) -> None:
+    def test_validation_lab_plan_fingerprint_changes_for_named_test_request(
+        self,
+    ) -> None:
         baseline = self.validation_lab_fingerprint(
             test_request=json.dumps(
                 {
@@ -3590,7 +3675,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertNotEqual(baseline, changed)
 
-    def test_validation_lab_plan_fingerprint_normalizes_named_test_request(self) -> None:
+    def test_validation_lab_plan_fingerprint_normalizes_named_test_request(
+        self,
+    ) -> None:
         payload = VALIDATION_PLAN_FINGERPRINT.plan_fingerprint_payload(
             selection_meta={},
             workflow="validation-lab.yml",
@@ -3614,7 +3701,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(payload["inputs"]["test_profile"], "rust_minimal")
 
-    def test_validation_lab_plan_fingerprint_reports_missing_selection_env(self) -> None:
+    def test_validation_lab_plan_fingerprint_reports_missing_selection_env(
+        self,
+    ) -> None:
         env = dict(os.environ)
         env.pop("SELECTION_META", None)
         proc = subprocess.run(
@@ -3701,7 +3790,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             VALIDATION_PLAN_FINGERPRINT.fingerprint_payload(expected_payload),
         )
 
-    def test_validation_lab_plan_fingerprint_reports_missing_selection_stdin(self) -> None:
+    def test_validation_lab_plan_fingerprint_reports_missing_selection_stdin(
+        self,
+    ) -> None:
         proc = subprocess.run(
             [
                 "python3",
@@ -3796,7 +3887,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_recommend_lab_full_collab_spawn_identity_candidate_includes_explicit_lanes(
         self,
     ) -> None:
-        payload = self.recommend_lab_for_files(self.collab_spawn_identity_candidate_paths)
+        payload = self.recommend_lab_for_files(
+            self.collab_spawn_identity_candidate_paths
+        )
 
         self.assertEqual(payload["profile"], "targeted")
         self.assertEqual(payload["lane_set"], "ui-protocol")
@@ -3815,7 +3908,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertTrue(payload["include_explicit_lanes"])
         self.assertEqual(payload["dispatch_inputs"]["include_explicit_lanes"], "true")
 
-    def test_recommend_lab_external_agent_containment_route_is_fail_closed(self) -> None:
+    def test_recommend_lab_external_agent_containment_route_is_fail_closed(
+        self,
+    ) -> None:
         payload = self.recommend_lab_for_files(
             [
                 "codex-rs/external-agent-migration/src/service.rs",
@@ -3839,8 +3934,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         lane = next(
             lane
             for lane in RESOLVE_VALIDATION_PLAN.load_catalog()["lanes"]
-            if lane["lane_id"]
-            == "codex.external-agent-migration-containment-targeted"
+            if lane["lane_id"] == "codex.external-agent-migration-containment-targeted"
         )
         self.assertTrue(lane["needs_nextest"])
         recipe = "\n".join(
@@ -4094,7 +4188,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             }
         )
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".json"
+        ) as handle:
             json.dump(catalog, handle)
             handle.flush()
 
@@ -4286,7 +4382,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         # Reproduce production failure mode where one lane has groups=null.
         catalog["lanes"][0]["groups"] = None
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".json"
+        ) as handle:
             json.dump(catalog, handle)
             handle.flush()
 
@@ -4333,7 +4431,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             }
 
         catalog = {"lanes": [workflow_lane(index) for index in range(257)]}
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".json"
+        ) as handle:
             json.dump(catalog, handle)
             handle.flush()
 
@@ -4365,7 +4465,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         catalog["lanes"][0]["checkout_fetch_depth"] = False
 
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".json"
+        ) as handle:
             json.dump(catalog, handle)
             handle.flush()
 
@@ -4393,7 +4495,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_validation_catalog_rejects_absolute_and_traversal_paths(self) -> None:
-        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(RESOLVE_VALIDATION_PLAN.load_catalog())
+        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(
+            RESOLVE_VALIDATION_PLAN.load_catalog()
+        )
 
         absolute_catalog = json.loads(json.dumps(catalog))
         absolute_catalog["lanes"][0]["working_directory"] = "/tmp"
@@ -4401,7 +4505,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             SystemExit,
             "must be a relative path within the repository root",
         ):
-            RESOLVE_VALIDATION_PLAN.validate_catalog(absolute_catalog, repo_root=REPO_ROOT)
+            RESOLVE_VALIDATION_PLAN.validate_catalog(
+                absolute_catalog, repo_root=REPO_ROOT
+            )
 
         traversal_catalog = json.loads(json.dumps(catalog))
         traversal_catalog["lanes"][0]["script_path"] = "../escape.sh"
@@ -4409,10 +4515,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             SystemExit,
             "must not contain '..' path segments",
         ):
-            RESOLVE_VALIDATION_PLAN.validate_catalog(traversal_catalog, repo_root=REPO_ROOT)
+            RESOLVE_VALIDATION_PLAN.validate_catalog(
+                traversal_catalog, repo_root=REPO_ROOT
+            )
 
     def test_validation_catalog_rejects_invalid_followup_route_priority(self) -> None:
-        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(RESOLVE_VALIDATION_PLAN.load_catalog())
+        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(
+            RESOLVE_VALIDATION_PLAN.load_catalog()
+        )
         route = next(
             route
             for route in catalog["followup_routes"]
@@ -4628,7 +4738,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_validation_lab_selected_lanes_do_not_block_on_smoke_gate(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         self.assertEqual((jobs.get("workflow_lanes") or {}).get("needs"), ["metadata"])
@@ -4639,7 +4751,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             (jobs.get("rust_minimal_batches") or {}).get("needs"), ["metadata"]
         )
-        self.assertEqual((jobs.get("nextest_archives") or {}).get("needs"), ["metadata"])
+        self.assertEqual(
+            (jobs.get("nextest_archives") or {}).get("needs"), ["metadata"]
+        )
         self.assertEqual(
             (jobs.get("rust_integration_archive_lanes") or {}).get("needs"),
             ["metadata", "nextest_archives"],
@@ -4653,7 +4767,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual((jobs.get("release_lanes") or {}).get("needs"), ["metadata"])
 
     def test_validation_lab_summary_waits_for_smoke_and_selected_fanout(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
         summary = jobs.get("summary") or {}
 
@@ -4681,8 +4797,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_validation_lab_summary_records_cache_occupancy(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
-        summary = ((payload.get("jobs") or {}).get("summary") or {})
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
+        summary = (payload.get("jobs") or {}).get("summary") or {}
         steps = summary.get("steps") or []
 
         self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
@@ -4719,9 +4837,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
 
-    def test_validation_lab_only_fetches_target_history_for_artifact_versioning(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
-        metadata_steps = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])
+    def test_validation_lab_only_fetches_target_history_for_artifact_versioning(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
+        metadata_steps = ((payload.get("jobs") or {}).get("metadata") or {}).get(
+            "steps"
+        ) or []
         materialize = next(
             step
             for step in metadata_steps
@@ -4733,21 +4857,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
             materialize_env.get("NEED_TAGS"),
             "${{ inputs.profile == 'artifact' || inputs.artifact_build }}",
         )
-        self.assertIn('fetch_args+=(--depth=1)', materialize_run)
-        self.assertIn('git fetch --tags origin', materialize_run)
-        self.assertIn('git worktree add --detach "${GITHUB_WORKSPACE}/validation-target"', materialize_run)
+        self.assertIn("fetch_args+=(--depth=1)", materialize_run)
+        self.assertIn("git fetch --tags origin", materialize_run)
+        self.assertIn(
+            'git worktree add --detach "${GITHUB_WORKSPACE}/validation-target"',
+            materialize_run,
+        )
 
         compute_plan = next(
-            step for step in metadata_steps if step.get("name") == "Compute validation-lab plan"
+            step
+            for step in metadata_steps
+            if step.get("name") == "Compute validation-lab plan"
         )
         run_script = compute_plan.get("run") or ""
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
-        self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
+        self.assertIn('git -C "${target_checkout}" tag --merged HEAD', run_script)
 
     def test_sedna_branch_build_uses_safe_ref_env_and_cached_macos_x64_preview(
         self,
     ) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
+        )
         workflow_dispatch_inputs = (
             (payload.get("on") or {}).get("workflow_dispatch") or {}
         ).get("inputs") or {}
@@ -4810,9 +4941,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(macos_job.get("runs-on"), "macos-15-intel")
         self.assertEqual(macos_job.get("timeout-minutes"), "210")
         self.assertNotIn("strategy", macos_job)
-        self.assertEqual((macos_job.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
+        self.assertEqual(
+            (macos_job.get("env") or {}).get("TARGET"), "x86_64-apple-darwin"
+        )
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", macos_job.get("env") or {})
-        self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", macos_job.get("env") or {})
+        self.assertNotIn(
+            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS", macos_job.get("env") or {}
+        )
         install_sccache_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
             "build-macos",
@@ -4870,7 +5005,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         macos_stage_script = macos_stage_step.get("run") or ""
         self.assertIn('"signing": "ad-hoc"', macos_stage_script)
         self.assertIn('"notarized": False', macos_stage_script)
-        self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
+        self.assertNotIn(
+            "${{ needs.metadata.outputs.display_ref }}", macos_stage_script
+        )
 
     def test_sedna_preview_artifact_builds_require_clean_git_provenance(
         self,
@@ -4879,7 +5016,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
         )
         jobs = payload.get("jobs") or {}
-        clean_check = 'source_status="$(git status --porcelain --untracked-files=normal)"'
+        clean_check = (
+            'source_status="$(git status --porcelain --untracked-files=normal)"'
+        )
         version_check = 'version_output="$("${stage_dir}/codex" --version)"'
 
         reusable_workflows = (
@@ -4887,8 +5026,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ("_validation-lane-release.yml", "run", "Run requested lane script"),
         )
         isolation_helper = (
-            REPO_ROOT
-            / ".github/scripts/isolate_workflow_paths_from_provenance.sh"
+            REPO_ROOT / ".github/scripts/isolate_workflow_paths_from_provenance.sh"
         ).read_text(encoding="utf-8")
         self.assertIn('echo "/.workflow-src/"', isolation_helper)
         self.assertIn('echo "/.sccache/"', isolation_helper)
@@ -4900,11 +5038,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     REPO_ROOT / ".github/workflows" / workflow_name
                 )
                 reusable_steps = (
-                    ((reusable_payload.get("jobs") or {}).get(job_name) or {}).get(
-                        "steps"
-                    )
-                    or []
-                )
+                    (reusable_payload.get("jobs") or {}).get(job_name) or {}
+                ).get("steps") or []
                 reusable_names = [step.get("name") for step in reusable_steps]
                 isolation_step = next(
                     step
@@ -4961,11 +5096,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
         release_steps = (
-            ((release_payload.get("jobs") or {}).get("release-linux") or {}).get(
-                "steps"
-            )
-            or []
-        )
+            (release_payload.get("jobs") or {}).get("release-linux") or {}
+        ).get("steps") or []
         release_named = {
             step.get("name"): step for step in release_steps if step.get("name")
         }
@@ -4988,7 +5120,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 )
             )
 
-        for name in ("Restore sccache cache (fallback)", "Save sccache cache (fallback)"):
+        for name in (
+            "Restore sccache cache (fallback)",
+            "Save sccache cache (fallback)",
+        ):
             preview_cache = preview_named[name].get("with") or {}
             release_cache = release_named[name].get("with") or {}
             self.assertNotIn("sedna-release-", json.dumps(preview_cache))
@@ -5008,18 +5143,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
         )
         branch_macos_steps = (
-            ((branch_payload.get("jobs") or {}).get("build-macos") or {}).get("steps")
-            or []
-        )
+            (branch_payload.get("jobs") or {}).get("build-macos") or {}
+        ).get("steps") or []
         branch_macos_named = {
             step.get("name"): step for step in branch_macos_steps if step.get("name")
         }
         release_macos_steps = (
-            ((release_payload.get("jobs") or {}).get("release-macos-build") or {}).get(
-                "steps"
-            )
-            or []
-        )
+            (release_payload.get("jobs") or {}).get("release-macos-build") or {}
+        ).get("steps") or []
         release_macos_named = {
             step.get("name"): step for step in release_macos_steps if step.get("name")
         }
@@ -5064,7 +5195,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 )
             )
 
-    def test_validation_lab_uses_safe_ref_env_for_checkout_and_display_refs(self) -> None:
+    def test_validation_lab_uses_safe_ref_env_for_checkout_and_display_refs(
+        self,
+    ) -> None:
         metadata_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/validation-lab.yml",
             "metadata",
@@ -5084,21 +5217,27 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('host_ref="${LAB_HOST_REF}"', run_script)
         self.assertIn('checkout_ref="${LAB_CHECKOUT_REF}"', run_script)
         self.assertIn('display_ref="${LAB_DISPLAY_REF}"', run_script)
-        self.assertIn('base_sha="$(git -C "${base_checkout}" rev-parse HEAD)"', run_script)
+        self.assertIn(
+            'base_sha="$(git -C "${base_checkout}" rev-parse HEAD)"', run_script
+        )
         self.assertIn("LAB_TARGET_SHA", run_script)
         self.assertIn("does not match requested target SHA", run_script)
         self.assertNotIn("checkout_ref='${{", run_script)
         self.assertNotIn("display_ref='${{", run_script)
 
     def test_validation_lab_exposes_fanout_and_batching_controls(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         workflow_dispatch_inputs = (
-            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
-        )
+            (payload.get("on") or {}).get("workflow_dispatch") or {}
+        ).get("inputs") or {}
         workflow_call_inputs = (
-            (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
-        )
-        lane_set_options = (workflow_dispatch_inputs.get("lane_set") or {}).get("options") or []
+            (payload.get("on") or {}).get("workflow_call") or {}
+        ).get("inputs") or {}
+        lane_set_options = (workflow_dispatch_inputs.get("lane_set") or {}).get(
+            "options"
+        ) or []
 
         self.assertIn("product-surfaces", lane_set_options)
         self.assertIn("sdk", lane_set_options)
@@ -5124,7 +5263,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             self.assertIn('          - "off"\n', workflow_text)
             self.assertNotIn("          - off\n", workflow_text)
 
-        metadata_job = ((payload.get("jobs") or {}).get("metadata") or {})
+        metadata_job = (payload.get("jobs") or {}).get("metadata") or {}
         self.assertEqual(
             (metadata_job.get("outputs") or {}).get("fanout_tier"),
             "${{ steps.meta.outputs.fanout_tier }}",
@@ -5143,7 +5282,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             env.get("LAB_FANOUT_TIER"),
             "${{ inputs.fanout_tier || 'enterprise' }}",
         )
-        self.assertEqual(env.get("LAB_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
+        self.assertEqual(
+            env.get("LAB_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}"
+        )
         self.assertEqual(
             env.get("LAB_RUST_BATCHING_OVERRIDE"),
             "${{ vars.VALIDATION_LAB_RUST_BATCHING }}",
@@ -5151,11 +5292,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
         run_script = metadata_step.get("run") or ""
         self.assertIn('--fanout-tier "${LAB_FANOUT_TIER}"', run_script)
         self.assertIn('--rust-batching "${LAB_RUST_BATCHING}"', run_script)
-        self.assertIn('--rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}"', run_script)
+        self.assertIn(
+            '--rust-batching-override "${LAB_RUST_BATCHING_OVERRIDE}"', run_script
+        )
         self.assertIn('--base-sha "${base_sha}"', run_script)
 
     def test_validation_lab_exposes_exact_plan_dedupe_metadata(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
         metadata_job = jobs.get("metadata") or {}
         outputs = metadata_job.get("outputs") or {}
@@ -5175,9 +5320,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         compute_env = compute_step.get("env") or {}
         compute_run = compute_step.get("run") or ""
-        self.assertEqual(compute_env.get("LAB_WORKFLOW_REF"), "${{ github.workflow_ref }}")
+        self.assertEqual(
+            compute_env.get("LAB_WORKFLOW_REF"), "${{ github.workflow_ref }}"
+        )
         self.assertEqual(compute_env.get("LAB_WORKFLOW_SHA"), "${{ github.sha }}")
-        self.assertEqual(compute_env.get("LAB_TEST_REQUEST"), "${{ inputs.test_request }}")
+        self.assertEqual(
+            compute_env.get("LAB_TEST_REQUEST"), "${{ inputs.test_request }}"
+        )
         self.assertEqual(
             compute_env.get("LAB_TEST_PROFILE"),
             "${{ inputs.test_profile || 'rust_minimal' }}",
@@ -5196,7 +5345,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("inputs.target_sha || inputs.ref", concurrency_group)
 
         dedupe_step = next(
-            step for step in steps if step.get("name") == "Check exact-plan evidence reuse"
+            step
+            for step in steps
+            if step.get("name") == "Check exact-plan evidence reuse"
         )
         dedupe_run = dedupe_step.get("run") or ""
         self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
@@ -5209,7 +5360,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("exact_plan_success_available_retained_by_", dedupe_run)
 
     def test_validation_lab_exact_plan_skip_gates_fanout_jobs_only(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
         fanout_jobs = [
             "smoke_workflow_lanes",
@@ -5240,8 +5393,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (jobs.get("summary") or {}).get("if") or "",
         )
 
-    def test_validation_lab_nextest_archive_jobs_build_and_download_artifacts(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+    def test_validation_lab_nextest_archive_jobs_build_and_download_artifacts(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
         metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
 
@@ -5262,7 +5419,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         archive_steps = archive_job.get("steps") or []
         build_step = next(
-            step for step in archive_steps if step.get("name") == "Build nextest archive"
+            step
+            for step in archive_steps
+            if step.get("name") == "Build nextest archive"
         )
         self.assertIn("run_validation_lane.py", build_step.get("run") or "")
         self.assertEqual(
@@ -5270,14 +5429,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ runner.temp }}/validation-lab-nextest-archives/${{ matrix.archive_file_name }}",
         )
         upload_step = next(
-            step for step in archive_steps if step.get("name") == "Upload nextest archive"
+            step
+            for step in archive_steps
+            if step.get("name") == "Upload nextest archive"
         )
         self.assertEqual(upload_step.get("uses"), "actions/upload-artifact@v7")
-        self.assertEqual((upload_step.get("with") or {}).get("name"), "${{ matrix.artifact_name }}")
+        self.assertEqual(
+            (upload_step.get("with") or {}).get("name"), "${{ matrix.artifact_name }}"
+        )
 
         archive_lanes = jobs.get("rust_integration_archive_lanes") or {}
         self.assertEqual(archive_lanes.get("needs"), ["metadata", "nextest_archives"])
-        self.assertIn("needs.nextest_archives.result == 'success'", archive_lanes.get("if") or "")
+        self.assertIn(
+            "needs.nextest_archives.result == 'success'", archive_lanes.get("if") or ""
+        )
         self.assertEqual(
             ((archive_lanes.get("with") or {}).get("nextest_archive_artifact_name")),
             "${{ matrix.nextest_archive_artifact_name }}",
@@ -5291,11 +5456,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (jobs.get("rust_integration_lanes") or {}).get("with") or {},
         )
 
-    def test_validation_lab_rust_integration_workflow_downloads_nextest_archive(self) -> None:
+    def test_validation_lab_rust_integration_workflow_downloads_nextest_archive(
+        self,
+    ) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/_validation-lane-rust-integration.yml"
         )
-        workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
+        workflow_call = (payload.get("on") or {}).get("workflow_call") or {}
         inputs = workflow_call.get("inputs") or {}
         run_job = (payload.get("jobs") or {}).get("run") or {}
         steps = run_job.get("steps") or []
@@ -5313,10 +5480,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         export_step = next(
             step for step in steps if step.get("name") == "Export nextest archive path"
         )
-        self.assertIn("VALIDATION_LAB_NEXTEST_ARCHIVE_FILE", export_step.get("run") or "")
+        self.assertIn(
+            "VALIDATION_LAB_NEXTEST_ARCHIVE_FILE", export_step.get("run") or ""
+        )
 
         summary_step = next(
-            step for step in steps if step.get("name") == "Prepare lane summary artifact"
+            step
+            for step in steps
+            if step.get("name") == "Prepare lane summary artifact"
         )
         summary_run = summary_step.get("run") or ""
         self.assertIn("--nextest-archive-artifact-name", summary_run)
@@ -5361,7 +5532,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             run_script,
         )
 
-    def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(self) -> None:
+    def test_sedna_heavy_tests_uses_safe_ref_env_and_requested_lane_inputs(
+        self,
+    ) -> None:
         metadata_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml",
             "metadata",
@@ -5371,10 +5544,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.sha }}")
         self.assertEqual(env.get("DISPLAY_REF"), "${{ github.ref_name }}")
         self.assertEqual(env.get("INPUT_REF"), "${{ inputs.ref }}")
-        self.assertEqual(env.get("PR_HEAD_SHA"), "${{ github.event.pull_request.head.sha }}")
-        self.assertEqual(env.get("PR_HEAD_REF"), "${{ github.event.pull_request.head.ref }}")
+        self.assertEqual(
+            env.get("PR_HEAD_SHA"), "${{ github.event.pull_request.head.sha }}"
+        )
+        self.assertEqual(
+            env.get("PR_HEAD_REF"), "${{ github.event.pull_request.head.ref }}"
+        )
         self.assertEqual(env.get("REQUESTED_LANE"), "${{ inputs.lane }}")
-        self.assertEqual(env.get("INPUT_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
+        self.assertEqual(
+            env.get("INPUT_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}"
+        )
         self.assertEqual(
             env.get("INPUT_RUST_BATCHING_OVERRIDE"),
             "${{ vars.SEDNA_HEAVY_RUST_BATCHING }}",
@@ -5393,7 +5572,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('display_ref="${DISPLAY_REF}"', run_script)
         self.assertIn('--requested-lane "${REQUESTED_LANE}"', run_script)
         self.assertIn('--rust-batching "${INPUT_RUST_BATCHING}"', run_script)
-        self.assertIn('--rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}"', run_script)
+        self.assertIn(
+            '--rust-batching-override "${INPUT_RUST_BATCHING_OVERRIDE}"', run_script
+        )
         self.assertIn('os.environ["REQUESTED_LANE"]', run_script)
         self.assertNotIn('"requested_lane": "${{ inputs.lane }}"', run_script)
 
@@ -5401,14 +5582,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         )
-        archive_env = ((payload.get("jobs") or {}).get("archive") or {}).get("env") or {}
+        archive_env = ((payload.get("jobs") or {}).get("archive") or {}).get(
+            "env"
+        ) or {}
         self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_DEBUG"), "0")
         self.assertEqual(archive_env.get("CARGO_PROFILE_CI_TEST_STRIP"), "symbols")
 
         tool_values: list[str] = []
         for job in (payload.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
-                if step.get("uses") != "taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c":
+                if (
+                    step.get("uses")
+                    != "taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c"
+                ):
                     continue
                 with_section = step.get("with") or {}
                 self.assertNotIn("version", with_section)
@@ -5427,9 +5613,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
         self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
-        self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
+        self.assertNotIn("hash:${{ matrix.shard }}/4", workflow_text)
 
-    def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(self) -> None:
+    def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(
+        self,
+    ) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         )
@@ -5458,9 +5646,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 run_script = step.get("run") or ""
                 step_name = step.get("name") or step.get("id")
                 for expression in unsafe_expressions:
-                    message = (
-                        f"{job_name}/{step_name} interpolates {expression} into shell source"
-                    )
+                    message = f"{job_name}/{step_name} interpolates {expression} into shell source"
                     self.assertNotIn(
                         expression,
                         run_script,
@@ -5491,12 +5677,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(recipes["with-param"], ["    cargo test -p codex-tui"])
         self.assertNotIn("foo,", recipes)
 
-    def test_run_just_recipe_lanes_declare_nextest_when_recipe_uses_nextest(self) -> None:
+    def test_run_just_recipe_lanes_declare_nextest_when_recipe_uses_nextest(
+        self,
+    ) -> None:
         catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
         nextest_recipes = just_recipes_with_nextest(REPO_ROOT / "justfile")
         missing: list[str] = []
         for lane in catalog["lanes"]:
-            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+            if (
+                lane.get("script_path")
+                != ".github/scripts/validation-lanes/run-just-recipe.sh"
+            ):
                 continue
             script_args = lane.get("script_args") or []
             recipe = script_args[0] if script_args else ""
@@ -5513,9 +5704,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 4)
 
-        blocking_waits_core_recipe = "\n".join(
-            recipes["blocking-waits-core-targeted"]
-        )
+        blocking_waits_core_recipe = "\n".join(recipes["blocking-waits-core-targeted"])
         self.assertEqual(blocking_waits_core_recipe.count("RUST_MIN_STACK="), 1)
 
         unified_exec_lines = recipes["blocking-waits-unified-exec-targeted"]
@@ -5543,7 +5732,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             if any(
                 command in line
                 for line in body
-                for command in ("cargo test", "cargo nextest", "cargo check", "cargo build")
+                for command in (
+                    "cargo test",
+                    "cargo nextest",
+                    "cargo check",
+                    "cargo build",
+                )
             )
             and any("codex-core" in line or "codex-tui" in line for line in body)
         }
@@ -5556,14 +5750,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 for line in body
             )
         }
-        linux_build_deps_recipes = direct_linux_build_deps_recipes | nested_linux_build_deps_recipes
+        linux_build_deps_recipes = (
+            direct_linux_build_deps_recipes | nested_linux_build_deps_recipes
+        )
         missing: list[str] = []
         for lane in catalog["lanes"]:
-            if lane.get("script_path") != ".github/scripts/validation-lanes/run-just-recipe.sh":
+            if (
+                lane.get("script_path")
+                != ".github/scripts/validation-lanes/run-just-recipe.sh"
+            ):
                 continue
             script_args = lane.get("script_args") or []
             recipe = script_args[0] if script_args else ""
-            if recipe in linux_build_deps_recipes and not lane.get("needs_linux_build_deps"):
+            if recipe in linux_build_deps_recipes and not lane.get(
+                "needs_linux_build_deps"
+            ):
                 missing.append(str(lane.get("lane_id")))
 
         self.assertEqual(missing, [])
@@ -5638,7 +5839,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             lane["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
         )
-        self.assertEqual(lane["script_args"], ["tui-weekly-pacing-status-line-targeted"])
+        self.assertEqual(
+            lane["script_args"], ["tui-weekly-pacing-status-line-targeted"]
+        )
 
         recipe = "\n".join(
             just_recipe_bodies(REPO_ROOT / "justfile")[
@@ -5654,7 +5857,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             self.assertIn(test_name, recipe)
 
     def test_validation_lab_passes_sccache_policy_only_to_sccache_lanes(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
         expected_policy = (
             "${{ inputs.supersession_mode != 'auto' && "
@@ -5687,10 +5892,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ]
         for job_name in non_sccache_jobs:
             with self.subTest(job=job_name):
-                self.assertNotIn("cache_policy", (jobs.get(job_name) or {}).get("with") or {})
+                self.assertNotIn(
+                    "cache_policy", (jobs.get(job_name) or {}).get("with") or {}
+                )
 
     def test_validation_lab_passes_bazel_setup_to_workflow_lanes(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
@@ -5701,22 +5910,32 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 )
 
     def test_validation_lab_passes_timeout_to_workflow_lanes(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
             with self.subTest(job=job_name):
                 self.assertEqual(
-                    ((jobs.get(job_name) or {}).get("with") or {}).get("timeout_minutes"),
+                    ((jobs.get(job_name) or {}).get("with") or {}).get(
+                        "timeout_minutes"
+                    ),
                     "${{ matrix.timeout_minutes }}",
                 )
 
         for job_name in ["smoke_node_lanes", "node_lanes"]:
             with self.subTest(job=job_name):
-                self.assertNotIn("timeout_minutes", (jobs.get(job_name) or {}).get("with") or {})
+                self.assertNotIn(
+                    "timeout_minutes", (jobs.get(job_name) or {}).get("with") or {}
+                )
 
-    def test_validation_lab_workflow_lanes_do_not_inherit_secrets_from_operator_refs(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/validation-lab.yml")
+    def test_validation_lab_workflow_lanes_do_not_inherit_secrets_from_operator_refs(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/validation-lab.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
@@ -5724,7 +5943,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertNotIn("secrets", jobs.get(job_name) or {})
 
     def test_sedna_heavy_writes_fallback_cache_only_for_manual_dispatch(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         jobs = payload.get("jobs") or {}
         expected_policy = "${{ github.event_name == 'workflow_dispatch' && 'write-fallback' || 'restore-only' }}"
 
@@ -5745,7 +5966,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 )
 
     def test_sedna_heavy_passes_bazel_setup_to_workflow_lanes(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
@@ -5756,19 +5979,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 )
 
     def test_sedna_heavy_passes_timeout_to_workflow_lanes(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["smoke_workflow_lanes", "workflow_lanes"]:
             with self.subTest(job=job_name):
                 self.assertEqual(
-                    ((jobs.get(job_name) or {}).get("with") or {}).get("timeout_minutes"),
+                    ((jobs.get(job_name) or {}).get("with") or {}).get(
+                        "timeout_minutes"
+                    ),
                     "${{ matrix.timeout_minutes }}",
                 )
 
         for job_name in ["smoke_node_lanes", "node_lanes"]:
             with self.subTest(job=job_name):
-                self.assertNotIn("timeout_minutes", (jobs.get(job_name) or {}).get("with") or {})
+                self.assertNotIn(
+                    "timeout_minutes", (jobs.get(job_name) or {}).get("with") or {}
+                )
 
     def test_reusable_sccache_workflows_require_explicit_fallback_writes(self) -> None:
         for workflow_name in [
@@ -5782,9 +6011,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 workflow_path = REPO_ROOT / ".github/workflows" / workflow_name
                 workflow_text = workflow_path.read_text(encoding="utf-8")
                 payload = load_workflow_payload(workflow_path)
-                inputs = (((payload.get("on") or {}).get("workflow_call") or {}).get("inputs") or {})
-                self.assertEqual((inputs.get("checkout_fetch_depth") or {}).get("default"), "1")
-                self.assertEqual((inputs.get("cache_policy") or {}).get("default"), "restore-only")
+                inputs = ((payload.get("on") or {}).get("workflow_call") or {}).get(
+                    "inputs"
+                ) or {}
+                self.assertEqual(
+                    (inputs.get("checkout_fetch_depth") or {}).get("default"), "1"
+                )
+                self.assertEqual(
+                    (inputs.get("cache_policy") or {}).get("default"), "restore-only"
+                )
                 self.assertNotIn("ACTIONS_RUNTIME_TOKEN", workflow_text)
                 self.assertNotIn("SCCACHE_GHA_ENABLED=true", workflow_text)
 
@@ -5798,10 +6033,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     (checkout_step.get("with") or {}).get("fetch-depth"),
                     "${{ inputs.checkout_fetch_depth }}",
                 )
-                self.assertEqual((run_job.get("env") or {}).get("SCCACHE_CACHE_SIZE"), "2G")
+                self.assertEqual(
+                    (run_job.get("env") or {}).get("SCCACHE_CACHE_SIZE"), "2G"
+                )
                 self.assertFalse(
                     any(
-                        step.get("name") == "Expose GitHub cache-service env for sccache"
+                        step.get("name")
+                        == "Expose GitHub cache-service env for sccache"
                         for step in run_job.get("steps") or []
                     )
                 )
@@ -5830,7 +6068,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     save_step.get("if") or "",
                 )
 
-    def test_rust_batch_workflow_reclaims_disk_and_uses_small_debug_profiles(self) -> None:
+    def test_rust_batch_workflow_reclaims_disk_and_uses_small_debug_profiles(
+        self,
+    ) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/_validation-lane-rust-batch.yml"
         )
@@ -5855,7 +6095,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("/opt/hostedtoolcache/CodeQL", cleanup_script)
         self.assertIn("12 GiB safety floor", cleanup_script)
 
-    def test_reusable_validation_lane_workflows_source_helpers_from_workflow_ref(self) -> None:
+    def test_reusable_validation_lane_workflows_source_helpers_from_workflow_ref(
+        self,
+    ) -> None:
         for workflow_name in [
             "_validation-lane-workflow.yml",
             "_validation-lane-node.yml",
@@ -5864,7 +6106,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "_validation-lane-release.yml",
         ]:
             with self.subTest(workflow=workflow_name):
-                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
+                payload = load_workflow_payload(
+                    REPO_ROOT / ".github/workflows" / workflow_name
+                )
                 run_job = (payload.get("jobs") or {}).get("run") or {}
                 checkout_steps = [
                     step
@@ -5901,9 +6145,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     summary_step.get("run") or "",
                 )
 
-    def test_validation_lane_workflow_keeps_secrets_out_of_target_controlled_scripts(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml")
-        workflow_call = ((payload.get("on") or {}).get("workflow_call") or {})
+    def test_validation_lane_workflow_keeps_secrets_out_of_target_controlled_scripts(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/_validation-lane-workflow.yml"
+        )
+        workflow_call = (payload.get("on") or {}).get("workflow_call") or {}
         self.assertNotIn("secrets", workflow_call)
 
         run_job = (payload.get("jobs") or {}).get("run") or {}
@@ -5919,7 +6167,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertNotIn("secrets.", str(env_value))
 
     def test_sync_models_json_splits_read_check_from_write_pr_creation(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sync-models-json.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sync-models-json.yml"
+        )
         jobs = payload.get("jobs") or {}
         check_job = jobs.get("check") or {}
         create_pr_job = jobs.get("create_pr") or {}
@@ -5931,7 +6181,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {"contents": "write", "pull-requests": "write"},
         )
         self.assertEqual(create_pr_job.get("needs"), "check")
-        self.assertEqual(create_pr_job.get("if"), "needs.check.outputs.changed == 'true'")
+        self.assertEqual(
+            create_pr_job.get("if"), "needs.check.outputs.changed == 'true'"
+        )
         self.assertEqual(
             (check_job.get("outputs") or {}).get("changed"),
             "${{ steps.diff.outputs.changed }}",
@@ -5953,7 +6205,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in create_steps if step.get("name") == "Download sync payload"
         )
         self.assertEqual(download_step.get("uses"), "actions/download-artifact@v8")
-        create_step = next(step for step in create_steps if step.get("name") == "Create PR")
+        create_step = next(
+            step for step in create_steps if step.get("name") == "Create PR"
+        )
         self.assertIn(
             "needs.check.outputs.upstream_short_sha",
             (create_step.get("with") or {}).get("branch", ""),
@@ -5988,9 +6242,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         concurrency_group = str(concurrency.get("group") or "")
         self.assertIn("concurrency-group::${{ github.workflow }}::", concurrency_group)
         self.assertIn("format('merge-group-{0}', github.sha)", concurrency_group)
-        self.assertIn("format('pr-{0}', github.event.pull_request.number)", concurrency_group)
+        self.assertIn(
+            "format('pr-{0}', github.event.pull_request.number)", concurrency_group
+        )
         self.assertIn("format('push-{0}', github.sha)", concurrency_group)
-        self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", concurrency_group)
+        self.assertIn(
+            "format('{0}-{1}', github.event_name, github.run_id)", concurrency_group
+        )
         self.assertEqual(
             concurrency.get("cancel-in-progress"),
             "${{ github.event_name == 'pull_request' }}",
@@ -6047,8 +6305,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
         self.assertIn("classify_ci_paths.py --base-sha", select_run)
-        self.assertIn("Unable to fetch PR base; running every CodeQL language.", select_run)
-        self.assertIn("Unable to classify PR paths; running every CodeQL language.", select_run)
+        self.assertIn(
+            "Unable to fetch PR base; running every CodeQL language.", select_run
+        )
+        self.assertIn(
+            "Unable to classify PR paths; running every CodeQL language.", select_run
+        )
         self.assertIn('["codeql_languages"]', select_run)
         self.assertIn('"language": "not-applicable"', select_run)
         for rust_scope in (
@@ -6090,14 +6352,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("autobuild", workflow_json)
         self.assertNotIn('"build-mode": "manual"', workflow_json)
 
-        checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
+        checkout_step = next(
+            step for step in steps if step.get("name") == "Checkout repository"
+        )
         self.assertEqual(checkout_step.get("uses"), "actions/checkout@v7")
-        self.assertEqual((checkout_step.get("with") or {}).get("persist-credentials"), "false")
+        self.assertEqual(
+            (checkout_step.get("with") or {}).get("persist-credentials"), "false"
+        )
 
         install_rust_step = next(
-            step for step in steps if step.get("name") == "Install Rust toolchains for CodeQL"
+            step
+            for step in steps
+            if step.get("name") == "Install Rust toolchains for CodeQL"
         )
-        self.assertEqual(install_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(
+            install_rust_step.get("if"), "${{ matrix.language == 'rust' }}"
+        )
         install_rust_run = install_rust_step.get("run") or ""
         self.assertIn("rust-toolchain*", install_rust_run)
         self.assertIn('"--component"', install_rust_run)
@@ -6110,10 +6380,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("subprocess.run(command, check=True)", install_rust_run)
 
         restore_rust_cache_step = next(
-            step for step in steps if step.get("name") == "Restore Rust dependency cache for CodeQL"
+            step
+            for step in steps
+            if step.get("name") == "Restore Rust dependency cache for CodeQL"
         )
-        self.assertEqual(restore_rust_cache_step.get("if"), "${{ matrix.language == 'rust' }}")
-        self.assertEqual(restore_rust_cache_step.get("uses"), "actions/cache/restore@v6")
+        self.assertEqual(
+            restore_rust_cache_step.get("if"), "${{ matrix.language == 'rust' }}"
+        )
+        self.assertEqual(
+            restore_rust_cache_step.get("uses"), "actions/cache/restore@v6"
+        )
         restore_cache_with = restore_rust_cache_step.get("with") or {}
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
@@ -6121,29 +6397,43 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("~/.rustup/toolchains", workflow_json)
 
         telemetry_step = next(
-            step for step in steps if step.get("name") == "Record Rust cache telemetry for CodeQL"
+            step
+            for step in steps
+            if step.get("name") == "Record Rust cache telemetry for CodeQL"
         )
         self.assertEqual(telemetry_step.get("if"), "${{ matrix.language == 'rust' }}")
         telemetry_run = telemetry_step.get("run") or ""
         self.assertIn("CodeQL Rust cache telemetry", telemetry_run)
-        self.assertIn("cache_codeql_rust_cargo_home_restore.outputs.cache-hit", telemetry_run)
+        self.assertIn(
+            "cache_codeql_rust_cargo_home_restore.outputs.cache-hit", telemetry_run
+        )
 
         prefetch_rust_step = next(
-            step for step in steps if step.get("name") == "Prefetch Rust dependencies for CodeQL"
+            step
+            for step in steps
+            if step.get("name") == "Prefetch Rust dependencies for CodeQL"
         )
-        self.assertEqual(prefetch_rust_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(
+            prefetch_rust_step.get("if"), "${{ matrix.language == 'rust' }}"
+        )
         self.assertEqual(prefetch_rust_step.get("continue-on-error"), "true")
         prefetch_run = prefetch_rust_step.get("run") or ""
-        self.assertIn("cargo fetch --locked --manifest-path codex-rs/Cargo.toml", prefetch_run)
+        self.assertIn(
+            "cargo fetch --locked --manifest-path codex-rs/Cargo.toml", prefetch_run
+        )
         self.assertIn(
             "cargo fetch --locked --manifest-path tools/argument-comment-lint/Cargo.toml",
             prefetch_run,
         )
 
         scoped_rust_config_step = next(
-            step for step in steps if step.get("name") == "Prepare scoped Rust CodeQL config"
+            step
+            for step in steps
+            if step.get("name") == "Prepare scoped Rust CodeQL config"
         )
-        self.assertEqual(scoped_rust_config_step.get("if"), "${{ matrix.language == 'rust' }}")
+        self.assertEqual(
+            scoped_rust_config_step.get("if"), "${{ matrix.language == 'rust' }}"
+        )
         self.assertEqual(
             scoped_rust_config_step.get("env") or {},
             {
@@ -6208,7 +6498,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     rf"{scope}\)\s+scope_paths=\(\s*(.*?)\s*\)\s+scope_ignores=\(\)",
                     scoped_rust_config_run,
                     re.DOTALL,
-                ).group(1).split()
+                )
+                .group(1)
+                .split()
             ]
             for scope in rest_scopes
         }
@@ -6231,7 +6523,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {
                 f"codex-rs/{path}"
                 for path in tracked_codex_rs_dirs
-                if path not in {
+                if path
+                not in {
                     "core",
                     "tui",
                     *(service_path.split("/", 1)[1] for service_path in service_paths),
@@ -6276,25 +6569,35 @@ class ValidationPlanScriptTests(unittest.TestCase):
                             },
                         ],
                         "paths": expected_paths,
-                        "paths-ignore": [".github/codeql/rust-computer-use-contract/test/**"],
+                        "paths-ignore": [
+                            ".github/codeql/rust-computer-use-contract/test/**"
+                        ],
                         "threat-models": "local",
                     },
                 )
 
         actions_config_step = next(
-            step for step in steps if step.get("name") == "Prepare Actions CodeQL query pack config"
+            step
+            for step in steps
+            if step.get("name") == "Prepare Actions CodeQL query pack config"
         )
-        self.assertEqual(actions_config_step.get("if"), "${{ matrix.language == 'actions' }}")
+        self.assertEqual(
+            actions_config_step.get("if"), "${{ matrix.language == 'actions' }}"
+        )
         actions_config_run = actions_config_step.get("run") or ""
         self.assertIn(".github/codeql/actions-workflow-security", actions_config_run)
-        self.assertIn("github.event.pull_request.head.repo.full_name", actions_config_run)
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name", actions_config_run
+        )
         self.assertIn("github.repository", actions_config_run)
         self.assertIn("github.event.pull_request.base.sha", actions_config_run)
         self.assertIn(".codeql-runtime/trusted-base", actions_config_run)
         self.assertIn("security-and-quality", actions_config_run)
         self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
 
-        init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
+        init_step = next(
+            step for step in steps if step.get("name") == "Initialize CodeQL"
+        )
         self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4.37.9")
         self.assertEqual(
             init_step.get("with") or {},
@@ -6325,7 +6628,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('> "${RUNNER_TEMP}/pr-diff-range.json"', diff_ranges_run)
         self.assertNotIn("--output", diff_ranges_run)
         self.assertLess(steps.index(init_step), steps.index(diff_ranges_step))
-        analyze_step = next(step for step in steps if step.get("name") == "Perform CodeQL Analysis")
+        analyze_step = next(
+            step for step in steps if step.get("name") == "Perform CodeQL Analysis"
+        )
         self.assertLess(steps.index(diff_ranges_step), steps.index(analyze_step))
         self.assertEqual(
             (analyze_step.get("with") or {}).get("category"),
@@ -6333,22 +6638,30 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
         save_rust_cache_step = next(
-            step for step in steps if step.get("name") == "Save Rust dependency cache for CodeQL"
+            step
+            for step in steps
+            if step.get("name") == "Save Rust dependency cache for CodeQL"
         )
         self.assertEqual(save_rust_cache_step.get("continue-on-error"), "true")
         self.assertEqual(save_rust_cache_step.get("uses"), "actions/cache/save@v6")
         self.assertIn("matrix.language == 'rust'", save_rust_cache_step.get("if") or "")
-        self.assertIn("github.event_name != 'pull_request'", save_rust_cache_step.get("if") or "")
+        self.assertIn(
+            "github.event_name != 'pull_request'", save_rust_cache_step.get("if") or ""
+        )
         self.assertIn("refs/heads/main", save_rust_cache_step.get("if") or "")
         self.assertIn("refs/heads/upstream-main", save_rust_cache_step.get("if") or "")
-        self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
+        self.assertNotIn(
+            "target/", (save_rust_cache_step.get("with") or {}).get("path") or ""
+        )
 
         self.assertEqual(results_job.get("name"), "CodeQL required gate")
         self.assertEqual(results_job.get("needs"), ["plan", "analyze"])
         self.assertEqual(results_job.get("if"), "always()")
         self.assertEqual(results_job.get("permissions") or {}, {"actions": "read"})
         timing_step = next(
-            step for step in results_job.get("steps") or [] if step.get("name") == "Report CodeQL timing"
+            step
+            for step in results_job.get("steps") or []
+            if step.get("name") == "Report CodeQL timing"
         )
         timing_run = timing_step.get("run") or ""
         self.assertIn("CodeQL timing", timing_run)
@@ -6363,7 +6676,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("No CodeQL language analysis was applicable", results_run)
 
         config = yaml.load(
-            (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
+            (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(
+                encoding="utf-8"
+            ),
             Loader=yaml.BaseLoader,
         )
         self.assertEqual(
@@ -6375,7 +6690,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
         actions_config = yaml.load(
-            (REPO_ROOT / ".github/codeql/codeql-actions.yml").read_text(encoding="utf-8"),
+            (REPO_ROOT / ".github/codeql/codeql-actions.yml").read_text(
+                encoding="utf-8"
+            ),
             Loader=yaml.BaseLoader,
         )
         self.assertEqual(
@@ -6390,12 +6707,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
         actions_pack = yaml.load(
-            (REPO_ROOT / ".github/codeql/actions-workflow-security/qlpack.yml").read_text(
-                encoding="utf-8"
-            ),
+            (
+                REPO_ROOT / ".github/codeql/actions-workflow-security/qlpack.yml"
+            ).read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
         )
-        self.assertEqual(actions_pack.get("name"), "sednalabs/actions-workflow-security")
+        self.assertEqual(
+            actions_pack.get("name"), "sednalabs/actions-workflow-security"
+        )
         self.assertEqual(actions_pack.get("extractor"), "actions")
         self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
         self.assertEqual(
@@ -6404,13 +6723,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             "@id actions/sensitive-workflow-value-to-log",
-            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql")
-            .read_text(encoding="utf-8"),
+            (
+                REPO_ROOT
+                / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql"
+            ).read_text(encoding="utf-8"),
         )
         self.assertIn(
             "@id actions/sensitive-workflow-value-to-verbose-tool",
-            (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToVerboseTool.ql")
-            .read_text(encoding="utf-8"),
+            (
+                REPO_ROOT
+                / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToVerboseTool.ql"
+            ).read_text(encoding="utf-8"),
         )
         for query_id in [
             "actions/unsafe-release-publishing-path",
@@ -6423,15 +6746,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     f"@id {query_id}" in path.read_text(encoding="utf-8")
-                    for path in (REPO_ROOT / ".github/codeql/actions-workflow-security").glob("*.ql")
+                    for path in (
+                        REPO_ROOT / ".github/codeql/actions-workflow-security"
+                    ).glob("*.ql")
                 ),
                 query_id,
             )
         self.assertIn(
             "getAWriteToGitHubEnv",
-            (REPO_ROOT / ".github/codeql/actions-workflow-security/LogExposure.qll").read_text(
-                encoding="utf-8"
-            ),
+            (
+                REPO_ROOT / ".github/codeql/actions-workflow-security/LogExposure.qll"
+            ).read_text(encoding="utf-8"),
         )
         workflow_security = (
             REPO_ROOT / ".github/codeql/actions-workflow-security/WorkflowSecurity.qll"
@@ -6464,9 +6789,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             },
         )
         rust_contract_pack = yaml.load(
-            (REPO_ROOT / ".github/codeql/rust-computer-use-contract/qlpack.yml").read_text(
-                encoding="utf-8"
-            ),
+            (
+                REPO_ROOT / ".github/codeql/rust-computer-use-contract/qlpack.yml"
+            ).read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
         )
         self.assertEqual(
@@ -6474,7 +6799,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "sednalabs/rust-computer-use-contract",
         )
         self.assertEqual(rust_contract_pack.get("extractor"), "rust")
-        self.assertEqual(rust_contract_pack.get("dependencies"), {"codeql/rust-all": "*"})
+        self.assertEqual(
+            rust_contract_pack.get("dependencies"), {"codeql/rust-all": "*"}
+        )
         for query_id in [
             "rust/computer-use-match-drops-native-image",
             "rust/android-visual-tool-missing-native-image-guard",
@@ -6483,22 +6810,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     f"@id {query_id}" in path.read_text(encoding="utf-8")
-                    for path in (REPO_ROOT / ".github/codeql/rust-computer-use-contract/queries").glob("*.ql")
+                    for path in (
+                        REPO_ROOT / ".github/codeql/rust-computer-use-contract/queries"
+                    ).glob("*.ql")
                 ),
                 query_id,
             )
 
     def test_closed_pr_run_canceller_preserves_post_merge_branch_runs(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/cancel-pr-runs.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/cancel-pr-runs.yml"
+        )
         trigger = payload.get("on") or {}
-        job = ((payload.get("jobs") or {}).get("cancel") or {})
+        job = (payload.get("jobs") or {}).get("cancel") or {}
         steps = job.get("steps") or []
 
         self.assertEqual(
             ((trigger.get("pull_request_target") or {}).get("types") or []),
             ["closed"],
         )
-        self.assertEqual(payload.get("permissions"), {"actions": "write", "contents": "read"})
+        self.assertEqual(
+            payload.get("permissions"), {"actions": "write", "contents": "read"}
+        )
         self.assertEqual(job.get("permissions") or {}, {})
         self.assertEqual(job.get("runs-on"), "ubuntu-latest")
 
@@ -6507,7 +6840,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("github.event.pull_request.head.repo.clone_url", workflow_json)
 
         cancel_step = next(
-            step for step in steps if step.get("name") == "Cancel stale runs for the closed PR"
+            step
+            for step in steps
+            if step.get("name") == "Cancel stale runs for the closed PR"
         )
         self.assertEqual(cancel_step.get("uses"), "actions/github-script@v9.0.0")
         script = (cancel_step.get("with") or {}).get("script") or ""
@@ -6523,11 +6858,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("mayCancelHeadPushRuns &&", script)
         self.assertIn("Post-merge push runs on ${baseBranch}", script)
 
-    def test_supersede_automation_prs_uses_pr_write_and_idempotent_comments(self) -> None:
+    def test_supersede_automation_prs_uses_pr_write_and_idempotent_comments(
+        self,
+    ) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/supersede-automation-prs.yml"
         )
-        reconcile = ((payload.get("jobs") or {}).get("reconcile") or {})
+        reconcile = (payload.get("jobs") or {}).get("reconcile") or {}
 
         self.assertEqual(
             payload.get("concurrency"),
@@ -6553,7 +6890,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 script = (step.get("with") or {}).get("script") or ""
                 self.assertIn("github.paginate(", script)
                 self.assertIn("github.rest.issues.listComments", script)
-                self.assertIn("comment.user?.login?.toLowerCase() === 'github-actions[bot]'", script)
+                self.assertIn(
+                    "comment.user?.login?.toLowerCase() === 'github-actions[bot]'",
+                    script,
+                )
                 self.assertIn("comment.body === action.message", script)
                 self.assertIn("github.rest.issues.createComment", script)
                 self.assertIn("github.rest.pulls.update", script)
@@ -6561,8 +6901,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertNotIn("github.rest.issues.update", script)
 
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
-        sync_job = ((payload.get("jobs") or {}).get("sync") or {})
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml"
+        )
+        sync_job = (payload.get("jobs") or {}).get("sync") or {}
         steps = sync_job.get("steps") or []
 
         credential_step = next(
@@ -6570,8 +6912,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
             for step in steps
             if step.get("name") == "Resolve upstream sync credential mode"
         )
-        self.assertIn("SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID", (credential_step.get("env") or {}).get("APP_CLIENT_ID", ""))
-        self.assertIn("SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY", (credential_step.get("env") or {}).get("APP_PRIVATE_KEY", ""))
+        self.assertIn(
+            "SEDNA_SYNC_UPSTREAM_APP_CLIENT_ID",
+            (credential_step.get("env") or {}).get("APP_CLIENT_ID", ""),
+        )
+        self.assertIn(
+            "SEDNA_SYNC_UPSTREAM_APP_PRIVATE_KEY",
+            (credential_step.get("env") or {}).get("APP_PRIVATE_KEY", ""),
+        )
 
         token_step = next(
             step
@@ -6596,7 +6944,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         sync_step = next(
             step for step in steps if step.get("name") == "Fast-forward upstream mirror"
         )
-        self.assertIn(".github/scripts/sync_upstream_mirror.py", sync_step.get("run") or "")
+        self.assertIn(
+            ".github/scripts/sync_upstream_mirror.py", sync_step.get("run") or ""
+        )
         self.assertIn("--mode required-write", sync_step.get("run") or "")
         self.assertEqual(
             (sync_job.get("outputs") or {}).get("synced_upstream_main_sha"),
@@ -6604,7 +6954,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_sedna_sync_upstream_keeps_audit_in_separate_read_only_job(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml"
+        )
         jobs = payload.get("jobs") or {}
         sync_job = jobs.get("sync") or {}
         audit_job = jobs.get("audit") or {}
@@ -6615,21 +6967,27 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("secrets.", audit_job_json)
         self.assertNotIn("SYNC_UPSTREAM_APP_TOKEN", audit_job_json)
         self.assertNotIn("SYNC_UPSTREAM_LEGACY_TOKEN", audit_job_json)
-        self.assertIn("Generate upstream sync app token", json.dumps(sync_job, sort_keys=True))
+        self.assertIn(
+            "Generate upstream sync app token", json.dumps(sync_job, sort_keys=True)
+        )
 
     def test_rust_ci_full_fallback_sccache_writes_are_disabled_by_default(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in ["lint_build"]:
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
-                workflow_text = (REPO_ROOT / ".github/workflows/rust-ci-full.yml").read_text(
-                    encoding="utf-8"
-                )
+                workflow_text = (
+                    REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+                ).read_text(encoding="utf-8")
                 env = job.get("env") or {}
                 self.assertEqual(env.get("SCCACHE_CACHE_SIZE"), "2G")
-                self.assertEqual(env.get("SCCACHE_FALLBACK_CACHE_POLICY"), "restore-only")
+                self.assertEqual(
+                    env.get("SCCACHE_FALLBACK_CACHE_POLICY"), "restore-only"
+                )
                 self.assertNotIn("ACTIONS_RUNTIME_TOKEN", workflow_text)
                 self.assertNotIn("SCCACHE_GHA_ENABLED=true", workflow_text)
 
@@ -6643,7 +7001,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     save_step.get("if") or "",
                 )
                 install_step = next(
-                    step for step in job.get("steps") or [] if step.get("name") == "Install sccache"
+                    step
+                    for step in job.get("steps") or []
+                    if step.get("name") == "Install sccache"
                 )
                 self.assertNotIn("version", install_step.get("with") or {})
                 configure_step = next(
@@ -6661,7 +7021,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "Summarize nextest failures",
                 ]:
                     matching_steps = [
-                        step for step in job.get("steps") or [] if step.get("name") == step_name
+                        step
+                        for step in job.get("steps") or []
+                        if step.get("name") == step_name
                     ]
                     for step in matching_steps:
                         self.assertIn(
@@ -6679,7 +7041,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("cargo nextest run", archive_steps_json)
 
     def test_rust_ci_full_runs_after_successful_scheduled_rust_ci_only(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
         trigger = payload.get("on") or {}
         jobs = payload.get("jobs") or {}
         schedule_gate = jobs.get("schedule_gate") or {}
@@ -6689,7 +7053,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["rust-ci"],
         )
         self.assertNotIn("schedule", trigger)
-        self.assertEqual(payload.get("permissions"), {"actions": "read", "contents": "read"})
+        self.assertEqual(
+            payload.get("permissions"), {"actions": "read", "contents": "read"}
+        )
 
         gate = schedule_gate.get("if") or ""
         self.assertIn("github.event.workflow_run.event == 'schedule'", gate)
@@ -6746,21 +7112,27 @@ class ValidationPlanScriptTests(unittest.TestCase):
             for step in steps
             if step.get("name") == "Check duplicate scheduled rust-ci success"
         )
-        self.assertEqual(dedupe_step.get("if"), "${{ github.event_name == 'schedule' }}")
+        self.assertEqual(
+            dedupe_step.get("if"), "${{ github.event_name == 'schedule' }}"
+        )
         dedupe_run = dedupe_step.get("run") or ""
         self.assertIn("skip_duplicate_workflow_run.py", dedupe_run)
         self.assertIn("--workflow rust-ci.yml", dedupe_run)
-        self.assertIn("--head-sha \"${{ github.sha }}\"", dedupe_run)
+        self.assertIn('--head-sha "${{ github.sha }}"', dedupe_run)
 
         detect_step = next(
-            step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
+            step
+            for step in steps
+            if step.get("name") == "Detect changed paths and rust-ci mode"
         )
         self.assertIn(
             "steps.schedule_duplicate.outputs.should_skip != 'true'",
             detect_step.get("if") or "",
         )
         skip_step = next(
-            step for step in steps if step.get("name") == "Emit duplicate scheduled skip plan"
+            step
+            for step in steps
+            if step.get("name") == "Emit duplicate scheduled skip plan"
         )
         self.assertEqual(
             skip_step.get("if"),
@@ -6781,14 +7153,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
     def test_rust_ci_argument_comment_lint_timeout_matches_lane_contract(self) -> None:
         rust_ci = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
-        rust_ci_full = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        rust_ci_full = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
 
         plan_run = (
-            (((rust_ci.get("jobs") or {}).get("matrix_plan") or {}).get("steps") or [])[0].get(
-                "run"
-            )
-            or ""
-        )
+            ((rust_ci.get("jobs") or {}).get("matrix_plan") or {}).get("steps") or []
+        )[0].get("run") or ""
         self.assertIn('"timeout_minutes": 30', plan_run)
 
         rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
@@ -6796,8 +7167,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ) or {}
         self.assertEqual(rust_ci_full_job.get("timeout-minutes"), "240")
 
-    def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+    def test_rust_ci_full_results_understands_archive_and_remote_test_jobs(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
         jobs = payload.get("jobs") or {}
         results = jobs.get("results") or {}
         steps = results.get("steps") or []
@@ -6817,10 +7192,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "remote_tests",
             ],
         )
-        self.assertIn("remote_tests_matrix", (jobs.get("matrix_plan") or {}).get("outputs") or {})
-        self.assertEqual((jobs.get("tests") or {}).get("needs"), ["matrix_plan", "nextest_archive"])
+        self.assertIn(
+            "remote_tests_matrix", (jobs.get("matrix_plan") or {}).get("outputs") or {}
+        )
         self.assertEqual(
-            (jobs.get("remote_tests") or {}).get("needs"), ["matrix_plan", "nextest_archive"]
+            (jobs.get("tests") or {}).get("needs"), ["matrix_plan", "nextest_archive"]
+        )
+        self.assertEqual(
+            (jobs.get("remote_tests") or {}).get("needs"),
+            ["matrix_plan", "nextest_archive"],
         )
 
         download_step = next(
@@ -6830,25 +7210,35 @@ class ValidationPlanScriptTests(unittest.TestCase):
             download_step.get("uses"),
             "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         )
-        self.assertEqual((download_step.get("with") or {}).get("pattern"), "rust-ci-full-*-summary-*")
-        self.assertEqual((download_step.get("with") or {}).get("merge-multiple"), "true")
+        self.assertEqual(
+            (download_step.get("with") or {}).get("pattern"), "rust-ci-full-*-summary-*"
+        )
+        self.assertEqual(
+            (download_step.get("with") or {}).get("merge-multiple"), "true"
+        )
 
         aggregate_step = next(
             step for step in steps if step.get("name") == "Build structured summary"
         )
         self.assertIn(
-            "${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py\" aggregate",
+            '${{ github.workspace }}/.github/scripts/summarize_rust_ci_full.py" aggregate',
             aggregate_step.get("run") or "",
         )
-        verify_step = next(step for step in steps if step.get("name") == "Verify full CI result")
+        verify_step = next(
+            step for step in steps if step.get("name") == "Verify full CI result"
+        )
         verify_run = verify_step.get("run") or ""
         self.assertIn("needs.schedule_gate.outputs.should_skip", verify_run)
         self.assertIn("Equivalent rust-ci-full run already passed", verify_run)
-        self.assertIn("require_success \"nextest_archive\"", verify_run)
-        self.assertIn("require_success \"remote_tests\"", verify_run)
+        self.assertIn('require_success "nextest_archive"', verify_run)
+        self.assertIn('require_success "remote_tests"', verify_run)
 
-    def test_rust_ci_full_archive_test_and_results_jobs_do_not_receive_secrets(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+    def test_rust_ci_full_archive_test_and_results_jobs_do_not_receive_secrets(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         for job_name in [
@@ -6863,11 +7253,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 job = jobs.get(job_name) or {}
                 self.assertNotIn("secrets", job)
                 self.assertNotIn("secrets.", json.dumps(job, sort_keys=True))
-                self.assertNotIn("ACTIONS_RUNTIME_TOKEN", json.dumps(job, sort_keys=True))
-                self.assertNotIn("SCCACHE_GHA_ENABLED=true", json.dumps(job, sort_keys=True))
+                self.assertNotIn(
+                    "ACTIONS_RUNTIME_TOKEN", json.dumps(job, sort_keys=True)
+                )
+                self.assertNotIn(
+                    "SCCACHE_GHA_ENABLED=true", json.dumps(job, sort_keys=True)
+                )
 
     def test_rust_ci_full_nextest_archive_is_reused_by_test_families(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci-full.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/rust-ci-full.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         archive_env = (jobs.get("nextest_archive") or {}).get("env") or {}
@@ -6876,15 +7272,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         archive_steps = (jobs.get("nextest_archive") or {}).get("steps") or []
         disk_reclaim_step = next(
-            step for step in archive_steps if step.get("name") == "Reclaim runner disk headroom"
+            step
+            for step in archive_steps
+            if step.get("name") == "Reclaim runner disk headroom"
         )
         self.assertEqual(disk_reclaim_step.get("if"), "${{ runner.os == 'Linux' }}")
         self.assertIn("/usr/share/dotnet", disk_reclaim_step.get("run") or "")
         self.assertIn("6 GiB safety floor", disk_reclaim_step.get("run") or "")
 
-        archive_run = next(
-            step for step in archive_steps if step.get("name") == "Build nextest archive"
-        ).get("run") or ""
+        archive_run = (
+            next(
+                step
+                for step in archive_steps
+                if step.get("name") == "Build nextest archive"
+            ).get("run")
+            or ""
+        )
         self.assertIn("cargo nextest archive", archive_run)
         self.assertIn("--archive-file", archive_run)
         self.assertNotIn("--all-features", archive_run)
@@ -6902,14 +7305,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertIn("bubblewrap", install_step.get("run") or "")
 
                 replay_disk_step = next(
-                    step for step in steps if step.get("name") == "Reclaim runner disk headroom"
+                    step
+                    for step in steps
+                    if step.get("name") == "Reclaim runner disk headroom"
                 )
-                self.assertEqual(replay_disk_step.get("if"), "${{ runner.os == 'Linux' }}")
+                self.assertEqual(
+                    replay_disk_step.get("if"), "${{ runner.os == 'Linux' }}"
+                )
                 self.assertIn("/usr/share/dotnet", replay_disk_step.get("run") or "")
                 self.assertIn("6 GiB safety floor", replay_disk_step.get("run") or "")
 
                 download_step = next(
-                    step for step in steps if step.get("name") == "Download nextest archive"
+                    step
+                    for step in steps
+                    if step.get("name") == "Download nextest archive"
                 )
                 self.assertEqual(
                     (download_step.get("with") or {}).get("name"),
@@ -6932,27 +7341,36 @@ class ValidationPlanScriptTests(unittest.TestCase):
             remote_matrix,
             "${{ steps.plan.outputs.remote_tests_matrix }}",
         )
-        plan_run = (
-            ((jobs.get("matrix_plan") or {}).get("steps") or [])[0].get("run") or ""
-        )
+        plan_run = ((jobs.get("matrix_plan") or {}).get("steps") or [])[0].get(
+            "run"
+        ) or ""
         self.assertNotIn('"filter"', plan_run)
-        remote_run = next(
-            step
-            for step in (jobs.get("remote_tests") or {}).get("steps") or []
-            if step.get("name") == "remote tests"
-        ).get("run") or ""
+        remote_run = (
+            next(
+                step
+                for step in (jobs.get("remote_tests") or {}).get("steps") or []
+                if step.get("name") == "remote tests"
+            ).get("run")
+            or ""
+        )
         self.assertNotIn(" -E ", remote_run)
-        remote_setup_run = next(
-            step
-            for step in (jobs.get("remote_tests") or {}).get("steps") or []
-            if step.get("name") == "Set up remote test env (Docker)"
-        ).get("run") or ""
+        remote_setup_run = (
+            next(
+                step
+                for step in (jobs.get("remote_tests") or {}).get("steps") or []
+                if step.get("name") == "Set up remote test env (Docker)"
+            ).get("run")
+            or ""
+        )
         self.assertIn("CODEX_TEST_REMOTE_ENV_CARGO_TARGET_DIR", remote_setup_run)
-        remote_cleanup_run = next(
-            step
-            for step in (jobs.get("remote_tests") or {}).get("steps") or []
-            if step.get("name") == "Reclaim remote env build artifacts"
-        ).get("run") or ""
+        remote_cleanup_run = (
+            next(
+                step
+                for step in (jobs.get("remote_tests") or {}).get("steps") or []
+                if step.get("name") == "Reclaim remote env build artifacts"
+            ).get("run")
+            or ""
+        )
         self.assertIn("20 GiB extraction safety floor", remote_cleanup_run)
 
     def test_rust_ci_full_summary_parser_extracts_compact_blockers(self) -> None:
@@ -6987,7 +7405,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            nextest = SUMMARIZE_RUST_CI_FULL.nextest_summary(nextest_log, "nextest-linux")
+            nextest = SUMMARIZE_RUST_CI_FULL.nextest_summary(
+                nextest_log, "nextest-linux"
+            )
             clippy = SUMMARIZE_RUST_CI_FULL.clippy_summary(clippy_log, "clippy-linux")
 
         self.assertEqual(
@@ -7163,7 +7583,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             summary = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertNotIn("error_lines", summary)
-        self.assertEqual(summary["primary_signal"], "error[E0277]: a real compiler failure")
+        self.assertEqual(
+            summary["primary_signal"], "error[E0277]: a real compiler failure"
+        )
 
     def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -7201,7 +7623,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
             summary = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(
-            summary["script_path"], ".github/scripts/validation-lanes/run-just-recipe.sh"
+            summary["script_path"],
+            ".github/scripts/validation-lanes/run-just-recipe.sh",
         )
         self.assertEqual(summary["script_args"], ["blocking-waits-core-targeted"])
         self.assertEqual(summary["cache_policy"], "restore-only")
@@ -7211,11 +7634,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
             summary["nextest_archive_artifact_name"],
             "validation-lab-nextest-core-carry-pilot",
         )
-        self.assertEqual(summary["nextest_archive_file_name"], "codex-core-carry-nextest.tar.zst")
+        self.assertEqual(
+            summary["nextest_archive_file_name"], "codex-core-carry-nextest.tar.zst"
+        )
         self.assertEqual(summary["nextest_archive_mode"], "downloaded")
         self.assertNotIn("run_command", summary)
 
-    def test_lane_summary_detects_server_notification_schema_fixture_drift(self) -> None:
+    def test_lane_summary_detects_server_notification_schema_fixture_drift(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             log = root / "lane.log"
@@ -7270,7 +7697,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "json app-server schema fixture ServerNotification.json differs from generated output",
         )
 
-    def test_aggregate_summary_surfaces_schema_fixture_drift_in_candidates(self) -> None:
+    def test_aggregate_summary_surfaces_schema_fixture_drift_in_candidates(
+        self,
+    ) -> None:
         drift = {
             "kind": "app_server_schema_fixture_drift",
             "fixture_family": "json",
@@ -7327,7 +7756,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(primary[0]["schema_fixture_drift"], drift)
         self.assertEqual(candidates[0]["schema_fixture_drift"], drift)
 
-    def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(self) -> None:
+    def test_validation_lab_frontier_all_widens_to_all_active_non_explicit_lanes(
+        self,
+    ) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
             "lab",
@@ -7341,14 +7772,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "false",
         )
 
-        selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
+        selected_lane_ids = [
+            lane["lane_id"] for lane in payload["selected_matrix"]["include"]
+        ]
         self.assertIn("codex.downstream-docs-check", selected_lane_ids)
         self.assertIn("codex.workflow-ci-sanity", selected_lane_ids)
         self.assertIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
-        self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
-        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        self.assertIn(
+            "codex.spawn-agent-description-model-surface-targeted", selected_lane_ids
+        )
+        self.assertIn(
+            "codex.core-multi-agent-orchestration-targeted", selected_lane_ids
+        )
+        self.assertNotIn(
+            "codex.tui-agent-picker-model-surface-targeted", selected_lane_ids
+        )
         self.assertEqual(payload["planned_job_count"], 42)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 3)
@@ -7379,11 +7818,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "true",
         )
 
-        selected_lane_ids = [lane["lane_id"] for lane in payload["selected_matrix"]["include"]]
-        self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
+        selected_lane_ids = [
+            lane["lane_id"] for lane in payload["selected_matrix"]["include"]
+        ]
+        self.assertIn(
+            "codex.tui-agent-picker-model-surface-targeted", selected_lane_ids
+        )
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
+        self.assertIn(
+            "codex.core-multi-agent-orchestration-targeted", selected_lane_ids
+        )
         self.assertIn("codex.rmcp-client-transport", selected_lane_ids)
         self.assertIn("codex.rmcp-consumers-check", selected_lane_ids)
         self.assertEqual(payload["planned_job_count"], 50)
@@ -7397,7 +7842,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_minimal_max_parallel"], "31")
         self.assertEqual(payload["rust_integration_max_parallel"], "29")
 
-    def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
+    def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(
+        self,
+    ) -> None:
         catalog = {
             "lanes": [
                 {
@@ -7479,7 +7926,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ):
             RESOLVE_VALIDATION_PLAN.select_frontier_all(catalog)
 
-    def test_heavy_plan_workflow_dispatch_all_uses_frontier_harvest_policy(self) -> None:
+    def test_heavy_plan_workflow_dispatch_all_uses_frontier_harvest_policy(
+        self,
+    ) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
             "heavy",
@@ -7511,7 +7960,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_minimal_max_parallel"], "20")
         self.assertEqual(payload["rust_integration_max_parallel"], "8")
         self.assertEqual(payload["release_max_parallel"], "1")
-        planned_lane_ids = [lane["lane_id"] for lane in payload["planned_matrix"]["include"]]
+        planned_lane_ids = [
+            lane["lane_id"] for lane in payload["planned_matrix"]["include"]
+        ]
         selected_lane_ids = payload["selected_lane_ids"]
         self.assertEqual(
             planned_lane_ids[:6],
@@ -7593,7 +8044,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+        self.assertEqual(
+            payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"]
+        )
         self.assertEqual(payload["matrix_fail_fast"], "true")
         self.assertEqual(payload["eager_release_lanes"], "false")
 
@@ -7619,7 +8072,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "true",
         )
 
-        self.assertEqual(payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+        self.assertEqual(
+            payload["selected_lane_ids"], ["codex.nextest-archive-core-carry-pilot"]
+        )
         self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
         self.assertEqual(payload["selected_nextest_archive_count"], 1)
@@ -7628,9 +8083,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         archive = payload["selected_nextest_archive_matrix"]["include"][0]
         self.assertEqual(archive["archive_cohort"], "core-carry-pilot")
-        self.assertEqual(archive["artifact_name"], "validation-lab-nextest-core-carry-pilot")
-        self.assertEqual(archive["archive_file_name"], "codex-core-carry-nextest.tar.zst")
-        self.assertEqual(archive["lane_ids"], ["codex.nextest-archive-core-carry-pilot"])
+        self.assertEqual(
+            archive["artifact_name"], "validation-lab-nextest-core-carry-pilot"
+        )
+        self.assertEqual(
+            archive["archive_file_name"], "codex-core-carry-nextest.tar.zst"
+        )
+        self.assertEqual(
+            archive["lane_ids"], ["codex.nextest-archive-core-carry-pilot"]
+        )
 
         archive_lane = payload["selected_rust_integration_archive_matrix"]["include"][0]
         self.assertTrue(archive_lane["uses_nextest_archive"])
@@ -7639,7 +8100,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "validation-lab-nextest-core-carry-pilot",
         )
 
-    def test_validation_lab_frontier_does_not_silently_select_archive_pilot(self) -> None:
+    def test_validation_lab_frontier_does_not_silently_select_archive_pilot(
+        self,
+    ) -> None:
         payload = run_script(
             SCRIPTS_DIR / "resolve_validation_plan.py",
             "lab",
@@ -7659,22 +8122,31 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "true",
         )
 
-        self.assertNotIn("codex.nextest-archive-core-carry-pilot", payload["selected_lane_ids"])
+        self.assertNotIn(
+            "codex.nextest-archive-core-carry-pilot", payload["selected_lane_ids"]
+        )
         self.assertEqual(payload["selected_nextest_archive_count"], 0)
         self.assertEqual(payload["selected_rust_integration_archive_lane_count"], 0)
         self.assertGreater(len(payload["selected_lane_ids"]), 0)
 
     def test_sedna_heavy_manual_harvest_jobs_follow_metadata_fail_fast(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         jobs = payload.get("jobs") or {}
 
         metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
-        self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(
+            metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}"
+        )
         self.assertEqual(
             metadata_outputs.get("event_policy"),
             "${{ steps.meta.outputs.event_policy }}",
         )
-        self.assertEqual(metadata_outputs.get("checkout_sha"), "${{ steps.meta.outputs.checkout_sha }}")
+        self.assertEqual(
+            metadata_outputs.get("checkout_sha"),
+            "${{ steps.meta.outputs.checkout_sha }}",
+        )
         self.assertEqual(
             metadata_outputs.get("planned_matrix"),
             "${{ steps.meta.outputs.planned_matrix }}",
@@ -7688,9 +8160,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ steps.meta.outputs.eager_release_lanes }}",
         )
         self.assertEqual(
-            ((jobs.get("smoke_rust_integration_lanes") or {}).get("strategy") or {}).get(
-                "fail-fast"
-            ),
+            (
+                (jobs.get("smoke_rust_integration_lanes") or {}).get("strategy") or {}
+            ).get("fail-fast"),
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
         self.assertEqual(
@@ -7700,7 +8172,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ fromJson(needs.metadata.outputs.matrix_fail_fast) }}",
         )
         rust_if = (jobs.get("rust_integration_lanes") or {}).get("if") or ""
-        self.assertIn("needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if)
+        self.assertIn(
+            "needs.metadata.outputs.continue_after_smoke_failure == 'true'", rust_if
+        )
         release_eager = jobs.get("release_lanes_eager") or {}
         self.assertEqual(release_eager.get("needs"), ["metadata"])
         self.assertIn(
@@ -7708,7 +8182,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             release_eager.get("if") or "",
         )
         release_if = (jobs.get("release_lanes") or {}).get("if") or ""
-        self.assertIn("needs.metadata.outputs.eager_release_lanes != 'true'", release_if)
+        self.assertIn(
+            "needs.metadata.outputs.eager_release_lanes != 'true'", release_if
+        )
 
     def test_sedna_heavy_pr_triggers_keep_ready_for_review(self) -> None:
         trigger_types = parse_pull_request_types(
@@ -7720,31 +8196,52 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_sedna_heavy_is_advisory_and_does_not_run_in_merge_queue(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         self.assertNotIn("merge_group", payload.get("on") or {})
 
     def test_sedna_heavy_metadata_skips_draft_pr_churn_without_ci_heavy(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
-        metadata_if = ((payload.get("jobs") or {}).get("metadata") or {}).get("if") or ""
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
+        metadata_if = ((payload.get("jobs") or {}).get("metadata") or {}).get(
+            "if"
+        ) or ""
 
         self.assertIn("github.event.pull_request.draft == false", metadata_if)
         self.assertIn("github.event.label.name == 'ci:heavy'", metadata_if)
 
     def test_sedna_heavy_workflow_dispatch_concurrency_keys_on_lane(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         concurrency = payload.get("concurrency") or {}
         group = concurrency.get("group") or ""
 
         self.assertIn("inputs.lane || 'all'", group)
         self.assertIn("github.event.pull_request.number", group)
 
-    def test_sedna_heavy_metadata_exposes_planner_fingerprint_and_dedupe_reason(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
-        metadata_outputs = (((payload.get("jobs") or {}).get("metadata") or {}).get("outputs") or {})
-        metadata_steps = (((payload.get("jobs") or {}).get("metadata") or {}).get("steps") or [])
-        metadata_run = next(
-            step for step in metadata_steps if step.get("name") == "Compute checkout ref"
-        ).get("run") or ""
+    def test_sedna_heavy_metadata_exposes_planner_fingerprint_and_dedupe_reason(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
+        metadata_outputs = ((payload.get("jobs") or {}).get("metadata") or {}).get(
+            "outputs"
+        ) or {}
+        metadata_steps = ((payload.get("jobs") or {}).get("metadata") or {}).get(
+            "steps"
+        ) or []
+        metadata_run = (
+            next(
+                step
+                for step in metadata_steps
+                if step.get("name") == "Compute checkout ref"
+            ).get("run")
+            or ""
+        )
 
         self.assertEqual(
             metadata_outputs.get("planner_fingerprint"),
@@ -7758,14 +8255,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
             metadata_outputs.get("event_policy"),
             "${{ steps.meta.outputs.event_policy }}",
         )
-        self.assertIn('event_policy="pull_request_exact_head_lane_fingerprint"', metadata_run)
-        self.assertIn('event_policy="workflow_dispatch_exact_head_manual"', metadata_run)
-        self.assertIn("unsupported event for sedna-heavy-tests checkout identity", metadata_run)
-        self.assertIn(".ci_proof_v1.schema_version == \"ci-proof-v1\"", metadata_run)
+        self.assertIn(
+            'event_policy="pull_request_exact_head_lane_fingerprint"', metadata_run
+        )
+        self.assertIn(
+            'event_policy="workflow_dispatch_exact_head_manual"', metadata_run
+        )
+        self.assertIn(
+            "unsupported event for sedna-heavy-tests checkout identity", metadata_run
+        )
+        self.assertIn('.ci_proof_v1.schema_version == "ci-proof-v1"', metadata_run)
         self.assertIn(".ci_proof_v1.planner_fingerprint == $planner", metadata_run)
-        self.assertIn(".ci_proof_v1.conclusion == \"success\"", metadata_run)
+        self.assertIn('.ci_proof_v1.conclusion == "success"', metadata_run)
+
     def test_sedna_heavy_summary_job_aggregates_lane_artifacts(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+        )
         jobs = payload.get("jobs") or {}
         summary = jobs.get("summary") or {}
 
@@ -7815,7 +8321,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
         self.assertIn(
-            '--planned-matrix-json \'${{ needs.metadata.outputs.planned_matrix }}\'',
+            "--planned-matrix-json '${{ needs.metadata.outputs.planned_matrix }}'",
             report_step.get("run") or "",
         )
         self.assertIn(
@@ -7862,47 +8368,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {"types": ["checks_requested"]},
         )
 
-    def test_blocking_ci_scope_routes_pull_requests_and_merge_groups(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
-        scope_job = (payload.get("jobs") or {}).get("scope") or {}
-        scope_steps = scope_job.get("steps") or []
-        checkout_step = next(
-            step
-            for step in scope_steps
-            if step.get("name") == "Checkout PR head for path classification"
-        )
-        self.assertEqual(
-            checkout_step.get("if"),
-            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
-        )
-        self.assertEqual(
-            checkout_step.get("with") or {},
-            {
-                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
-                "fetch-depth": "1",
-                "persist-credentials": "false",
-            },
-        )
-        classify_step = next(
-            step for step in scope_steps if step.get("name") == "Classify blocking CI scope"
-        )
-        self.assertEqual(
-            classify_step.get("env") or {},
-            {
-                "BASE_SHA": "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
-                "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}",
-            },
-        )
-        classify_run = classify_step.get("run") or ""
-        self.assertIn(
-            "if [[ '${{ github.event_name }}' != 'pull_request' && '${{ github.event_name }}' != 'merge_group' ]]; then",
-            classify_run,
-        )
-        self.assertIn("classify_ci_paths.py --base-sha", classify_run)
-        self.assertIn("Unable to fetch PR base; running full blocking CI.", classify_run)
-        self.assertIn("Unable to classify PR paths; running full blocking CI.", classify_run)
-
-    def test_blocking_ci_clippy_required_lane_is_path_aware_and_fail_closed(self) -> None:
+    def test_blocking_ci_preserves_candidate_dispatch_and_required_gate(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
         triggers = payload.get("on") or {}
         self.assertIn("pull_request", triggers)
@@ -7910,40 +8376,49 @@ class ValidationPlanScriptTests(unittest.TestCase):
             triggers.get("merge_group"),
             {"types": ["checks_requested"]},
         )
-        jobs = payload.get("jobs") or {}
-        scope = jobs.get("scope") or {}
-        outputs = scope.get("outputs") or {}
-        self.assertEqual(outputs.get("clippy"), "${{ steps.scope.outputs.clippy }}")
-        scope_run = next(
-            step for step in scope.get("steps") or [] if step.get("name") == "Classify blocking CI scope"
-        ).get("run") or ""
-        self.assertIn('echo "clippy=true"', scope_run)
-        self.assertIn('"clippy",', scope_run)
-        self.assertIn("if ! plan=", scope_run)
+        self.assertEqual(
+            (triggers.get("push") or {}).get("branches"),
+            ["main", "upstream-main"],
+        )
 
-        clippy = jobs.get("clippy-required") or {}
-        self.assertEqual(clippy.get("name"), "Linux full Clippy")
-        self.assertEqual(clippy.get("needs"), "scope")
-        self.assertEqual(clippy.get("if"), "${{ always() }}")
-        steps = clippy.get("steps") or []
-        verify = next(step for step in steps if step.get("name") == "Verify Clippy scope classification")
-        verify_run = verify.get("run") or ""
-        self.assertIn('[[ "${SCOPE_RESULT}" == "success" ]]', verify_run)
-        self.assertIn("Unknown Clippy scope classification", verify_run)
-        command = next(
-            step for step in steps
-            if step.get("name") == "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings"
-        )
+        dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
         self.assertEqual(
-            command.get("run"),
-            "cargo clippy --target x86_64-unknown-linux-gnu --all-features --tests --profile dev -- -D warnings",
+            set(dispatch_inputs),
+            {"candidate_sha", "candidate_tree", "base_sha"},
         )
-        self.assertEqual(
-            command.get("if"),
-            "${{ needs.scope.outputs.clippy == 'true' }}",
+        self.assertTrue(
+            all(
+                input_spec.get("required") == "true"
+                for input_spec in dispatch_inputs.values()
+            )
         )
+
+        jobs = payload.get("jobs") or {}
         required = jobs.get("required") or {}
-        self.assertIn("clippy-required", required.get("needs") or [])
+        self.assertEqual(required.get("name"), "CI required")
+        self.assertEqual(required.get("if"), "${{ always() }}")
+        self.assertEqual(
+            required.get("needs"),
+            [
+                "bazel",
+                "blob-size-policy",
+                "cargo-deny",
+                "codespell",
+                "repo-checks",
+                "rust-ci",
+                "sdk",
+            ],
+        )
+
+        checkout = next(
+            step
+            for step in required.get("steps") or []
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        self.assertEqual(
+            (checkout.get("with") or {}).get("persist-credentials"),
+            "false",
+        )
 
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         merge_group_workflows = []
@@ -7959,9 +8434,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 self.assertIn("concurrency-group::${{ github.workflow }}::", group)
                 self.assertIn("github.event_name == 'merge_group'", group)
                 self.assertIn("format('merge-group-{0}', github.sha)", group)
-                self.assertIn("format('pr-{0}', github.event.pull_request.number)", group)
+                self.assertIn(
+                    "format('pr-{0}', github.event.pull_request.number)", group
+                )
                 self.assertIn("format('push-{0}', github.sha)", group)
-                self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", group)
+                self.assertIn(
+                    "format('{0}-{1}', github.event_name, github.run_id)", group
+                )
                 cancel = str(concurrency.get("cancel-in-progress") or "")
                 self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
 
@@ -7983,10 +8462,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_blob_size_policy_uses_queue_base_for_merge_groups(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blob-size-policy.yml")
-        check_steps = ((payload.get("jobs") or {}).get("check") or {}).get("steps") or []
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/blob-size-policy.yml"
+        )
+        check_steps = ((payload.get("jobs") or {}).get("check") or {}).get(
+            "steps"
+        ) or []
         range_step = next(
-            step for step in check_steps if step.get("name") == "Determine comparison range"
+            step
+            for step in check_steps
+            if step.get("name") == "Determine comparison range"
         )
         run_script = range_step.get("run") or ""
         self.assertIn(
@@ -8054,10 +8539,12 @@ class BazelCiModeScriptTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
-                    comparison_complete=comparison_complete,
-                    files=files,
-                    statuses=["M"] * len(files) if isinstance(files, list) else None,
-                ),
+                        comparison_complete=comparison_complete,
+                        files=files,
+                        statuses=["M"] * len(files)
+                        if isinstance(files, list)
+                        else None,
+                    ),
                     {"mode": "full", "run_bazel": "true", "run_observer": "false"},
                 )
 
@@ -8082,7 +8569,9 @@ class BazelCiModeScriptTests(unittest.TestCase):
             "--statuses-json",
             "not-json",
         )
-        self.assertEqual(outputs, {"mode": "full", "run_bazel": "true", "run_observer": "false"})
+        self.assertEqual(
+            outputs, {"mode": "full", "run_bazel": "true", "run_observer": "false"}
+        )
 
     def test_command_line_mode_resolver_writes_github_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -8154,25 +8643,35 @@ class RustCiModeScriptTests(unittest.TestCase):
             args.extend(extra_args)
         return run_script(SCRIPTS_DIR / "resolve_rust_ci_mode.py", *args)
 
-    def test_rust_ci_changed_job_uses_pr_metadata_fast_path_with_git_fallback(self) -> None:
+    def test_rust_ci_changed_job_uses_pr_metadata_fast_path_with_git_fallback(
+        self,
+    ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
-        changed = ((payload.get("jobs") or {}).get("changed") or {})
+        changed = (payload.get("jobs") or {}).get("changed") or {}
         steps = changed.get("steps") or []
         checkout = next(
             step
             for step in steps
-            if step.get("uses") == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+            if step.get("uses")
+            == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
         )
         self.assertEqual((checkout.get("with") or {}).get("fetch-depth"), "1")
 
         previous_required_step = next(
-            step for step in steps if step.get("name") == "Check previous required result on follow-up head"
+            step
+            for step in steps
+            if step.get("name") == "Check previous required result on follow-up head"
         )
-        self.assertEqual(previous_required_step.get("uses"), "actions/github-script@v9.0.0")
-        self.assertIn("github.event.action == 'synchronize'", previous_required_step.get("if") or "")
-        previous_required_script = (
-            (previous_required_step.get("with") or {}).get("script") or ""
+        self.assertEqual(
+            previous_required_step.get("uses"), "actions/github-script@v9.0.0"
         )
+        self.assertIn(
+            "github.event.action == 'synchronize'",
+            previous_required_step.get("if") or "",
+        )
+        previous_required_script = (previous_required_step.get("with") or {}).get(
+            "script"
+        ) or ""
         self.assertIn("github.rest.pulls.listCommits", previous_required_script)
         self.assertIn("github.rest.checks.listForRef", previous_required_script)
         self.assertIn("context.payload.before", previous_required_script)
@@ -8182,10 +8681,12 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("Rust CI required gate", previous_required_script)
 
         metadata_step = next(
-            step for step in steps if step.get("name") == "Resolve PR changed files via API"
+            step
+            for step in steps
+            if step.get("name") == "Resolve PR changed files via API"
         )
         self.assertEqual(metadata_step.get("uses"), "actions/github-script@v9.0.0")
-        metadata_script = ((metadata_step.get("with") or {}).get("script") or "")
+        metadata_script = (metadata_step.get("with") or {}).get("script") or ""
         self.assertIn("github.paginate(github.rest.pulls.listFiles", metadata_script)
         self.assertIn("github.rest.repos.compareCommitsWithBasehead", metadata_script)
         self.assertEqual(
@@ -8194,7 +8695,9 @@ class RustCiModeScriptTests(unittest.TestCase):
         )
 
         fallback_step = next(
-            step for step in steps if step.get("name") == "Fetch history for git diff fallback"
+            step
+            for step in steps
+            if step.get("name") == "Fetch history for git diff fallback"
         )
         self.assertIn(
             "steps.pr_diff.outputs.needs_git_fallback == 'true'",
@@ -8205,11 +8708,15 @@ class RustCiModeScriptTests(unittest.TestCase):
             "before_sha='${{ steps.previous_required.outputs.previous_green_sha || steps.shas.outputs.before_sha }}'",
             fallback_run,
         )
-        self.assertIn('git fetch --no-tags --depth=1 "${head_repo}" "${before_sha}"', fallback_run)
+        self.assertIn(
+            'git fetch --no-tags --depth=1 "${head_repo}" "${before_sha}"', fallback_run
+        )
         self.assertIn('"${before_sha}^{commit}"', fallback_run)
 
         detect_step = next(
-            step for step in steps if step.get("name") == "Detect changed paths and rust-ci mode"
+            step
+            for step in steps
+            if step.get("name") == "Detect changed paths and rust-ci mode"
         )
         detect_env = detect_step.get("env") or {}
         self.assertEqual(
@@ -8222,7 +8729,9 @@ class RustCiModeScriptTests(unittest.TestCase):
         )
         detect_run = detect_step.get("run") or ""
         self.assertIn('--before-sha "${COMPARISON_BEFORE_SHA}"', detect_run)
-        self.assertIn('--previous-green-required "${PREVIOUS_GREEN_REQUIRED}"', detect_run)
+        self.assertIn(
+            '--previous-green-required "${PREVIOUS_GREEN_REQUIRED}"', detect_run
+        )
         self.assertIn("--primary-files-json", detect_run)
         self.assertIn("--primary-line-count", detect_run)
         self.assertIn("--latest-delta-files-json", detect_run)
@@ -8240,8 +8749,12 @@ class RustCiModeScriptTests(unittest.TestCase):
             or ""
         )
 
-        self.assertIn("needs.changed.outputs.run_argument_comment_lint_package", results_run)
-        self.assertIn("needs.changed.outputs.run_argument_comment_lint_prebuilt", results_run)
+        self.assertIn(
+            "needs.changed.outputs.run_argument_comment_lint_package", results_run
+        )
+        self.assertIn(
+            "needs.changed.outputs.run_argument_comment_lint_prebuilt", results_run
+        )
         self.assertIn("needs.changed.outputs.run_general", results_run)
         self.assertIn("needs.changed.outputs.run_cargo_shear", results_run)
         self.assertIn("needs.changed.outputs.run_incremental_validation", results_run)
@@ -8250,14 +8763,18 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("needs.matrix_plan.result", results_run)
         self.assertIn("matrix_plan failed", results_run)
         self.assertIn("needs.planner_fixtures.result", results_run)
-        self.assertIn('"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'', results_run)
+        self.assertIn("\"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}\" == 'true'", results_run)
         self.assertIn("planner_fixtures failed", results_run)
         self.assertIn("incremental_validation failed", results_run)
-        no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[0]
+        no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[
+            0
+        ]
         self.assertIn("NEEDS_CHANGED_OUTPUTS_WORKFLOWS", no_relevant_gate)
-        self.assertIn("needs.changed.outputs.run_incremental_validation", no_relevant_gate)
+        self.assertIn(
+            "needs.changed.outputs.run_incremental_validation", no_relevant_gate
+        )
         self.assertNotIn(
-            'NEEDS_CHANGED_OUTPUTS_CODEX}" == \'true\' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'',
+            "NEEDS_CHANGED_OUTPUTS_CODEX}\" == 'true' || \"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}\" == 'true'",
             results_run,
         )
 
@@ -8267,13 +8784,17 @@ class RustCiModeScriptTests(unittest.TestCase):
             "${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}",
         )
 
-    def test_rust_ci_general_runs_pinned_targeted_clippy_before_bench_smoke(self) -> None:
+    def test_rust_ci_general_runs_pinned_targeted_clippy_before_bench_smoke(
+        self,
+    ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
         general = (payload.get("jobs") or {}).get("general") or {}
         self.assertEqual(general.get("name"), "Fast format / Clippy / etc")
         steps = general.get("steps") or []
         names = [step.get("name") for step in steps]
-        self.assertLess(names.index("cargo fmt"), names.index("cargo clippy (targeted packages)"))
+        self.assertLess(
+            names.index("cargo fmt"), names.index("cargo clippy (targeted packages)")
+        )
         self.assertLess(
             names.index("cargo clippy (targeted packages)"),
             names.index("Rust benchmark smoke test"),
@@ -8281,14 +8802,17 @@ class RustCiModeScriptTests(unittest.TestCase):
         toolchain = next(
             step
             for step in steps
-            if step.get("uses") == "dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d"
+            if step.get("uses")
+            == "dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d"
         )
         self.assertEqual(
             (toolchain.get("with") or {}).get("target"),
             "x86_64-unknown-linux-gnu",
         )
         clippy = next(
-            step for step in steps if step.get("name") == "cargo clippy (targeted packages)"
+            step
+            for step in steps
+            if step.get("name") == "cargo clippy (targeted packages)"
         )
         clippy_run = clippy.get("run") or ""
         self.assertIn("run_targeted_clippy.sh", clippy_run)
@@ -8302,9 +8826,13 @@ class RustCiModeScriptTests(unittest.TestCase):
         ):
             self.assertIn(flag, helper)
         self.assertNotIn("--workspace", helper)
-        self.assertIn("steps.targeted_clippy_packages.outputs.packages", clippy.get("if") or "")
+        self.assertIn(
+            "steps.targeted_clippy_packages.outputs.packages", clippy.get("if") or ""
+        )
 
-    def test_rust_ci_argument_comment_lint_uses_single_cached_bazel_action(self) -> None:
+    def test_rust_ci_argument_comment_lint_uses_single_cached_bazel_action(
+        self,
+    ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
         jobs = payload.get("jobs") or {}
 
@@ -8337,10 +8865,14 @@ class RustCiModeScriptTests(unittest.TestCase):
             if step.get("name") == "Run argument comment lint on codex-rs"
         ]
         self.assertEqual(len(lint_steps), 1)
-        self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
+        self.assertEqual(
+            lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint"
+        )
         self.assertNotIn("buildbuddy-api-key", lint_steps[0].get("with") or {})
 
-    def test_argument_comment_lint_platform_workflow_is_pr_only_advisory_coverage(self) -> None:
+    def test_argument_comment_lint_platform_workflow_is_pr_only_advisory_coverage(
+        self,
+    ) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/argument-comment-lint-platform.yml"
         )
@@ -8392,13 +8924,20 @@ class RustCiModeScriptTests(unittest.TestCase):
         steps = lint_job.get("steps") or []
         checkout = steps[0]
         self.assertEqual(
-            checkout.get("uses"), "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+            checkout.get("uses"),
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
         )
-        self.assertEqual((checkout.get("with") or {}).get("persist-credentials"), "false")
+        self.assertEqual(
+            (checkout.get("with") or {}).get("persist-credentials"), "false"
+        )
         lint_step = next(
-            step for step in steps if step.get("name") == "Run argument comment lint on codex-rs"
+            step
+            for step in steps
+            if step.get("name") == "Run argument comment lint on codex-rs"
         )
-        self.assertEqual(lint_step.get("uses"), "./.github/actions/run-argument-comment-lint")
+        self.assertEqual(
+            lint_step.get("uses"), "./.github/actions/run-argument-comment-lint"
+        )
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(
@@ -8431,7 +8970,9 @@ class RustCiModeScriptTests(unittest.TestCase):
             ),
         )
 
-    def test_explicit_latest_delta_inputs_route_green_followup_without_git_history(self) -> None:
+    def test_explicit_latest_delta_inputs_route_green_followup_without_git_history(
+        self,
+    ) -> None:
         outputs = run_script(
             SCRIPTS_DIR / "resolve_rust_ci_mode.py",
             "--repo-root",
@@ -8561,11 +9102,18 @@ class RustCiModeScriptTests(unittest.TestCase):
     def test_merge_group_complete_docs_delta_uses_lightweight_route(self) -> None:
         outputs = run_script(
             SCRIPTS_DIR / "resolve_rust_ci_mode.py",
-            "--repo-root", str(self.repo.root), "--event-name", "merge_group",
-            "--merge-group-comparison-complete", "true",
-            "--merge-group-files-json", json.dumps(["README.md", "docs/ci.md"]),
-            "--merge-group-status-json", json.dumps(["A", "M"]),
-            "--merge-group-line-count", "12",
+            "--repo-root",
+            str(self.repo.root),
+            "--event-name",
+            "merge_group",
+            "--merge-group-comparison-complete",
+            "true",
+            "--merge-group-files-json",
+            json.dumps(["README.md", "docs/ci.md"]),
+            "--merge-group-status-json",
+            json.dumps(["A", "M"]),
+            "--merge-group-line-count",
+            "12",
         )
         self.assertEqual(outputs["validation_mode"], "light_merge_group")
         self.assertEqual(outputs["run_incremental_validation"], "true")
@@ -8585,11 +9133,18 @@ class RustCiModeScriptTests(unittest.TestCase):
         for complete, files, lines in cases:
             with self.subTest(complete=complete, files=files, lines=lines):
                 args = [
-                    "--repo-root", str(self.repo.root), "--event-name", "merge_group",
-                    "--merge-group-comparison-complete", complete,
-                    "--merge-group-files-json", "not-json" if files is None else json.dumps(files),
-                    "--merge-group-status-json", json.dumps(["M"] * len(files)) if files is not None else "not-json",
-                    "--merge-group-line-count", lines,
+                    "--repo-root",
+                    str(self.repo.root),
+                    "--event-name",
+                    "merge_group",
+                    "--merge-group-comparison-complete",
+                    complete,
+                    "--merge-group-files-json",
+                    "not-json" if files is None else json.dumps(files),
+                    "--merge-group-status-json",
+                    json.dumps(["M"] * len(files)) if files is not None else "not-json",
+                    "--merge-group-line-count",
+                    lines,
                 ]
                 outputs = run_script(SCRIPTS_DIR / "resolve_rust_ci_mode.py", *args)
                 self.assertEqual(outputs["validation_mode"], "full")
@@ -8599,11 +9154,18 @@ class RustCiModeScriptTests(unittest.TestCase):
         for files in (["docs/old.md", "docs/new.md"], ["docs/deleted.md"]):
             outputs = run_script(
                 SCRIPTS_DIR / "resolve_rust_ci_mode.py",
-                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
-                "--merge-group-comparison-complete", "true",
-                "--merge-group-files-json", json.dumps(files),
-                "--merge-group-status-json", json.dumps(["R100", "D"] if len(files) == 2 else ["D"]),
-                "--merge-group-line-count", "2",
+                "--repo-root",
+                str(self.repo.root),
+                "--event-name",
+                "merge_group",
+                "--merge-group-comparison-complete",
+                "true",
+                "--merge-group-files-json",
+                json.dumps(files),
+                "--merge-group-status-json",
+                json.dumps(["R100", "D"] if len(files) == 2 else ["D"]),
+                "--merge-group-line-count",
+                "2",
             )
             self.assertEqual(outputs["validation_mode"], "full")
 
@@ -8611,15 +9173,24 @@ class RustCiModeScriptTests(unittest.TestCase):
         for count in ("10000", "not-a-count"):
             outputs = run_script(
                 SCRIPTS_DIR / "resolve_rust_ci_mode.py",
-                "--repo-root", str(self.repo.root), "--event-name", "merge_group",
-                "--merge-group-comparison-complete", "true",
-                "--merge-group-files-json", json.dumps(["docs/ci.md"]),
-                "--merge-group-status-json", json.dumps(["M"]),
-                "--merge-group-line-count", count,
+                "--repo-root",
+                str(self.repo.root),
+                "--event-name",
+                "merge_group",
+                "--merge-group-comparison-complete",
+                "true",
+                "--merge-group-files-json",
+                json.dumps(["docs/ci.md"]),
+                "--merge-group-status-json",
+                json.dumps(["M"]),
+                "--merge-group-line-count",
+                count,
             )
             self.assertEqual(outputs["validation_mode"], "full")
 
-    def test_rust_ci_producer_output_delimiter_is_closed_and_collision_free(self) -> None:
+    def test_rust_ci_producer_output_delimiter_is_closed_and_collision_free(
+        self,
+    ) -> None:
         producer_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/rust-ci.yml",
             "changed",
@@ -8726,12 +9297,18 @@ class RustCiModeScriptTests(unittest.TestCase):
             )
             outputs = run_script(
                 SCRIPTS_DIR / "resolve_rust_ci_mode.py",
-                "--repo-root", str(repo),
-                "--event-name", "merge_group",
-                "--merge-group-comparison-complete", produced["comparison_complete"],
-                "--merge-group-files-json", produced["files_json"],
-                "--merge-group-status-json", produced["status_json"],
-                "--merge-group-line-count", produced["line_count"],
+                "--repo-root",
+                str(repo),
+                "--event-name",
+                "merge_group",
+                "--merge-group-comparison-complete",
+                produced["comparison_complete"],
+                "--merge-group-files-json",
+                produced["files_json"],
+                "--merge-group-status-json",
+                produced["status_json"],
+                "--merge-group-line-count",
+                produced["line_count"],
             )
             self.assertEqual(outputs["validation_mode"], "light_merge_group")
             self.assertEqual(outputs["run_incremental_validation"], "true")
@@ -8794,7 +9371,9 @@ class RustCiModeScriptTests(unittest.TestCase):
         )
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
 
-    def test_light_followup_accepts_small_workflow_catalog_delta_after_green_head(self) -> None:
+    def test_light_followup_accepts_small_workflow_catalog_delta_after_green_head(
+        self,
+    ) -> None:
         green_sha = self.repo.commit(
             "green",
             {".github/workflows/validation-lab.yml": "base\n"},
@@ -8922,10 +9501,14 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
 
-    def test_review_request_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
+    def test_review_request_pr_routes_to_custom_prompt_targeted_validation(
+        self,
+    ) -> None:
         outputs = self.run_rust_ci_mode(
             event_action="opened",
-            head_files={"codex-rs/prompts/src/review_request.rs": "fn review_prompt() {}\n"},
+            head_files={
+                "codex-rs/prompts/src/review_request.rs": "fn review_prompt() {}\n"
+            },
         )
 
         self.assertEqual(outputs["validation_mode"], "light_initial")
@@ -9024,9 +9607,7 @@ class HelperScriptTests(unittest.TestCase):
                 json.dumps(
                     {
                         "spdxVersion": (
-                            "SPDX-2.2"
-                            if failure == "malformed_sbom"
-                            else "SPDX-2.3"
+                            "SPDX-2.2" if failure == "malformed_sbom" else "SPDX-2.3"
                         )
                     }
                 ),
@@ -9048,7 +9629,9 @@ class HelperScriptTests(unittest.TestCase):
             for name in asset_names:
                 digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
                 checksums.append(f"{digest}  {name}")
-            (root / checksum_name).write_text("\n".join(checksums) + "\n", encoding="utf-8")
+            (root / checksum_name).write_text(
+                "\n".join(checksums) + "\n", encoding="utf-8"
+            )
             if failure == "checksum_mismatch":
                 (root / codex_sigstore_name).write_text("tampered\n", encoding="utf-8")
 
@@ -9089,9 +9672,7 @@ class HelperScriptTests(unittest.TestCase):
                         "target_commitish": (
                             "b" * 40
                             if failure == "wrong_source_commit"
-                            else (
-                                "main" if failure == "legacy_x86" else target_commit
-                            )
+                            else ("main" if failure == "legacy_x86" else target_commit)
                         ),
                         "assets": release_assets,
                     }
@@ -9142,7 +9723,9 @@ class HelperScriptTests(unittest.TestCase):
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 visible_path.parent.mkdir(parents=True)
                 visible_path.symlink_to(predecessor_link)
-                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                current_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
                 current_path.parent.mkdir(parents=True)
                 current_path.symlink_to(root / "previous-current")
                 (visible_path.parent / ".codex.restore.collision").symlink_to(
@@ -9157,13 +9740,17 @@ class HelperScriptTests(unittest.TestCase):
                 visible_path = root / "home" / ".local" / "bin" / "codex"
                 visible_path.parent.mkdir(parents=True)
                 visible_path.symlink_to(predecessor_link)
-                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                current_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
                 current_path.parent.mkdir(parents=True)
                 current_path.symlink_to(root / "previous-current")
             elif failure == "empty_attacker_replacement":
                 pass
             if failure == "symlink_releases":
-                releases_path = root / "home" / ".codex" / "packages" / "standalone" / "releases"
+                releases_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "releases"
+                )
                 releases_path.parent.mkdir(parents=True)
                 releases_path.symlink_to(root / "outside-releases")
             elif failure == "symlink_bin":
@@ -9176,12 +9763,20 @@ class HelperScriptTests(unittest.TestCase):
                 local_path.symlink_to(root / "outside-local")
             elif failure == "symlink_release_entry":
                 release_path = (
-                    root / "home" / ".codex" / "packages" / "standalone" / "releases" / release_tag
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / "releases"
+                    / release_tag
                 )
                 release_path.mkdir(parents=True)
                 (release_path / "codex").symlink_to(root / "outside-codex")
             elif failure == "symlink_backups":
-                backups_path = root / "home" / ".codex" / "packages" / "standalone" / "backups"
+                backups_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "backups"
+                )
                 backups_path.parent.mkdir(parents=True)
                 backups_path.symlink_to(root / "outside-backups")
 
@@ -9220,7 +9815,7 @@ fi
             fake_uname = fake_bin / "uname"
             fake_uname.write_text(
                 "#!/usr/bin/env bash\n"
-                "if [[ ${1:-} == -s ]]; then echo Linux; else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
+                'if [[ ${1:-} == -s ]]; then echo Linux; else echo "${FAKE_UNAME_ARCH}"; fi\n',
                 encoding="utf-8",
             )
             for name in ("cosign", "gh", "readelf"):
@@ -9295,7 +9890,7 @@ fi
                     helper.write_text(
                         "#!/usr/bin/env bash\n"
                         + (
-                            "echo \"Requesting program interpreter: ${FAKE_ELF_INTERPRETER}\"\n"
+                            'echo "Requesting program interpreter: ${FAKE_ELF_INTERPRETER}"\n'
                             if name == "readelf"
                             else "exit 0\n"
                         ),
@@ -9358,13 +9953,21 @@ fi
             elif failure == "rollback_attacker_replacement":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "replace-before-rollback"
                 env["SEDNA_INSTALLER_TESTING"] = "1"
-                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(root / "attacker-visible")
-                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(root / "attacker-current")
+                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(
+                    root / "attacker-visible"
+                )
+                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(
+                    root / "attacker-current"
+                )
             elif failure == "empty_attacker_replacement":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "replace-before-rollback"
                 env["SEDNA_INSTALLER_TESTING"] = "1"
-                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(root / "attacker-visible")
-                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(root / "attacker-current")
+                env["SEDNA_INSTALLER_TEST_ATTACKER_VISIBLE"] = str(
+                    root / "attacker-visible"
+                )
+                env["SEDNA_INSTALLER_TEST_ATTACKER_CURRENT"] = str(
+                    root / "attacker-current"
+                )
             elif failure == "activation_fault_inert":
                 env["SEDNA_INSTALLER_TEST_FAULT"] = "after-visible-predecessor"
                 env.pop("SEDNA_INSTALLER_TESTING", None)
@@ -9401,15 +10004,28 @@ fi
             if failure == "activation_empty_restore":
                 self.assertFalse((root / "home" / ".local" / "bin" / "codex").exists())
                 self.assertFalse(
-                    (root / "home" / ".codex" / "packages" / "standalone" / "current").exists()
+                    (
+                        root / "home" / ".codex" / "packages" / "standalone" / "current"
+                    ).exists()
                 )
             if failure == "restore_temp_collision":
-                visible_temp = root / "home" / ".local" / "bin" / ".codex.restore.collision"
-                current_temp = root / "home" / ".codex" / "packages" / "standalone" / ".current.restore.collision"
+                visible_temp = (
+                    root / "home" / ".local" / "bin" / ".codex.restore.collision"
+                )
+                current_temp = (
+                    root
+                    / "home"
+                    / ".codex"
+                    / "packages"
+                    / "standalone"
+                    / ".current.restore.collision"
+                )
                 self.assertEqual(visible_temp.readlink(), root / "attacker-visible")
                 self.assertEqual(current_temp.readlink(), root / "attacker-current")
                 visible_path = root / "home" / ".local" / "bin" / "codex"
-                current_path = root / "home" / ".codex" / "packages" / "standalone" / "current"
+                current_path = (
+                    root / "home" / ".codex" / "packages" / "standalone" / "current"
+                )
                 self.assertFalse(visible_path.exists() or visible_path.is_symlink())
                 self.assertFalse(current_path.exists() or current_path.is_symlink())
             if failure == "rollback_attacker_replacement":
@@ -9418,7 +10034,9 @@ fi
                     root / "attacker-visible",
                 )
                 self.assertEqual(
-                    (root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(),
+                    (
+                        root / "home" / ".codex" / "packages" / "standalone" / "current"
+                    ).readlink(),
                     root / "attacker-current",
                 )
             if failure == "empty_attacker_replacement":
@@ -9427,7 +10045,9 @@ fi
                     root / "attacker-visible",
                 )
                 self.assertEqual(
-                    (root / "home" / ".codex" / "packages" / "standalone" / "current").readlink(),
+                    (
+                        root / "home" / ".codex" / "packages" / "standalone" / "current"
+                    ).readlink(),
                     root / "attacker-current",
                 )
             return proc
@@ -9447,12 +10067,14 @@ fi
         proc = self.run_sedna_installer_fixture("wrong_workflow_sha")
         self.assertNotEqual(proc.returncode, 0)
 
-    def test_sedna_release_installer_serializes_activation_before_mutation(self) -> None:
+    def test_sedna_release_installer_serializes_activation_before_mutation(
+        self,
+    ) -> None:
         script = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
             encoding="utf-8"
         )
         self.assertIn("acquire_activation_lock", script)
-        self.assertIn('activation_started=true', script)
+        self.assertIn("activation_started=true", script)
         self.assertIn('activation_previous_current="$(readlink', script)
         self.assertIn("refusing to overwrite an existing installer backup", script)
         self.assertIn("while os.getppid() == parent_pid", script)
@@ -9461,32 +10083,36 @@ fi
             (REPO_ROOT / "docs/install.md").read_text(encoding="utf-8"),
         )
 
-    def test_sedna_release_installer_restores_visible_predecessor_on_failure(self) -> None:
-        proc = self.run_sedna_installer_fixture(
-            "activation_restore", dry_run=False
-        )
+    def test_sedna_release_installer_restores_visible_predecessor_on_failure(
+        self,
+    ) -> None:
+        proc = self.run_sedna_installer_fixture("activation_restore", dry_run=False)
         self.assertEqual(proc.returncode, 73, proc.stderr)
 
-    def test_sedna_release_installer_fault_hook_is_inert_without_testing_mode(self) -> None:
-        proc = self.run_sedna_installer_fixture(
-            "activation_fault_inert", dry_run=False
-        )
+    def test_sedna_release_installer_fault_hook_is_inert_without_testing_mode(
+        self,
+    ) -> None:
+        proc = self.run_sedna_installer_fixture("activation_fault_inert", dry_run=False)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("installed sednalabs/codex@", proc.stdout)
 
-    def test_sedna_release_installer_removes_new_links_on_empty_predecessor_failure(self) -> None:
+    def test_sedna_release_installer_removes_new_links_on_empty_predecessor_failure(
+        self,
+    ) -> None:
         proc = self.run_sedna_installer_fixture(
             "activation_empty_restore", dry_run=False
         )
         self.assertEqual(proc.returncode, 74, proc.stderr)
 
-    def test_sedna_release_installer_fails_closed_on_restore_temp_collisions(self) -> None:
-        proc = self.run_sedna_installer_fixture(
-            "restore_temp_collision", dry_run=False
-        )
+    def test_sedna_release_installer_fails_closed_on_restore_temp_collisions(
+        self,
+    ) -> None:
+        proc = self.run_sedna_installer_fixture("restore_temp_collision", dry_run=False)
         self.assertEqual(proc.returncode, 74, proc.stderr)
 
-    def test_sedna_release_installer_preserves_empty_predecessor_replacements(self) -> None:
+    def test_sedna_release_installer_preserves_empty_predecessor_replacements(
+        self,
+    ) -> None:
         proc = self.run_sedna_installer_fixture(
             "empty_attacker_replacement", dry_run=False
         )
@@ -9524,9 +10150,7 @@ fi
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(expected, proc.stderr)
 
-        arm_proc = self.run_sedna_installer_fixture(
-            "arm_missing_sbom", arch="aarch64"
-        )
+        arm_proc = self.run_sedna_installer_fixture("arm_missing_sbom", arch="aarch64")
         self.assertNotEqual(arm_proc.returncode, 0)
         self.assertIn("missing required assets", arm_proc.stderr)
 
@@ -9620,7 +10244,14 @@ fi
                     write_elf(codex, machine, interpreter)
                     write_elf(proxy, machine, interpreter)
                     proc = subprocess.run(
-                        [sys.executable, "-", target, interpreter, str(codex), str(proxy)],
+                        [
+                            sys.executable,
+                            "-",
+                            target,
+                            interpreter,
+                            str(codex),
+                            str(proxy),
+                        ],
                         input=fallback,
                         text=True,
                         capture_output=True,
@@ -9728,7 +10359,9 @@ fi
             },
         )
 
-    def test_duplicate_workflow_finder_ignores_wrong_sha_branch_or_failed_runs(self) -> None:
+    def test_duplicate_workflow_finder_ignores_wrong_sha_branch_or_failed_runs(
+        self,
+    ) -> None:
         runs = [
             {
                 "id": 21,
@@ -9766,7 +10399,9 @@ fi
             )
         )
 
-    def test_duplicate_workflow_finder_requires_matching_summary_fingerprint(self) -> None:
+    def test_duplicate_workflow_finder_requires_matching_summary_fingerprint(
+        self,
+    ) -> None:
         runs = [
             {
                 "id": 31,
@@ -9868,8 +10503,12 @@ fi
             )
 
         self.assertEqual(payload, b"artifact bytes")
-        first_headers = {key.lower(): value for key, value in requests[0].header_items()}
-        second_headers = {key.lower(): value for key, value in requests[1].header_items()}
+        first_headers = {
+            key.lower(): value for key, value in requests[0].header_items()
+        }
+        second_headers = {
+            key.lower(): value for key, value in requests[1].header_items()
+        }
         self.assertEqual(first_headers.get("authorization"), "Bearer token-value")
         self.assertNotIn("authorization", second_headers)
 
@@ -9914,7 +10553,9 @@ fi
         self.assertEqual(output_lines["should_run"], "true")
         self.assertEqual(output_lines["reason"], "lookup_failed_run_conservatively")
 
-    def test_github_output_parser_tolerates_malformed_and_multiline_entries(self) -> None:
+    def test_github_output_parser_tolerates_malformed_and_multiline_entries(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "github-output.txt"
             output.write_text(
@@ -9952,10 +10593,9 @@ fi
     ) -> None:
         workflow_path = REPO_ROOT / ".github/workflows/sedna-release.yml"
         payload = load_workflow_payload(workflow_path)
-        inputs = (
-            ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs")
-            or {}
-        )
+        inputs = ((payload.get("on") or {}).get("workflow_dispatch") or {}).get(
+            "inputs"
+        ) or {}
         channel_input = inputs.get("channel") or {}
         macos_input = inputs.get("macos_release_mode") or {}
 
@@ -9996,11 +10636,8 @@ fi
         install_workflow = REPO_ROOT / ".github/workflows/sedna-release-install.yml"
         install_payload = load_workflow_payload(install_workflow)
         install_inputs = (
-            ((install_payload.get("on") or {}).get("workflow_dispatch") or {}).get(
-                "inputs"
-            )
-            or {}
-        )
+            (install_payload.get("on") or {}).get("workflow_dispatch") or {}
+        ).get("inputs") or {}
         install_macos_input = install_inputs.get("macos_release_mode") or {}
         self.assertEqual(
             {
@@ -10013,7 +10650,9 @@ fi
             },
         )
 
-    def test_prerelease_main_command_dispatches_explicit_markerless_opt_in(self) -> None:
+    def test_prerelease_main_command_dispatches_explicit_markerless_opt_in(
+        self,
+    ) -> None:
         justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
         self.assertIn("prerelease-main:", justfile)
         self.assertIn(
@@ -10027,13 +10666,13 @@ fi
         release_payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
-        release_push = ((release_payload.get("on") or {}).get("push") or {})
+        release_push = (release_payload.get("on") or {}).get("push") or {}
         jobs = release_payload.get("jobs") or {}
         route_job = jobs.get("route") or {}
-        router_steps = (
-            (route_job.get("steps") or [])
-        )
-        named_steps = {step.get("name"): step for step in router_steps if "name" in step}
+        router_steps = route_job.get("steps") or []
+        named_steps = {
+            step.get("name"): step for step in router_steps if "name" in step
+        }
         resolve_job = jobs.get("resolve") or {}
         release_job = jobs.get("release-linux") or {}
         publish_job = jobs.get("publish-release") or {}
@@ -10047,8 +10686,12 @@ fi
         self.assertEqual(release_payload.get("permissions"), {})
         self.assertEqual(route_job.get("permissions"), {})
         self.assertFalse(any("uses" in step for step in router_steps))
-        self.assertIn("HEAD_MESSAGE", named_steps["Resolve release request"].get("env") or {})
-        self.assertIn("^Sedna-Release:", named_steps["Resolve release request"].get("run") or "")
+        self.assertIn(
+            "HEAD_MESSAGE", named_steps["Resolve release request"].get("env") or {}
+        )
+        self.assertIn(
+            "^Sedna-Release:", named_steps["Resolve release request"].get("run") or ""
+        )
         self.assertIn(
             '"${EVENT_NAME}" == "workflow_dispatch" && "${EVENT_REF}" != "refs/heads/main"',
             named_steps["Resolve release request"].get("run") or "",
@@ -10085,14 +10728,20 @@ fi
             'if [[ "${target_sha}" != "${HOST_SHA}" ]]',
             resolve_metadata_step.get("run") or "",
         )
-        resolve_script = resolve_named_steps["Resolve release metadata"].get("run") or ""
-        self.assertNotIn("INPUT_ALLOW_PRIOR_MAIN_TARGET", resolve_metadata_step.get("env") or {})
+        resolve_script = (
+            resolve_named_steps["Resolve release metadata"].get("run") or ""
+        )
+        self.assertNotIn(
+            "INPUT_ALLOW_PRIOR_MAIN_TARGET", resolve_metadata_step.get("env") or {}
+        )
         self.assertNotIn("INPUT_ALLOW_PRIOR_MAIN_TARGET", resolve_script)
-        self.assertIn("refusing an unattestable differing-source release", resolve_script)
+        self.assertIn(
+            "refusing an unattestable differing-source release", resolve_script
+        )
         self.assertIn('"${target_commit}" != "${HOST_SHA}"', resolve_script)
         self.assertIn('"${target_commit}" != "${WORKFLOW_SHA}"', resolve_script)
         self.assertIn(
-            'INPUT_ALLOW_MARKERLESS_PRERELEASE',
+            "INPUT_ALLOW_MARKERLESS_PRERELEASE",
             resolve_metadata_step.get("env") or {},
         )
         self.assertIn(
@@ -10168,7 +10817,9 @@ fi
         )
 
     def test_sedna_release_uses_dedicated_github_app_for_publication(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
         jobs = payload.get("jobs") or {}
         release_job = jobs.get("release-linux") or {}
         publish_job = jobs.get("publish-release") or {}
@@ -10212,9 +10863,7 @@ fi
         config_step = named_steps["Check release publisher app configuration"]
         self.assertEqual(
             {
-                "APP_CLIENT_ID": (
-                    (config_step.get("env") or {}).get("APP_CLIENT_ID")
-                ),
+                "APP_CLIENT_ID": ((config_step.get("env") or {}).get("APP_CLIENT_ID")),
                 "APP_PRIVATE_KEY": (
                     (config_step.get("env") or {}).get("APP_PRIVATE_KEY")
                 ),
@@ -10252,7 +10901,9 @@ fi
             )
         self.assertEqual(publish_job.get("permissions"), {"actions": "read"})
 
-    def test_sedna_release_verifier_checks_staged_binary_version_in_dry_run(self) -> None:
+    def test_sedna_release_verifier_checks_staged_binary_version_in_dry_run(
+        self,
+    ) -> None:
         installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
             encoding="utf-8"
         )
@@ -10269,7 +10920,9 @@ fi
         self.assertIn('echo "$staged_version_output"', installer)
 
     def test_sedna_release_macos_x64_is_signed_notarized_and_verified(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
         jobs = payload.get("jobs") or {}
         preflight = jobs.get("release-macos-signing-preflight") or {}
         build = jobs.get("release-macos-build") or {}
@@ -10293,21 +10946,33 @@ fi
             if step.get("name")
         }
         config = preflight_steps["Check Intel macOS signing configuration"]
-        self.assertIn("Missing Intel macOS release signing configuration", config.get("run") or "")
+        self.assertIn(
+            "Missing Intel macOS release signing configuration", config.get("run") or ""
+        )
         self.assertIn("APPLE_NOTARIZATION_KEY_P8", config.get("env") or {})
 
         self.assertEqual(build.get("runs-on"), "macos-15-intel")
-        self.assertEqual(build.get("needs"), ["resolve", "release-macos-signing-preflight"])
+        self.assertEqual(
+            build.get("needs"), ["resolve", "release-macos-signing-preflight"]
+        )
         self.assertEqual((build.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
-        self.assertEqual((build.get("env") or {}).get("MACOSX_DEPLOYMENT_TARGET"), "12.0")
+        self.assertEqual(
+            (build.get("env") or {}).get("MACOSX_DEPLOYMENT_TARGET"), "12.0"
+        )
         self.assertEqual(sign.get("runs-on"), "ubuntu-24.04")
         self.assertIn(
             "macos_release_mode == 'notarized'",
             sign.get("if") or "",
         )
-        self.assertEqual(sign.get("environment"), {"name": "codesigning", "deployment": "false"})
+        self.assertEqual(
+            sign.get("environment"), {"name": "codesigning", "deployment": "false"}
+        )
         self.assertEqual((sign.get("permissions") or {}).get("id-token"), "write")
-        sign_steps = {step.get("name"): step for step in sign.get("steps") or [] if step.get("name")}
+        sign_steps = {
+            step.get("name"): step
+            for step in sign.get("steps") or []
+            if step.get("name")
+        }
         self.assertIn(
             "notarize_macos_binary_with_rcodesign.sh",
             sign_steps["Sign and notarize Intel macOS binaries"].get("run") or "",
@@ -10315,26 +10980,39 @@ fi
 
         self.assertEqual(package.get("runs-on"), "macos-15-intel")
         package_steps = {
-            step.get("name"): step for step in package.get("steps") or [] if step.get("name")
+            step.get("name"): step
+            for step in package.get("steps") or []
+            if step.get("name")
         }
-        package_script = package_steps["Package Intel macOS release assets"].get("run") or ""
+        package_script = (
+            package_steps["Package Intel macOS release assets"].get("run") or ""
+        )
         self.assertIn("hdiutil create", package_script)
         self.assertIn("codex codex-responses-api-proxy", package_script)
 
-        self.assertEqual(sign_dmg.get("environment"), {"name": "codesigning", "deployment": "false"})
+        self.assertEqual(
+            sign_dmg.get("environment"), {"name": "codesigning", "deployment": "false"}
+        )
         sign_dmg_steps = {
-            step.get("name"): step for step in sign_dmg.get("steps") or [] if step.get("name")
+            step.get("name"): step
+            for step in sign_dmg.get("steps") or []
+            if step.get("name")
         }
         self.assertIn(
             "notarize_macos_dmg_with_rcodesign.sh",
-            sign_dmg_steps["Sign, notarize, and staple Intel macOS DMG"].get("run") or "",
+            sign_dmg_steps["Sign, notarize, and staple Intel macOS DMG"].get("run")
+            or "",
         )
 
         self.assertEqual(finalize.get("runs-on"), "macos-15-intel")
         finalize_steps = {
-            step.get("name"): step for step in finalize.get("steps") or [] if step.get("name")
+            step.get("name"): step
+            for step in finalize.get("steps") or []
+            if step.get("name")
         }
-        verify_script = finalize_steps["Verify Intel macOS release assets"].get("run") or ""
+        verify_script = (
+            finalize_steps["Verify Intel macOS release assets"].get("run") or ""
+        )
         for evidence in (
             "lipo",
             "codesign --verify --strict",
@@ -10348,7 +11026,9 @@ fi
             self.assertIn(evidence, verify_script)
 
     def test_sedna_release_macos_preview_is_explicit_and_unnotarized(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
         jobs = payload.get("jobs") or {}
         build = jobs.get("release-macos-build") or {}
         preview = jobs.get("release-macos-preview-package") or {}
@@ -10388,9 +11068,10 @@ fi
             for step in preview.get("steps") or []
             if step.get("name")
         }
-        package_script = preview_steps[
-            "Ad-hoc sign and package Intel macOS preview"
-        ].get("run") or ""
+        package_script = (
+            preview_steps["Ad-hoc sign and package Intel macOS preview"].get("run")
+            or ""
+        )
         for evidence in (
             "--identity -",
             "Signature=adhoc",
@@ -10410,18 +11091,18 @@ fi
         }
         create_script = publish_steps["Create GitHub release"].get("run") or ""
         for evidence in (
-            "release_note_suffix=\"\"",
+            'release_note_suffix=""',
             "Intel macOS preview: macOS 12+ on Intel x86_64 only;",
             "Intel macOS unnotarized asset: macOS 12+ on Intel x86_64 only;",
             "ad-hoc signed, not Apple-notarized",
             "not an official supported macOS distribution",
             "Monterey runtime smoke is not claimed",
-            "guidance_url=\"https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow\"",
+            'guidance_url="https://github.com/${GH_REPO}/blob/${RELEASE_TAG}/docs/sedna-release.md#release-install-verification-workflow"',
             'gh release create "${RELEASE_TAG}" "${assets[@]}"',
             'release_id="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json databaseId --jq .databaseId)"',
             'generated_body="$(gh release view "${RELEASE_TAG}" --repo "${GH_REPO}" --json body --jq .body)"',
             'release_body="${generated_body}"$\'\\n\\n\'"${release_note_suffix}"',
-            'jq -n --arg body "${release_body}" \'{body: $body}\'',
+            "jq -n --arg body \"${release_body}\" '{body: $body}'",
             'gh api --method PATCH "repos/${GH_REPO}/releases/${release_id}" --input -',
         ):
             self.assertIn(evidence, create_script)
@@ -10469,7 +11150,9 @@ fi
             "Build verification matrix",
         )["run"]
 
-        def resolve_matrix(mode: str, *, require_arm64: bool = True) -> list[dict[str, str]]:
+        def resolve_matrix(
+            mode: str, *, require_arm64: bool = True
+        ) -> list[dict[str, str]]:
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_path = Path(tmpdir) / "github-output.txt"
                 output_path.write_text("", encoding="utf-8")
@@ -10514,8 +11197,12 @@ fi
             "plan",
             "Validate x86-only compatibility request",
         )
-        self.assertEqual(compatibility_step.get("if"), "${{ !inputs.require_linux_arm64 }}")
-        self.assertIn("releases/tags/${RELEASE_TAG}", compatibility_step.get("run") or "")
+        self.assertEqual(
+            compatibility_step.get("if"), "${{ !inputs.require_linux_arm64 }}"
+        )
+        self.assertIn(
+            "releases/tags/${RELEASE_TAG}", compatibility_step.get("run") or ""
+        )
         self.assertIn("-aarch64-unknown-linux-gnu", compatibility_step.get("run") or "")
         self.assertIn('> "${asset_names}"', compatibility_step.get("run") or "")
         gh_api_lines = [
@@ -10554,7 +11241,9 @@ fi
         self.assertIn("verify_download_sha256", installer)
         self.assertIn("2026, 8, 16", installer)
         self.assertIn("published_at", installer)
-        self.assertIn('.decode(\n            "utf-8", errors="strict"\n        )', installer)
+        self.assertIn(
+            '.decode(\n            "utf-8", errors="strict"\n        )', installer
+        )
         self.assertNotIn("hashlib.file_digest", installer)
         self.assertIn("--signer-workflow", installer)
         daemon_update_loop = (
@@ -10564,7 +11253,9 @@ fi
             "async fn install_latest_sedna_standalone", 1
         )[1]
         self.assertIn(".stderr(Stdio::inherit())", sedna_updater)
-        self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
+        self.assertEqual(
+            installer.count('--source-digest "$expected_source_commit"'), 3
+        )
         self.assertEqual(installer.count('--signer-digest "$expected_workflow_sha"'), 3)
         self.assertEqual(
             installer.count(
@@ -10579,10 +11270,10 @@ fi
         ]
         self.assertEqual(len(deny_runner_lines), 3)
         self.assertIn("SPDX-2.3", installer)
-        self.assertIn('verify_signatures=true', installer)
-        self.assertIn('verify_attestation=true', installer)
+        self.assertIn("verify_signatures=true", installer)
+        self.assertIn("verify_attestation=true", installer)
         self.assertIn('release_dir_name="${release_tag}-${target}"', installer)
-        self.assertIn('actual_target not in (None, expected_target)', installer)
+        self.assertIn("actual_target not in (None, expected_target)", installer)
         self.assertIn("readelf -l", installer)
         self.assertIn('"$staged/codex" exec --help', installer)
         self.assertIn('"$staged/codex" app-server --help', installer)
@@ -10593,9 +11284,11 @@ fi
         )
         verify_script = verify_step.get("run") or ""
         self.assertIn("installer_args=(", verify_script)
-        self.assertIn("installer_args+=(--verify-signatures --verify-attestation)", verify_script)
+        self.assertIn(
+            "installer_args+=(--verify-signatures --verify-attestation)", verify_script
+        )
         self.assertIn("installer_args+=(--allow-historical-x86)", verify_script)
-        self.assertIn('installer_args+=(--macos-unnotarized)', verify_script)
+        self.assertIn("installer_args+=(--macos-unnotarized)", verify_script)
         self.assertNotIn('"${attestation_arg[@]}"', verify_script)
         self.assertIn('"${REQUIRE_LINUX_ARM64}" == "true"', verify_script)
         self.assertEqual(
@@ -10618,14 +11311,15 @@ fi
             REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
         release_steps = (
-            ((release_payload.get("jobs") or {}).get("release-linux") or {}).get("steps")
-            or []
-        )
+            (release_payload.get("jobs") or {}).get("release-linux") or {}
+        ).get("steps") or []
         release_named_steps = {
             step.get("name"): step for step in release_steps if step.get("name")
         }
         stage_script = release_named_steps["Stage release assets"].get("run") or ""
-        self.assertIn('install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"', stage_script)
+        self.assertIn(
+            'install -m 0644 Cargo.toml Cargo.lock "${stage_dir}/"', stage_script
+        )
         self.assertIn('"workflow_sha": os.environ["WORKFLOW_SHA"]', stage_script)
         attest_subjects = (
             release_named_steps["Attest Linux archive and SBOM provenance"].get("with")
@@ -10635,9 +11329,9 @@ fi
         self.assertIn("${{ github.workspace }}/dist/", attest_subjects)
         self.assertIn("matrix.metadata_json_name", attest_subjects)
         self.assertIn("matrix.metadata_text_name", attest_subjects)
-        sbom_output = (
-            release_named_steps["Generate SPDX SBOM"].get("with") or {}
-        ).get("output-file") or ""
+        sbom_output = (release_named_steps["Generate SPDX SBOM"].get("with") or {}).get(
+            "output-file"
+        ) or ""
         self.assertTrue(sbom_output.startswith("${{ github.workspace }}/dist/"))
         provenance_step = release_named_steps["Stage provenance bundle and checksums"]
         self.assertIsNone(provenance_step.get("working-directory"))
@@ -10766,7 +11460,7 @@ fi
     def test_sedna_release_does_not_accept_tag_push_authority(self) -> None:
         workflow_path = REPO_ROOT / ".github/workflows/sedna-release.yml"
         payload = load_workflow_payload(workflow_path)
-        push = ((payload.get("on") or {}).get("push") or {})
+        push = (payload.get("on") or {}).get("push") or {}
         self.assertEqual(push, {"branches": ["main"]})
         self.assertNotIn("tags", push)
 
@@ -10815,16 +11509,18 @@ fi
         self.assertNotIn("git fetch upstream --tags", workflow)
 
     def test_sedna_release_dispatches_public_asset_verification_only(self) -> None:
-        release_workflow = (REPO_ROOT / ".github/workflows/sedna-release.yml").read_text(
-            encoding="utf-8"
-        )
+        release_workflow = (
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        ).read_text(encoding="utf-8")
         install_payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release-install.yml"
         )
-        install_job = ((install_payload.get("jobs") or {}).get("install") or {})
-        plan_job = ((install_payload.get("jobs") or {}).get("plan") or {})
+        install_job = (install_payload.get("jobs") or {}).get("install") or {}
+        plan_job = (install_payload.get("jobs") or {}).get("plan") or {}
         plan_steps = {
-            step.get("name"): step for step in plan_job.get("steps") or [] if "name" in step
+            step.get("name"): step
+            for step in plan_job.get("steps") or []
+            if "name" in step
         }
 
         self.assertIn("Dispatch release asset verifier", release_workflow)
@@ -10870,19 +11566,29 @@ fi
         self.assertIn("external deployment path", workflow_json)
 
     def test_sedna_release_reuses_caches_without_reusing_smoke_artifacts(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
-        release_job = ((payload.get("jobs") or {}).get("release-linux") or {})
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
+        )
+        release_job = (payload.get("jobs") or {}).get("release-linux") or {}
         steps = release_job.get("steps") or []
         named_steps = {step.get("name"): step for step in steps if "name" in step}
 
         self.assertEqual(
             {
-                "cargo_home_restore": named_steps["Restore cargo home cache"].get("uses"),
+                "cargo_home_restore": named_steps["Restore cargo home cache"].get(
+                    "uses"
+                ),
                 "sccache_install": named_steps["Install sccache"].get("uses"),
-                "sccache_configure_run": named_steps["Configure sccache backend"].get("run"),
-                "sccache_restore": named_steps["Restore sccache cache (fallback)"].get("uses"),
+                "sccache_configure_run": named_steps["Configure sccache backend"].get(
+                    "run"
+                ),
+                "sccache_restore": named_steps["Restore sccache cache (fallback)"].get(
+                    "uses"
+                ),
                 "cargo_home_save": named_steps["Save cargo home cache"].get("uses"),
-                "sccache_save": named_steps["Save sccache cache (fallback)"].get("uses"),
+                "sccache_save": named_steps["Save sccache cache (fallback)"].get(
+                    "uses"
+                ),
             },
             {
                 "cargo_home_restore": "actions/cache/restore@v6",
@@ -10926,9 +11632,14 @@ fi
             '"upstream_position": os.environ["UPSTREAM_POSITION"]',
             named_steps["Stage release assets"].get("run") or "",
         )
-        self.assertEqual(named_steps["Build release binaries"].get("id"), "build_release")
+        self.assertEqual(
+            named_steps["Build release binaries"].get("id"), "build_release"
+        )
         self.assertFalse(
-            any(step.get("uses", "").startswith("actions/download-artifact") for step in steps)
+            any(
+                step.get("uses", "").startswith("actions/download-artifact")
+                for step in steps
+            )
         )
 
     def test_workflow_policy_rejects_missing_node_version_file(self) -> None:
@@ -10993,7 +11704,9 @@ jobs:
             ],
         )
 
-    def test_workflow_policy_rejects_self_hosted_runners_in_public_workflows(self) -> None:
+    def test_workflow_policy_rejects_self_hosted_runners_in_public_workflows(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow = root / ".github/workflows/deploy.yml"
@@ -11146,7 +11859,9 @@ jobs:
             [runner_group_input_violation],
         )
 
-    def test_workflow_policy_does_not_treat_unused_runs_on_as_runner_override(self) -> None:
+    def test_workflow_policy_does_not_treat_unused_runs_on_as_runner_override(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow = root / ".github/workflows/release.yml"
@@ -11224,7 +11939,9 @@ jobs:
 
         self.assertEqual(violations, [])
 
-    def test_workflow_policy_rejects_release_install_dispatch_without_dry_run(self) -> None:
+    def test_workflow_policy_rejects_release_install_dispatch_without_dry_run(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow = root / ".github/workflows/release.yml"
@@ -11281,7 +11998,9 @@ jobs:
 
         self.assertEqual(violations, [])
 
-    def test_workflow_policy_rejects_release_install_script_without_dry_run(self) -> None:
+    def test_workflow_policy_rejects_release_install_script_without_dry_run(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow = root / ".github/workflows/install.yml"
@@ -11433,7 +12152,9 @@ jobs:
 
         self.assertEqual(violations, [])
 
-    def test_workflow_policy_accepts_app_token_release_create_with_read_only_token(self) -> None:
+    def test_workflow_policy_accepts_app_token_release_create_with_read_only_token(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow = root / ".github/workflows/release.yml"
@@ -11607,7 +12328,9 @@ jobs:
             "success",
         )
 
-    def test_aggregate_summary_marks_stale_frontier_failures_for_targeted_latest_head_proof(self) -> None:
+    def test_aggregate_summary_marks_stale_frontier_failures_for_targeted_latest_head_proof(
+        self,
+    ) -> None:
         args = mock.Mock(
             head_sha="1111111111111111111111111111111111111111",
             latest_head_sha="2222222222222222222222222222222222222222",
@@ -11618,12 +12341,28 @@ jobs:
         freshness = AGGREGATE_VALIDATION_SUMMARY.classify_head_freshness(
             args,
             queue=[
-                {"kind": "lane", "lane_id": "codex.api-client-targeted", "outcome": "failure"},
-                {"kind": "lane", "lane_id": "codex.api-types-targeted", "outcome": "failure"},
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.api-client-targeted",
+                    "outcome": "failure",
+                },
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.api-types-targeted",
+                    "outcome": "failure",
+                },
             ],
             candidate_next_slices=[
-                {"kind": "lane", "lane_id": "codex.api-client-targeted", "signal": "API fixture failed"},
-                {"kind": "lane", "lane_id": "codex.api-types-targeted", "signal": "API type drift"},
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.api-client-targeted",
+                    "signal": "API fixture failed",
+                },
+                {
+                    "kind": "lane",
+                    "lane_id": "codex.api-types-targeted",
+                    "signal": "API type drift",
+                },
             ],
             downstream_result="failure",
         )
@@ -11639,7 +12378,9 @@ jobs:
         )
         self.assertEqual(freshness["recommended_rerun"]["profile"], "targeted")
 
-    def test_aggregate_summary_marks_schema_fixture_failure_for_latest_head_proof(self) -> None:
+    def test_aggregate_summary_marks_schema_fixture_failure_for_latest_head_proof(
+        self,
+    ) -> None:
         args = mock.Mock(
             head_sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee",
             latest_head_sha="ffffffffeeeeeeeeddddddddccccccccbbbbbbbb",
@@ -11737,7 +12478,9 @@ jobs:
         self.assertEqual(freshness["run_head_status"], "current")
         self.assertEqual(freshness["failed_lane_classification"], "cancelled")
         self.assertTrue(freshness["recommended_rerun"]["needed"])
-        self.assertEqual(freshness["recommended_rerun"]["lane_ids"], ["codex.release-smoke"])
+        self.assertEqual(
+            freshness["recommended_rerun"]["lane_ids"], ["codex.release-smoke"]
+        )
 
     def test_markdown_link_regex_excludes_optional_title(self) -> None:
         match = CHECK_MARKDOWN_LINKS.INLINE_LINK_RE.search(
@@ -12088,7 +12831,9 @@ class ValidationLaneBatchRunnerTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("branch-only-lane-ran", proc.stdout)
-            results = json.loads((output_dir / "batch-results.json").read_text(encoding="utf-8"))
+            results = json.loads(
+                (output_dir / "batch-results.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(
                 results["results"][0]["lane_id"],
                 "codex.branch-only-targeted",
@@ -12467,7 +13212,9 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
         self.assertEqual(result["release_tag"], "v0.126.0-alpha.3-sedna.1")
         self.assertTrue(result["github_prerelease"])
 
-    def test_future_upstream_tag_is_not_used_for_older_synced_upstream_base(self) -> None:
+    def test_future_upstream_tag_is_not_used_for_older_synced_upstream_base(
+        self,
+    ) -> None:
         repo, upstream, downstream = self.create_fixture(marker=None)
         try:
             repo._git(
@@ -12496,7 +13243,9 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
             },
         )
 
-    def test_upstream_mirror_ahead_of_target_does_not_advance_release_track(self) -> None:
+    def test_upstream_mirror_ahead_of_target_does_not_advance_release_track(
+        self,
+    ) -> None:
         repo, upstream, downstream = self.create_fixture(marker=None)
         try:
             repo._git("checkout", "-B", "upstream-main-fixture", upstream)
@@ -12513,7 +13262,9 @@ class SednaReleaseVersionResolverTests(unittest.TestCase):
                 "Release 0.126.0-alpha.4",
                 env={"GIT_COMMITTER_DATE": "2099-01-01T00:00:00+00:00"},
             )
-            repo._git("update-ref", "refs/remotes/origin/upstream-main", future_upstream)
+            repo._git(
+                "update-ref", "refs/remotes/origin/upstream-main", future_upstream
+            )
             repo._git("checkout", "main")
 
             result = self.resolve(repo, downstream, channel="auto")

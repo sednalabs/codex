@@ -43,12 +43,7 @@ pub fn resolve_review_request(
     request: ReviewRequest,
     cwd: &AbsolutePathBuf,
 ) -> anyhow::Result<ResolvedReviewRequest> {
-    let target = match request.target {
-        ReviewTarget::Custom { instructions } => ReviewTarget::Custom {
-            instructions: instructions.trim().to_string(),
-        },
-        other => other,
-    };
+    let target = request.target;
     let prompt = review_prompt(&target, cwd)?;
     let user_facing_hint = request
         .user_facing_hint
