@@ -203,12 +203,13 @@ async fn local_compaction_respects_tool_metadata_state(
 #[tokio::test]
 async fn local_compaction_completion_persists_exact_provider_usage() -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
+    let server_uri = server.uri();
     let (mut session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
         move |config| {
             config.model = Some("gpt-6-sol".to_string());
-            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+            config.model_provider.base_url = Some(format!("{server_uri}/v1"));
         },
     )
     .await;
