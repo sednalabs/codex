@@ -2,8 +2,6 @@
 """Check or stamp the Rust workspace version from an exact upstream lineage."""
 
 import argparse
-import glob
-import importlib.util
 import json
 import re
 import sys
@@ -12,14 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-RESOLVER_PATH = SCRIPT_DIR / "resolve_sedna_release_version.py"
-SPEC = importlib.util.spec_from_file_location("sedna_version_resolver", RESOLVER_PATH)
-if SPEC is None or SPEC.loader is None:
-    raise RuntimeError(f"cannot load version resolver at {RESOLVER_PATH}")
-VERSION_RESOLVER = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = VERSION_RESOLVER
-SPEC.loader.exec_module(VERSION_RESOLVER)
+import resolve_sedna_release_version as VERSION_RESOLVER
 
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_ASSIGNMENT_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"\s*(?:#.*)?(?:\r?\n)?$')
@@ -74,9 +65,26 @@ def resolve_provenance(
 
     try:
         resolved_source = VERSION_RESOLVER.resolve_commit(repo, source_commit)
-        upstream_ref_commit = VERSION_RESOLVER.resolve_commit(repo, upstream_ref)
         if resolved_source != source_commit:
             raise BuildVersionError("--source-commit did not resolve to the supplied exact SHA")
+        checkout_head = VERSION_RESOLVER.resolve_commit(repo, "HEAD")
+        if checkout_head != source_commit:
+            raise BuildVersionError(
+                f"checkout HEAD is {checkout_head}, not --source-commit {source_commit}"
+            )
+        dirty_state = VERSION_RESOLVER.git(
+            repo, "status", "--porcelain=v1", "--untracked-files=all"
+        )
+        if dirty_state:
+            raise BuildVersionError("source checkout must be clean before version preparation")
+        checkout_root = Path(
+            VERSION_RESOLVER.git(repo, "rev-parse", "--show-toplevel")
+        ).resolve()
+        if checkout_root != repo.resolve():
+            raise BuildVersionError(
+                f"--repo-root is {repo.resolve()}, not checkout root {checkout_root}"
+            )
+        upstream_ref_commit = VERSION_RESOLVER.resolve_commit(repo, upstream_ref)
         upstream_base = VERSION_RESOLVER.git(
             repo, "merge-base", resolved_source, upstream_ref_commit
         )
@@ -108,7 +116,7 @@ def resolve_provenance(
 
 def _load_toml(path: Path) -> dict:
     try:
-        return tomllib.loads(path.read_text())
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise BuildVersionError(f"cannot read valid TOML from {path}: {exc}") from exc
 
@@ -116,7 +124,7 @@ def _load_toml(path: Path) -> dict:
 def _member_manifests(cargo_dir: Path, member_patterns: list[str]) -> list[Path]:
     manifests: set[Path] = set()
     for pattern in member_patterns:
-        matches = sorted(glob.glob(str(cargo_dir / pattern), recursive=True))
+        matches = sorted(cargo_dir.glob(pattern))
         if not matches:
             raise BuildVersionError(f"workspace member does not resolve: {pattern}")
         found_for_pattern = False
@@ -249,8 +257,11 @@ def _package_blocks(lock_text: str) -> list[tuple[int, int, dict]]:
     lines = lock_text.splitlines(keepends=True)
     starts = [i for i, line in enumerate(lines) if line.strip() == "[[package]]"]
     blocks: list[tuple[int, int, dict]] = []
-    for offset, start in enumerate(starts):
-        end = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+    for start in starts:
+        end = next(
+            (i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[", lines[i])),
+            len(lines),
+        )
         try:
             entry = tomllib.loads("".join(lines[start:end]))["package"][0]
         except (tomllib.TOMLDecodeError, KeyError, IndexError) as exc:
@@ -265,8 +276,8 @@ def load_workspace_state(repo: Path) -> WorkspaceState:
     cargo_dir = repo / "codex-rs"
     manifest_path = cargo_dir / "Cargo.toml"
     lock_path = cargo_dir / "Cargo.lock"
-    manifest_text = manifest_path.read_text()
-    lock_text = lock_path.read_text()
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    lock_text = lock_path.read_text(encoding="utf-8")
     workspace_doc = _load_toml(manifest_path).get("workspace")
     if not isinstance(workspace_doc, dict):
         raise BuildVersionError(f"missing [workspace] table in {manifest_path}")
@@ -374,8 +385,12 @@ def run(repo: Path, source_commit: str, upstream_ref: str, expected_track: str, 
     state = load_workspace_state(repo)
     manifest_text, lock_text, updated_entries = prepare_workspace(state, expected_track, mode)
     if mode == "write":
-        (state.cargo_dir / "Cargo.toml").write_text(manifest_text)
-        (state.cargo_dir / "Cargo.lock").write_text(lock_text)
+        manifest_path = state.cargo_dir / "Cargo.toml"
+        lock_path = state.cargo_dir / "Cargo.lock"
+        if manifest_text != state.manifest_text:
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+        if lock_text != state.lock_text:
+            lock_path.write_text(lock_text, encoding="utf-8")
     return {
         "mode": mode,
         "source_commit": provenance.source_commit,

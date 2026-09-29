@@ -1962,8 +1962,9 @@ bundles during upstream sync merely because they once shared this carry entry.
 - Version metadata rebuilds when git state changes, including shared worktree
   git state.
 - Preview workspace versions use `.github/scripts/prepare_codex_build_version.py`.
-  Derive the release track from the pre-stamp source commit and upstream ref
-  with the existing resolver, then run the helper with `--write` and commit its
+  Start from a clean checkout whose `HEAD` is the supplied pre-stamp source
+  commit. Derive the release track from that commit and upstream ref with the
+  existing resolver, then run the helper with `--write` and commit its
   workspace `Cargo.toml` plus source-free local package lock updates. Run it
   again with `--check`, the final frozen source commit, and the same upstream
   ref and track before hosted `cargo build --locked`; the helper reports the
