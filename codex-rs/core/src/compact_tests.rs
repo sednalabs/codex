@@ -17,6 +17,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_tools::ToolName;
+use core_test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -227,7 +228,7 @@ async fn local_compaction_completion_persists_exact_provider_usage() -> anyhow::
         responses::ev_completed_with_tokens("local-compaction-response", 505),
     ]))
     .insert_header("OpenAI-Model", "gpt-6-luna");
-    responses::mount_sse_once(&server, request).await;
+    responses::mount_response_once(&server, request).await;
     run_compact_task(
         Arc::clone(&session),
         turn,
