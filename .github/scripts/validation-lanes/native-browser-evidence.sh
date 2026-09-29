@@ -25,11 +25,16 @@ else
   echo "native-browser-evidence: no Node browser test files; continuing to hosted Rust provider test"
 fi
 
-python3 -m venv "$playwright_venv"
-"$playwright_venv/bin/pip" install --quiet 'PyYAML==6.0.2'
-"$playwright_venv/bin/python" \
-  codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py \
-  .codex/skills/use-native-browser
+skill_fixture=".codex/skills/use-native-browser"
+if [[ -f "$skill_fixture/SKILL.md" ]]; then
+  python3 -m venv "$playwright_venv"
+  "$playwright_venv/bin/pip" install --quiet 'PyYAML==6.0.2'
+  "$playwright_venv/bin/python" \
+    codex-rs/skills/src/assets/samples/skill-creator/scripts/quick_validate.py \
+    "$skill_fixture"
+else
+  echo "native-browser-evidence: no tracked use-native-browser skill fixture; skipping its documentation validation"
+fi
 
 rust_test_output="$native_browser_evidence_dir/hosted-native-browser-test.log"
 if ! cargo test --locked -p codex-browser-computer-use --lib tests::hosted_native_browser_tool_flow -- --exact --ignored --test-threads=1 >"$rust_test_output" 2>&1; then
