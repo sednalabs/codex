@@ -29,6 +29,7 @@ use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use chrono::Utc;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -399,6 +400,8 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        let provider_call_id = uuid::Uuid::now_v7().to_string();
+        let provider_call_started_at = Utc::now().to_rfc3339();
         let result = match client_session
             .stream(
                 prompt,
@@ -416,7 +419,16 @@ async fn run_remote_compaction_request_v2(
             )
             .await
         {
-            Ok(stream) => collect_compaction_output(sess, turn_context, stream).await,
+            Ok(stream) => {
+                collect_compaction_output(
+                    sess,
+                    step_context,
+                    stream,
+                    provider_call_id,
+                    provider_call_started_at,
+                )
+                .await
+            }
             Err(err) => Err(err),
         };
 
@@ -440,14 +452,18 @@ async fn run_remote_compaction_request_v2(
 
 async fn collect_compaction_output(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     mut stream: ResponseStream,
+    provider_call_id: String,
+    provider_call_started_at: String,
 ) -> CodexResult<RemoteCompactionV2Output> {
+    let turn_context = &step_context.turn;
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
     let mut compaction_output = None;
     let mut completed_response_id = None;
     let mut completed_token_usage = None;
+    let mut actual_model_used = None;
     while let Some(event) = stream.next().await {
         match event? {
             ResponseEvent::OutputItemDone(item) => {
@@ -472,9 +488,23 @@ async fn collect_compaction_output(
                     usage_metadata.as_ref(),
                 )
                 .await;
+                sess.record_provider_call_usage_for_response(
+                    turn_context,
+                    &step_context.settings.model_info,
+                    step_context.settings.service_tier.clone(),
+                    provider_call_id,
+                    provider_call_started_at,
+                    &response_id,
+                    actual_model_used,
+                    token_usage.as_ref(),
+                )
+                .await;
                 completed_response_id = Some(response_id);
                 completed_token_usage = token_usage;
                 break;
+            }
+            ResponseEvent::ServerModel(server_model) => {
+                actual_model_used = Some(server_model);
             }
             _ => {}
         }
@@ -784,6 +814,7 @@ mod tests {
     use codex_protocol::models::ContentItemKind;
     use codex_protocol::models::InternalChatMessageMetadataPassthrough;
     use codex_protocol::models::MessagePhase;
+    use core_test_support::PathExt;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
@@ -1213,6 +1244,7 @@ mod tests {
                 Some(MessagePhase::FinalAnswer),
             ))),
             Ok(ResponseEvent::OutputItemDone(compaction.clone())),
+            Ok(ResponseEvent::ServerModel("gpt-6-luna".to_string())),
             Ok(ResponseEvent::Completed {
                 response_id: "resp-compact".to_string(),
                 token_usage: Some(TokenUsage {
@@ -1232,11 +1264,33 @@ mod tests {
             }),
         ]);
 
-        let (sess, turn_context, rx) =
+        let (mut sess, mut turn_context, rx) =
             crate::session::tests::make_session_and_context_with_rx().await;
-        let output = collect_compaction_output(&sess, &turn_context, stream)
+        crate::session::tests::update_turn_settings_for_test(
+            Arc::get_mut(&mut turn_context).expect("turn should be uniquely owned before dispatch"),
+            |settings| {
+                Arc::make_mut(&mut settings.model_info).slug = "gpt-6-sol".to_string();
+            },
+        );
+        let ledger_home = tempfile::tempdir().expect("create isolated usage home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(ledger_home.path().abs());
+        let state_db = codex_state::StateRuntime::init(sqlite.clone(), "openai".to_string())
             .await
-            .expect("compaction should be collected");
+            .expect("initialize isolated usage database");
+        Arc::get_mut(&mut sess)
+            .expect("session should be uniquely owned before dispatch")
+            .services
+            .state_db = Some(Arc::clone(&state_db));
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let output = collect_compaction_output(
+            &sess,
+            &step_context,
+            stream,
+            "local-call-remote-compaction".to_string(),
+            "2026-09-30T00:00:00Z".to_string(),
+        )
+        .await
+        .expect("compaction should be collected");
 
         assert_eq!(output.compaction_output, compaction);
         assert_eq!(output.response_id, "resp-compact");
@@ -1264,6 +1318,38 @@ mod tests {
                 codex_rollout_budget_units: None,
             })
         );
+        let row = sqlx::query_as::<_, (String, String, String, Option<String>, Option<i64>, Option<i64>)>(
+            "SELECT provider_call_id, request_id, requested_model, actual_model_used, input_tokens_uncached, output_tokens FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind(sess.thread_id.to_string())
+        .fetch_one(state_db.usage_pool().as_ref())
+        .await
+        .expect("read durable row written by the remote compaction completion path");
+        assert_eq!(
+            row,
+            (
+                "local-call-remote-compaction".to_string(),
+                "resp-compact".to_string(),
+                "gpt-6-sol".to_string(),
+                Some("gpt-6-luna".to_string()),
+                Some(115_566),
+                Some(42),
+            )
+        );
+        state_db.close().await;
+        drop(state_db);
+        let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string())
+            .await
+            .expect("reopen usage database after remote compaction completion");
+        let summary = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT provider_call_count, priced_call_count, unpriced_call_count, partial FROM usage_thread_credit_summary WHERE thread_id = ?",
+        )
+        .bind(sess.thread_id.to_string())
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("read remote compaction credit summary after reopen");
+        assert_eq!(summary, (1, 0, 1, 1));
+        reopened.close().await;
     }
 }
 

@@ -21,6 +21,7 @@ use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
 use crate::state::AutoCompactWindowIds;
 use crate::util::backoff;
+use chrono::Utc;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -776,6 +777,8 @@ async fn drain_to_completed(
     prompt: &Prompt,
     phase: CompactionPhase,
 ) -> CodexResult<CompactionResponse> {
+    let provider_call_id = uuid::Uuid::now_v7().to_string();
+    let provider_call_started_at = Utc::now().to_rfc3339();
     let mut stream = client_session
         .stream(
             prompt,
@@ -795,6 +798,7 @@ async fn drain_to_completed(
         )
         .await?;
     let mut output = Vec::new();
+    let mut actual_model_used = None;
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -823,6 +827,9 @@ async fn drain_to_completed(
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
             }
+            Ok(ResponseEvent::ServerModel(server_model)) => {
+                actual_model_used = Some(server_model);
+            }
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
@@ -834,6 +841,17 @@ async fn drain_to_completed(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                )
+                .await;
+                sess.record_provider_call_usage_for_response(
+                    turn_context,
+                    turn_context.model_info(),
+                    turn_context.config.service_tier.clone(),
+                    provider_call_id,
+                    provider_call_started_at,
+                    &response_id,
+                    actual_model_used,
+                    token_usage.as_ref(),
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())

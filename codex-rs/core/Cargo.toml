@@ -161,6 +161,7 @@ opentelemetry_sdk = { workspace = true, features = [
     "metrics",
 ] }
 serial_test = { workspace = true }
+sqlx = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-opentelemetry = { workspace = true }

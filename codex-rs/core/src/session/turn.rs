@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::marker::PhantomData;
@@ -2479,6 +2480,9 @@ async fn try_run_sampling_request(
         turn_context.provider.info().name.as_str(),
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
+    let requested_service_tier = step_context.settings.service_tier.clone();
+    let provider_call_started_at = Utc::now().to_rfc3339();
+    let provider_call_id = uuid::Uuid::now_v7().to_string();
     let uses_sequential_cutoff_reasoning_summaries = turn_context
         .config
         .features
@@ -2514,6 +2518,7 @@ async fn try_run_sampling_request(
     let mut should_emit_token_count = false;
     const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
     let mut analytics_tool_call_ids = Vec::new();
+    let mut actual_model_used: Option<String> = None;
     let reasoning_effort = step_context
         .settings
         .reasoning_effort()
@@ -2773,6 +2778,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ServerModel(server_model) => {
+                actual_model_used = Some(server_model.clone());
                 if !turn_context
                     .server_model_warning_emitted
                     .load(Ordering::Relaxed)
@@ -2855,6 +2861,17 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                )
+                .await;
+                sess.record_provider_call_usage_for_response(
+                    &turn_context,
+                    &step_context.settings.model_info,
+                    requested_service_tier.clone(),
+                    provider_call_id.clone(),
+                    provider_call_started_at.clone(),
+                    &response_id,
+                    actual_model_used.clone(),
+                    token_usage.as_ref(),
                 )
                 .await;
                 let budget_result = sess
