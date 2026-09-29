@@ -27,6 +27,15 @@ main().catch((error) => {
 });
 
 async function main() {
+  if (process.platform === "win32") {
+    throw new Error(
+      "Native browser support is not available on Windows yet. " +
+        "Windows support is deferred until browser-state permissions and ACL " +
+        "isolation can be validated; disable the native browser provider or use " +
+        "a supported platform.",
+    );
+  }
+
   const request = JSON.parse(await readStdin());
   const { chromium } = loadPlaywright();
   const { stateDir } = await browserProfile(request);

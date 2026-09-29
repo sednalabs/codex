@@ -1804,5 +1804,48 @@ exports.chromium = {
             1,
             "an invalid writable path must not fall back to the default root"
         );
+
+        let windows_state_root = fixture.path().join("simulated-windows-state");
+        write_config(
+            &codex_home,
+            Some(
+                windows_state_root
+                    .to_str()
+                    .expect("UTF-8 simulated Windows state path"),
+            ),
+        );
+        let platform_preload = fixture.path().join("force-win32.cjs");
+        std::fs::write(
+            &platform_preload,
+            "Object.defineProperty(process, 'platform', { value: 'win32' });\n",
+        )
+        .expect("write child-only Windows platform preload");
+        let mut platform_environment = RestoreEnvironment(Vec::new());
+        let existing_node_options = std::env::var("NODE_OPTIONS").unwrap_or_default();
+        let node_options = if existing_node_options.is_empty() {
+            format!("--require={}", platform_preload.display())
+        } else {
+            format!(
+                "--require={} {existing_node_options}",
+                platform_preload.display()
+            )
+        };
+        platform_environment.set("NODE_OPTIONS", node_options);
+
+        let response = invoke(
+            &codex_home,
+            "windows-unsupported-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({}),
+        )
+        .await;
+        assert!(!response.success);
+        let ComputerUseCallOutputContentItem::InputText { text } = &response.content_items[0]
+        else {
+            panic!("unsupported Windows platform must return actionable text");
+        };
+        assert!(text.contains("not available on Windows yet"), "{text}");
+        assert!(text.contains("permissions and ACL isolation"), "{text}");
+        assert!(!windows_state_root.exists());
     }
 }
