@@ -119,36 +119,36 @@ jobs:
           (cd ../dist && sha256sum "${archive_base}.tar.gz") > "../dist/${archive_base}.tar.gz.sha256"
 
           python3 - <<'PY' > "../dist/${archive_base}.json"
-          import hashlib
-          import json
-          import os
-          import subprocess
-          import sys
+        import hashlib
+        import json
+        import os
+        import subprocess
+        import sys
 
-          binary_path = os.path.join(
-              os.environ["RUNNER_TEMP"],
-              "sedna-branch/x86_64-unknown-linux-gnu-host-only/codex-code-mode-host",
-          )
-          payload = {
-              "repository": os.environ["GITHUB_REPOSITORY"],
-              "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "workflowCommit": subprocess.check_output(
-                  ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
-              ).strip(),
-              "ref": os.environ["DISPLAY_REF"],
-              "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
-              "artifact": "codex-code-mode-host",
-              "binarySha256": "",
-              "workflow": (
-                  f'{os.environ["GITHUB_SERVER_URL"]}/'
-                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
-              ),
-          }
-          with open(binary_path, "rb") as binary_file:
-              payload["binarySha256"] = hashlib.sha256(binary_file.read()).hexdigest()
-          json.dump(payload, sys.stdout, indent=2)
-          sys.stdout.write("\n")
-          PY
+        binary_path = os.path.join(
+            os.environ["RUNNER_TEMP"],
+            "sedna-branch/x86_64-unknown-linux-gnu-host-only/codex-code-mode-host",
+        )
+        payload = {
+            "repository": os.environ["GITHUB_REPOSITORY"],
+            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "workflowCommit": subprocess.check_output(
+                ["git", "-C", "../.workflow-src", "rev-parse", "HEAD"], text=True
+            ).strip(),
+            "ref": os.environ["DISPLAY_REF"],
+            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "artifact": "codex-code-mode-host",
+            "binarySha256": "",
+            "workflow": (
+                f'{os.environ["GITHUB_SERVER_URL"]}/'
+                f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+            ),
+        }
+        with open(binary_path, "rb") as binary_file:
+            payload["binarySha256"] = hashlib.sha256(binary_file.read()).hexdigest()
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        PY
           exit 0
         fi
         source_status="$(git status --porcelain --untracked-files=normal)"
