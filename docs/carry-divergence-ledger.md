@@ -38,9 +38,11 @@ records each family, its owner, guardrail lane, and retirement condition. The
 families are retained as one cumulative contract: terminal completion input,
 realtime continuity, usage provenance, phase-two memory attestation,
 configured-identity provenance, dynamic-tool persistence, browser
-computer-use routing, native multi-agent wait continuity, RMCP caller
-cancellation, and the merge-queue CodeQL required gate. Accepted leaf evidence
-is not reopened absent a concrete candidate defect.
+computer-use routing, the legacy V1 exact-target wait, RMCP caller cancellation,
+and the merge-queue CodeQL required gate. The downstream V2 exact-target/native
+wait extension is superseded for the reserved V2 tool schema; its historical
+lineage and rationale remain in the registry below. Accepted leaf evidence is
+not reopened absent a concrete candidate defect.
 
 ## P7-owned composition
 
@@ -85,6 +87,7 @@ the local repairs remain limited to the named acceptance contracts:
 | Unknown legacy rollout event                        | `deferred-no-equivalent` | Preserve forward-compatible `EventMsg::Unknown` consumption and correct the stale assertion.                           |
 | `codex-rs/code-mode/Cargo.toml` feature exception   | `deferred-no-equivalent` | Remove the stale verifier exception; retain the legitimate V8 POC exception.                                           |
 | Validation planner identity/runner/dispatch receipt | `downstream-governance`  | Enforce nested runner-group/label rejection, allowed labels, dispatch inputs, and exact hosted SHA/tree when supplied. |
+| Reserved `collaboration.wait_agent` V2 schema        | `adopt-reserved-contract` | Restore upstream timeout-only V2 schema and mailbox/steer/timeout handling; supersede V2 exact-target/native arguments. Preserve V1 exact-target wait and TUI turn-reopen behavior. |
 
 The agent-action-provenance and background agent-picker heads remain preserved
 outside this freeze unless they land before the final root cutoff. The current

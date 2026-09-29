@@ -65,9 +65,9 @@
     {
       "id": "native-multi-agent-wait-continuity",
       "title": "Native multi-agent wait continuity and causal wake handling",
-      "status": "p7-composed",
+      "status": "p7-v2-extension-superseded",
       "category": "agent-runtime",
-      "surface": ["native wait lifecycle", "mailbox wake causality", "reverse-wait guard"],
+      "surface": ["reserved V2 mailbox wait", "legacy V1 exact-target wait"],
       "files": [
         "codex-rs/core/src/session/input_queue.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
@@ -76,11 +76,12 @@
         "codex-rs/tui/src/app/thread_routing.rs"
       ],
       "upstream_equivalent": false,
-      "disposition": "retain",
+      "disposition": "superseded-v2-extension",
       "owner": "downstream",
       "upstreamability_tier": "upstream-pr",
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
-      "retirement_condition": "Upstream provides equivalent event-driven native waits, exact-target wake causality, turn-reopen semantics, and cycle prevention."
+      "retirement_condition": "The reserved V2 wait accepts only timeout_ms and reports mailbox, steer, or timeout summaries. The downstream V2 exact-target/native-event extension is retired for schema compatibility; the separate V1 exact-target API and TUI turn-reopen behavior remain unchanged. Reconsider only if the reserved V2 API gains a compatible extension point.",
+      "scope_note": "The V2 extension originated in downstream commit 175c8cb33257186ef0fbd4144b075e8d70dfb082 and is superseded by the reserved upstream contract at 2399dceb15294cc5782a901a38dae4fae5b9621a."
     },
     {
       "id": "rmcp-request-cancellation",

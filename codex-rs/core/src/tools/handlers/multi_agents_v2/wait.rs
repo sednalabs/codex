@@ -1,37 +1,12 @@
 use super::*;
-use crate::agent::agent_resolver::resolve_agent_target;
-use crate::agent::status::is_final;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
-use codex_protocol::ThreadId;
-use codex_protocol::protocol::AgentStatus;
 use codex_tools::ToolSpec;
-use futures::FutureExt;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
-use serde::Deserialize;
-use serde::Serialize;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::Duration;
 use tokio::time::Instant;
-
-type StatusFuture = futures::future::BoxFuture<
-    'static,
-    (
-        ThreadId,
-        tokio::sync::watch::Receiver<AgentStatus>,
-        Result<(), tokio::sync::watch::error::RecvError>,
-    ),
->;
-type StatusFutures = FuturesUnordered<StatusFuture>;
-
-// Native waits stay inside this helper across provider/runtime lease renewal.
-// Renewal is deliberately invisible to the model: it must never turn into a
-// new tool result or provider turn. This is an internal safety lease, not the
-// operator-requested wait timeout.
-const NATIVE_WAIT_LEASE: Duration = Duration::from_secs(60 * 60);
+use tokio::time::timeout_at;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -75,122 +50,28 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let targetless_native_allowed = turn
-            .session_source
-            .get_agent_path()
-            .is_none_or(|path| path.is_root());
-        if args.native_event_wait && args.targets.is_empty() && !targetless_native_allowed {
-            return Err(FunctionCallError::RespondToModel(
-                "native_event_wait requires at least one exact target".to_string(),
-            ));
-        }
-        let timeout_ms = resolve_timeout(
-            args.timeout_ms,
-            turn.config.multi_agent_v2.min_wait_timeout_ms,
-            turn.config.multi_agent_v2.max_wait_timeout_ms,
-            turn.config.multi_agent_v2.default_wait_timeout_ms,
-        )?;
-
-        let mut target_ids = Vec::with_capacity(args.targets.len());
-        for target in &args.targets {
-            target_ids.push(resolve_agent_target(&session, &turn, target).await?);
-        }
-        let mut unique_targets = HashSet::with_capacity(target_ids.len());
-        if target_ids.iter().any(|id| !unique_targets.insert(*id)) {
-            return Err(FunctionCallError::RespondToModel(
-                "targets must resolve to unique agents".to_string(),
-            ));
-        }
-        if args.native_event_wait {
-            let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
-                session
-                    .services
-                    .agent_control
-                    .get_agent_metadata(session.thread_id)
-                    .and_then(|metadata| metadata.agent_path)
-            });
-            for target_id in &target_ids {
-                let target_agent_path = session
-                    .services
-                    .agent_control
-                    .get_agent_metadata(*target_id)
-                    .and_then(|metadata| metadata.agent_path);
-                if let Some(message) =
-                    reverse_wait_error(current_agent_path.as_ref(), target_agent_path.as_ref())
-                {
-                    return Err(FunctionCallError::RespondToModel(message));
-                }
+        let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
+        let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
+        let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
+        let requested_timeout_ms = args.timeout_ms;
+        let timeout_ms = match requested_timeout_ms {
+            Some(ms) if ms > max_timeout_ms => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "timeout_ms must be at most {max_timeout_ms}"
+                )));
             }
-        }
+            Some(ms) => ms.max(min_timeout_ms),
+            None => default_timeout_ms,
+        };
 
-        // Capture the mailbox boundary and receiver under the queue's native
-        // activity boundary. This makes a native wait insensitive to entries
-        // already queued before it began while retaining a single
-        // event-driven subscription with no enqueue gap.
-        let (mut activity_rx, mut pending_activity, mailbox_generation, pending_mailbox) =
-            if args.native_event_wait {
-                session.input_queue.subscribe_native_activity().await
-            } else {
-                let turn_state = session
-                    .input_queue
-                    .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
-                    .await;
-                let (rx, pending) = session
-                    .input_queue
-                    .subscribe_activity(turn_state.as_deref())
-                    .await;
-                (
-                    rx,
-                    pending,
-                    session.input_queue.mailbox_generation(),
-                    Vec::new(),
-                )
-            };
-        if args.native_event_wait
-            && pending_activity.is_none()
-            && session
-                .input_queue
-                .has_pending_input(&session.active_turn)
-                .await
-        {
-            pending_activity = Some(InputQueueActivity::Steer);
-        }
-        let target_paths = target_ids
-            .iter()
-            .filter_map(|id| {
-                session
-                    .services
-                    .agent_control
-                    .get_agent_metadata(*id)
-                    .and_then(|metadata| metadata.agent_path)
-            })
-            .collect::<Vec<_>>();
-        let mut statuses = HashMap::new();
-        let mut status_futures: StatusFutures = FuturesUnordered::new();
-        for id in &target_ids {
-            let mut status_rx = match session.services.agent_control.subscribe_status(*id).await {
-                Ok(rx) => rx,
-                Err(err) => {
-                    if err.to_string().to_ascii_lowercase().contains("not found") {
-                        statuses.insert(*id, AgentStatus::NotFound);
-                        continue;
-                    }
-                    return Err(FunctionCallError::RespondToModel(err.to_string()));
-                }
-            };
-            let status = status_rx.borrow().clone();
-            if is_final(&status) {
-                statuses.insert(*id, status);
-            }
-            let id = *id;
-            status_futures.push(
-                async move {
-                    let changed = status_rx.changed().await;
-                    (id, status_rx, changed)
-                }
-                .boxed(),
-            );
-        }
+        let turn_state = session
+            .input_queue
+            .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)
+            .await;
+        let (mut activity_rx, pending_activity) = session
+            .input_queue
+            .subscribe_activity(turn_state.as_deref())
+            .await;
 
         session
             .emit_turn_item_started(
@@ -200,48 +81,20 @@ impl Handler {
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: target_ids.clone(),
+                    receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    agents_states: statuses.clone(),
+                    agents_states: Default::default(),
                 }),
             )
             .await;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-        let (reason, timed_out) = wait_for_event(WaitEventContext {
-            session: &session,
-            activity_rx: &mut activity_rx,
-            pending_activity,
-            mailbox_generation,
-            target_ids: &target_ids,
-            target_paths: &target_paths,
-            return_when: args.return_when,
-            statuses: &mut statuses,
-            status_futures: &mut status_futures,
-            deadline,
-            native_event_wait: args.native_event_wait,
-            pending_mailbox: &pending_mailbox,
-        })
-        .await;
+        let outcome = wait_for_activity(&mut activity_rx, pending_activity, deadline).await;
+        let result = WaitAgentResult::from_outcome(outcome, requested_timeout_ms, timeout_ms);
 
-        let mut message = reason.message();
-        if let Some(requested) = args.timeout_ms.filter(|requested| *requested < timeout_ms) {
-            message = format!(
-                "{message}\n\nRequested timeout of {requested}ms was clamped to the minimum of {timeout_ms}ms."
-            );
-        }
-        if args.native_event_wait {
-            message = format!(
-                "{message} Wake cause: {}; origin: {}; disposition: {}.",
-                reason.wake_cause(),
-                reason.notification_origin(),
-                reason.delivery_disposition()
-            );
-        }
-        let result = WaitAgentResult { message, timed_out };
         session
             .emit_turn_item_completed(
                 &turn,
@@ -250,15 +103,16 @@ impl Handler {
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::Completed,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: target_ids,
+                    receiver_thread_ids: Vec::new(),
                     receiver_agents: Vec::new(),
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
-                    agents_states: statuses,
+                    agents_states: HashMap::new(),
                 }),
             )
             .await;
+
         Ok(boxed_tool_output(result))
     }
 }
@@ -272,21 +126,7 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
-    #[serde(default)]
-    targets: Vec<String>,
     timeout_ms: Option<i64>,
-    #[serde(default)]
-    return_when: ReturnWhen,
-    #[serde(default)]
-    native_event_wait: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum ReturnWhen {
-    #[default]
-    Any,
-    All,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -295,516 +135,71 @@ pub(crate) struct WaitAgentResult {
     pub(crate) timed_out: bool,
 }
 
+impl WaitAgentResult {
+    fn from_outcome(
+        outcome: WaitOutcome,
+        requested_timeout_ms: Option<i64>,
+        timeout_ms: i64,
+    ) -> Self {
+        let message = match outcome {
+            WaitOutcome::MailboxActivity => "Wait completed.",
+            WaitOutcome::Steered => "Wait interrupted by new input.",
+            WaitOutcome::TimedOut => "Wait timed out.",
+        };
+        let message = match requested_timeout_ms {
+            Some(requested_timeout_ms) if requested_timeout_ms < timeout_ms => format!(
+                "{message}\n\nRequested timeout of {requested_timeout_ms}ms was clamped to the minimum of {timeout_ms}ms."
+            ),
+            Some(_) | None => message.to_string(),
+        };
+        Self {
+            message,
+            timed_out: outcome == WaitOutcome::TimedOut,
+        }
+    }
+}
+
 impl ToolOutput for WaitAgentResult {
     fn log_output(&self) -> String {
         tool_output_json_text(self, "wait_agent")
     }
+
     fn success_for_logging(&self) -> bool {
         true
     }
+
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         tool_output_response_item(call_id, payload, self, /*success*/ None, "wait_agent")
     }
+
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
         tool_output_code_mode_result(self, "wait_agent")
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WaitReason {
-    TargetTerminal,
-    Mailbox,
-    TerminalCompletion,
-    Steer,
-    Timeout,
-    SubscriptionLoss,
+enum WaitOutcome {
+    MailboxActivity,
+    Steered,
+    TimedOut,
 }
 
-impl WaitReason {
-    fn message(self) -> String {
-        match self {
-            Self::TargetTerminal | Self::Mailbox | Self::TerminalCompletion => {
-                "Wait completed.".into()
-            }
-            Self::Steer => "Wait interrupted by new input.".into(),
-            Self::Timeout => "Wait timed out.".into(),
-            Self::SubscriptionLoss => "Wait ended because an event subscription was lost.".into(),
-        }
-    }
-    fn wake_cause(self) -> &'static str {
-        match self {
-            Self::TargetTerminal => "target_terminal",
-            Self::Mailbox => "target_actionable_message",
-            Self::TerminalCompletion => "terminal_completion",
-            Self::Steer => "operator_message",
-            Self::Timeout => "timeout_lease_expiry",
-            Self::SubscriptionLoss => "runtime_system_event",
-        }
-    }
-    fn notification_origin(self) -> &'static str {
-        match self {
-            Self::Mailbox => "agent_mailbox",
-            Self::TerminalCompletion => "unified_exec",
-            Self::Steer => "operator",
-            Self::TargetTerminal => "agent_status",
-            Self::Timeout => "runtime",
-            Self::SubscriptionLoss => "runtime",
-        }
-    }
-    fn delivery_disposition(self) -> &'static str {
-        match self {
-            Self::Mailbox => "queued",
-            Self::TerminalCompletion => "terminal",
-            Self::Steer => "turn_triggered",
-            Self::TargetTerminal => "terminal",
-            Self::Timeout => "lease_expired",
-            Self::SubscriptionLoss => "lost",
-        }
-    }
-}
-
-fn resolve_timeout(
-    requested: Option<i64>,
-    min: i64,
-    max: i64,
-    default: i64,
-) -> Result<i64, FunctionCallError> {
-    let min = min.max(0);
-    let max = max.max(min);
-    match requested {
-        Some(value) if value < min => Ok(min),
-        Some(value) if value > max => Err(FunctionCallError::RespondToModel(format!(
-            "timeout_ms must be at most {max}"
-        ))),
-        Some(value) => Ok(value),
-        None => Ok(default.clamp(min, max)),
-    }
-}
-
-struct WaitEventContext<'a> {
-    session: &'a crate::session::session::Session,
-    activity_rx: &'a mut tokio::sync::watch::Receiver<InputQueueActivity>,
+async fn wait_for_activity(
+    activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
     pending_activity: Option<InputQueueActivity>,
-    mailbox_generation: u64,
-    target_ids: &'a [ThreadId],
-    target_paths: &'a [codex_protocol::AgentPath],
-    return_when: ReturnWhen,
-    statuses: &'a mut HashMap<ThreadId, AgentStatus>,
-    status_futures: &'a mut StatusFutures,
     deadline: Instant,
-    native_event_wait: bool,
-    pending_mailbox: &'a [(codex_protocol::AgentPath, u64, bool)],
-}
-
-async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
-    let WaitEventContext {
-        session,
-        activity_rx,
-        pending_activity,
-        mailbox_generation,
-        target_ids,
-        target_paths,
-        return_when,
-        statuses,
-        status_futures,
-        mut deadline,
-        native_event_wait,
-        pending_mailbox,
-    } = context;
-    if terminal_rule_satisfied(target_ids, return_when, statuses) {
-        return (WaitReason::TargetTerminal, false);
+) -> WaitOutcome {
+    if let Some(activity) = pending_activity {
+        return match activity {
+            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
+            InputQueueActivity::Steer => WaitOutcome::Steered,
+        };
     }
-    if matches!(
-        pending_activity,
-        Some(InputQueueActivity::TerminalCompletion)
-    ) {
-        return (WaitReason::TerminalCompletion, false);
-    }
-    if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
-        return (WaitReason::Steer, false);
-    }
-    if native_event_wait
-        && mailbox_wake_matches(
-            target_ids,
-            target_paths,
-            pending_mailbox,
-            mailbox_generation,
-        )
-    {
-        return (WaitReason::Mailbox, false);
-    }
-    if !native_event_wait {
-        if matches!(pending_activity, Some(InputQueueActivity::Steer)) {
-            return (WaitReason::Steer, false);
-        }
-        match pending_activity {
-            Some(InputQueueActivity::Mailbox) => return (WaitReason::Mailbox, false),
-            Some(InputQueueActivity::TerminalCompletion) => {
-                return (WaitReason::TerminalCompletion, false);
-            }
-            _ => {}
-        }
-    }
-    loop {
-        tokio::select! {
-            changed = activity_rx.changed() => {
-                if changed.is_err() { return (WaitReason::SubscriptionLoss, false); }
-                let activity = *activity_rx.borrow_and_update();
-                if matches!(activity, InputQueueActivity::Steer) { return (WaitReason::Steer, false); }
-                if matches!(activity, InputQueueActivity::TerminalCompletion) {
-                    return (WaitReason::TerminalCompletion, false);
-                }
-                if matches!(activity, InputQueueActivity::Mailbox) {
-                    for id in target_ids {
-                        let status = session.services.agent_control.get_status(*id).await;
-                        if is_final(&status) {
-                            statuses.insert(*id, status);
-                        }
-                    }
-                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
-                        return (WaitReason::TargetTerminal, false);
-                    }
-                }
-                if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
-                    && !native_event_wait
-                {
-                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
-                        return (WaitReason::TargetTerminal, false);
-                    }
-                    return (if activity == InputQueueActivity::TerminalCompletion { WaitReason::TerminalCompletion } else { WaitReason::Mailbox }, false);
-                }
-                if native_event_wait && matches!(activity, InputQueueActivity::Mailbox) {
-                    let pending_mailbox = session.input_queue.pending_mailbox_authors().await;
-                    if mailbox_wake_matches(
-                        target_ids,
-                        target_paths,
-                        &pending_mailbox,
-                        mailbox_generation,
-                    ) {
-                        return (WaitReason::Mailbox, false);
-                    }
-                }
-            }
-            status = status_futures.next(), if !status_futures.is_empty() => {
-                let Some((id, mut rx, changed)) = status else { continue; };
-                if changed.is_err() { return (WaitReason::SubscriptionLoss, false); }
-                let value = rx.borrow().clone();
-                if is_final(&value) { statuses.insert(id, value); }
-                if terminal_rule_satisfied(target_ids, return_when, statuses) { return (WaitReason::TargetTerminal, false); }
-                status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                if native_event_wait {
-                    deadline = Instant::now() + NATIVE_WAIT_LEASE;
-                    continue;
-                }
-                return (WaitReason::Timeout, true);
-            }
-        }
-    }
-}
-
-fn mailbox_wake_matches(
-    target_ids: &[ThreadId],
-    target_paths: &[codex_protocol::AgentPath],
-    pending_mailbox: &[(codex_protocol::AgentPath, u64, bool)],
-    mailbox_generation: u64,
-) -> bool {
-    pending_mailbox
-        .iter()
-        .any(|(author, sequence, trigger_turn)| {
-            *sequence > mailbox_generation
-                && *trigger_turn
-                && (target_ids.is_empty() || target_paths.contains(author))
-        })
-}
-
-fn terminal_rule_satisfied(
-    target_ids: &[ThreadId],
-    return_when: ReturnWhen,
-    statuses: &HashMap<ThreadId, AgentStatus>,
-) -> bool {
-    if target_ids.is_empty() {
-        return false;
-    }
-    match return_when {
-        ReturnWhen::Any => target_ids
-            .iter()
-            .any(|id| statuses.get(id).is_some_and(is_final)),
-        ReturnWhen::All => target_ids
-            .iter()
-            .all(|id| statuses.get(id).is_some_and(is_final)),
-    }
-}
-
-/// A native wait on the current agent or one of its ancestors creates a reverse
-/// dependency: the ancestor normally waits for this child to return, so both
-/// sides can remain in native waits forever. Bounded non-native status waits
-/// retain their existing compatibility, while descendants and unrelated peers
-/// remain valid native wait targets.
-fn reverse_wait_error(
-    current_agent_path: Option<&codex_protocol::AgentPath>,
-    target_agent_path: Option<&codex_protocol::AgentPath>,
-) -> Option<String> {
-    let (Some(current), Some(target)) = (current_agent_path, target_agent_path) else {
-        return None;
-    };
-    let target_is_current_or_ancestor = target == current
-        || current
-            .as_str()
-            .strip_prefix(target.as_str())
-            .is_some_and(|suffix| suffix.starts_with('/'));
-    target_is_current_or_ancestor.then(|| {
-        format!(
-            "wait target `{target}` is the current agent or an ancestor of `{current}`; return the decision-complete result to the parent instead of waiting on it"
-        )
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::tests::make_session_and_context;
-    use codex_protocol::AgentPath;
-    use codex_protocol::protocol::InterAgentCommunication;
-
-    fn path(value: &str) -> codex_protocol::AgentPath {
-        AgentPath::try_from(value).expect("agent path")
-    }
-
-    #[test]
-    fn native_wait_ignores_queue_only_mailbox_progress() {
-        let worker = path("/root/worker");
-        let target_paths = vec![worker.clone()];
-        let queued_only = vec![(worker, 1, false)];
-        assert!(!mailbox_wake_matches(
-            &[ThreadId::new()],
-            &target_paths,
-            &queued_only,
-            /*mailbox_generation*/ 0,
-        ));
-    }
-
-    #[test]
-    fn native_wait_accepts_actionable_target_mailbox_progress() {
-        let worker = path("/root/worker");
-        let target_paths = vec![worker.clone()];
-        let actionable = vec![(worker, 1, true)];
-        assert!(mailbox_wake_matches(
-            &[ThreadId::new()],
-            &target_paths,
-            &actionable,
-            /*mailbox_generation*/ 0,
-        ));
-    }
-
-    #[test]
-    fn targetless_native_wait_accepts_any_actionable_mailbox_progress() {
-        let worker = path("/root/worker");
-        let actionable = vec![(worker, 1, true)];
-        assert!(mailbox_wake_matches(
-            &[],
-            &[],
-            &actionable,
-            /*mailbox_generation*/ 0,
-        ));
-    }
-
-    #[test]
-    fn native_wait_does_not_replay_the_snapshot_boundary() {
-        let worker = path("/root/worker");
-        let snapshot = vec![(worker, 1, true)];
-        assert!(!mailbox_wake_matches(
-            &[],
-            &[],
-            &snapshot,
-            /*mailbox_generation*/ 1,
-        ));
-    }
-
-    #[test]
-    fn completion_rule_distinguishes_any_from_all() {
-        let first = ThreadId::new();
-        let second = ThreadId::new();
-        let statuses = HashMap::from([(first, AgentStatus::Shutdown)]);
-
-        assert!(terminal_rule_satisfied(
-            &[first, second],
-            ReturnWhen::Any,
-            &statuses,
-        ));
-        assert!(!terminal_rule_satisfied(
-            &[first, second],
-            ReturnWhen::All,
-            &statuses,
-        ));
-
-        let statuses = HashMap::from([
-            (first, AgentStatus::Shutdown),
-            (second, AgentStatus::Shutdown),
-        ]);
-        assert!(terminal_rule_satisfied(
-            &[first, second],
-            ReturnWhen::All,
-            &statuses,
-        ));
-    }
-
-    #[test]
-    fn reverse_wait_rejects_parent_and_self_but_allows_noncyclic_targets() {
-        let parent = path("/root/staff_r2_signing");
-        let reviewer = path("/root/staff_r2_signing/staff_custody_review");
-        let child = path("/root/staff_r2_signing/staff_custody_review/worker");
-        let sibling = path("/root/staff_r2_signing/other_review");
-
-        let parent_error = reverse_wait_error(Some(&reviewer), Some(&parent))
-            .expect("a reviewer must not wait on its parent");
-        assert!(parent_error.contains("current agent or an ancestor"));
-        assert!(reverse_wait_error(Some(&reviewer), Some(&reviewer)).is_some());
-        assert!(reverse_wait_error(Some(&reviewer), Some(&child)).is_none());
-        assert!(reverse_wait_error(Some(&reviewer), Some(&sibling)).is_none());
-    }
-
-    #[test]
-    fn reverse_wait_guard_is_conservative_when_paths_are_unknown() {
-        let reviewer = path("/root/staff_r2_signing/staff_custody_review");
-        let parent = path("/root/staff_r2_signing");
-
-        assert!(reverse_wait_error(/*current_agent_path*/ None, Some(&parent)).is_none());
-        assert!(reverse_wait_error(Some(&reviewer), /*target_agent_path*/ None).is_none());
-    }
-
-    #[tokio::test]
-    async fn native_wait_all_stays_pending_until_every_target_is_terminal() {
-        let (session, _) = make_session_and_context().await;
-        let (mut activity_rx, pending_activity, mailbox_generation, pending_mailbox) =
-            session.input_queue.subscribe_native_activity().await;
-        let first = ThreadId::new();
-        let second = ThreadId::new();
-        let (first_tx, mut first_rx) = tokio::sync::watch::channel(AgentStatus::Running);
-        let (second_tx, mut second_rx) = tokio::sync::watch::channel(AgentStatus::Running);
-        let mut statuses = HashMap::new();
-        let mut status_futures: StatusFutures = FuturesUnordered::new();
-        status_futures.push(
-            async move {
-                let changed = first_rx.changed().await;
-                (first, first_rx, changed)
-            }
-            .boxed(),
-        );
-        status_futures.push(
-            async move {
-                let changed = second_rx.changed().await;
-                (second, second_rx, changed)
-            }
-            .boxed(),
-        );
-        let target_ids = [first, second];
-        let target_paths = Vec::new();
-        let wait = wait_for_event(WaitEventContext {
-            session: &session,
-            activity_rx: &mut activity_rx,
-            pending_activity,
-            mailbox_generation,
-            target_ids: &target_ids,
-            target_paths: &target_paths,
-            return_when: ReturnWhen::All,
-            statuses: &mut statuses,
-            status_futures: &mut status_futures,
-            deadline: Instant::now() + NATIVE_WAIT_LEASE,
-            native_event_wait: true,
-            pending_mailbox: &pending_mailbox,
-        });
-        tokio::pin!(wait);
-
-        first_tx
-            .send(AgentStatus::Shutdown)
-            .expect("first status receiver");
-        tokio::select! {
-            biased;
-            result = &mut wait => panic!("all returned after one target: {result:?}"),
-            () = tokio::task::yield_now() => {}
-        }
-
-        second_tx
-            .send(AgentStatus::Shutdown)
-            .expect("second status receiver");
-        assert_eq!(wait.await, (WaitReason::TargetTerminal, false));
-    }
-
-    #[tokio::test]
-    async fn native_lease_expiry_and_queue_only_mail_stay_inside_wait() {
-        let (session, _) = make_session_and_context().await;
-        let (mut activity_rx, pending_activity, mailbox_generation, pending_mailbox) =
-            session.input_queue.subscribe_native_activity().await;
-        let target_ids = Vec::new();
-        let target_paths = Vec::new();
-        let mut statuses = HashMap::new();
-        let mut status_futures: StatusFutures = FuturesUnordered::new();
-
-        tokio::time::pause();
-        let wait = wait_for_event(WaitEventContext {
-            session: &session,
-            activity_rx: &mut activity_rx,
-            pending_activity,
-            mailbox_generation,
-            target_ids: &target_ids,
-            target_paths: &target_paths,
-            return_when: ReturnWhen::Any,
-            statuses: &mut statuses,
-            status_futures: &mut status_futures,
-            deadline: Instant::now() + Duration::from_millis(5),
-            native_event_wait: true,
-            pending_mailbox: &pending_mailbox,
-        });
-        tokio::pin!(wait);
-
-        session
-            .input_queue
-            .enqueue_mailbox_communication(
-                InterAgentCommunication::new(
-                    path("/root/worker"),
-                    AgentPath::root(),
-                    Vec::new(),
-                    "queued progress".to_string(),
-                    /*trigger_turn*/ false,
-                ),
-                Default::default(),
-            )
-            .await;
-        tokio::select! {
-            biased;
-            result = &mut wait => panic!("queue-only mail completed native wait: {result:?}"),
-            () = tokio::task::yield_now() => {}
-        }
-
-        tokio::time::advance(Duration::from_millis(5)).await;
-        tokio::select! {
-            biased;
-            result = &mut wait => panic!("initial native lease escaped the tool: {result:?}"),
-            () = tokio::task::yield_now() => {}
-        }
-        tokio::time::advance(NATIVE_WAIT_LEASE).await;
-        tokio::select! {
-            biased;
-            result = &mut wait => panic!("renewed native lease escaped the tool: {result:?}"),
-            () = tokio::task::yield_now() => {}
-        }
-
-        session
-            .input_queue
-            .enqueue_mailbox_communication(
-                InterAgentCommunication::new(
-                    path("/root/worker"),
-                    AgentPath::root(),
-                    Vec::new(),
-                    "action required".to_string(),
-                    /*trigger_turn*/ true,
-                ),
-                Default::default(),
-            )
-            .await;
-        assert_eq!(wait.await, (WaitReason::Mailbox, false));
-        tokio::time::resume();
+    match timeout_at(deadline, activity_rx.changed()).await {
+        Ok(Ok(())) => match *activity_rx.borrow_and_update() {
+            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
+            InputQueueActivity::Steer => WaitOutcome::Steered,
+        },
+        Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
     }
 }
