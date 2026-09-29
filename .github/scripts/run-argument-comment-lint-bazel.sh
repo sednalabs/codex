@@ -47,6 +47,19 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
     echo "Failed to discover Windows Bazel lint targets." >&2
     exit 1
   fi
+
+  # The concrete Rust target set can exceed Windows' CreateProcessW command
+  # line limit. Keep one short explicit target for the wrapper contract and
+  # pass the complete set through Bazel's target-pattern file instead.
+  target_pattern_file="$(mktemp)"
+  trap 'rm -f "$target_pattern_file"' EXIT
+  printf '%s\n' "${final_build_targets[@]}" >"$target_pattern_file"
+  target_pattern_file_arg="$target_pattern_file"
+  if command -v cygpath >/dev/null 2>&1; then
+    target_pattern_file_arg="$(cygpath -w "$target_pattern_file")"
+  fi
+  bazel_lint_args+=("--target_pattern_file=${target_pattern_file_arg}")
+  final_build_targets=("${final_build_targets[0]}")
 fi
 
 ./.github/scripts/run-bazel-ci.sh \
