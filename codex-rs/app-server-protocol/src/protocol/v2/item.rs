@@ -29,7 +29,7 @@ pub use codex_protocol::items::AgentMessageDelivery;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
-use codex_protocol::items::CollabAgentRef as CoreCollabAgentRef;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
@@ -382,9 +382,9 @@ pub enum ThreadItem {
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
         /// Receiver identity metadata captured when the wait began.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        receiver_agents: Vec<CollabAgentRef>,
+        receiver_agents: Option<Vec<CollabAgentRef>>,
         /// Actual reason a V2 wait call returned, when available.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -984,11 +984,15 @@ impl From<CoreTurnItem> for ThreadItem {
                     .into_iter()
                     .map(String::from)
                     .collect(),
-                receiver_agents: call
-                    .receiver_agents
-                    .into_iter()
-                    .map(CollabAgentRef::from)
-                    .collect(),
+                receiver_agents: match call.receiver_agents.is_empty() {
+                    true => None,
+                    false => Some(
+                        call.receiver_agents
+                            .into_iter()
+                            .map(CollabAgentRef::from)
+                            .collect(),
+                    ),
+                },
                 wait_outcome: call.wait_outcome.map(WaitAgentOutcome::from),
                 queued_update_count: call.queued_update_count,
                 prompt: call.prompt,

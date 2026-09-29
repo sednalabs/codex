@@ -271,13 +271,13 @@ pub(crate) fn tool_call_history_cell(
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
                 Some(waiting_begin(
                     receiver_thread_ids,
-                    receiver_agents,
+                    receiver_agents.as_deref().unwrap_or_default(),
                     &mut agent_metadata,
                 ))
             } else {
                 Some(waiting_end(
                     receiver_thread_ids,
-                    receiver_agents,
+                    receiver_agents.as_deref().unwrap_or_default(),
                     agents_states,
                     *wait_outcome,
                     *queued_update_count,
@@ -846,7 +846,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: None,
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
@@ -869,7 +869,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: None,
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: Some("Please continue and return the answer only.".to_string()),
@@ -892,11 +892,11 @@ mod tests {
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: vec![CollabAgentRef {
+                receiver_agents: Some(vec![CollabAgentRef {
                     thread_id: robie_id.to_string(),
                     agent_nickname: Some("Projected Robie".to_string()),
                     agent_role: Some("researcher".to_string()),
-                }],
+                }]),
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: None,
@@ -916,11 +916,11 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
-                receiver_agents: vec![CollabAgentRef {
+                receiver_agents: Some(vec![CollabAgentRef {
                     thread_id: robie_id.to_string(),
                     agent_nickname: Some("Projected Robie".to_string()),
                     agent_role: Some("researcher".to_string()),
-                }],
+                }]),
                 wait_outcome: Some(WaitAgentOutcome::ExactTargetActionableMessage),
                 queued_update_count: Some(2),
                 prompt: None,
@@ -949,7 +949,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: None,
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: None,
@@ -1036,7 +1036,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: None,
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: Some(String::new()),
@@ -1078,7 +1078,7 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
-                receiver_agents: Vec::new(),
+                receiver_agents: None,
                 wait_outcome: None,
                 queued_update_count: None,
                 prompt: None,

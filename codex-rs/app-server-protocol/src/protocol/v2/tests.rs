@@ -5,7 +5,7 @@ use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmen
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
-use codex_protocol::items::CollabAgentRef as CoreCollabAgentRef;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
@@ -3343,7 +3343,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         status: CoreCollabAgentToolCallStatus::Completed,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
-        receiver_agents: Vec::new(),
+        receiver_agents: None,
         wait_outcome: None,
         queued_update_count: None,
         prompt: Some("continue".to_string()),
@@ -3362,7 +3362,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
-            receiver_agents: Vec::new(),
+            receiver_agents: None,
             wait_outcome: None,
             queued_update_count: None,
             prompt: Some("continue".to_string()),
@@ -3607,11 +3607,11 @@ fn v2_wait_call_projects_receiver_and_observed_outcome() {
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
-            receiver_agents: vec![CollabAgentRef {
+            receiver_agents: Some(vec![CollabAgentRef {
                 thread_id: receiver_thread_id.to_string(),
                 agent_nickname: Some("Ada".to_string()),
                 agent_role: Some("worker".to_string()),
-            }],
+            }]),
             wait_outcome: Some(WaitAgentOutcome::ExactTargetActionableMessage),
             queued_update_count: Some(2),
             prompt: None,
@@ -3647,7 +3647,7 @@ fn v2_legacy_wait_item_defaults_projection_fields() {
     else {
         panic!("legacy wait item should remain a collab tool call");
     };
-    assert!(receiver_agents.is_empty());
+    assert_eq!(receiver_agents, None);
     assert_eq!(wait_outcome, None);
     assert_eq!(queued_update_count, None);
 }
