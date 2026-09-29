@@ -355,9 +355,13 @@ fn sub_agent_activity_title(
     ];
     if let Some(model) = model {
         spans.push(Span::from(format!(" · model `{model}`")).dim());
+    } else if matches!(kind, SubAgentActivityKind::Started) {
+        spans.push(Span::from(" · model `unknown`").dim());
     }
     if let Some(effort) = reasoning_effort {
         spans.push(Span::from(format!(" · effort `{effort}`")).dim());
+    } else if matches!(kind, SubAgentActivityKind::Started) {
+        spans.push(Span::from(" · effort `unknown`").dim());
     }
     title_spans_line(spans)
 }
