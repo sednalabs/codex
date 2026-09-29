@@ -77,6 +77,18 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
         self.assertIn("hosted job log", result["message"])
 
+    def test_more_than_one_executed_test_fails_closed(self) -> None:
+        result = self.run_request(
+            "test suite::known ... ok\n"
+            "test suite::other ... ok\n"
+            "\n"
+            "test result: ok. 2 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out\n"
+        )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
+
     def test_inventory_failure_preserves_actionable_bounded_diagnostics(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
         with (
@@ -105,6 +117,10 @@ class NamedRustTests(TestCase):
             )
         with self.assertRaises(ValueError):
             MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args(REQUEST, list_only=False, test_name="--ignored")
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args(REQUEST, list_only=False)
 
     def test_command_builder_returns_only_catalog_commands(self) -> None:
         self.assertEqual(
@@ -112,7 +128,7 @@ class NamedRustTests(TestCase):
             ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"],
         )
         self.assertEqual(
-            MODULE.cargo_args(REQUEST, list_only=False),
+            MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known"),
             [
                 "cargo",
                 "test",
@@ -121,9 +137,37 @@ class NamedRustTests(TestCase):
                 "codex-core",
                 "--lib",
                 "--",
+                "suite::known",
+                "--exact",
                 "--test-threads=1",
             ],
         )
+
+    def test_execution_uses_one_shell_free_exact_test_command(self) -> None:
+        inventory = self.completed(stdout="suite::known: test\n")
+        execution = self.completed(
+            stdout=(
+                "test suite::known ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n"
+            )
+        )
+        with (
+            mock.patch.object(
+                MODULE.subprocess, "run", side_effect=[inventory, execution]
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(REQUEST, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "success")
+        execution_call = run.call_args_list[1]
+        self.assertEqual(
+            execution_call.args[0][-4:],
+            ["--", "suite::known", "--exact", "--test-threads=1"],
+        )
+        self.assertIs(execution_call.kwargs["shell"], False)
 
     def test_unknown_target_fails_before_cargo(self) -> None:
         request = {**REQUEST, "package": "not-in-catalog"}

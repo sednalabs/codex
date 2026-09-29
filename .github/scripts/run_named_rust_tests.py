@@ -4,8 +4,9 @@
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
 tests to reconcile.  The runner inventories the target first, refuses to run
-when a requested name is missing or ambiguous, and executes only the
-catalog-owned target argv.  This prevents request data from reaching Cargo.
+when a requested name is missing or ambiguous, and then runs each reconciled
+name exactly once.  The target command remains catalog-owned; the validated
+test name is passed as one shell-free test-harness argument.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from typing import Any
 SCHEMA_VERSION = "rust-tests-v1"
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
+TEST_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_:.\-]{0,254}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
@@ -251,16 +252,14 @@ def cargo_args(
     test_name: str = "",
     command_record: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Return a complete argv tuple from the closed target command catalog.
+    """Return inventory argv or one exact-test argv from the closed catalog.
 
-    A test name is a reconciliation selector, not an argv fragment.  The
-    runner executes the immutable target command once and matches requested
-    names against its exact per-test output.  Rejecting ``test_name`` here
-    prevents callers from accidentally reintroducing a request-derived sink.
+    The package and target command prefix is immutable candidate-owned data.
+    Execution requires one safe fully-qualified name that has already been
+    reconciled against Cargo's inventory.  ``subprocess.run(..., shell=False)``
+    passes that name as one argument rather than executable syntax.
     """
 
-    if test_name:
-        raise ValueError("test selectors are not command arguments")
     record = command_record
     if record is None:
         manifest_root = Path(__file__).resolve().parents[2]
@@ -269,7 +268,16 @@ def cargo_args(
     command = record.get(key)
     if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
         raise ValueError("command catalog entry is not a complete argv tuple")
-    return list(command)
+    argv = list(command)
+    if list_only:
+        if test_name:
+            raise ValueError("inventory commands do not accept a test name")
+        return argv
+    if not test_name or not TEST_RE.fullmatch(test_name):
+        raise ValueError("execution requires one safe fully-qualified test name")
+    if len(argv) < 2 or argv[-2:] != ["--", "--test-threads=1"]:
+        raise ValueError("execution command catalog delimiter is invalid")
+    return [*argv[:-1], test_name, "--exact", argv[-1]]
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -304,8 +312,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
-    # Both subprocess commands are complete tuples from the closed catalog.
-    # Request fields select a catalog entry and never form an argv element.
+    # Inventory uses the complete tuple from the closed catalog. Execution
+    # below adds only a syntax-checked name that this inventory found exactly
+    # once, and subprocess runs it without a shell.
     inventory_command = cargo_args(
         request, list_only=True, command_record=command_record
     )
@@ -357,33 +366,41 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    # Run the complete immutable target command.  This keeps the command
-    # surface closed while the requested names remain exact post-run selectors.
-    test_command = cargo_args(
-        request, list_only=False, command_record=command_record
-    )
-    completed = subprocess.run(
-        test_command,
-        cwd=manifest_root,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        shell=False,
-    )
-    output = "\n".join(
-        value for value in (completed.stdout, completed.stderr) if value
-    )
-    counts = test_result_counts(output)
-    outcomes = test_outcomes(output)
     for name in request["tests"]:
+        test_command = cargo_args(
+            request,
+            list_only=False,
+            test_name=name,
+            command_record=command_record,
+        )
+        completed = subprocess.run(
+            test_command,
+            cwd=manifest_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        output = "\n".join(
+            value for value in (completed.stdout, completed.stderr) if value
+        )
+        result_counts = test_result_counts(output)
+        outcomes = test_outcomes(output)
         observed = outcomes.get(name, [])
         outcome = observed[0] if len(observed) == 1 else ""
+        exact_result_count = (
+            result_counts is not None
+            and result_counts["passed"] == 1
+            and result_counts["failed"] == 0
+            and result_counts["ignored"] == 0
+            and result_counts["measured"] == 0
+        )
         execution_reconciled = (
             completed.returncode == 0
-            and counts is not None
             and len(observed) == 1
             and outcome == "ok"
+            and exact_result_count
         )
         status = "success" if execution_reconciled else "failure"
         failure_code = ""
@@ -393,7 +410,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             failure_code = "named_test_ignored"
         elif completed.returncode != 0 or outcome == "FAILED":
             failure_code = "named_test_failed"
-        elif counts is None:
+        elif not exact_result_count:
             failure_code = "execution_reconciliation_failed"
         result["tests"].append(
             {
@@ -402,7 +419,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "exit_code": completed.returncode,
                 "execution_reconciled": execution_reconciled,
                 "observed_outcomes": observed,
-                "result_counts": counts,
+                "result_counts": result_counts,
                 "diagnostics": command_diagnostics(completed),
             }
         )
