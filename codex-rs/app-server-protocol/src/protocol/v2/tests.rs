@@ -76,6 +76,24 @@ fn test_absolute_path() -> AbsolutePathBuf {
 }
 
 #[test]
+fn sub_agent_activity_legacy_wire_shape_keeps_identity_optional() {
+    let legacy = json!({
+        "type": "subAgentActivity",
+        "id": "activity-legacy",
+        "kind": "completed",
+        "agentThreadId": codex_protocol::ThreadId::default().to_string(),
+        "agentPath": "/root/worker",
+    });
+
+    let item: ThreadItem = serde_json::from_value(legacy.clone())
+        .expect("legacy sub-agent activity should deserialize without identity fields");
+    assert_eq!(
+        serde_json::to_value(item).expect("sub-agent activity should serialize"),
+        legacy,
+    );
+}
+
+#[test]
 fn managed_hooks_requirements_default_interrupt_to_empty() {
     let value = json!({
         "managedDir": null,
@@ -3362,6 +3380,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
             .expect("worker path"),
+        model: None,
+        reasoning_effort: None,
     });
 
     assert_eq!(
@@ -3371,6 +3391,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
+            model: None,
+            reasoning_effort: None,
         }
     );
 

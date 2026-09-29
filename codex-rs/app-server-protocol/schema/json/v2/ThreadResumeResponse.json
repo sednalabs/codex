@@ -2239,6 +2239,23 @@
             "kind": {
               "$ref": "#/definitions/SubAgentActivityKind"
             },
+            "model": {
+              "description": "Effective child model and reasoning selected at spawn time, when known.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reasoningEffort": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "subAgentActivity"

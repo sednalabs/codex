@@ -307,13 +307,22 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
 
 pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     let ThreadItem::SubAgentActivity {
-        kind, agent_path, ..
+        kind,
+        agent_path,
+        model,
+        reasoning_effort,
+        ..
     } = item
     else {
         return None;
     };
     Some(collab_event(
-        sub_agent_activity_title(*kind, agent_path),
+        sub_agent_activity_title(
+            *kind,
+            agent_path,
+            model.as_deref(),
+            reasoning_effort.as_ref(),
+        ),
         Vec::new(),
     ))
 }
@@ -328,17 +337,33 @@ pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path:
     }
 }
 
-fn sub_agent_activity_title(kind: SubAgentActivityKind, agent_path: &str) -> Line<'static> {
+fn sub_agent_activity_title(
+    kind: SubAgentActivityKind,
+    agent_path: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Line<'static> {
     let (prefix, path) = match kind {
         SubAgentActivityKind::Started => ("Started ", agent_path),
         SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
         SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
         SubAgentActivityKind::Completed => ("Completed ", agent_path),
     };
-    title_spans_line(vec![
+    let mut spans = vec![
         Span::from(prefix).bold(),
         Span::from(format!("`{path}`")).cyan(),
-    ])
+    ];
+    if let Some(model) = model {
+        spans.push(Span::from(format!(" · model `{model}`")).dim());
+    } else if matches!(kind, SubAgentActivityKind::Started) {
+        spans.push(Span::from(" · model `unknown`").dim());
+    }
+    if let Some(effort) = reasoning_effort {
+        spans.push(Span::from(format!(" · effort `{effort}`")).dim());
+    } else if matches!(kind, SubAgentActivityKind::Started) {
+        spans.push(Span::from(" · effort `unknown`").dim());
+    }
+    title_spans_line(spans)
 }
 
 fn spawn_end(
@@ -694,6 +719,8 @@ mod tests {
             kind: SubAgentActivityKind::Interacted,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
@@ -707,6 +734,8 @@ mod tests {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: thread_id.to_string(),
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
         };
 
         assert_eq!(

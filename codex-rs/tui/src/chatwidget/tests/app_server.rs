@@ -1224,14 +1224,20 @@ async fn live_app_server_command_output_delta_transcript_snapshot() {
 }
 
 #[tokio::test]
-async fn live_app_server_sub_agent_activity_renders_once() {
+async fn sub_agent_activity_public_item_renders_once() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let activity = AppServerThreadItem::SubAgentActivity {
-        id: "activity-1".to_string(),
-        kind: codex_app_server_protocol::SubAgentActivityKind::Completed,
-        agent_thread_id: ThreadId::new().to_string(),
-        agent_path: "/root/researcher".to_string(),
-    };
+    // Decode through the public boundary so legacy builds without the additive
+    // fields still compile and exercise their missing-identity behavior.
+    let activity: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "subAgentActivity",
+        "id": "activity-1",
+        "kind": "completed",
+        "agentThreadId": ThreadId::new().to_string(),
+        "agentPath": "/root/researcher",
+        "model": "configured-child-model",
+        "reasoningEffort": "high"
+    }))
+    .expect("public activity item should decode");
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -1255,7 +1261,263 @@ async fn live_app_server_sub_agent_activity_renders_once() {
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1);
     let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("/root/researcher"));
+    assert!(rendered.contains("configured-child-model"));
+    assert!(rendered.contains("high"));
     assert_chatwidget_snapshot!("app_server_sub_agent_activity_renders_once", rendered);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_acceptance_spawn_identity_survives_cold_replay() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use app_test_support::MockResponsesConfig;
+    use app_test_support::TestAppServer;
+    use codex_app_server_protocol::ClientRequest;
+    use codex_app_server_protocol::ThreadReadParams;
+    use codex_app_server_protocol::ThreadReadResponse;
+    use codex_app_server_protocol::ThreadStartParams;
+    use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::TurnStartParams;
+    use codex_app_server_protocol::TurnStartResponse;
+    use core_test_support::responses;
+    use tempfile::TempDir;
+    use tokio::time::Duration;
+    use tokio::time::timeout;
+
+    const CHILD_PROMPT: &str = "child: verify joined identity";
+    const PARENT_PROMPT: &str = "spawn the configured researcher";
+    const SPAWN_CALL_ID: &str = "fork-acceptance-spawn";
+    const TASK_NAME: &str = "researcher";
+    const EXPECTED_PATH: &str = "/root/researcher";
+    const ROLE_MODEL: &str = "gpt-5.5";
+    const ROLE_EFFORT: &str = "high";
+    const REQUESTED_MODEL: &str = "gpt-5.4";
+    const REQUESTED_EFFORT: &str = "low";
+    const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let model_server = responses::start_mock_server().await;
+    let spawn_args = serde_json::to_string(&serde_json::json!({
+        "message": CHILD_PROMPT,
+        "task_name": TASK_NAME,
+        "agent_type": "researcher",
+        // The role file below is authoritative. These deliberately different
+        // requested values prove that the displayed/outbound identity is the
+        // production-resolved child configuration, not copied tool arguments.
+        "model": REQUESTED_MODEL,
+        "reasoning_effort": REQUESTED_EFFORT,
+    }))?;
+    let _parent_turn = responses::mount_sse_once_match(
+        &model_server,
+        |request: &wiremock::Request| {
+            String::from_utf8_lossy(&request.body).contains(PARENT_PROMPT)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("fork-acceptance-parent-1"),
+            responses::ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                "collaboration",
+                "spawn_agent",
+                &spawn_args,
+            ),
+            responses::ev_completed("fork-acceptance-parent-1"),
+        ]),
+    )
+    .await;
+    let child_turn = responses::mount_sse_once_match(
+        &model_server,
+        |request: &wiremock::Request| {
+            let body = String::from_utf8_lossy(&request.body);
+            body.contains(CHILD_PROMPT) && !body.contains(SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("fork-acceptance-child"),
+            responses::ev_assistant_message("fork-acceptance-child-message", "child complete"),
+            responses::ev_completed("fork-acceptance-child"),
+        ]),
+    )
+    .await;
+    let _parent_follow_up = responses::mount_sse_once_match(
+        &model_server,
+        |request: &wiremock::Request| {
+            String::from_utf8_lossy(&request.body).contains(SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("fork-acceptance-parent-2"),
+            responses::ev_assistant_message("fork-acceptance-parent-message", "parent complete"),
+            responses::ev_completed("fork-acceptance-parent-2"),
+        ]),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&model_server.uri())
+        .enable_feature(Feature::Collab)
+        .enable_feature(Feature::MultiAgentV2)
+        .write(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("researcher.toml"),
+        format!("model = {ROLE_MODEL:?}\nmodel_reasoning_effort = {ROLE_EFFORT:?}\n"),
+    )?;
+    let config_path = codex_home.path().join("config.toml");
+    let root_config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{root_config}
+
+[agents.researcher]
+description = "Joined acceptance role"
+config_file = "./researcher.toml"
+"#
+        ),
+    )?;
+
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app_server
+        .start_thread(ThreadStartParams {
+            model: Some(REQUESTED_MODEL.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let TurnStartResponse { turn } = app_server
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![codex_app_server_protocol::UserInput::Text {
+                    text: PARENT_PROMPT.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let live_activity = timeout(READ_TIMEOUT, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                app_server.read_notification("item/completed").await?;
+            if matches!(
+                &completed.item,
+                AppServerThreadItem::SubAgentActivity { id, .. } if id == SPAWN_CALL_ID
+            ) {
+                return Ok::<ItemCompletedNotification, anyhow::Error>(completed);
+            }
+        }
+    })
+    .await??;
+    let live_json = serde_json::to_value(&live_activity.item)?;
+    assert_eq!(live_json["agentPath"], EXPECTED_PATH);
+    assert_eq!(live_json["model"], ROLE_MODEL);
+    assert_eq!(live_json["reasoningEffort"], ROLE_EFFORT);
+
+    let (mut live_chat, mut live_rx, _live_ops) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    live_chat.handle_server_notification(
+        ServerNotification::ItemCompleted(live_activity),
+        /*replay_kind*/ None,
+    );
+    let live_cells = drain_insert_history(&mut live_rx);
+    assert_eq!(live_cells.len(), 1);
+    let live_rendered = lines_to_single_string(&live_cells[0]);
+    for expected in [EXPECTED_PATH, ROLE_MODEL, ROLE_EFFORT] {
+        assert_eq!(
+            live_rendered.matches(expected).count(),
+            1,
+            "live activity should render {expected:?} exactly once: {live_rendered:?}",
+        );
+    }
+    assert!(!live_rendered.contains(REQUESTED_MODEL));
+    assert!(!live_rendered.contains(REQUESTED_EFFORT));
+
+    let child_request = timeout(READ_TIMEOUT, async {
+        loop {
+            if let Some(request) = child_turn.requests().into_iter().find(|request| {
+                request.body_contains_text(CHILD_PROMPT)
+                    && !request.body_contains_text(SPAWN_CALL_ID)
+            }) {
+                return request;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    let child_request_json = child_request.body_json();
+    assert_eq!(child_request_json["model"], ROLE_MODEL);
+    assert_eq!(child_request_json["reasoning"]["effort"], ROLE_EFFORT);
+    // The captured request proves the configured outbound selection only. The
+    // deterministic fake does not claim a provider backend execution identity.
+
+    timeout(READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                app_server.read_notification("turn/completed").await?;
+            if completed.thread_id == thread.id && completed.turn.id == turn.id {
+                return Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    let exit = timeout(READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
+    anyhow::ensure!(exit.success(), "first app-server exited with {exit}");
+    drop(app_server);
+
+    let mut restarted = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let ThreadReadResponse { thread: replayed } = restarted
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: thread.id.clone(),
+                include_turns: true,
+            },
+        })
+        .await?;
+    let (replayed_turn_id, replayed_activity) = replayed
+        .turns
+        .iter()
+        .find_map(|turn| {
+            turn.items.iter().find_map(|item| {
+                matches!(
+                    item,
+                    AppServerThreadItem::SubAgentActivity { id, .. } if id == SPAWN_CALL_ID
+                )
+                .then(|| (turn.id.clone(), item.clone()))
+            })
+        })
+        .context("persisted thread/read omitted the production sub-agent activity")?;
+    let replayed_json = serde_json::to_value(&replayed_activity)?;
+    assert_eq!(replayed_json["agentPath"], EXPECTED_PATH);
+    assert_eq!(replayed_json["model"], ROLE_MODEL);
+    assert_eq!(replayed_json["reasoningEffort"], ROLE_EFFORT);
+
+    let (mut replay_chat, mut replay_rx, _replay_ops) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    replay_chat.replay_thread_item(
+        replayed_activity,
+        replayed_turn_id,
+        ReplayKind::ThreadSnapshot,
+    );
+    let replay_cells = drain_insert_history(&mut replay_rx);
+    assert_eq!(replay_cells.len(), 1);
+    let replayed_rendered = lines_to_single_string(&replay_cells[0]);
+    for expected in [EXPECTED_PATH, ROLE_MODEL, ROLE_EFFORT] {
+        assert_eq!(
+            replayed_rendered.matches(expected).count(),
+            1,
+            "cold replay should render {expected:?} exactly once: {replayed_rendered:?}",
+        );
+    }
+    assert!(!replayed_rendered.contains(REQUESTED_MODEL));
+    assert!(!replayed_rendered.contains(REQUESTED_EFFORT));
+
+    Ok(())
 }
 
 #[tokio::test]

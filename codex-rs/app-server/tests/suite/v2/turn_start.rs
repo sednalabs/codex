@@ -4297,6 +4297,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
+        "task_name": "researcher",
         "model": REQUESTED_MODEL,
         "reasoning_effort": REQUESTED_REASONING_EFFORT,
     }))?;
@@ -4307,7 +4308,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             responses::ev_response_created("resp-turn1-1"),
             responses::ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                "multi_agent_v1",
+                "collaboration",
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -4414,6 +4415,24 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             agents_states: HashMap::new(),
         }
     );
+
+    // Read the production activity as JSON so this detector remains
+    // compile-valid on the baseline, where the optional identity fields do
+    // not yet exist in the Rust enum.
+    let activity = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                mcp.read_notification("item/completed").await?;
+            if let ThreadItem::SubAgentActivity { .. } = &completed.item {
+                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            }
+        }
+    })
+    .await??;
+    let activity_json = serde_json::to_value(&activity)?;
+    assert_eq!(activity_json["agentPath"], "/root/researcher");
+    assert_eq!(activity_json["model"], REQUESTED_MODEL);
+    assert_eq!(activity_json["reasoningEffort"], "low");
 
     let spawn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {

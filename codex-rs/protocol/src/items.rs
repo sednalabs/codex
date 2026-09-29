@@ -367,6 +367,13 @@ pub struct SubAgentActivityItem {
     pub kind: SubAgentActivityKind,
     pub agent_thread_id: ThreadId,
     pub agent_path: AgentPath,
+    /// Effective child model and reasoning selected at spawn time, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]

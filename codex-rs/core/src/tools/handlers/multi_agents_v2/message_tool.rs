@@ -76,6 +76,8 @@ pub(super) async fn handle_message_string_tool(
             id: call_id,
             agent_thread_id: receiver_thread_id,
             agent_path: receiver_agent_path,
+            model: None,
+            reasoning_effort: None,
             kind: SubAgentActivityKind::Interacted,
         },
     )
