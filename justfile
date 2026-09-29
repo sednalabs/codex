@@ -245,6 +245,9 @@ tui-agent-picker-targeted:
 
 # Focused TUI replay and live collab-spawn requested-identity slice.
 tui-collab-spawn-identity-targeted:
+    cargo build --locked -p codex-app-server --bin codex-app-server
+    sha256sum target/debug/codex-app-server
+    @set -euo pipefail; log="$(mktemp)"; trap 'rm -f "$log"' EXIT; CARGO_BIN_EXE_codex_app_server="{{ justfile_directory() }}/codex-rs/target/debug/codex-app-server" cargo test --locked -p codex-tui chatwidget::tests::app_server::fork_acceptance_spawn_identity_survives_cold_replay --lib -- --exact --test-threads=1 2>&1 | tee "$log"; grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;' "$log"
     cargo test -p codex-tui chatwidget::tests::history_replay::replayed_collab_spawn_terminal_uses_only_explicit_effective_identity --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::history_replay::replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity --lib -- --exact --test-threads=1
