@@ -210,6 +210,7 @@ async fn local_compaction_completion_persists_exact_provider_usage() -> anyhow::
         move |config| {
             config.model = Some("gpt-6-sol".to_string());
             config.model_provider.base_url = Some(format!("{server_uri}/v1"));
+            config.model_provider.supports_websockets = false;
         },
     )
     .await;

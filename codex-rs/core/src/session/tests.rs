@@ -3343,7 +3343,10 @@ async fn completed_responses_persist_response_local_usage_rows() {
     let (mut session, mut turn, events) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
-        |config| config.model_provider.base_url = Some(format!("{}/v1", server.uri())),
+        |config| {
+            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+            config.model_provider.supports_websockets = false;
+        },
     )
     .await;
     update_turn_settings_for_test(
