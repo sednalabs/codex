@@ -4872,6 +4872,36 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('"notarized": False', macos_stage_script)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
 
+    def test_sedna_branch_build_host_only_command_has_valid_shell_syntax(self) -> None:
+        workflow_path = REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
+        payload = load_workflow_payload(workflow_path)
+        workflow_inputs = ((payload.get("on") or {}).get("workflow_dispatch") or {}).get(
+            "inputs"
+        ) or {}
+        self.assertEqual((workflow_inputs.get("host_only") or {}).get("default"), "false")
+
+        build_job = (payload.get("jobs") or {}).get("build-linux-x86_64") or {}
+        run_command = (build_job.get("with") or {}).get("run_command") or ""
+        self.assertIn("${{ inputs.host_only }}", run_command)
+        v8_setup = (
+            "source ../.github/scripts/validation-lanes/setup-rusty-v8.sh "
+            "x86_64-unknown-linux-gnu"
+        )
+        host_build = (
+            "cargo build --locked --target x86_64-unknown-linux-gnu --release "
+            "--bin codex-code-mode-host"
+        )
+        self.assertIn(v8_setup, run_command)
+        self.assertLess(run_command.index(v8_setup), run_command.index(host_build))
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=run_command.replace("${{ inputs.host_only }}", "true"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_sedna_preview_artifact_builds_require_clean_git_provenance(
         self,
     ) -> None:

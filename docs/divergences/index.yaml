@@ -3656,6 +3656,31 @@
         ".codex/skills/babysit-pr/scripts/gh_pr_watch.py"
       ],
       "extraction_target": "upstream exact virtual-workflow watcher identity"
+    },
+    {
+      "id": "linux-preview-code-mode-host-artifact",
+      "title": "Linux x86_64 preview code-mode host artifact",
+      "status": "live",
+      "category": "release",
+      "surface_type": "build-workflow",
+      "surface": ["manual Linux x86_64 preview artifact"],
+      "files": [
+        ".github/workflows/sedna-branch-build.yml",
+        ".github/scripts/validation-lanes/setup-rusty-v8.sh",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "The preview workflow can build and stage only codex-code-mode-host for Linux x86_64, using the target's checksum-verifying V8 setup helper, locked dependencies, an executable --help smoke, exact source and workflow commit metadata, and SHA-256 digests, while its default CLI and proxy build remains unchanged.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "sedna-branch-build-host-only",
+      "tests": ["manual workflow dispatch with host_only=true and platform=linux-x86_64"],
+      "owner": "downstream",
+      "notes": "Keep this supplemental artifact bound to the exact CLI/proxy source commit; do not treat the host-only artifact as a standalone preview installation.",
+      "upstreamability_tier": "downstream-workflow",
+      "boundary_type": "preview-artifact-production",
+      "hotspot_files": [".github/workflows/sedna-branch-build.yml"],
+      "extraction_target": "upstream preview packaging for the code-mode host helper"
     }
   ],
   "superseded_hunks": [

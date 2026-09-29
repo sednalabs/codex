@@ -617,6 +617,11 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     entries are restored and saved for repeat builds.
   - Treat it as artifact validation, not the primary downstream correctness
     gate.
+  - For a missing Linux x86_64 code-mode host, dispatch the same workflow with
+    `host_only=true` and the exact source commit in `ref`. This uploads a
+    separate host-only artifact after locked compilation and `--help` smoke;
+    the build sources that target's checksum-verifying V8 setup helper. Assemble
+    it only alongside CLI and proxy binaries from that same commit.
 
 ## Divergence mapping
 

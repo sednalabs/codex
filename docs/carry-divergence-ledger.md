@@ -3726,3 +3726,17 @@ mutation no-replay and existing elicitation tests. `codex.rmcp-consumers-check`
 compiles all direct SDK consumers. Remove this guard when upstream provides
 both equivalent caller-drop cancellation and the existing concurrent control
 capacity; passing source tests alone does not prove an installed host adopted it.
+
+## Linux x86_64 preview code-mode host artifact
+
+The `sedna-branch-build` workflow has an opt-in `host_only=true` dispatch for
+`platform=linux-x86_64`. It builds only `codex-code-mode-host` with Cargo
+`--locked`, stages the executable, verifies its Linux x86_64 format, and runs
+`--help` before uploading a separate archive. The artifact metadata records the
+exact source commit and workflow commit; adjacent SHA-256 files cover both the
+binary and archive. The default preview dispatch continues to build the CLI and
+responses API proxy. Before Cargo runs, the host-only path sources the target's
+existing `setup-rusty-v8.sh` helper, which downloads the matching Codex release
+archive and binding and verifies them against the target's pinned checksum
+manifest. Use the host-only artifact only with companion binaries built from
+the same source commit.
