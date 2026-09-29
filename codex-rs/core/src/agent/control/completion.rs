@@ -35,6 +35,9 @@ impl LocalAgentControl {
         else {
             return;
         };
+        if !self.claim_terminal_publication(outcome.thread_id, &outcome.turn_id) {
+            return;
+        }
         let is_quiet_continuation = is_active_goal_continuation(&outcome);
         let parent_thread_id = *parent_thread_id;
         let status = outcome.status;
@@ -153,6 +156,7 @@ mod tests {
     use super::is_active_goal_continuation;
     use crate::agent::api::AgentTurnLogicalTerminality;
     use crate::agent::api::AgentTurnOutcome;
+    use crate::agent::control::LocalAgentControl;
     use codex_protocol::AgentPath;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::AgentStatus;
@@ -205,5 +209,15 @@ mod tests {
             AgentStatus::Errored("error".to_string()),
             Some(matching),
         )));
+    }
+
+    #[test]
+    fn duplicate_terminal_publication_is_idempotent_per_latest_turn() {
+        let control = LocalAgentControl::default();
+        let thread_id = ThreadId::default();
+        assert!(control.claim_terminal_publication(thread_id, "turn-1"));
+        assert!(!control.claim_terminal_publication(thread_id, "turn-1"));
+        assert!(control.claim_terminal_publication(thread_id, "turn-2"));
+        assert!(!control.claim_terminal_publication(thread_id, "turn-2"));
     }
 }

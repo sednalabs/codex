@@ -113,6 +113,9 @@ pub(crate) struct LocalAgentControl {
     rollout_budget: Arc<RolloutBudget>,
     /// Atomic raw-status/logical-terminal observations for native wait consumers.
     wait_status_by_thread: Arc<Mutex<HashMap<ThreadId, watch::Sender<AgentWaitStatus>>>>,
+    /// The most recently routed terminal turn per thread, to make duplicate
+    /// terminal publications idempotent without retaining every historical turn.
+    last_terminal_publication_by_thread: Arc<Mutex<HashMap<ThreadId, String>>>,
     /// The user-selected root routing tier, shared by the entire agent tree.
     root_service_tier: Arc<ArcSwapOption<String>>,
     /// Retains the root's opt-in instruction provider even when the root is unloaded.
@@ -145,6 +148,7 @@ impl LocalAgentControl {
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             wait_status_by_thread: Arc::default(),
+            last_terminal_publication_by_thread: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
             shared_thread_instructions_provider: Arc::default(),
         };
@@ -415,6 +419,23 @@ impl LocalAgentControl {
 
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    /// Claim one terminal turn for routing; repeated publication of the latest
+    /// turn is ignored while a new turn advances the bounded per-thread cursor.
+    pub(crate) fn claim_terminal_publication(&self, agent_id: ThreadId, turn_id: &str) -> bool {
+        let mut last_turns = self
+            .last_terminal_publication_by_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last_turns
+            .get(&agent_id)
+            .is_some_and(|last| last == turn_id)
+        {
+            return false;
+        }
+        last_turns.insert(agent_id, turn_id.to_string());
+        true
     }
 
     /// Publish raw status and producer eligibility atomically to native wait consumers.
