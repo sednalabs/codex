@@ -3310,6 +3310,130 @@ async fn record_token_usage_info_notifies_extension_contributors() {
 }
 
 #[tokio::test]
+async fn completed_responses_persist_response_local_usage_rows() {
+    let server = start_mock_server().await;
+    let mut first_completed = responses::ev_completed_with_tokens("response-1", 101);
+    first_completed["response"]["end_turn"] = json!(false);
+    let second_completed = json!({
+        "type": "response.completed",
+        "response": {"id": "response-2"}
+    });
+    let requests = responses::mount_response_sequence(
+        &server,
+        vec![
+            responses::sse_response(sse(vec![
+                ev_response_created("response-1"),
+                first_completed,
+            ]))
+            .insert_header("OpenAI-Model", "gpt-6-luna"),
+            responses::sse_response(sse(vec![
+                ev_response_created("response-2"),
+                second_completed,
+            ]))
+            .insert_header("OpenAI-Model", "gpt-6-sol"),
+        ],
+    )
+    .await;
+    let (mut session, mut turn, events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| config.model_provider.base_url = Some(format!("{}/v1", server.uri())),
+    )
+    .await;
+    update_turn_settings_for_test(
+        Arc::get_mut(&mut turn).expect("turn should be uniquely owned before dispatch"),
+        |settings| {
+            let model_info = Arc::make_mut(&mut settings.model_info);
+            model_info.slug = "gpt-6-sol".to_string();
+            model_info.default_service_tier = Some("priority".to_string());
+        },
+    );
+
+    let ledger_home = tempfile::tempdir().expect("create isolated usage home");
+    let sqlite = codex_state::SqliteConfig::new_for_testing(ledger_home.path().abs());
+    let state_db = codex_state::StateRuntime::init(sqlite.clone(), "openai".to_string())
+        .await
+        .expect("initialize isolated usage database");
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned before dispatch")
+        .services
+        .state_db = Some(Arc::clone(&state_db));
+
+    let input = vec![TurnInput::UserInput {
+        acceptance_order: None,
+        content: vec![UserInput::Text {
+            text: "record both responses".to_string(),
+            text_elements: Vec::new(),
+        }],
+        client_id: None,
+    }];
+    session
+        .spawn_task(Arc::clone(&turn), input, crate::tasks::RegularTask::new())
+        .await;
+    recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
+    assert_eq!(requests.requests().len(), 2);
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
+        "SELECT provider_call_id, request_id, requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, input_tokens_uncached, input_tokens_cached, output_tokens, total_tokens, input_tokens_cache_write FROM usage_provider_calls WHERE thread_id = ? ORDER BY rowid",
+    )
+    .bind(session.thread_id.to_string())
+    .fetch_all(state_db.usage_pool().as_ref())
+    .await
+    .expect("read rows written by the real completed-response path");
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].0, rows[1].0, "each local call needs its own ID");
+    assert_eq!(rows[0].1.as_deref(), Some("response-1"));
+    assert_eq!(rows[1].1.as_deref(), Some("response-2"));
+    assert_eq!(rows[0].2, "gpt-6-sol");
+    assert_eq!(rows[0].3.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(rows[1].3.as_deref(), Some("gpt-6-sol"));
+    assert_eq!((rows[0].4.as_deref(), rows[0].5.as_deref()), (None, None));
+    assert_eq!(
+        (rows[1].6, rows[1].7, rows[1].8, rows[1].9, rows[1].10),
+        (None, None, None, None, None),
+        "a completed response without provider usage must retain NULL token fields"
+    );
+
+    state_db.close().await;
+    drop(state_db);
+    let reopened = codex_state::StateRuntime::init(sqlite, "openai".to_string())
+        .await
+        .expect("reopen usage database after completed responses");
+    let summary = sqlx::query_as::<_, (i64, i64, i64, i64, Option<f64>)>(
+        "SELECT provider_call_count, priced_call_count, unpriced_call_count, partial, estimated_total_credits FROM usage_thread_credit_summary WHERE thread_id = ?",
+    )
+    .bind(session.thread_id.to_string())
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await
+    .expect("read thread credit summary after reopen");
+    assert_eq!(summary, (2, 0, 2, 1, None));
+    let missing_status = sqlx::query_scalar::<_, String>(
+        "SELECT pricing_status FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+    )
+    .bind(&rows[1].0)
+    .fetch_one(reopened.usage_pool().as_ref())
+    .await
+    .expect("read missing-usage credit classification after reopen");
+    assert_eq!(missing_status, "provider_usage_missing");
+    reopened.close().await;
+}
+
+#[tokio::test]
 async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
     struct SessionTurnStartMarker;
     struct ThreadTurnStartMarker;

@@ -84,7 +84,6 @@ use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -2486,13 +2485,10 @@ async fn try_run_sampling_request(
     let requested_model = step_context.settings.model_info.slug.clone();
     let requested_service_tier = step_context.settings.service_tier.clone();
     let actual_service_tier = if provider == "openai" {
-        Some(
-            step_context
-                .settings
-                .model_info
-                .service_tier_for_request(requested_service_tier.clone())
-                .unwrap_or_else(|| SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
-        )
+        step_context
+            .settings
+            .model_info
+            .service_tier_for_request(requested_service_tier.clone())
     } else {
         None
     };
