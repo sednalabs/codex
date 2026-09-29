@@ -719,6 +719,8 @@ mod tests {
             kind: SubAgentActivityKind::Interacted,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
@@ -732,6 +734,8 @@ mod tests {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: thread_id.to_string(),
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
         };
 
         assert_eq!(

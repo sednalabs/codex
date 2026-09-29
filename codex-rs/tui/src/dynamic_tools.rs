@@ -1494,9 +1494,12 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                 kind,
                 agent_thread_id,
                 agent_path,
+                model,
+                reasoning_effort,
             } => json!({
                 "type": "subAgentActivity", "id": id, "kind": kind,
-                "agentThreadId": agent_thread_id, "agentPath": agent_path
+                "agentThreadId": agent_thread_id, "agentPath": agent_path,
+                "model": model, "reasoningEffort": reasoning_effort
             }),
             ThreadItem::WebSearch(item) => json!({
                 "type": "webSearch", "id": item.id,
