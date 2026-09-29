@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -28,7 +29,7 @@ main().catch((error) => {
 async function main() {
   const request = JSON.parse(await readStdin());
   const { chromium } = loadPlaywright();
-  const stateDir = await browserStateDir();
+  const { stateDir } = await browserProfile(request);
   await withProfileLock(stateDir, async () => {
     const headless = playwrightHeadless();
     const viewport = viewportFromRequest(request);
@@ -40,7 +41,7 @@ async function main() {
 
     try {
       const page = await activePage(context);
-      await restoreOrNavigate(page, request);
+      await restoreOrNavigate(page, request, stateDir);
 
       const summaries = [];
       if (request.tool === TOOL_STEP) {
@@ -78,41 +79,137 @@ async function readStdin() {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function browserStateDir() {
-  if (process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR !== undefined) {
-    throw new Error(
-      "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR is not supported; browser state uses the fixed default path",
-    );
-  }
-  const dir = path.join(
-    os.homedir(),
-    ".codex",
-    "browser-computer-use-playwright",
+async function browserProfile(request) {
+  const baseDir = await browserStateRoot(
+    process.env.CODEX_BROWSER_PLAYWRIGHT_STATE_DIR,
   );
-  await validateFixedStateDir(dir);
-  await fs.mkdir(dir, { recursive: true });
-  return dir;
+  const threadId = request.threadId;
+  if (typeof threadId !== "string" || !threadId.trim()) {
+    throw new Error("Browser thread isolation requires a non-empty threadId.");
+  }
+
+  const profilesDir = path.join(baseDir, "profiles");
+  const profileDir = path.join(profilesDir, safePathComponent(threadId));
+  await ensurePrivateStateDirectory(baseDir);
+  await ensurePrivateStateDirectory(profilesDir);
+  await ensurePrivateStateDirectory(profileDir);
+  return { stateDir: profileDir };
 }
 
-async function validateFixedStateDir(stateDir) {
-  const codexDir = path.join(os.homedir(), ".codex");
-  for (const component of [codexDir, stateDir]) {
+async function browserStateRoot(configured) {
+  if (typeof configured === "string" && configured.trim()) {
+    const root = path.isAbsolute(configured)
+      ? path.resolve(configured)
+      : path.resolve(process.cwd(), configured);
+    await validateStatePath(root, { allowMissing: true });
+    return root;
+  }
+
+  const codexHome = await activeCodexHome();
+  const root = path.join(codexHome, "browser-computer-use-playwright");
+  await validateStatePath(root, { allowMissing: true });
+  return root;
+}
+
+async function activeCodexHome() {
+  const configured = process.env.CODEX_HOME;
+  if (typeof configured === "string" && configured.length > 0) {
+    const candidate = path.resolve(process.cwd(), configured);
+    const stat = await fs.stat(candidate).catch((error) => {
+      throw new Error(`Cannot resolve active CODEX_HOME: ${error.message}`);
+    });
+    if (!stat.isDirectory()) {
+      throw new Error("Active CODEX_HOME must be a directory.");
+    }
+    // Codex canonicalizes an explicitly configured CODEX_HOME before using it.
+    return fs.realpath(candidate);
+  }
+
+  return path.join(await fs.realpath(os.homedir()), ".codex");
+}
+
+async function ensurePrivateStateDirectory(directory) {
+  await validateStatePath(directory, { allowMissing: true });
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await validateStatePath(directory);
+}
+
+async function validateStatePath(directory, { allowMissing = false } = {}) {
+  if (!path.isAbsolute(directory) || path.resolve(directory) !== directory) {
+    throw new Error(
+      `Browser state path must be absolute and canonical: ${directory}`,
+    );
+  }
+
+  const { root } = path.parse(directory);
+  const components = directory.slice(root.length).split(path.sep).filter(Boolean);
+  let current = root;
+  let missing = false;
+  for (const component of components) {
+    current = path.join(current, component);
+    let stat;
     try {
-      const stat = await fs.lstat(component);
-      if (stat.isSymbolicLink()) {
-        throw new Error(
-          `Browser state path component must not be a symlink: ${component}`,
-        );
-      }
-      if ((await fs.realpath(component)) !== component) {
-        throw new Error(`Browser state path component must be canonical: ${component}`);
-      }
+      stat = await fs.lstat(current);
     } catch (error) {
-      if (error?.code !== "ENOENT") {
-        throw error;
+      if (error?.code === "ENOENT" && allowMissing) {
+        missing = true;
+        continue;
       }
+      throw error;
+    }
+    if (missing) {
+      throw new Error(
+        `Browser state path reappeared below a missing ancestor: ${current}`,
+      );
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Browser state path component must not be a symlink: ${current}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`Browser state path component must be a directory: ${current}`);
+    }
+    validatePathOwnershipAndMode(current, stat, current === directory);
+    if ((await fs.realpath(current)) !== current) {
+      throw new Error(`Browser state path component must be canonical: ${current}`);
     }
   }
+}
+
+function validatePathOwnershipAndMode(component, stat, isStateDirectory) {
+  if (typeof process.getuid !== "function") {
+    return;
+  }
+  const uid = process.getuid();
+  const mode = stat.mode & 0o7777;
+  if (stat.uid !== uid && stat.uid !== 0) {
+    throw new Error(
+      `Browser state path ancestor has an untrusted owner: ${component}`,
+    );
+  }
+  const writableByGroupOrOther = mode & 0o022;
+  const trustedStickyRootDirectory = stat.uid === 0 && Boolean(mode & 0o1000);
+  if (
+    writableByGroupOrOther &&
+    (!trustedStickyRootDirectory || isStateDirectory)
+  ) {
+    throw new Error(
+      `Browser state path ancestor is writable by untrusted users: ${component}`,
+    );
+  }
+  if (isStateDirectory && stat.uid !== uid) {
+    throw new Error(`Browser state directory must be owned by the current user: ${component}`);
+  }
+}
+
+function safePathComponent(value) {
+  const text = String(value || "default");
+  const slug =
+    text
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 64) || "default";
+  const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
+  return `${slug}-${hash}`;
 }
 
 async function withProfileLock(stateDir, body) {
@@ -220,14 +317,14 @@ async function activePage(context) {
   return existing || context.newPage();
 }
 
-async function restoreOrNavigate(page, request) {
+async function restoreOrNavigate(page, request, stateDir) {
   const explicitUrl = request.arguments?.url;
   if (explicitUrl) {
     await page.goto(explicitUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
     return;
   }
 
-  const statePath = path.join(await browserStateDir(), "state.json");
+  const statePath = path.join(stateDir, "state.json");
   const state = await readJsonOrNull(statePath);
   if (state?.url && page.url() === "about:blank") {
     await page.goto(state.url, { waitUntil: "domcontentloaded", timeout: timeoutMs(request) });
