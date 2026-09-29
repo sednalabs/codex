@@ -825,7 +825,7 @@ async fn openai_static_catalog_applies_overlay_but_other_static_catalogs_do_not(
     };
 
     let openai = StaticModelsManager::new_with_provider_kind(
-        None,
+        /*auth_manager*/ None,
         catalog.clone(),
         ModelProviderKind::OpenAiCompatible,
     );
@@ -842,7 +842,7 @@ async fn openai_static_catalog_applies_overlay_but_other_static_catalogs_do_not(
     );
 
     let other = StaticModelsManager::new(
-        None,
+        /*auth_manager*/ None,
         ModelsResponse {
             models: vec![candidate],
         },
