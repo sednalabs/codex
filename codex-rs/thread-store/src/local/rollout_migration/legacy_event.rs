@@ -263,7 +263,7 @@ pub(super) fn completed_item(
                 agent_thread_id: event.agent_thread_id,
                 agent_path: event.agent_path.clone(),
                 model: event.model.clone(),
-                reasoning_effort: event.reasoning_effort,
+                reasoning_effort: event.reasoning_effort.clone(),
             }),
             None,
         )),
