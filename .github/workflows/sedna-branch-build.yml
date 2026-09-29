@@ -115,8 +115,8 @@ jobs:
           readelf -l "${stage_dir}/codex-code-mode-host" | grep -F '/lib64/ld-linux-x86-64.so.2'
           "${stage_dir}/codex-code-mode-host" --help >/dev/null
           tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
-          sha256sum "${stage_dir}/codex-code-mode-host" > "../dist/${archive_base}.binary.sha256"
-          sha256sum "../dist/${archive_base}.tar.gz" > "../dist/${archive_base}.tar.gz.sha256"
+          (cd "${stage_dir}" && sha256sum codex-code-mode-host) > "../dist/${archive_base}.binary.sha256"
+          (cd ../dist && sha256sum "${archive_base}.tar.gz") > "../dist/${archive_base}.tar.gz.sha256"
 
           python3 - <<'PY' > "../dist/${archive_base}.json"
           import hashlib
