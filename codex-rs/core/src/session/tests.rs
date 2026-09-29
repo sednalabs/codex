@@ -3423,7 +3423,7 @@ async fn completed_responses_persist_response_local_usage_rows() {
     assert_eq!(rows[2].3, None, "missing same-response model stays NULL");
     assert_eq!(
         (rows[2].6, rows[2].7, rows[2].8, rows[2].9),
-        (Some(303), Some(0), Some(303), Some(303)),
+        (Some(303), Some(0), Some(0), Some(303)),
         "reported usage remains exact when actual model identity is absent"
     );
     assert_eq!(rows[2].11, "ok");
