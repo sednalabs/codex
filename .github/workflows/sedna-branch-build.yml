@@ -89,7 +89,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
@@ -100,6 +100,7 @@ jobs:
         mkdir -p "${stage_dir}"
 
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/x86_64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
 
         file "${stage_dir}/codex" | grep -F 'x86-64'
@@ -111,6 +112,7 @@ jobs:
           exit 1
         fi
         "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex-code-mode-host" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
@@ -157,7 +159,7 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-responses-api-proxy
+        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
@@ -168,6 +170,7 @@ jobs:
         mkdir -p "${stage_dir}"
 
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
         install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
 
         file "${stage_dir}/codex" | grep -F 'ARM aarch64'
@@ -179,6 +182,7 @@ jobs:
           exit 1
         fi
         "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex-code-mode-host" --help >/dev/null
         "${stage_dir}/codex" exec --help >/dev/null
         "${stage_dir}/codex" app-server --help >/dev/null
         "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
