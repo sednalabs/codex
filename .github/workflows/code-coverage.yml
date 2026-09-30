@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/scripts/**"
       - ".github/workflows/code-coverage.yml"
+      - ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py"
+      - ".codex/skills/sedna/subagent-session-tail/tests/**"
       - "scripts/codex_package/**"
       - "scripts/*.py"
       - "sdk/python/**"
@@ -17,6 +19,8 @@ on:
     paths:
       - ".github/scripts/**"
       - ".github/workflows/code-coverage.yml"
+      - ".codex/skills/sedna/subagent-session-tail/scripts/inspect_subagent_tail.py"
+      - ".codex/skills/sedna/subagent-session-tail/tests/**"
       - "scripts/codex_package/**"
       - "scripts/*.py"
       - "sdk/python/**"
@@ -63,6 +67,9 @@ jobs:
             coverage run --append --source=.github/scripts,scripts/codex_package "${test_file}"
           done
           coverage xml -o coverage-python-tools.xml
+
+      - name: Test subagent session tail helper
+        run: python -m unittest discover -s .codex/skills/sedna/subagent-session-tail/tests -p 'test_*.py'
 
   python-sdk:
     name: Python SDK coverage
