@@ -606,6 +606,12 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
     terminal = ensure_dict(session_info.get("last_terminal"))
     current_turn = ensure_dict(session_info.get("last_task_started"))
     child_thread_id = meta.get("id")
+    lookup_state = lookup.get("lookup_state", "unknown")
+    candidate_state = session_info.get("session_state", "unknown")
+    # A selected candidate is not enough to claim the aggregate lookup's state:
+    # another exact match may be ambiguous or may not have been fully inspected.
+    # Keep the selected status only as explicitly nonterminal evidence.
+    session_state = candidate_state if lookup_state == "complete" else "unknown"
     result = {
         "schema_version": 1,
         "session_file": str(session_info.get("path")),
@@ -613,14 +619,15 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
         "agent_path": meta.get("agent_path"),
         "agent_role": meta.get("agent_role"),
         "agent_nickname": meta.get("agent_nickname"),
-        "session_state": session_info.get("session_state", "unknown"),
+        "session_state": session_state,
+        "last_known_candidate_state": candidate_state if lookup_state != "complete" else None,
         "terminal_event": terminal.get("event_type"),
         "terminal_at": terminal.get("timestamp"),
         "terminal_reason": terminal.get("reason"),
         "current_turn_id": current_turn.get("turn_id"),
         "last_event_at": session_info.get("last_timestamp"),
         "matched_session_files": lookup.get("matched_session_files", 0),
-        "lookup_state": lookup.get("lookup_state", "unknown"),
+        "lookup_state": lookup_state,
         "diagnostics": sorted(set(lookup.get("diagnostics", []) + session_info.get("diagnostics", []))),
         "candidate_files_inspected": lookup.get("candidate_files_inspected", 0),
         "candidate_metadata_bytes": lookup.get("candidate_metadata_bytes", 0),

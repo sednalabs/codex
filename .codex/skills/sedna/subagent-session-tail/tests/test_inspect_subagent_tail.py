@@ -229,6 +229,38 @@ class SessionRecordTest(unittest.TestCase):
         self.assertEqual(stats["lookup_state"], "ambiguous")
         self.assertIn("multiple_matching_sessions", stats["diagnostics"])
 
+    def test_aggregate_cap_with_duplicate_cannot_claim_selected_terminal_state(self) -> None:
+        thread_id = "same-child-capped"
+        first = write_session(
+            self.root / "first.jsonl", metadata(thread_id),
+            [event("task_complete", "2026-09-30T00:00:01Z", turn_id="visible")],
+        )
+        second = write_session(
+            self.root / "second.jsonl", metadata(thread_id),
+            [event("task_started", "2026-09-30T00:00:02Z", turn_id="uninspected")],
+        )
+        with patch.object(inspect_subagent_tail, "MAX_LOOKUP_TRANSCRIPT_BYTES", first.stat().st_size):
+            selected, stats = inspect_subagent_tail._resolve_candidates(
+                [first, second], tail=8, child_thread_id=thread_id,
+            )
+
+        self.assertEqual(selected["path"], first)
+        self.assertEqual(selected["session_state"], "completed")
+        self.assertEqual(stats["lookup_state"], "partial")
+        self.assertIn("multiple_matching_sessions", stats["diagnostics"])
+        self.assertIn("candidate_transcript_limit_reached", stats["diagnostics"])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            inspect_subagent_tail._render_result(
+                selected, stats,
+                datetime(2026, 9, 30, tzinfo=timezone.utc), False, True,
+            )
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["session_state"], "unknown")
+        self.assertEqual(result["last_known_candidate_state"], "completed")
+        self.assertEqual(result["lookup_state"], "partial")
+
     def test_json_output_has_versioned_status_and_work_counters(self) -> None:
         path = write_session(self.root / "rollout-h.jsonl", metadata("child-h"), [
             event("task_complete", "2026-09-30T00:00:01Z", turn_id="h"),
