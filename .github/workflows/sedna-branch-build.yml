@@ -414,7 +414,7 @@ jobs:
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
-            .github/scripts/build-codex-package-archive.sh \
+            bash .github/scripts/build-codex-package-archive.sh \
               --target "${CODEX_TARGET}" \
               --bundle primary \
               --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
@@ -590,7 +590,7 @@ jobs:
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
-            .github/scripts/build-codex-package-archive.sh \
+            bash .github/scripts/build-codex-package-archive.sh \
               --target "${CODEX_TARGET}" \
               --bundle primary \
               --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
