@@ -5,6 +5,7 @@
 #![recursion_limit = "256"]
 #![allow(clippy::expect_used)]
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::StateDbHandle;
@@ -444,6 +445,33 @@ async fn wait_for_goal_start_count(gate: &GoalStartGate, expected: usize) -> Res
     Ok(())
 }
 
+async fn assert_goal_queue_message_accepted(server: &MockServer, child_id: ThreadId) -> Result<()> {
+    let requests = server
+        .received_requests()
+        .await
+        .context("read child provider requests after queue-only goal message")?;
+    let output = requests
+        .iter()
+        .filter(|request| request_thread_id(request) == Some(child_id.to_string()))
+        .find_map(|request| {
+            body_json(request)["input"]
+                .as_array()?
+                .iter()
+                .find_map(|item| {
+                    (item["type"] == json!("function_call_output")
+                        && item["call_id"] == json!("goal-queue-only-call"))
+                    .then(|| item["output"].as_str().map(str::to_string))
+                    .flatten()
+                })
+        })
+        .context("goal-queue-only-call had no captured child function-call output")?;
+    assert_eq!(
+        output, "",
+        "goal-queue-only-call must be accepted before queued_update_count is asserted"
+    );
+    Ok(())
+}
+
 async fn wait_for_parent_wait_output(
     server: &MockServer,
     parent_id: ThreadId,
@@ -511,7 +539,8 @@ async fn run_goal_scheduler_wait(resumed: bool, outcome: FinalOutcome) -> Result
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await?;
+        .await
+        .context("waiting for the pre-resume parent turn to become idle")?;
         assert_eq!(parent_request_count(&server, parent_id).await, 2);
     } else {
         assert_eq!(
@@ -543,12 +572,14 @@ async fn run_goal_scheduler_wait(resumed: bool, outcome: FinalOutcome) -> Result
         let mut builder = builder_with_goal(Arc::clone(&state_slot), Arc::clone(&gate));
         let resumed_test = builder
             .resume(&server, Arc::clone(&test.home), rollout_path)
-            .await?;
+            .await
+            .context("resuming the parent before reloading the persisted active-goal child")?;
         assert_eq!(resumed_test.session_configured.thread_id, parent_id);
         resumed_test
             .thread_manager
             .ensure_multi_agent_v2_child_loaded(child_id)
-            .await?;
+            .await
+            .context("reloading the persisted active-goal child into the resumed parent")?;
         resumed_test
     } else {
         let state_db = state_slot
@@ -565,7 +596,15 @@ async fn run_goal_scheduler_wait(resumed: bool, outcome: FinalOutcome) -> Result
         test
     };
     let child = active.thread_manager.get_thread(child_id).await?;
-    wait_for_goal_start_count(gate.as_ref(), 1).await?;
+    wait_for_goal_start_count(gate.as_ref(), 1)
+        .await
+        .with_context(|| {
+            format!(
+                "waiting for the {} child goal turn to reach its start gate (observed {})",
+                if resumed { "resumed" } else { "fresh" },
+                gate.entered.load(Ordering::Acquire)
+            )
+        })?;
     timeout(Duration::from_secs(5), async {
         while active.codex.agent_status().await == AgentStatus::Running {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -672,6 +711,7 @@ async fn run_goal_scheduler_wait(resumed: bool, outcome: FinalOutcome) -> Result
             "intermediate {intermediate} caused an extra parent provider request"
         );
     }
+    assert_goal_queue_message_accepted(&server, child_id).await?;
     if matches!(outcome, FinalOutcome::Abort) {
         gate.release_one();
         wait_for_goal_request_count(&server, child_id, 4).await?;

@@ -26,6 +26,8 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::handlers::multi_agents_v2::wait::WaitReason;
+use crate::tools::handlers::multi_agents_v2::wait::WakeCause;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
@@ -955,7 +957,7 @@ async fn multi_agent_v2_full_history_fork_inherits_root_service_tier() {
     let nested_output = SpawnAgentHandlerV2::default()
         .handle(invocation(
             child_thread.session.clone(),
-            Arc::new(child_thread.session.new_default_turn().await),
+            child_thread.session.new_default_turn().await,
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect the nested task",
@@ -3255,7 +3257,7 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         .agent_path
         .expect("worker path");
 
-    let wait_task = tokio::spawn({
+    let mut wait_task = tokio::spawn({
         let session = session.clone();
         let turn = turn.clone();
         async move {
@@ -3275,11 +3277,31 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         .input_queue
         .enqueue_mailbox_communication(
             InterAgentCommunication::new(
-                worker_path,
+                worker_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "hello from worker".to_string(),
                 /*trigger_turn*/ false,
+            ),
+            Default::default(),
+        )
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(30), &mut wait_task)
+            .await
+            .is_err(),
+        "queue-only mail must leave the native wait pending"
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                worker_path,
+                AgentPath::root(),
+                Vec::new(),
+                "request a parent turn".to_string(),
+                /*trigger_turn*/ true,
             ),
             Default::default(),
         )
@@ -3295,8 +3317,12 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Mailbox activity requested a turn.".to_string(),
             timed_out: false,
+            reason: WaitReason::MailboxActivity,
+            wake_cause: WakeCause::MailboxTurnRequested,
+            status: HashMap::new(),
+            queued_update_count: Some(1),
         }
     );
     assert_eq!(success, None);
@@ -3344,6 +3370,10 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            reason: WaitReason::TimedOut,
+            wake_cause: WakeCause::Timeout,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3379,6 +3409,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            reason: WaitReason::TimedOut,
+            wake_cause: WakeCause::Timeout,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3434,6 +3468,10 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            reason: WaitReason::TimedOut,
+            wake_cause: WakeCause::Timeout,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3474,6 +3512,10 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            reason: WaitReason::TimedOut,
+            wake_cause: WakeCause::Timeout,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3539,6 +3581,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            reason: WaitReason::TimedOut,
+            wake_cause: WakeCause::Timeout,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3779,7 +3825,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
                 AgentPath::root(),
                 Vec::new(),
                 "completed".to_string(),
-                /*trigger_turn*/ false,
+                /*trigger_turn*/ true,
             ),
             Default::default(),
         )
@@ -3795,8 +3841,12 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Mailbox activity requested a turn.".to_string(),
             timed_out: false,
+            reason: WaitReason::MailboxActivity,
+            wake_cause: WakeCause::MailboxTurnRequested,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -3855,7 +3905,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
                 AgentPath::root(),
                 Vec::new(),
                 "already queued".to_string(),
-                /*trigger_turn*/ false,
+                /*trigger_turn*/ true,
             ),
             Default::default(),
         )
@@ -3879,15 +3929,19 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Mailbox activity requested a turn.".to_string(),
             timed_out: false,
+            reason: WaitReason::MailboxActivity,
+            wake_cause: WakeCause::MailboxTurnRequested,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
+async fn multi_agent_v2_wait_agent_wakes_on_turn_requesting_mailbox_notification() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -3957,7 +4011,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
                 AgentPath::root(),
                 Vec::new(),
                 "from worker b".to_string(),
-                /*trigger_turn*/ false,
+                /*trigger_turn*/ true,
             ),
             Default::default(),
         )
@@ -3973,8 +4027,12 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Mailbox activity requested a turn.".to_string(),
             timed_out: false,
+            reason: WaitReason::MailboxActivity,
+            wake_cause: WakeCause::MailboxTurnRequested,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert_eq!(success, None);
@@ -4048,7 +4106,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
                 AgentPath::root(),
                 Vec::new(),
                 "sensitive child output".to_string(),
-                /*trigger_turn*/ false,
+                /*trigger_turn*/ true,
             ),
             Default::default(),
         )
@@ -4064,8 +4122,12 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
+            message: "Mailbox activity requested a turn.".to_string(),
             timed_out: false,
+            reason: WaitReason::MailboxActivity,
+            wake_cause: WakeCause::MailboxTurnRequested,
+            status: HashMap::new(),
+            queued_update_count: Some(0),
         }
     );
     assert!(!content.contains("sensitive child output"));

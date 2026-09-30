@@ -1472,6 +1472,7 @@ async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_l
 
     assert!(
         resumed_control
+            .runtime
             .ensure_agent_known(worker_thread_id)
             .is_err()
     );
@@ -2295,6 +2296,8 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
         "V1 forks lack complete retained authorization in both context modes"
     );
     let turn_context = child_thread.session.new_default_turn().await;
+    let provider_request_started_at =
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     child_thread
         .session
         .record_observed_response_completed(
@@ -2302,6 +2305,12 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             "child-response",
             Some(&child_usage),
             /*usage_metadata*/ None,
+            crate::session::ProviderResponseUsageContext {
+                started_at: provider_request_started_at,
+                requested_model: turn_context.initial_settings.model_info.slug.clone(),
+                actual_model_used: None,
+                requested_service_tier: turn_context.initial_settings.service_tier.clone(),
+            },
         )
         .await;
     child_thread

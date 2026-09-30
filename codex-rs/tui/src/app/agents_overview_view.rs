@@ -458,6 +458,7 @@ impl AgentsOverviewView {
                 width,
             ),
             Line::from(vec![dot, " ".into(), status.into()]),
+            Line::from(vec!["Thread ID: ".dim(), row.thread.id.clone().into()]),
             Line::default(),
             Line::from("Project".dim()),
             Line::from(row.thread.cwd.display().to_string()),
@@ -478,7 +479,6 @@ impl AgentsOverviewView {
                 "Provider-effective identity: ".dim(),
                 "Unknown".into(),
             ]),
-            Line::from(vec!["Thread ID: ".dim(), row.thread.id.clone().into()]),
         ];
         if let Some(parent_thread_id) = &row.thread.parent_thread_id {
             lines.push(Line::from(vec![

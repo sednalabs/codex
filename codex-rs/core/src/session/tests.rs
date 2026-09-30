@@ -11837,6 +11837,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
     };
     let requests = responses::mount_response_sequence(&server, replies).await;
     let mut client_session = session.services.model_client.new_session();
+    let cancellation_token = CancellationToken::new();
     crate::compact_remote_v2::run_inline_remote_auto_compact_task(
         Arc::clone(&session),
         Arc::clone(&primary),
@@ -11845,6 +11846,7 @@ async fn remote_compaction_v2_retains_only_the_selected_step(first_attempt: Firs
         InitialContextInjection::DoNotInject,
         CompactionReason::ModelDownshift,
         CompactionPhase::PreTurn,
+        &cancellation_token,
     )
     .await
     .expect("compaction succeeds");
