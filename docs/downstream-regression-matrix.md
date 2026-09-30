@@ -622,6 +622,18 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     separate host-only artifact after locked compilation and `--help` smoke;
     the build sources that target's checksum-verifying V8 setup helper. Assemble
     it only alongside CLI and proxy binaries from that same commit.
+  - `just install-branch-artifact --branch REF` resolves the newest retained
+    successful product-source build for that exact ref and requires a matching
+    `codex-code-mode-host` companion before staging the CLI, proxy, and host
+    together under the standalone versioned-package directory. Exact run mode
+    is `--run-id CORE_RUN --host-run-id HOST_RUN`; the companion run cannot be
+    inferred safely from one run ID because core and host-only runs share the
+    Actions artifact name. `--dry-run` verifies provenance and architecture
+    without inspecting or modifying managed install paths under the home directory.
+    The fixture-only installer
+    checks are included in hosted `just build-policy-sanity`; they cover paired
+    source identity, run/artifact linkage, checksums, archive safety, x86_64 and
+    AArch64 targets, and activation rollback without installing a real artifact.
 
 ## Divergence mapping
 

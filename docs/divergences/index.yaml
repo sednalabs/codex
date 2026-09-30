@@ -3658,6 +3658,32 @@
       "extraction_target": "upstream exact virtual-workflow watcher identity"
     },
     {
+      "id": "linux-branch-artifact-installer",
+      "title": "Linux branch-artifact installer",
+      "status": "live",
+      "category": "release",
+      "surface_type": "artifact-installer",
+      "surface": ["manual just install-branch-artifact command"],
+      "files": [
+        "justfile",
+        "scripts/install_branch_artifact",
+        "scripts/install/test_branch_artifact_installer.py",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "The installer resolves a latest successful product-ref build or an exact core run, then requires a same-source/ref/target code-mode-host companion. It binds each Actions artifact by exact run/artifact ID and SHA-256, rejects ambiguous or incomplete pairs, safely extracts native Linux x86_64/aarch64 executables, stages a versioned package and atomically switches managed launcher links with rollback while preserving prior packages.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "sedna-branch-artifact-installer-contract",
+      "tests": ["just build-policy-sanity synthetic installer fixtures and dry-run recipe invocation"],
+      "owner": "downstream",
+      "notes": "Exact --run-id requires --host-run-id because normal and host-only runs reuse the artifact name. AArch64 installs require a retained matching host-only artifact; absence fails closed. This helper installs disposable branch previews, not releases.",
+      "upstreamability_tier": "downstream-tooling",
+      "boundary_type": "artifact-installation",
+      "hotspot_files": ["justfile", "scripts/install_branch_artifact"],
+      "extraction_target": "upstream branch-artifact resolution and pairing contract"
+    },
+    {
       "id": "linux-preview-code-mode-host-artifact",
       "title": "Linux x86_64 preview code-mode host artifact",
       "status": "live",
