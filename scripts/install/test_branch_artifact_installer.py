@@ -17,6 +17,8 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +85,14 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(401)
             return
         if "/actions/artifacts/" in self.path and self.path.endswith("/zip"):
+            redirect_root = getattr(self.server, "redirect_artifact_root", None)
+            if redirect_root is not None:
+                location = f"{redirect_root}{self.path}"
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             artifact_id = int(self.path.rsplit("/", 2)[1])
             body = fixture_api.payloads[artifact_id]
             content_type = "application/zip"
@@ -98,6 +108,22 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
                 status = 404
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class RedirectArtifactHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        fixture_api: FakeApi = self.server.fixture_api  # type: ignore[attr-defined]
+        self.server.authorization_headers.append(self.headers.get("Authorization"))  # type: ignore[attr-defined]
+        artifact_id = int(self.path.rsplit("/", 2)[1])
+        body = fixture_api.payloads[artifact_id]
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -244,6 +270,18 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(installer.InstallError, "not bound"):
             installer.validate_run(run)
 
+    def test_authenticated_redirect_rejects_https_downgrade(self) -> None:
+        request = urllib.request.Request("https://api.github.com/repos/example/actions/artifact")
+        with self.assertRaises(urllib.error.HTTPError):
+            installer.SafeRedirectHandler().redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "http://downloads.example.invalid/artifact.zip",
+            )
+
     def test_source_mismatch_is_rejected(self) -> None:
         api = make_api((self.core_zip, action_artifact("host", 1002, source_sha="c" * 40)))
         with self.assertRaisesRegex(installer.InstallError, "do not match"):
@@ -337,8 +375,14 @@ class BranchArtifactInstallerTests(unittest.TestCase):
 
     def test_public_just_recipe_dry_run_uses_loopback_fixture_api(self) -> None:
         api = make_api((self.core_zip, self.host_zip))
+        artifact_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), RedirectArtifactHandler)
+        artifact_server.fixture_api = api  # type: ignore[attr-defined]
+        artifact_server.authorization_headers = []  # type: ignore[attr-defined]
+        artifact_thread = threading.Thread(target=artifact_server.serve_forever, daemon=True)
+        artifact_thread.start()
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
         server.fixture_api = api  # type: ignore[attr-defined]
+        server.redirect_artifact_root = f"http://127.0.0.1:{artifact_server.server_port}"
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         fake_home = self.root / "recipe-home"
@@ -374,8 +418,12 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+            artifact_server.shutdown()
+            artifact_server.server_close()
+            artifact_thread.join(timeout=5)
         self.assertIn("dry-run: verified", result.stdout)
         self.assertIn("core run 1001 and host run 1002", result.stdout)
+        self.assertEqual(artifact_server.authorization_headers, [None, None])
         self.assertFalse(fake_home.exists())
 
     def test_activation_preserves_previous_package_and_switches_launcher(self) -> None:

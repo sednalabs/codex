@@ -3762,6 +3762,11 @@ silently substitutes a core-only pair or an older branch source. Branch lookup
 is deliberately bounded to recent matching runs; collisions or too many
 candidates require exact run IDs.
 
+Authenticated API redirects retain bearer credentials only on the same HTTPS
+origin. Cross-origin artifact redirects strip authorization, proxy-authorization,
+and cookie headers; HTTPS downgrade and non-loopback HTTP test redirects fail
+closed.
+
 Linux x86_64 and AArch64 packages are supported when both core and host-only
 artifacts are retained. Some workflow revisions do not produce an AArch64
 host-only artifact; the installer accepts an explicit exact companion from a
@@ -3778,7 +3783,8 @@ without inspecting or changing managed installation paths under `HOME` (the
 GitHub CLI may still read its configured token when no token environment
 variable is supplied). The synthetic hosted fixture invokes the public just
 recipe through a test-only loopback API endpoint and isolated home path;
-production requests remain pinned to GitHub's API. Synthetic API/artifact, malformed archive,
+production requests remain pinned to GitHub's API. Synthetic API/artifact,
+cross-origin redirect, malformed archive,
 pair mismatch, dry-run, activation, and rollback fixtures run through
 `just build-policy-sanity` on hosted CI; they never download a real build or
 touch an operator home.
