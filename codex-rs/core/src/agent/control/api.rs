@@ -174,6 +174,10 @@ impl AgentControl for LocalAgentControl {
         })
     }
 
+    fn inspect(&self, thread_id: ThreadId) -> BoxFuture<'_, Result<AgentInfo>> {
+        Box::pin(self.inspect_agent(thread_id))
+    }
+
     fn interrupt(
         &self,
         caller: ThreadId,

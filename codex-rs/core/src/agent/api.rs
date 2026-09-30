@@ -27,6 +27,9 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
+use std::sync::Mutex;
+use tokio::sync::broadcast;
+use tokio::sync::watch;
 
 // Keep dynamic dispatch a compile-time property of the contract.
 const _: Option<&dyn AgentControl> = None;
@@ -67,6 +70,10 @@ pub trait AgentControl: Send + Sync {
     /// Implementations validate ownership and restore the child under the parent's current
     /// authority. Success makes the child available for attachment through its thread manager.
     fn ensure_child_loaded(&self, parent: ThreadId, child: ThreadId) -> BoxFuture<'_, Result<()>>;
+
+    /// Read a known agent's registry identity and loaded runtime snapshot without
+    /// resuming, interrupting, or sending work. Unloaded status/settings remain unknown.
+    fn inspect(&self, thread_id: ThreadId) -> BoxFuture<'_, Result<AgentInfo>>;
 
     /// Stop current work and return the pre-interrupt snapshot. V2 rejects root/self
     /// targets and tolerates known unloaded agents; other modes retain direct-ID interruption.
@@ -226,8 +233,146 @@ pub struct AgentTurnOutcome {
     pub parent_turn_id: Option<String>,
     pub initiating_agent_path: Option<AgentPath>,
     pub status: AgentStatus,
+    /// Logical readiness captured for this exact turn before terminal event delivery.
+    /// The raw status above remains the per-turn status exposed to existing clients.
+    pub readiness: AgentReadiness,
     /// Typed reason used to choose guidance in the parent notification.
     pub error_info: Option<CodexErrorInfo>,
+}
+
+/// A goal extension may publish this marker only after accounting the matching turn.
+/// An absent, stale, or mismatched marker retains the legacy actionable result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GoalTurnMarker {
+    pub goal_id: String,
+    pub turn_id: String,
+    pub readiness: GoalTurnReadiness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalTurnReadiness {
+    Continuing,
+    ActionRequired,
+}
+
+/// Logical readiness is separate from the raw per-turn AgentStatus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentReadiness {
+    Pending,
+    GoalContinuing { goal_id: String, turn_id: String },
+    ActionRequired,
+    Terminal,
+}
+
+impl AgentReadiness {
+    pub fn wakes_wait(&self) -> bool {
+        matches!(self, Self::ActionRequired | Self::Terminal)
+    }
+}
+
+/// One atomic, producer-observed status/readiness snapshot for notification and wait.
+#[derive(Clone, Debug)]
+pub struct AgentOutcomeSnapshot {
+    pub turn_id: Option<String>,
+    pub status: AgentStatus,
+    pub readiness: AgentReadiness,
+}
+
+impl Default for AgentOutcomeSnapshot {
+    fn default() -> Self {
+        Self {
+            turn_id: None,
+            status: AgentStatus::PendingInit,
+            readiness: AgentReadiness::Pending,
+        }
+    }
+}
+
+/// Session-scoped sender retained by the local tree across unload/reload.
+/// Receivers see the most recent snapshot even when they subscribe after publication.
+pub struct AgentOutcomePublisher {
+    tx: watch::Sender<AgentOutcomeSnapshot>,
+    actionable_tx: broadcast::Sender<AgentOutcomeSnapshot>,
+    publication_lock: Mutex<()>,
+    last_reported_turn: Mutex<Option<String>>,
+}
+
+impl Default for AgentOutcomePublisher {
+    fn default() -> Self {
+        let (tx, _) = watch::channel(AgentOutcomeSnapshot::default());
+        let (actionable_tx, _) = broadcast::channel(64);
+        Self {
+            tx,
+            actionable_tx,
+            publication_lock: Mutex::new(()),
+            last_reported_turn: Mutex::new(None),
+        }
+    }
+}
+
+impl AgentOutcomePublisher {
+    pub fn snapshot(&self) -> AgentOutcomeSnapshot {
+        self.tx.borrow().clone()
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<AgentOutcomeSnapshot> {
+        self.tx.subscribe()
+    }
+
+    /// Subscribe before reading the snapshot; actionable transitions are retained
+    /// even if a subsequent turn-start coalesces the watch value.
+    pub fn subscribe_actionable(&self) -> broadcast::Receiver<AgentOutcomeSnapshot> {
+        self.actionable_tx.subscribe()
+    }
+
+    pub fn publish(&self, snapshot: AgentOutcomeSnapshot) {
+        let _guard = self
+            .publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.tx.send_replace(snapshot.clone());
+        if snapshot.readiness.wakes_wait() {
+            let _ = self.actionable_tx.send(snapshot);
+        }
+    }
+
+    fn mark_current_goal_action_required(&self) {
+        let _guard = self
+            .publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshot = self.tx.borrow().clone();
+        if !matches!(&snapshot.readiness, AgentReadiness::GoalContinuing { .. }) {
+            return;
+        }
+        snapshot.readiness = AgentReadiness::ActionRequired;
+        self.tx.send_replace(snapshot.clone());
+        let _ = self.actionable_tx.send(snapshot);
+    }
+
+    /// Suppress a duplicate completion handback for the same exact turn.
+    pub fn mark_reported(&self, turn_id: &str) -> bool {
+        let mut last = self
+            .last_reported_turn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last.as_deref() == Some(turn_id) {
+            return false;
+        }
+        *last = Some(turn_id.to_string());
+        true
+    }
+}
+
+/// Narrow extension hook for a scheduler rejection after a quiet goal turn.
+/// It never changes raw status or inserts model-visible content.
+#[derive(Clone)]
+pub struct GoalContinuationReadiness(pub std::sync::Arc<AgentOutcomePublisher>);
+
+impl GoalContinuationReadiness {
+    pub fn mark_action_required_if_continuing(&self) {
+        self.0.mark_current_goal_action_required();
+    }
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

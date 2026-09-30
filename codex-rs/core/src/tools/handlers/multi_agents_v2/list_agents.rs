@@ -1,4 +1,6 @@
 use super::analytics::ToolCallAnalytics;
+use super::inspect_agent::InspectedAgent;
+use super::inspect_agent::inspect_agent;
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
 use codex_tools::ToolSpec;
@@ -52,19 +54,16 @@ impl Handler {
             .await
             .map_err(collab_spawn_error)?;
 
-        let agents = agents
-            .into_iter()
-            .map(|agent| ListedAgent {
-                agent_name: agent
-                    .metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| agent.thread_id.to_string()),
-                agent_status: agent.status,
-            })
-            .collect();
-        Ok(boxed_tool_output(ListAgentsResult { agents }))
+        let mut inspected_agents = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let inspected = inspect_agent(session.services.agent_control.as_ref(), agent.thread_id)
+                .await
+                .map_err(collab_spawn_error)?;
+            inspected_agents.push(inspected);
+        }
+        Ok(boxed_tool_output(ListAgentsResult {
+            agents: inspected_agents,
+        }))
     }
 }
 
@@ -81,14 +80,8 @@ struct ListAgentsArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct ListedAgent {
-    agent_name: String,
-    agent_status: AgentStatus,
-}
-
-#[derive(Debug, Serialize)]
 pub(crate) struct ListAgentsResult {
-    agents: Vec<ListedAgent>,
+    agents: Vec<InspectedAgent>,
 }
 
 impl ToolOutput for ListAgentsResult {

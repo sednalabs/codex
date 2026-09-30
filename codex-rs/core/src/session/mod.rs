@@ -13,7 +13,11 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentConfigUpdate;
+use crate::agent::api::AgentOutcomeSnapshot;
+use crate::agent::api::AgentReadiness;
 use crate::agent::api::AgentTurnOutcome;
+use crate::agent::api::GoalTurnMarker;
+use crate::agent::api::GoalTurnReadiness;
 use crate::agent::control::AgentControlInit;
 use crate::agent::status::is_final;
 use crate::agents_md_manager::SessionInstructions;
@@ -167,6 +171,7 @@ use codex_rollout_trace::ThreadTraceContext;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::policy_transforms::intersect_permission_profiles_with_context;
 use codex_shell_command::parse_command::parse_command;
+use codex_state::ProviderCallUsageRecord;
 use codex_terminal_detection::user_agent;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::LiveThread;
@@ -413,6 +418,15 @@ pub(crate) struct SessionIo {
 }
 
 pub(crate) type SessionLoopTermination = Shared<BoxFuture<'static, ()>>;
+
+/// Facts captured at the boundary of one provider response, not inferred from
+/// later turn totals or configured aliases.
+pub(crate) struct ProviderResponseUsageContext {
+    pub(crate) started_at: String,
+    pub(crate) requested_model: String,
+    pub(crate) actual_model_used: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GitEnrichmentPolicy {
@@ -2250,6 +2264,9 @@ impl Session {
                 .await
                 .replace(error.clone());
         }
+        // Publish the goal-bound decision before the raw terminal event is visible to
+        // status subscribers, parent notification routing, or an active native wait.
+        self.publish_agent_outcome(turn_context, &legacy_source);
         self.services
             .rollout_thread_trace
             .record_codex_turn_event(&turn_context.sub_id, &legacy_source);
@@ -2299,6 +2316,47 @@ impl Session {
         }
     }
 
+    fn publish_agent_outcome(&self, turn_context: &TurnContext, msg: &EventMsg) {
+        let Some(status) = agent_status_from_event(msg) else {
+            return;
+        };
+        let turn_id = turn_context.sub_id.clone();
+        let readiness = match msg {
+            EventMsg::TurnStarted(_) => AgentReadiness::Pending,
+            EventMsg::TurnComplete(event) if event.error.is_none() => {
+                match turn_context.extension_data.get::<GoalTurnMarker>() {
+                    Some(marker)
+                        if marker.turn_id == turn_id
+                            && marker.turn_id == event.turn_id
+                            && !marker.goal_id.trim().is_empty() =>
+                    {
+                        match marker.readiness {
+                            GoalTurnReadiness::Continuing => AgentReadiness::GoalContinuing {
+                                goal_id: marker.goal_id.clone(),
+                                turn_id: marker.turn_id.clone(),
+                            },
+                            GoalTurnReadiness::ActionRequired => AgentReadiness::ActionRequired,
+                        }
+                    }
+                    _ => AgentReadiness::Terminal,
+                }
+            }
+            EventMsg::TurnAborted(_) => AgentReadiness::ActionRequired,
+            EventMsg::TurnComplete(_) | EventMsg::Error(_) | EventMsg::ShutdownComplete => {
+                AgentReadiness::Terminal
+            }
+            _ => AgentReadiness::Pending,
+        };
+        self.services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id)
+            .publish(AgentOutcomeSnapshot {
+                turn_id: Some(turn_id),
+                status,
+                readiness,
+            });
+    }
+
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
     async fn maybe_notify_parent_of_terminal_turn(
         &self,
@@ -2346,7 +2404,21 @@ impl Session {
                 }
             }
         };
-        if !is_final(&status) {
+        let outcome_snapshot = self
+            .services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id)
+            .snapshot();
+        let readiness = if outcome_snapshot.turn_id.as_deref() == Some(turn_context.sub_id.as_str())
+        {
+            outcome_snapshot.readiness
+        } else if is_final(&status) {
+            // Unknown or stale binding fails open to the established terminal path.
+            AgentReadiness::Terminal
+        } else {
+            AgentReadiness::ActionRequired
+        };
+        if !readiness.wakes_wait() {
             return;
         }
 
@@ -2363,11 +2435,33 @@ impl Session {
                         .initiating_agent_path()
                         .cloned(),
                     status,
+                    readiness,
                     error_info,
                 },
                 &self.services.rollout_thread_trace,
             )
             .await;
+    }
+
+    /// Reconcile a quiet goal completion after the idle extension has attempted
+    /// its continuation. This is a second, idempotent handback opportunity only
+    /// for a scheduler rejection that promoted the exact turn to action-needed.
+    pub(crate) async fn maybe_notify_parent_after_idle_goal(
+        &self,
+        turn_context: &TurnContext,
+        msg: &EventMsg,
+    ) {
+        let snapshot = self
+            .services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id)
+            .snapshot();
+        if snapshot.turn_id.as_deref() == Some(turn_context.sub_id.as_str())
+            && matches!(snapshot.readiness, AgentReadiness::ActionRequired)
+        {
+            self.maybe_notify_parent_of_terminal_turn(turn_context, msg)
+                .await;
+        }
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
@@ -4695,7 +4789,9 @@ impl Session {
         response_id: &str,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
+        context: ProviderResponseUsageContext,
     ) {
+        let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         self.send_event(
             turn_context,
             EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
@@ -4705,22 +4801,60 @@ impl Session {
             }),
         )
         .await;
-        let Some(usage) = usage else {
-            return;
-        };
-        let record = self.state.lock().await.record_token_usage(
-            self.thread_id,
-            &turn_context.sub_id,
-            self.session_id(),
-            turn_context
-                .turn_metadata_state
-                .root_turn_id()
-                .unwrap_or_else(|| turn_context.sub_id.clone()),
-            response_id.to_string(),
-            usage,
-        );
-        self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
-            .await;
+        if let Some(usage) = usage {
+            let record = self.state.lock().await.record_token_usage(
+                self.thread_id,
+                &turn_context.sub_id,
+                self.session_id(),
+                turn_context
+                    .turn_metadata_state
+                    .root_turn_id()
+                    .unwrap_or_else(|| turn_context.sub_id.clone()),
+                response_id.to_string(),
+                usage,
+            );
+            self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
+                .await;
+        }
+        if let Some(state_db) = self.state_db() {
+            let record = ProviderCallUsageRecord {
+                provider_call_id: uuid::Uuid::new_v4().to_string(),
+                thread_id: self.thread_id.to_string(),
+                turn_id: turn_context.sub_id.clone(),
+                provider: turn_context.provider.info().name.clone(),
+                provider_account_scope: None,
+                requested_model: context.requested_model,
+                actual_model_used: context.actual_model_used,
+                response_id: response_id.to_string(),
+                requested_service_tier: context.requested_service_tier,
+                actual_service_tier: None,
+                actual_service_tier_source: None,
+                fast_mode_requested: None,
+                fast_mode_used: None,
+                billing_surface: None,
+                account_plan: None,
+                started_at: context.started_at,
+                completed_at,
+                input_tokens_uncached: usage.map(|usage| {
+                    usage
+                        .input_tokens
+                        .saturating_sub(usage.cached_input_tokens)
+                        .max(0)
+                }),
+                input_tokens_cached: usage.map(|usage| usage.cached_input_tokens),
+                input_tokens_cache_write: usage.map(|usage| usage.cache_write_input_tokens),
+                output_tokens: usage.map(|usage| usage.output_tokens),
+                total_tokens: usage.map(|usage| usage.total_tokens),
+                status: if usage.is_some() {
+                    "ok"
+                } else {
+                    "provider_usage_missing"
+                },
+            };
+            if let Err(err) = state_db.record_provider_call_usage(&record).await {
+                warn!("failed to record per-response provider usage for {response_id}: {err}");
+            }
+        }
     }
 
     pub(crate) async fn record_token_usage_info(

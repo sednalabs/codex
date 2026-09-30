@@ -126,7 +126,40 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     );
     assert_eq!(
         output_schema.expect("spawn_agent output schema").to_value()["required"],
-        json!(["task_name", "nickname"])
+        json!([
+            "task_name",
+            "agent_id",
+            "nickname",
+            "agent_status",
+            "configured_model",
+            "configured_reasoning_effort"
+        ])
+    );
+}
+
+#[test]
+fn spawn_agent_tool_v2_hidden_metadata_output_contains_only_task_name() {
+    let tool = create_spawn_agent_tool_v2(
+        SpawnAgentToolOptions {
+            hide_agent_type_model_reasoning: true,
+            ..Default::default()
+        },
+        /*description_override*/ None,
+    );
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = tool else {
+        panic!("spawn_agent should be a function tool");
+    };
+
+    let schema = output_schema.expect("spawn_agent output schema").to_value();
+    assert_eq!(schema["required"], json!(["task_name"]));
+    assert_eq!(
+        schema["properties"],
+        json!({
+            "task_name": {
+                "type": "string",
+                "description": "Canonical task name for the spawned agent."
+            }
+        })
     );
 }
 
@@ -504,7 +537,15 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     assert_eq!(
         output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
             ["required"],
-        json!(["agent_name", "agent_status"])
+        json!([
+            "agent_name",
+            "agent_id",
+            "canonical_path",
+            "nickname",
+            "agent_status",
+            "configured_model",
+            "configured_reasoning_effort"
+        ])
     );
 }
 
@@ -517,7 +558,7 @@ fn list_agents_tool_status_schema_includes_interrupted() {
 
     assert_eq!(
         output_schema.expect("list_agents output schema").to_value()["properties"]["agents"]["items"]
-            ["properties"]["agent_status"]["allOf"][0]["oneOf"][0]["enum"],
+            ["properties"]["agent_status"]["anyOf"][0]["oneOf"][0]["enum"],
         json!([
             "pending_init",
             "running",

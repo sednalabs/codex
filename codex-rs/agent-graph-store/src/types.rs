@@ -11,6 +11,15 @@ pub enum ThreadSpawnEdgeStatus {
     Closed,
 }
 
+/// Descendants returned by a bounded persisted-graph recovery query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadSpawnDescendants {
+    /// Descendant thread identifiers retained by the bounded query.
+    pub thread_ids: Vec<ThreadId>,
+    /// Whether the recursive safety limit was exceeded.
+    pub relation_limit_reached: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

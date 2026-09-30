@@ -81,7 +81,10 @@ mod turn_input_response_item {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputQueueActivity {
-    Mailbox,
+    /// The producer observed mailbox delivery; queue-only mail never starts work.
+    Mailbox {
+        trigger_turn: bool,
+    },
     Steer,
 }
 
@@ -105,7 +108,9 @@ struct PendingMailboxCommunication {
 
 impl InputQueue {
     pub(crate) fn new() -> Self {
-        let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
+        let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox {
+            trigger_turn: false,
+        });
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
@@ -127,8 +132,8 @@ impl InputQueue {
         };
         let pending_activity = if let Some(activity) = turn_activity {
             Some(activity)
-        } else if self.has_pending_mailbox_items().await {
-            Some(InputQueueActivity::Mailbox)
+        } else if let Some(activity) = self.pending_mailbox_activity().await {
+            Some(activity)
         } else {
             None
         };
@@ -152,11 +157,16 @@ impl InputQueue {
         if !turn_state.accepts_mailbox_delivery_for_current_turn() {
             return false;
         }
+        let activity = InputQueueActivity::Mailbox {
+            trigger_turn: communication.trigger_turn,
+        };
         turn_state
             .pending_input
             .items
             .push(TurnInput::InterAgentCommunication(communication));
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        if matches!(activity, InputQueueActivity::Mailbox { trigger_turn: true }) {
+            self.activity_tx.send_replace(activity);
+        }
         true
     }
 
@@ -165,6 +175,9 @@ impl InputQueue {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
     ) {
+        let activity = InputQueueActivity::Mailbox {
+            trigger_turn: communication.trigger_turn,
+        };
         self.mailbox_pending_mails
             .lock()
             .await
@@ -173,11 +186,40 @@ impl InputQueue {
                 start_options,
                 _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             });
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        if matches!(activity, InputQueueActivity::Mailbox { trigger_turn: true }) {
+            self.activity_tx.send_replace(activity);
+        }
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+    }
+
+    /// Observational metadata only. Reading this does not notify a waiter or
+    /// schedule a turn, and it never exposes queued message contents.
+    pub(crate) async fn queued_update_count(&self, turn_state: Option<&Mutex<TurnState>>) -> u32 {
+        let turn_count = if let Some(turn_state) = turn_state {
+            turn_state.lock().await.pending_input.queued_update_count()
+        } else {
+            0
+        };
+        let mailbox_count = self
+            .mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .filter(|mail| !mail.communication.trigger_turn)
+            .count();
+        turn_count
+            .saturating_add(mailbox_count)
+            .min(u32::MAX as usize) as u32
+    }
+
+    async fn pending_mailbox_activity(&self) -> Option<InputQueueActivity> {
+        let pending = self.mailbox_pending_mails.lock().await;
+        (!pending.is_empty()).then(|| InputQueueActivity::Mailbox {
+            trigger_turn: pending.iter().any(|mail| mail.communication.trigger_turn),
+        })
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -413,6 +455,15 @@ impl InputQueue {
 }
 
 impl TurnInputQueue {
+    fn queued_update_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|input| {
+                matches!(input, TurnInput::InterAgentCommunication(mail) if !mail.trigger_turn)
+            })
+            .count()
+    }
+
     fn has_user_input(&self) -> bool {
         self.items
             .iter()
@@ -436,7 +487,11 @@ impl TurnInputQueue {
             .iter()
             .any(|input| matches!(input, TurnInput::InterAgentCommunication(_)))
         {
-            Some(InputQueueActivity::Mailbox)
+            Some(InputQueueActivity::Mailbox {
+                trigger_turn: self.items.iter().any(|input| {
+                    matches!(input, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn)
+                }),
+            })
         } else {
             None
         }
@@ -519,7 +574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_queue_notifies_mailbox_subscribers() {
+    async fn input_queue_only_notifies_mailbox_subscribers_for_waking_mail() {
         let input_queue = InputQueue::new();
         let (mut activity_rx, pending_activity) =
             input_queue.subscribe_activity(/*turn_state*/ None).await;
@@ -543,11 +598,29 @@ mod tests {
         input_queue
             .enqueue_mailbox_communication(mail_two, Default::default())
             .await;
+        assert_eq!(input_queue.queued_update_count(None).await, 2);
+
+        assert!(
+            !activity_rx
+                .has_changed()
+                .expect("activity sender remains live")
+        );
+
+        let waking_mail = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "wake",
+            /*trigger_turn*/ true,
+        );
+        input_queue
+            .enqueue_mailbox_communication(waking_mail, Default::default())
+            .await;
+        assert_eq!(input_queue.queued_update_count(None).await, 2);
 
         activity_rx.changed().await.expect("mailbox update");
         assert_eq!(
             *activity_rx.borrow_and_update(),
-            InputQueueActivity::Mailbox
+            InputQueueActivity::Mailbox { trigger_turn: true }
         );
     }
 
@@ -606,7 +679,9 @@ mod tests {
             .await;
         assert_eq!(
             input_queue.subscribe_activity(Some(&turn_state)).await.1,
-            Some(InputQueueActivity::Mailbox)
+            Some(InputQueueActivity::Mailbox {
+                trigger_turn: false,
+            })
         );
         input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(

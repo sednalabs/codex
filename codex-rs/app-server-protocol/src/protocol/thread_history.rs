@@ -933,6 +933,10 @@ impl ThreadHistoryBuilder {
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
@@ -968,6 +972,10 @@ impl ThreadHistoryBuilder {
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
@@ -985,6 +993,10 @@ impl ThreadHistoryBuilder {
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
@@ -1009,6 +1021,10 @@ impl ThreadHistoryBuilder {
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id.clone()],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
@@ -1042,6 +1058,10 @@ impl ThreadHistoryBuilder {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1077,6 +1097,10 @@ impl ThreadHistoryBuilder {
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1094,6 +1118,10 @@ impl ThreadHistoryBuilder {
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1120,6 +1148,10 @@ impl ThreadHistoryBuilder {
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1137,6 +1169,10 @@ impl ThreadHistoryBuilder {
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -1166,6 +1202,10 @@ impl ThreadHistoryBuilder {
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_id],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: None,
             model: None,
             reasoning_effort: None,
@@ -4594,6 +4634,10 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -4654,6 +4698,10 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
                 receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
@@ -4726,6 +4774,10 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender.to_string(),
                 receiver_thread_ids: vec![receiver.to_string()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
@@ -5105,6 +5157,86 @@ mod tests {
                 kind: crate::protocol::v2::SubAgentActivityKind::Completed,
                 agent_thread_id: child_thread_id.to_string(),
                 agent_path: "/root/worker".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn completed_v2_wait_item_keeps_projection_in_cold_replay() {
+        let sender = ThreadId::new();
+        let receiver = ThreadId::new();
+        let item =
+            CoreTurnItem::CollabAgentToolCall(codex_protocol::items::CollabAgentToolCallItem {
+                id: "wait-cold-replay".into(),
+                tool: codex_protocol::items::CollabAgentTool::Wait,
+                status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender,
+                receiver_thread_ids: vec![receiver],
+                receiver_agents: vec![codex_protocol::protocol::CollabAgentRef {
+                    thread_id: receiver,
+                    agent_nickname: Some("Ada".into()),
+                    agent_role: Some("worker".into()),
+                }],
+                wait_reason: Some(codex_protocol::items::AgentWaitReason::MailboxActivity),
+                wait_wake_cause: Some(
+                    codex_protocol::items::AgentWaitWakeCause::MailboxTurnRequested,
+                ),
+                queued_update_count: Some(3),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: [(receiver, AgentStatus::Running)].into_iter().collect(),
+            });
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-wait".into(),
+                root_turn_id: None,
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: sender,
+                turn_id: "turn-wait".into(),
+                item,
+                started_at_ms: None,
+                completed_at_ms: 7,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::CollabAgentToolCall {
+                id: "wait-cold-replay".into(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: vec![receiver.to_string()],
+                receiver_agents: vec![crate::protocol::v2::CollabAgentRef {
+                    thread_id: receiver.to_string(),
+                    agent_nickname: Some("Ada".into()),
+                    agent_role: Some("worker".into()),
+                }],
+                wait_reason: Some(crate::protocol::v2::AgentWaitReason::MailboxActivity),
+                wait_wake_cause: Some(
+                    crate::protocol::v2::AgentWaitWakeCause::MailboxTurnRequested,
+                ),
+                queued_update_count: Some(3),
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: [(
+                    receiver.to_string(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
             }]
         );
     }

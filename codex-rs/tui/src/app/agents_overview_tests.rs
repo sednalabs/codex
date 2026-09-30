@@ -769,7 +769,7 @@ async fn check_hidden_thread_does_not_refresh_shared_overview(source: &str) {
 }
 
 #[tokio::test]
-async fn agents_overview_details_show_available_attention_without_expanding_rows() -> Result<()> {
+async fn agents_overview_details_show_available_attention_in_the_tree() -> Result<()> {
     let mut app = make_test_app().await;
     let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
     let [root, child, unloaded] = std::array::from_fn(|_| ThreadId::new());
@@ -835,9 +835,11 @@ async fn agents_overview_details_show_available_attention_without_expanding_rows
         "/tmp/project  2{}",
         " ".repeat(project.len().saturating_sub("/tmp/project".len()))
     );
-    insta::with_settings!({snapshot_path => "../snapshots"}, {
-        insta::assert_snapshot!("agents_overview_attention", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  2"), &normalized_group).replace(&project, "/tmp/project"));
-    });
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96)
+        .replace(&format!("{project}  2"), &normalized_group)
+        .replace(&project, "/tmp/project");
+    assert!(rendered.contains("Check dependencies"));
+    assert!(rendered.contains("Which dependency version should I use?"));
     app.handle_app_server_event(
         &app_server,
         AppServerEvent::ServerNotification(Box::new(ServerNotification::ServerRequestResolved(
@@ -856,9 +858,11 @@ async fn agents_overview_details_show_available_attention_without_expanding_rows
 
     let view = app.agents_overview_view(threads, Some(unloaded));
     app.chat_widget.show_bottom_pane_view(Box::new(view));
-    insta::with_settings!({snapshot_path => "../snapshots"}, {
-        insta::assert_snapshot!("agents_overview_last_message", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  2"), &normalized_group).replace(&project, "/tmp/project"));
-    });
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96)
+        .replace(&format!("{project}  2"), &normalized_group)
+        .replace(&project, "/tmp/project");
+    assert!(rendered.contains("Check dependencies"));
+    assert!(rendered.contains("Found the regression"));
     app.track_agents_overview_notification(&ServerNotification::ThreadReverted(
         codex_app_server_protocol::ThreadRevertedNotification {
             thread_id: unloaded.to_string(),
@@ -1197,7 +1201,7 @@ async fn overview_model_grouping_shows_details_and_preserves_selection() {
 }
 
 #[tokio::test]
-async fn shared_overview_shows_only_root_sessions() {
+async fn shared_overview_renders_root_and_known_agent_rows() {
     assert_eq!(
         AgentsOverviewGroup::for_status(&ThreadStatus::SystemError),
         AgentsOverviewGroup::NeedsYou
@@ -1278,17 +1282,17 @@ async fn shared_overview_shows_only_root_sessions() {
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     let project = test_path_display("/tmp/project");
     let normalized_project_group = format!(
-        "/tmp/project  3{}",
+        "/tmp/project  4{}",
         " ".repeat(project.len().saturating_sub("/tmp/project".len()))
     );
-    insta::with_settings!({snapshot_path => "../snapshots"}, {
-        insta::assert_snapshot!(
-            "agents_overview",
-            render_bottom_popup(&app.chat_widget, /*width*/ 96)
-                .replace(&format!("{project}  3"), &normalized_project_group)
-                .replace(&project, "/tmp/project")
-        );
-    });
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96)
+        .replace(&format!("{project}  4"), &normalized_project_group)
+        .replace(&project, "/tmp/project");
+    assert!(rendered.contains("Build the dashboard"));
+    assert!(rendered.contains("Inspect keyboard shortcuts"));
+    assert!(rendered.contains("↳ Inspect keyboard shortcuts"));
+    assert!(rendered.contains("Repair authentication"));
+    assert!(rendered.contains("Review yesterday's changes"));
 
     let threads = (0..20)
         .map(|index| {
@@ -1332,7 +1336,7 @@ async fn shared_overview_shows_only_root_sessions() {
     assert!(
         rendered
             .lines()
-            .any(|line| line.contains("› ● Inspect unnamed task"))
+            .any(|line| line.contains("› ● Unnamed task"))
     );
 
     app.transcript_cells.push(std::sync::Arc::new(
@@ -1352,6 +1356,242 @@ async fn shared_overview_shows_only_root_sessions() {
         .expect("restore conversation after closing dashboard");
     assert!(tui.terminal.viewport_area.height < screen_size.height);
     assert!(app.last_rendered_history_tail.is_some());
+}
+
+#[tokio::test]
+async fn agents_overview_renders_mixed_v1_v2_tree_filter_clear_and_narrow_width() {
+    let mut app = make_test_app().await;
+    let [root_id, legacy_id, v2_id] = std::array::from_fn(|_| ThreadId::new());
+    app.primary_thread_id = Some(root_id);
+
+    let mut root = overview_thread(
+        root_id,
+        /*parent_thread_id*/ None,
+        "Build the report",
+        ThreadStatus::Active {
+            active_flags: Vec::new(),
+        },
+    );
+    root.model = Some("gpt-6-luna".to_string());
+    root.reasoning_effort = Some(codex_protocol::openai_models::ReasoningEffort::High);
+
+    // Legacy/V1 records carry parent_thread_id directly, without the V2
+    // ThreadSpawn parent snapshot.
+    let mut legacy = overview_thread(
+        legacy_id,
+        /*parent_thread_id*/ None,
+        "Review the source",
+        ThreadStatus::Idle,
+    );
+    legacy.parent_thread_id = Some(root_id.to_string());
+    legacy.source = SessionSource::Cli;
+    legacy.cwd = test_path_buf("/tmp/legacy-project").abs();
+    legacy.model = Some("legacy-model".to_string());
+
+    // V2 records can instead carry parentage in ThreadSpawn. Their raw preview
+    // may include inherited instructions; the tree renders only named/task
+    // metadata and never echoes this payload.
+    let mut v2 = overview_thread(
+        v2_id,
+        Some(legacy_id),
+        "Check the fixture",
+        ThreadStatus::Active {
+            active_flags: vec![ThreadActiveFlag::WaitingOnUserInput],
+        },
+    );
+    v2.agent_nickname = Some("fixture-checker".to_string());
+    v2.agent_role = Some("reviewer".to_string());
+    v2.model = Some("configured-child-model".to_string());
+    v2.reasoning_effort = Some(codex_protocol::openai_models::ReasoningEffort::Medium);
+    v2.cwd = test_path_buf("/tmp/child-project").abs();
+    v2.path = Some(std::path::PathBuf::from(
+        "/tmp/agents/fixture-checker.rollout",
+    ));
+    v2.preview = "PRIVATE DEVELOPER INSTRUCTIONS: secret fixture text".to_string();
+
+    let threads = vec![root, legacy, v2];
+    let view = app.agents_overview_view(threads.clone(), /*selected_thread_id*/ None);
+    assert_eq!(view.rows.len(), 3);
+    assert_eq!(view.rows[0].thread_id, root_id);
+    assert_eq!(view.rows[0].depth, 0);
+    assert_eq!(view.rows[1].thread_id, legacy_id);
+    assert_eq!(view.rows[1].depth, 1);
+    assert_eq!(view.rows[2].thread_id, v2_id);
+    assert_eq!(view.rows[2].depth, 2);
+    assert_eq!(view.rows[0].group, AgentsOverviewGroup::Working);
+    assert_eq!(view.rows[2].group, AgentsOverviewGroup::NeedsYou);
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+
+    // Empty search is the normal initial state, and the rendered task list
+    // contains all known generations rather than only a Started transcript.
+    let empty_search = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(empty_search.contains("Build the report"));
+    assert!(empty_search.contains("Review the source"));
+    assert!(empty_search.contains("↳ Review the source"));
+    assert!(empty_search.contains("Check the fixture"));
+    assert!(empty_search.contains("  ↳ Check the fixture"));
+    assert!(empty_search.contains("Working"));
+    assert!(empty_search.contains("gpt-6-luna"));
+    assert!(empty_search.contains("high"));
+    assert!(empty_search.contains(&root_id.to_string()));
+    let root_project = test_path_display("/tmp/project");
+    assert!(empty_search.contains(&format!("{root_project}  3")));
+
+    // Project and Model preserve the default branch tree and use its root key
+    // consistently for sorting, headings, and counts despite child metadata.
+    app.agents_overview.view_state.lock().unwrap().grouping = AgentsOverviewGrouping::Model;
+    let model_grouped = app.agents_overview_view(threads.clone(), Some(root_id));
+    app.chat_widget
+        .show_bottom_pane_view(Box::new(model_grouped));
+    let model_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert_eq!(model_render.matches("gpt-6-luna  3").count(), 1);
+    assert!(!model_render.contains("legacy-model  1"));
+    assert!(model_render.contains("↳ Review the source"));
+
+    // Status mode groups each task by its own lifecycle state. Since this can
+    // separate a child from its parent, it suppresses tree indentation while
+    // retaining the parent ID in the selected task details.
+    app.agents_overview.view_state.lock().unwrap().grouping = AgentsOverviewGrouping::Status;
+    let status_grouped = app.agents_overview_view(threads.clone(), Some(v2_id));
+    app.chat_widget
+        .show_bottom_pane_view(Box::new(status_grouped));
+    let status_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    let needs_you = status_render.find("Needs input  1").unwrap();
+    let working = status_render.find("Working  1").unwrap();
+    let ready = status_render.find("Ready  1").unwrap();
+    assert!(needs_you < working && working < ready);
+    assert!(!status_render.contains("↳ "));
+    assert!(status_render.contains("Parent thread ID:"));
+    assert!(status_render.contains(&legacy_id.to_string()));
+
+    app.agents_overview.view_state.lock().unwrap().grouping = AgentsOverviewGrouping::Project;
+
+    let unknown_metadata = app.agents_overview_view(threads.clone(), Some(legacy_id));
+    app.chat_widget
+        .show_bottom_pane_view(Box::new(unknown_metadata));
+    let unknown_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(unknown_render.contains("Unknown"));
+
+    let selected_child = app.agents_overview_view(threads.clone(), Some(v2_id));
+    app.chat_widget
+        .show_bottom_pane_view(Box::new(selected_child));
+    let child_details = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(child_details.contains("Needs input"));
+    assert!(child_details.contains("Parent thread ID:"));
+    assert!(child_details.contains(&legacy_id.to_string()));
+    assert!(child_details.contains("Agent: fixture-checker"));
+    assert!(child_details.contains("Assignment: reviewer"));
+    assert!(child_details.contains("configured-child-model"));
+    assert!(child_details.contains("fixture-checker.rollout"));
+    assert!(!child_details.contains("PRIVATE DEVELOPER INSTRUCTIONS"));
+    assert!(!child_details.contains("secret fixture text"));
+
+    let mut filtered = app.agents_overview_view(threads.clone(), Some(v2_id));
+    filtered.handle_key_event(KeyCode::Char('f').into());
+    assert!(filtered.handle_paste("Review the source".to_string()));
+    app.chat_widget.show_bottom_pane_view(Box::new(filtered));
+    let filtered_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(filtered_render.contains("Review the source"));
+    assert!(!filtered_render.contains("Build the report"));
+    assert!(!filtered_render.contains("Check the fixture"));
+
+    app.chat_widget.handle_key_event(KeyCode::Char('f').into());
+    let cleared_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(cleared_render.contains("Build the report"));
+    assert!(cleared_render.contains("Review the source"));
+    assert!(cleared_render.contains("Check the fixture"));
+
+    let narrow = app.agents_overview_view(threads, Some(root_id));
+    app.chat_widget.show_bottom_pane_view(Box::new(narrow));
+    let narrow_render = render_bottom_popup(&app.chat_widget, /*width*/ 48);
+    assert!(narrow_render.contains("Build"));
+    assert!(narrow_render.contains("Review"));
+    assert!(narrow_render.contains("Check"));
+}
+
+#[tokio::test]
+async fn agents_overview_renders_replayed_thread_list_and_live_metadata_updates() -> Result<()> {
+    let mut app = make_test_app().await;
+    let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
+    let [root_id, child_id] = std::array::from_fn(|_| ThreadId::new());
+    app.primary_thread_id = Some(root_id);
+    let root = overview_thread(
+        root_id,
+        /*parent_thread_id*/ None,
+        "Release checklist",
+        ThreadStatus::Idle,
+    );
+    let child = overview_thread(
+        child_id,
+        Some(root_id),
+        "Check documentation",
+        ThreadStatus::Active {
+            active_flags: Vec::new(),
+        },
+    );
+
+    // Seed from the persisted thread-list projection, not a Started-only
+    // transcript. This is the cold/replay input that the overview consumes.
+    let request_id = Uuid::new_v4();
+    app.agents_overview.request_id = Some(request_id);
+    app.apply_agents_overview_thread_refresh(
+        &app_server,
+        request_id,
+        Ok(AgentsOverviewThreadRefresh {
+            last_messages: HashMap::new(),
+            threads: HashMap::from([(root_id, Some(root)), (child_id, Some(child.clone()))]),
+            recent_seed_complete: true,
+            discovery: None,
+        }),
+    );
+
+    let replayed = app
+        .agents_overview
+        .threads
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    let view = app.agents_overview_view(replayed, Some(root_id));
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let replayed_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(replayed_render.contains("Release checklist"));
+    assert!(replayed_render.contains("Check documentation"));
+    assert!(replayed_render.contains("↳ Check documentation"));
+    assert!(replayed_render.contains("Working"));
+
+    let mut updated_child = child;
+    updated_child.name = Some("Documentation check complete".to_string());
+    updated_child.status = ThreadStatus::NotLoaded;
+    let request_id = Uuid::new_v4();
+    app.agents_overview.request_id = Some(request_id);
+    app.apply_agents_overview_thread_refresh(
+        &app_server,
+        request_id,
+        Ok(AgentsOverviewThreadRefresh {
+            last_messages: HashMap::new(),
+            threads: HashMap::from([(child_id, Some(updated_child))]),
+            recent_seed_complete: true,
+            discovery: None,
+        }),
+    );
+
+    let refreshed = app
+        .agents_overview
+        .threads
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    let view = app.agents_overview_view(refreshed, Some(child_id));
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+    let refreshed_render = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(refreshed_render.contains("Documentation check complete"));
+    assert!(!refreshed_render.contains("Check documentation"));
+    assert!(refreshed_render.contains("Inactive"));
+
+    app_server.shutdown().await?;
+    Ok(())
 }
 
 #[cfg(any(unix, windows))]

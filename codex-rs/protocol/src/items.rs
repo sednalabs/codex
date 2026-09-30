@@ -343,6 +343,30 @@ pub enum CollabAgentToolCallStatus {
     Interrupted,
 }
 
+/// The producer's actual reason for returning from a V2 agent wait.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentWaitReason {
+    TargetTerminal,
+    MailboxActivity,
+    Steered,
+    TimedOut,
+    Unknown,
+}
+
+/// The exact event that woke a V2 agent wait, distinct from raw agent status.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentWaitWakeCause {
+    TargetStatus,
+    MailboxTurnRequested,
+    OperatorSteer,
+    Timeout,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CollabAgentToolCallItem {
     pub id: String,
@@ -353,6 +377,18 @@ pub struct CollabAgentToolCallItem {
     pub receiver_thread_ids: Vec<ThreadId>,
     #[serde(default)]
     pub receiver_agents: Vec<CollabAgentRef>,
+    /// Producer-reported reason for a V2 wait return; absent in legacy history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_reason: Option<AgentWaitReason>,
+    /// Producer-reported actual wake event; queue-only activity is never a cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wait_wake_cause: Option<AgentWaitWakeCause>,
+    /// Observed quiet updates still queued at return; this never implies a wake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub queued_update_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub prompt: Option<String>,
@@ -870,5 +906,31 @@ mod tests {
                 hook_run_id: "hook-run-1".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn collab_wait_projection_uses_stable_wire_values_and_legacy_unknowns() {
+        assert_eq!(
+            serde_json::to_value(AgentWaitReason::MailboxActivity).expect("serialize wait reason"),
+            json!("mailbox_activity")
+        );
+        assert_eq!(
+            serde_json::to_value(AgentWaitWakeCause::OperatorSteer).expect("serialize wait cause"),
+            json!("operator_steer")
+        );
+
+        let item: CollabAgentToolCallItem = serde_json::from_value(json!({
+            "id": "wait-legacy",
+            "tool": "wait",
+            "status": "completed",
+            "sender_thread_id": "00000000-0000-0000-0000-000000000001",
+            "receiver_thread_ids": ["00000000-0000-0000-0000-000000000002"],
+            "agents_states": {}
+        }))
+        .expect("legacy wait item should deserialize");
+
+        assert_eq!(item.wait_reason, None);
+        assert_eq!(item.wait_wake_cause, None);
+        assert_eq!(item.queued_update_count, None);
     }
 }

@@ -31,6 +31,7 @@ use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::handlers::multi_agents_common::thread_spawn_source;
 use assert_matches::assert_matches;
+use codex_agent_graph_store::AgentGraphStore;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::Instructions;
 use codex_extension_api::LoadInstructionsFuture;
@@ -1123,7 +1124,11 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
 
 #[tokio::test]
 async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
-    let (home, mut config) = test_config().await;
+    let (home, mut config) = test_config_with_cli_overrides(vec![(
+        "agents.max_threads".to_string(),
+        TomlValue::Integer(8),
+    )])
+    .await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
     let harness = AgentControlHarness::new_with_config(home, config).await;
@@ -1223,6 +1228,43 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
+
+    // A colliding in-memory path must abort the whole restore batch, including
+    // the unrelated anonymous sibling. Removing the collision permits retry.
+    let collision_thread_id = ThreadId::new();
+    let mut collision = resumed_control
+        .runtime
+        .registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve conflicting path");
+    collision
+        .reserve_agent_path(&worker_path)
+        .expect("reserve worker path for conflict fixture");
+    collision.commit(AgentMetadata {
+        agent_id: Some(collision_thread_id),
+        agent_path: Some(worker_path.clone()),
+        agent_nickname: Some("collision".to_string()),
+        agent_role: None,
+    });
+    resumed_control
+        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .await;
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(worker_thread_id)
+            .is_err()
+    );
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(sibling_thread_id)
+            .is_err()
+    );
+    resumed_control
+        .runtime
+        .registry
+        .release_spawned_thread(collision_thread_id);
     resumed_control
         .restore_v2_agent_metadata(&harness.config, parent_thread_id)
         .await;
@@ -1234,6 +1276,22 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
                 .is_ok()
         );
     }
+
+    let resumed_worker_id = resumed_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            worker_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+        )
+        .await
+        .expect("the restored child should resume by its persisted ID and path");
+    assert_eq!(resumed_worker_id, worker_thread_id);
 
     resumed_control
         .close_agent(worker_thread_id)
@@ -1247,6 +1305,177 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert!(closed_worker.is_err());
     assert!(surviving_sibling.is_ok());
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
+}
+
+async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_limit() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let worker_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("persisted child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::root().join("worker").expect("worker path")),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("worker spawn should succeed");
+    let worker_thread = harness
+        .manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("worker thread should exist");
+    persist_thread_for_tree_resume(&parent_thread, "parent persisted").await;
+    persist_thread_for_tree_resume(&worker_thread, "worker persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, parent_thread_id, &[worker_thread_id])
+        .await;
+
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be enabled");
+
+    let graph_store =
+        codex_agent_graph_store::LocalAgentGraphStore::new(std::sync::Arc::clone(state_db));
+    let empty = graph_store
+        .list_thread_spawn_descendants_bounded(
+            ThreadId::new(),
+            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+        )
+        .await
+        .expect("empty graph should return a complete bounded result");
+    assert!(empty.thread_ids.is_empty());
+    assert!(!empty.relation_limit_reached);
+
+    state_db
+        .upsert_thread_spawn_edge(
+            worker_thread_id,
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("root-reentry cycle edge should persist");
+    let closed_parent_id = ThreadId::from_string("ffffffff-ffff-ffff-ffff-000000000050")
+        .expect("closed parent ID should be valid");
+    let hidden_child_id = ThreadId::from_string("ffffffff-ffff-ffff-ffff-000000000051")
+        .expect("hidden child ID should be valid");
+    state_db
+        .upsert_thread_spawn_edge(
+            parent_thread_id,
+            closed_parent_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed ancestor edge should persist");
+    state_db
+        .upsert_thread_spawn_edge(
+            closed_parent_id,
+            hidden_child_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child below the closed edge should persist");
+
+    for suffix in 10_000..13_199 {
+        let ghost_thread_id =
+            ThreadId::from_string(&format!("ffffffff-ffff-ffff-ffff-{suffix:012}"))
+                .expect("generated descendant ID should be valid");
+        state_db
+            .upsert_thread_spawn_edge(
+                worker_thread_id,
+                ghost_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("over-limit graph edge should persist");
+    }
+
+    let exact = graph_store
+        .list_thread_spawn_descendants_bounded(
+            parent_thread_id,
+            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+        )
+        .await
+        .expect("exact-bound graph should return its bounded result");
+    assert_eq!(
+        exact.thread_ids.len(),
+        codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+    );
+    assert!(!exact.relation_limit_reached);
+    assert!(exact.thread_ids.contains(&worker_thread_id));
+    assert!(!exact.thread_ids.contains(&parent_thread_id));
+    assert!(!exact.thread_ids.contains(&hidden_child_id));
+
+    let overflow_id = ThreadId::from_string("ffffffff-ffff-ffff-ffff-000000013199")
+        .expect("overflow descendant ID should be valid");
+    state_db
+        .upsert_thread_spawn_edge(
+            worker_thread_id,
+            overflow_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("overflow sentinel edge should persist");
+    let oversized = graph_store
+        .list_thread_spawn_descendants_bounded(
+            parent_thread_id,
+            Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+        )
+        .await
+        .expect("over-limit persisted graph should return its bounded result");
+    assert!(oversized.relation_limit_reached);
+    assert_eq!(
+        oversized.thread_ids.len(),
+        codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+    );
+    assert!(oversized.thread_ids.contains(&worker_thread_id));
+    assert!(!oversized.thread_ids.contains(&parent_thread_id));
+    assert!(!oversized.thread_ids.contains(&hidden_child_id));
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    let resumed_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        harness.config.model_provider.clone(),
+        harness.config.codex_home.to_path_buf(),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        harness.state_db.clone(),
+    );
+    let resumed_control = resumed_manager.agent_control();
+    let resumed_parent_thread_id = resumed_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            parent_thread_id,
+            SessionSource::Exec,
+        )
+        .await
+        .expect("root resume should succeed");
+    assert_eq!(resumed_parent_thread_id, parent_thread_id);
+    assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
+
+    resumed_control
+        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .await;
+
+    assert!(
+        resumed_control
+            .ensure_agent_known(worker_thread_id)
+            .is_err()
+    );
+    assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
 }
 
 struct TestThreadInstructionsProvider {

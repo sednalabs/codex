@@ -71,6 +71,7 @@ pub use model::ThreadRelationFilter;
 pub use model::ThreadSection;
 pub use model::ThreadSectionAppearance;
 pub use model::ThreadSectionsPage;
+pub use model::ThreadSpawnDescendants;
 pub use model::ThreadsPage;
 pub use runtime::ExternalAgentConfigImportDetailsRecord;
 pub use runtime::ExternalAgentConfigImportFailureRecord;
@@ -85,6 +86,9 @@ pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
+pub use runtime::ProviderCallUsageRecord;
+pub use runtime::ProviderCallUsageWriteOutcome;
+pub use runtime::UsageThreadRecord;
 pub use runtime::backup_runtime_db_for_fresh_start;
 pub use runtime::is_sqlite_corruption_error;
 pub use runtime::open_thread_history_db;
@@ -108,6 +112,9 @@ pub const MAX_THREAD_ATTACHMENT_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// Maximum byte length of a persisted attachment type.
 pub const MAX_THREAD_ATTACHMENT_TYPE_BYTES: usize = 256;
+
+/// Maximum descendants considered by persisted V2 agent metadata recovery.
+pub const MAX_THREAD_SPAWN_DESCENDANTS: usize = 3_200;
 
 /// Maximum byte length of a persisted stable attachment identity key.
 pub const MAX_THREAD_ATTACHMENT_IDENTITY_KEY_BYTES: usize = 256;

@@ -318,6 +318,35 @@ impl App {
                 thread.parent_thread_id = Some(parent_thread_id.to_string());
             }
         }
+        let mut all_children: HashMap<String, Vec<&Thread>> = HashMap::new();
+        for thread in &threads {
+            if let Some(parent_thread_id) = &thread.parent_thread_id {
+                all_children
+                    .entry(parent_thread_id.clone())
+                    .or_default()
+                    .push(thread);
+            }
+        }
+
+        // Hiding a task hides its known descendants too. Metadata refreshes
+        // can add children later, so derive the branch from the current tree
+        // rather than keeping a second mutable visibility index.
+        let mut hidden_thread_ids = self
+            .agents_overview
+            .hidden_threads
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        let mut pending_hidden = hidden_thread_ids.iter().cloned().collect::<Vec<_>>();
+        while let Some(parent_thread_id) = pending_hidden.pop() {
+            for child in all_children.get(&parent_thread_id).into_iter().flatten() {
+                if hidden_thread_ids.insert(child.id.clone()) {
+                    pending_hidden.push(child.id.clone());
+                }
+            }
+        }
+        threads.retain(|thread| !hidden_thread_ids.contains(&thread.id));
+
         let mut children: HashMap<String, Vec<&Thread>> = HashMap::new();
         for thread in &threads {
             if let Some(parent_thread_id) = &thread.parent_thread_id {
@@ -333,32 +362,30 @@ impl App {
             .iter()
             .find(|thread| Some(&thread.id) == voice_owner.as_ref())
             .map(|thread| &thread.session_id);
-        let mut roots = threads
-            .iter()
-            .filter(|thread| thread.parent_thread_id.is_none())
-            .map(|root| (root, agents_overview_group(root, &children)))
-            .collect::<Vec<_>>();
-        roots.sort_by(|(left, left_group), (right, right_group)| {
-            left_group
-                .cmp(right_group)
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        let ordered_threads = agents_overview_tree_order(&threads, &children);
         let mut rows = Vec::new();
-        for (root, group) in roots {
-            let Ok(thread_id) = ThreadId::from_string(&root.id) else {
+        let mut branch_roots = HashMap::new();
+        for (thread, depth) in ordered_threads {
+            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 continue;
             };
-            if self.agents_overview.hidden_threads.contains(&thread_id) {
-                continue;
-            }
+            let tree_root_thread_id = thread
+                .parent_thread_id
+                .as_ref()
+                .and_then(|parent| branch_roots.get(parent))
+                .copied()
+                .unwrap_or(thread_id);
+            branch_roots.insert(thread.id.clone(), tree_root_thread_id);
             rows.push(AgentsOverviewRow {
-                details: self.agents_overview_details(root, &children),
-                thread: root.clone(),
+                details: self.agents_overview_details(thread, &children),
+                thread: thread.clone(),
                 thread_id,
-                group,
+                depth,
+                tree_root_thread_id,
+                group: AgentsOverviewGroup::for_status(&thread.status),
                 is_current: self.primary_thread_id == Some(thread_id),
-                has_voice: voice_session == Some(&root.session_id),
+                has_voice: thread.parent_thread_id.is_none()
+                    && voice_session == Some(&thread.session_id),
             });
         }
 
@@ -1176,8 +1203,87 @@ fn agents_overview_group(
     thread: &Thread,
     children: &HashMap<String, Vec<&Thread>>,
 ) -> AgentsOverviewGroup {
-    children.get(&thread.id).into_iter().flatten().fold(
-        AgentsOverviewGroup::for_status(&thread.status),
-        |group, child| group.min(agents_overview_group(child, children)),
-    )
+    let mut group = AgentsOverviewGroup::Finished;
+    let mut visited = HashSet::new();
+    let mut pending = vec![thread];
+    while let Some(thread) = pending.pop() {
+        if !visited.insert(thread.id.as_str()) {
+            continue;
+        }
+        group = group.min(AgentsOverviewGroup::for_status(&thread.status));
+        pending.extend(children.get(&thread.id).into_iter().flatten().copied());
+    }
+    group
+}
+
+fn agents_overview_tree_order<'a>(
+    threads: &'a [Thread],
+    children: &HashMap<String, Vec<&'a Thread>>,
+) -> Vec<(&'a Thread, usize)> {
+    fn append_subtree<'a>(
+        root: (&'a Thread, usize),
+        children: &HashMap<String, Vec<&'a Thread>>,
+        visited: &mut HashSet<&'a str>,
+        ordered: &mut Vec<(&'a Thread, usize)>,
+    ) {
+        let mut pending = vec![root];
+        while let Some((thread, depth)) = pending.pop() {
+            if !visited.insert(thread.id.as_str()) {
+                continue;
+            }
+            ordered.push((thread, depth));
+            if let Some(children) = children.get(&thread.id) {
+                let mut children = children.to_vec();
+                children.sort_by(|left, right| {
+                    left.updated_at
+                        .cmp(&right.updated_at)
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                children.reverse();
+                pending.extend(
+                    children
+                        .into_iter()
+                        .map(|child| (child, depth.saturating_add(1))),
+                );
+            }
+        }
+    }
+
+    let known_ids = threads
+        .iter()
+        .map(|thread| thread.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut roots = threads
+        .iter()
+        .filter(|thread| {
+            thread
+                .parent_thread_id
+                .as_deref()
+                .is_none_or(|parent| !known_ids.contains(parent))
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| {
+        agents_overview_group(left, children)
+            .cmp(&agents_overview_group(right, children))
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut visited = HashSet::new();
+    let mut ordered = Vec::with_capacity(threads.len());
+    for root in roots {
+        append_subtree((root, 0), children, &mut visited, &mut ordered);
+    }
+
+    // Malformed cyclic parentage has no root. Keep every record visible once
+    // as a detached row instead of recursing forever or silently dropping it.
+    let mut detached = threads
+        .iter()
+        .filter(|thread| !visited.contains(thread.id.as_str()))
+        .collect::<Vec<_>>();
+    detached.sort_by(|left, right| left.id.cmp(&right.id));
+    for thread in detached {
+        append_subtree((thread, 0), children, &mut visited, &mut ordered);
+    }
+    ordered
 }

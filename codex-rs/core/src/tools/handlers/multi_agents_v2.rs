@@ -34,6 +34,7 @@ pub(crate) use wait::Handler as WaitAgentHandler;
 
 mod analytics;
 mod followup_task;
+mod inspect_agent;
 mod interrupt_agent;
 mod list_agents;
 mod message_tool;

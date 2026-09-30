@@ -5,6 +5,7 @@
 
 use super::LocalAgentControl;
 use crate::TurnStartOptions;
+use crate::agent::api::AgentReadiness;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -29,6 +30,9 @@ impl LocalAgentControl {
         outcome: AgentTurnOutcome,
         trace: &ThreadTraceContext,
     ) {
+        if matches!(&outcome.readiness, AgentReadiness::GoalContinuing { .. }) {
+            return;
+        }
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             agent_path: Some(child_agent_path),
@@ -46,8 +50,16 @@ impl LocalAgentControl {
         else {
             return;
         };
+        if !self
+            .runtime
+            .outcome_publisher(outcome.thread_id)
+            .mark_reported(&outcome.turn_id)
+        {
+            return;
+        }
 
         if matches!(status, AgentStatus::Completed(_))
+            && matches!(&outcome.readiness, AgentReadiness::Terminal)
             && let Some(parent_turn_id) = outcome.parent_turn_id
         {
             let initiating_thread_id = match outcome.initiating_agent_path.as_ref() {
@@ -87,14 +99,17 @@ impl LocalAgentControl {
             }
         }
 
-        let message = match (&status, outcome.error_info) {
-            (AgentStatus::Errored(error), Some(CodexErrorInfo::TooManyDenials)) => {
+        let message = match (&status, &outcome.readiness, outcome.error_info) {
+            (AgentStatus::Errored(error), _, Some(CodexErrorInfo::TooManyDenials)) => {
                 Some(format_guardian_interruption_message(
                     parent_agent_path.clone(),
                     child_agent_path.clone(),
                     error,
                 ))
             }
+            (_, AgentReadiness::ActionRequired, _) => Some(format!(
+                "Message Type: ACTION_REQUIRED\nTask name: {parent_agent_path}\nSender: {child_agent_path}\nPayload:\nThe agent requires intervention. Inspect its current status and goal before resuming."
+            )),
             _ => format_inter_agent_completion_message(
                 parent_agent_path.clone(),
                 child_agent_path.clone(),

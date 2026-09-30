@@ -872,10 +872,14 @@ impl Session {
         };
         if saved_guardian_completion {
             // The parent can request another review as soon as it receives this event.
-            self.send_event(turn_context.as_ref(), event).await;
+            self.send_event(turn_context.as_ref(), event.clone()).await;
         }
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+            // A goal turn stays quiet only if the existing idle scheduler accepted
+            // its continuation. A rejected submission becomes actionable here.
+            self.maybe_notify_parent_after_idle_goal(turn_context.as_ref(), &event)
+                .await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.

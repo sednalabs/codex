@@ -88,6 +88,9 @@ impl ToolExecutor<ToolInvocation> for Handler {
                     reasoning_effort: agent_snapshot
                         .and_then(|snapshot| snapshot.reasoning_effort.clone()),
                     agents_states,
+                    wait_reason: None,
+                    wait_wake_cause: None,
+                    queued_update_count: None,
                 },
                 started_at_ms,
                 completed_at_ms,
@@ -244,9 +247,13 @@ async fn handle_spawn_agent(
     let output = if hide_agent_metadata {
         SpawnAgentResult::HiddenMetadata { task_name }
     } else {
-        SpawnAgentResult::WithNickname {
+        SpawnAgentResult::WithMetadata {
             task_name,
+            agent_id: new_thread_id.to_string(),
             nickname,
+            agent_status,
+            configured_model: agent_snapshot.model.clone(),
+            configured_reasoning_effort: agent_snapshot.reasoning_effort.clone(),
         }
     };
     Ok((output, new_thread_id, agent_status, agent_snapshot))
@@ -310,9 +317,13 @@ impl SpawnAgentArgs {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum SpawnAgentResult {
-    WithNickname {
+    WithMetadata {
         task_name: String,
+        agent_id: String,
         nickname: Option<String>,
+        agent_status: AgentStatus,
+        configured_model: String,
+        configured_reasoning_effort: Option<ReasoningEffort>,
     },
     HiddenMetadata {
         task_name: String,

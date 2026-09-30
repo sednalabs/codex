@@ -82,6 +82,10 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some(begin_event.prompt),
                 model: Some(begin_event.model),
                 reasoning_effort: Some(begin_event.reasoning_effort),
@@ -121,6 +125,10 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some(end_event.prompt),
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
@@ -141,6 +149,10 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some(begin_event.prompt),
                 model: None,
                 reasoning_effort: None,
@@ -169,6 +181,10 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id.clone()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: Some(end_event.prompt),
                 model: None,
                 reasoning_effort: None,
@@ -207,6 +223,10 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -243,6 +263,10 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -262,6 +286,10 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -295,6 +323,10 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -314,6 +346,10 @@ pub fn item_event_to_server_notification(
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -347,6 +383,10 @@ pub fn item_event_to_server_notification(
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids: vec![receiver_id],
+                receiver_agents: Vec::new(),
+                wait_reason: None,
+                wait_wake_cause: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -474,6 +514,7 @@ mod tests {
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::ItemCompletedEvent;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -494,6 +535,86 @@ mod tests {
             ServerNotification::ItemCompleted(payload) => assert_eq!(payload, expected),
             other => panic!("expected item completed notification, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn v2_wait_completion_maps_producer_outcome_to_live_notification() {
+        let sender = ThreadId::new();
+        let receiver = ThreadId::new();
+        let event = ItemCompletedEvent {
+            thread_id: sender,
+            turn_id: "turn-wait".into(),
+            item: codex_protocol::items::TurnItem::CollabAgentToolCall(
+                codex_protocol::items::CollabAgentToolCallItem {
+                    id: "wait-live".into(),
+                    tool: codex_protocol::items::CollabAgentTool::Wait,
+                    status: codex_protocol::items::CollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![receiver],
+                    receiver_agents: vec![codex_protocol::protocol::CollabAgentRef {
+                        thread_id: receiver,
+                        agent_nickname: Some("Ada".into()),
+                        agent_role: Some("worker".into()),
+                    }],
+                    wait_reason: Some(codex_protocol::items::AgentWaitReason::MailboxActivity),
+                    wait_wake_cause: Some(
+                        codex_protocol::items::AgentWaitWakeCause::MailboxTurnRequested,
+                    ),
+                    queued_update_count: Some(3),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: [(receiver, codex_protocol::protocol::AgentStatus::Running)]
+                        .into_iter()
+                        .collect(),
+                },
+            ),
+            started_at_ms: None,
+            completed_at_ms: 7,
+        };
+        let notification = item_event_to_server_notification(
+            EventMsg::ItemCompleted(event),
+            "thread-parent",
+            "turn-wait",
+        );
+
+        assert_item_completed_server_notification(
+            notification,
+            ItemCompletedNotification {
+                thread_id: "thread-parent".into(),
+                turn_id: "turn-wait".into(),
+                item: ThreadItem::CollabAgentToolCall {
+                    id: "wait-live".into(),
+                    tool: CollabAgentTool::Wait,
+                    status: CollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender.to_string(),
+                    receiver_thread_ids: vec![receiver.to_string()],
+                    receiver_agents: vec![crate::protocol::v2::CollabAgentRef {
+                        thread_id: receiver.to_string(),
+                        agent_nickname: Some("Ada".into()),
+                        agent_role: Some("worker".into()),
+                    }],
+                    wait_reason: Some(crate::protocol::v2::AgentWaitReason::MailboxActivity),
+                    wait_wake_cause: Some(
+                        crate::protocol::v2::AgentWaitWakeCause::MailboxTurnRequested,
+                    ),
+                    queued_update_count: Some(3),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: [(
+                        receiver.to_string(),
+                        CollabAgentState {
+                            status: crate::protocol::v2::CollabAgentStatus::Running,
+                            message: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+                completed_at_ms: 7,
+            },
+        );
     }
 
     fn assert_command_execution_output_delta_server_notification(
@@ -536,6 +657,10 @@ mod tests {
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: event.sender_thread_id.to_string(),
                     receiver_thread_ids: vec![event.receiver_thread_id.to_string()],
+                    receiver_agents: Vec::new(),
+                    wait_reason: None,
+                    wait_wake_cause: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
@@ -575,6 +700,10 @@ mod tests {
                     status: CollabAgentToolCallStatus::Failed,
                     sender_thread_id: event.sender_thread_id.to_string(),
                     receiver_thread_ids: vec![receiver_id.clone()],
+                    receiver_agents: Vec::new(),
+                    wait_reason: None,
+                    wait_wake_cause: None,
+                    queued_update_count: None,
                     prompt: None,
                     model: None,
                     reasoning_effort: None,

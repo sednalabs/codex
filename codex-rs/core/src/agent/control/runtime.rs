@@ -5,6 +5,7 @@ use super::LocalAgentControl;
 use super::execution::AgentExecutionLimiter;
 use super::residency::V2Residency;
 use crate::agent::api::AgentControl;
+use crate::agent::api::AgentOutcomePublisher;
 use crate::agent::registry::AgentRegistry;
 use crate::config::RolloutBudgetConfig;
 use crate::rollout_budget::RolloutBudget;
@@ -14,7 +15,9 @@ use arc_swap::ArcSwapOption;
 use codex_extension_api::ThreadInstructionsProvider;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::Weak;
 
@@ -37,6 +40,8 @@ pub(crate) struct LocalAgentRuntime {
         Arc<OnceLock<Arc<dyn ThreadInstructionsProvider>>>,
     pub(super) registry: Arc<AgentRegistry>,
     pub(super) residency: Arc<V2Residency>,
+    /// Logical per-thread readiness survives runtime unloading within this local tree.
+    pub(super) outcomes: Arc<Mutex<HashMap<ThreadId, Arc<AgentOutcomePublisher>>>>,
 }
 
 impl LocalAgentRuntime {
@@ -50,6 +55,7 @@ impl LocalAgentRuntime {
             thread_id_generator,
             registry: Arc::default(),
             residency: Arc::default(),
+            outcomes: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
@@ -67,6 +73,14 @@ impl LocalAgentRuntime {
             session_id,
             runtime: self.clone(),
         }
+    }
+
+    pub(crate) fn outcome_publisher(&self, thread_id: ThreadId) -> Arc<AgentOutcomePublisher> {
+        let mut outcomes = self
+            .outcomes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(outcomes.entry(thread_id).or_default())
     }
 }
 

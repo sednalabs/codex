@@ -123,6 +123,19 @@ impl GoalRuntimeHandle {
         self.inner.enabled.load(Ordering::Relaxed)
     }
 
+    /// Conservative pre-publication check. The idle hook remains the owner of
+    /// submitting continuation work; this only prevents a known unavailable
+    /// scheduler from being advertised as quiet progress.
+    pub(crate) async fn can_schedule_continuation(&self) -> bool {
+        if !self.tools_available() {
+            return false;
+        }
+        let Some(manager) = self.inner.thread_manager.upgrade() else {
+            return false;
+        };
+        manager.get_thread(self.thread_id()).await.is_ok()
+    }
+
     pub(crate) fn tools_visible(&self) -> bool {
         self.is_enabled() && self.inner.tools_visible_for_thread
     }
@@ -423,9 +436,14 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+        self.try_continue_if_idle().await.map(|_| ())
+    }
+
+    /// Returns whether the existing scheduler actually accepted a continuation.
+    pub(crate) async fn try_continue_if_idle(&self) -> Result<bool, String> {
         if !self.tools_available() {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(false);
         }
         // Hold this through the read/start window so external set/clear cannot
         // change the goal after we read it but before the continuation launches.
@@ -439,16 +457,16 @@ impl GoalRuntimeHandle {
             .await
             .map_err(|err| err.to_string())?
         {
-            return Ok(());
+            return Ok(false);
         }
 
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             tracing::debug!("skipping goal continuation because thread manager is unavailable");
-            return Ok(());
+            return Ok(false);
         };
         let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
             tracing::debug!("skipping goal continuation because live thread is unavailable");
-            return Ok(());
+            return Ok(false);
         };
 
         let Some(goal) = self
@@ -460,11 +478,11 @@ impl GoalRuntimeHandle {
             .map_err(|err| err.to_string())?
         else {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(false);
         };
         if goal.status != codex_state::ThreadGoalStatus::Active {
             self.inner.accounting_state.clear_active_goal();
-            return Ok(());
+            return Ok(false);
         }
         let start_options = thread
             .thread_extension_data()
@@ -476,7 +494,7 @@ impl GoalRuntimeHandle {
             thread.config().await.update_plan_enabled,
         );
 
-        match thread
+        let started = match thread
             .start_turn_if_idle(
                 TurnInputRequest::new(TurnInput::ResponseItem(item)).on_start(TurnStartOptions {
                     turn_trigger: Some("goal".to_string()),
@@ -489,20 +507,23 @@ impl GoalRuntimeHandle {
                 // Turn-stop evaluation takes the same permit, so even a fast response
                 // cannot finish before this host-admitted continuation is identified.
                 self.inner.accounting_state.mark_goal_continuation(turn_id);
+                true
             }
             Ok(StartIfIdleSubmission::NotSubmitted { reason }) => {
                 tracing::debug!(
                     ?reason,
                     "skipping goal continuation because automatic idle work was rejected"
                 );
+                false
             }
             Err(error) => {
                 tracing::debug!(
                     %error,
                     "skipping goal continuation because turn input submission failed"
                 );
+                false
             }
-        }
+        };
 
         let current_turn_is_goal_active = self
             .inner
@@ -519,7 +540,7 @@ impl GoalRuntimeHandle {
                 .accounting_state
                 .reset_idle_progress_baseline_and_clear_active_goal();
         }
-        Ok(())
+        Ok(started)
     }
 
     pub(crate) async fn inject_active_turn_steering(&self, item: ResponseItem) {

@@ -1,15 +1,23 @@
 use anyhow::Result;
+use codex_core::GoalTurnMarker;
+use codex_core::GoalTurnReadiness;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_core::config::AgentRoleConfig;
 use codex_core::config::CurrentTimeReminderConfig;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::TurnLifecycleContributor;
+use codex_extension_api::TurnStopInput;
 use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
@@ -62,6 +70,8 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::time::Instant;
@@ -2450,6 +2460,309 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(
 enum CompletionScenario {
     Completed,
     TerminalError,
+}
+
+/// A deliberately small producer for the core notification/wait consumer test.
+/// The goal extension's persistence and scheduler are tested in its own crate.
+struct ThreeQuietChildTurns {
+    root_thread_id: std::sync::Arc<Mutex<Option<ThreadId>>>,
+    child_stops: AtomicUsize,
+}
+
+impl TurnLifecycleContributor for ThreeQuietChildTurns {
+    fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            let root = *self.root_thread_id.lock().expect("root ID lock");
+            if root.is_some_and(|id| input.thread_store.level_id() == id.to_string()) {
+                return;
+            }
+            if self.child_stops.fetch_add(1, Ordering::AcqRel) < 3 {
+                input.turn_store.insert(GoalTurnMarker {
+                    goal_id: "fixture-goal".to_string(),
+                    turn_id: input.turn_store.level_id().to_string(),
+                    readiness: GoalTurnReadiness::Continuing,
+                });
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_native_wait_and_parent_requests_stay_quiet_through_goal_progress() -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": "goal-intermediate-first",
+        "task_name": "worker",
+        "fork_turns": "none",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "spawn quiet worker"),
+        sse(vec![
+            ev_response_created("resp-quiet-parent-spawn"),
+            ev_function_call_with_namespace(
+                "quiet-spawn-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-quiet-parent-spawn"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "quiet-spawn-call")
+                && !body_contains(request, "wait for quiet worker")
+                && !request_has_input_type(request, "agent_message")
+        },
+        sse(vec![
+            ev_response_created("resp-quiet-parent-spawn-done"),
+            ev_assistant_message("msg-quiet-parent-spawn-done", "worker spawned"),
+            ev_completed("resp-quiet-parent-spawn-done"),
+        ]),
+    )
+    .await;
+    for (prompt, response_id) in [
+        ("goal-intermediate-first", "resp-quiet-child-1"),
+        ("goal-intermediate-third", "resp-quiet-child-3"),
+        ("goal-final-result", "resp-quiet-child-4"),
+    ] {
+        mount_response_once_match(
+            &server,
+            move |request: &wiremock::Request| {
+                body_contains(request, prompt) && request_has_input_type(request, "agent_message")
+            },
+            sse_response(sse(vec![
+                ev_response_created(response_id),
+                ev_assistant_message(response_id, response_id),
+                ev_completed(response_id),
+            ]))
+            .set_delay(Duration::from_millis(
+                if prompt == "goal-intermediate-first" {
+                    500
+                } else {
+                    150
+                },
+            )),
+        )
+        .await;
+    }
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "goal-intermediate-second")
+                && !body_contains(request, "quiet-mail-call")
+                && request_has_input_type(request, "agent_message")
+        },
+        sse(vec![
+            ev_response_created("resp-quiet-child-mail"),
+            ev_function_call_with_namespace(
+                "quiet-mail-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "send_message",
+                r#"{"target":"/root","message":"queue-only progress"}"#,
+            ),
+            ev_completed("resp-quiet-child-mail"),
+        ]),
+    )
+    .await;
+    mount_response_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "quiet-mail-call")
+                && request_has_input_type(request, "agent_message")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-quiet-child-2"),
+            ev_assistant_message("msg-quiet-child-2", "intermediate progress"),
+            ev_completed("resp-quiet-child-2"),
+        ]))
+        .set_delay(Duration::from_millis(150)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, "wait for quiet worker"),
+        sse(vec![
+            ev_response_created("resp-quiet-parent-wait"),
+            ev_function_call_with_namespace(
+                "quiet-wait-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "wait_agent",
+                r#"{"targets":["/root/worker"],"return_when":"any","timeout_ms":10000}"#,
+            ),
+            ev_completed("resp-quiet-parent-wait"),
+        ]),
+    )
+    .await;
+    let resumed_parent_request = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, "quiet-wait-call")
+                && !request_has_input_type(request, "agent_message")
+        },
+        sse(vec![
+            ev_response_created("resp-quiet-parent-resumed"),
+            ev_assistant_message("msg-quiet-parent-resumed", "worker finished"),
+            ev_completed("resp-quiet-parent-resumed"),
+        ]),
+    )
+    .await;
+
+    let root_id = std::sync::Arc::new(Mutex::new(None));
+    let producer = std::sync::Arc::new(ThreeQuietChildTurns {
+        root_thread_id: std::sync::Arc::clone(&root_id),
+        child_stops: AtomicUsize::new(0),
+    });
+    let mut extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::default();
+    extensions.turn_lifecycle_contributor(producer.clone());
+    let test = test_codex()
+        .with_model("koffing")
+        .with_extensions(std::sync::Arc::new(extensions.build()))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("collab feature");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("v2 feature");
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            config.model_provider.supports_websockets = false;
+        })
+        .build(&server)
+        .await?;
+    let parent_id = test.session_configured.thread_id;
+    *root_id.lock().expect("root ID lock") = Some(parent_id);
+    let mut created_threads = test.thread_manager.subscribe_thread_created();
+    test.submit_turn("spawn quiet worker").await?;
+    let child_id = timeout(Duration::from_secs(5), created_threads.recv()).await??;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    wait_for_event(child.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(producer.child_stops.load(Ordering::Acquire), 1);
+    assert!(resumed_parent_request.requests().is_empty());
+
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "wait for quiet worker".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = test.codex.next_event().await.expect("parent event stream");
+            if let EventMsg::ItemStarted(item) = event.msg
+                && let TurnItem::CollabAgentToolCall(call) = item.item
+                && call.tool == CollabAgentTool::Wait
+                && call.status == CollabAgentToolCallStatus::InProgress
+            {
+                break;
+            }
+        }
+    })
+    .await?;
+    let parent_request_count = server
+        .received_requests()
+        .await
+        .expect("mock requests")
+        .iter()
+        .filter(|request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id))
+        .count();
+    assert_eq!(parent_request_count, 3);
+    assert!(resumed_parent_request.requests().is_empty());
+
+    child
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "goal-intermediate-second".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(child.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(producer.child_stops.load(Ordering::Acquire), 2);
+    assert!(
+        resumed_parent_request.requests().is_empty(),
+        "intermediate goal turn woke wait"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock requests")
+            .iter()
+            .filter(
+                |request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id)
+            )
+            .count(),
+        parent_request_count,
+        "intermediate goal turn started an extra parent provider request",
+    );
+
+    // The first quiet completion preceded wait entry. This third child turn is
+    // the second intermediate completion while the exact-target wait is active.
+    child
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "goal-intermediate-third".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(child.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(producer.child_stops.load(Ordering::Acquire), 3);
+    assert!(
+        resumed_parent_request.requests().is_empty(),
+        "second in-wait intermediate goal turn woke wait"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock requests")
+            .iter()
+            .filter(
+                |request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id)
+            )
+            .count(),
+        parent_request_count,
+        "second in-wait intermediate goal turn started an extra parent provider request",
+    );
+
+    child
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "goal-final-result".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(child.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    timeout(Duration::from_secs(5), async {
+        while resumed_parent_request.requests().is_empty() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let resumed_requests = resumed_parent_request.requests();
+    let resumed_request = &resumed_requests[0];
+    let wait_output = resumed_request
+        .function_call_output_text("quiet-wait-call")
+        .expect("wait output reaches parent model");
+    assert!(wait_output.contains("target_terminal"));
+    assert!(wait_output.contains("target_status"));
+    assert!(wait_output.contains("queued_update_count"));
+    Ok(())
 }
 
 #[test_case(

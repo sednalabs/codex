@@ -27,12 +27,16 @@ impl AgentsOverviewView {
         right: usize,
     ) -> bool {
         match grouping {
+            // Project/Model keep each parent's tree together, matching the sort
+            // keys used to emit rows and headings.
             AgentsOverviewGrouping::Project => {
-                self.project_groups[left].key == self.project_groups[right].key
+                self.project_groups[self.tree_roots[left]].key
+                    == self.project_groups[self.tree_roots[right]].key
             }
             AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
             AgentsOverviewGrouping::Model => {
-                model_name(&self.rows[left].thread) == model_name(&self.rows[right].thread)
+                model_name(&self.rows[self.tree_roots[left]].thread)
+                    == model_name(&self.rows[self.tree_roots[right]].thread)
             }
         }
     }

@@ -11,7 +11,10 @@ expression: snapshot
 • Waiting for Robie [explorer]
 
 • Finished waiting
-  └ Robie [explorer]: Completed - 39916800
-    Bob [worker]: Error - tool timeout
+  └ Projected Robie [researcher]: Completed
+    Bob [worker]: Errored
+    Wait reason: Mailbox activity
+    Wake cause: Mailbox turn requested
+    Quiet queued updates: 1 (did not wake this wait)
 
 • Closed Robie [explorer]

@@ -433,12 +433,28 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
                 "type": "string",
                 "description": "Canonical task name for the spawned agent."
             },
+            "agent_id": {
+                "type": "string",
+                "description": "Stable thread identifier for the spawned agent."
+            },
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "agent_status": {
+                "allOf": [agent_status_output_schema()],
+                "description": "Status returned by the agent runtime when the agent was spawned."
+            },
+            "configured_model": {
+                "type": "string",
+                "description": "Resolved configured model for the child; this is not provider-effective model identity."
+            },
+            "configured_reasoning_effort": {
+                "type": ["string", "null"],
+                "description": "Resolved configured reasoning effort for the child, or null when unavailable."
             }
         },
-        "required": ["task_name", "nickname"],
+        "required": ["task_name", "agent_id", "nickname", "agent_status", "configured_model", "configured_reasoning_effort"],
         "additionalProperties": false
     })
 }
@@ -470,12 +486,32 @@ fn list_agents_output_schema() -> Value {
                             "type": "string",
                             "description": "Canonical task name for the agent when available, otherwise the agent id."
                         },
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Stable thread identifier for the agent."
+                        },
+                        "canonical_path": {
+                            "type": ["string", "null"],
+                            "description": "Canonical task path when available; null means the runtime did not provide one."
+                        },
+                        "nickname": {
+                            "type": ["string", "null"],
+                            "description": "User-facing nickname when available."
+                        },
                         "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
+                            "description": "Status observed from the runtime, or null when currently unknown.",
+                            "anyOf": [agent_status_output_schema(), {"type": "null"}]
+                        },
+                        "configured_model": {
+                            "type": ["string", "null"],
+                            "description": "Configured child model when available; this is not provider-effective model identity."
+                        },
+                        "configured_reasoning_effort": {
+                            "type": ["string", "null"],
+                            "description": "Configured child reasoning effort when available."
                         }
                     },
-                    "required": ["agent_name", "agent_status"],
+                    "required": ["agent_name", "agent_id", "canonical_path", "nickname", "agent_status", "configured_model", "configured_reasoning_effort"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -875,13 +911,30 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(/*description*/ None),
+                Some("Exact agent ids or paths to wait on; omit for mailbox or operator input."
+                    .to_string()),
+            ),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string(Some(
+                "With targets, return on any logical terminal/actionable target (default) or all targets; values: any, all."
+                    .to_string(),
+            )),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

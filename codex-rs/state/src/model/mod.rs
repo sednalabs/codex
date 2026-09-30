@@ -46,6 +46,7 @@ pub use thread_metadata::ThreadRelationFilter;
 pub use thread_metadata::ThreadSection;
 pub use thread_metadata::ThreadSectionAppearance;
 pub use thread_metadata::ThreadSectionsPage;
+pub use thread_metadata::ThreadSpawnDescendants;
 pub use thread_metadata::ThreadsPage;
 
 pub(crate) use thread_goal::ThreadGoalRow;

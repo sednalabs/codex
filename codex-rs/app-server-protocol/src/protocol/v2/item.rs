@@ -26,6 +26,8 @@ use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianA
 use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
 pub use codex_protocol::items::AgentMessageDelivery;
+use codex_protocol::items::AgentWaitReason as CoreAgentWaitReason;
+use codex_protocol::items::AgentWaitWakeCause as CoreAgentWaitWakeCause;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
@@ -43,6 +45,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::parse_command::ParsedCommand as CoreParsedCommand;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
 use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
@@ -383,6 +386,22 @@ pub enum ThreadItem {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Resolved receiver identity metadata when available.
+        #[serde(default)]
+        #[ts(optional)]
+        receiver_agents: Vec<CollabAgentRef>,
+        /// Producer-reported wait reason; missing on legacy history.
+        #[serde(default)]
+        #[ts(optional)]
+        wait_reason: Option<AgentWaitReason>,
+        /// Producer-reported actual wake cause; quiet queue updates are not causes.
+        #[serde(default)]
+        #[ts(optional)]
+        wait_wake_cause: Option<AgentWaitWakeCause>,
+        /// Observed quiet updates still queued at return; this does not imply a wake.
+        #[serde(default)]
+        #[ts(optional)]
+        queued_update_count: Option<u32>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -968,6 +987,14 @@ impl From<CoreTurnItem> for ThreadItem {
                     .into_iter()
                     .map(String::from)
                     .collect(),
+                receiver_agents: call
+                    .receiver_agents
+                    .into_iter()
+                    .map(CollabAgentRef::from)
+                    .collect(),
+                wait_reason: call.wait_reason.map(AgentWaitReason::from),
+                wait_wake_cause: call.wait_wake_cause.map(AgentWaitWakeCause::from),
+                queued_update_count: call.queued_update_count,
                 prompt: call.prompt,
                 model: call.model,
                 reasoning_effort: call.reasoning_effort,
@@ -1327,6 +1354,71 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 status: CollabAgentStatus::NotFound,
                 message: None,
             },
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum AgentWaitReason {
+    TargetTerminal,
+    MailboxActivity,
+    Steered,
+    TimedOut,
+    Unknown,
+}
+
+impl From<CoreAgentWaitReason> for AgentWaitReason {
+    fn from(value: CoreAgentWaitReason) -> Self {
+        match value {
+            CoreAgentWaitReason::TargetTerminal => Self::TargetTerminal,
+            CoreAgentWaitReason::MailboxActivity => Self::MailboxActivity,
+            CoreAgentWaitReason::Steered => Self::Steered,
+            CoreAgentWaitReason::TimedOut => Self::TimedOut,
+            CoreAgentWaitReason::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum AgentWaitWakeCause {
+    TargetStatus,
+    MailboxTurnRequested,
+    OperatorSteer,
+    Timeout,
+    Unknown,
+}
+
+impl From<CoreAgentWaitWakeCause> for AgentWaitWakeCause {
+    fn from(value: CoreAgentWaitWakeCause) -> Self {
+        match value {
+            CoreAgentWaitWakeCause::TargetStatus => Self::TargetStatus,
+            CoreAgentWaitWakeCause::MailboxTurnRequested => Self::MailboxTurnRequested,
+            CoreAgentWaitWakeCause::OperatorSteer => Self::OperatorSteer,
+            CoreAgentWaitWakeCause::Timeout => Self::Timeout,
+            CoreAgentWaitWakeCause::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct CollabAgentRef {
+    pub thread_id: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+impl From<CoreCollabAgentRef> for CollabAgentRef {
+    fn from(agent: CoreCollabAgentRef) -> Self {
+        Self {
+            thread_id: agent.thread_id.to_string(),
+            agent_nickname: agent.agent_nickname,
+            agent_role: agent.agent_role,
         }
     }
 }

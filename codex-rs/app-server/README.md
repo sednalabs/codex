@@ -512,3 +512,20 @@ and out-of-scope item IDs return invalid params (`-32602`) with
 Omitted or null cursors preserve normal first-page behavior. Continue anchored
 pages with the returned opaque string `nextCursor`; response fields and
 `backwardsCursor` semantics are unchanged.
+
+## Multi-agent wait item metadata
+
+Completed V2 `wait_agent` `collabAgentToolCall` items may include
+`receiverAgents` with the resolved receiver thread ID and available nickname
+and role, alongside `receiverThreadIds` and `agentsStates`. The optional
+`waitReason` and `waitWakeCause` fields report the producer-observed return
+reason and actual wake event separately from raw agent status. Their values are
+`targetTerminal`, `mailboxActivity`, `steered`, `timedOut`, or
+`unknown`, and `targetStatus`, `mailboxTurnRequested`, `operatorSteer`,
+`timeout`, or `unknown`, respectively.
+
+`queuedUpdateCount` is a separate, bounded observation of quiet updates still
+queued when the wait returned; it is not evidence that queued work woke the
+wait. A value of zero is an observed empty queue. Older stored items can omit
+these fields, in which case clients should treat cause and count as unknown
+rather than infer them from status or queued activity.

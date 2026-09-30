@@ -46,6 +46,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_sandboxing::SandboxType;
 use codex_skills::SkillError;
+use codex_state::UsageThreadRecord;
 use codex_utils_git_discovery::GitRootDiscovery;
 use codex_utils_path::replace_path_and_deduplicate;
 use std::sync::OnceLock;
@@ -960,6 +961,11 @@ impl Session {
                 (control, runtime)
             }
         };
+        // A resumed runtime starts a new observation generation. Retain the channel so
+        // existing waits can follow it, but never reuse a prior turn's terminality.
+        local_agent_runtime
+            .outcome_publisher(thread_id)
+            .publish(crate::agent::api::AgentOutcomeSnapshot::default());
         let time_provider = crate::current_time::resolve_time_provider(
             config.current_time_reminder.as_ref(),
             external_time_provider,
@@ -996,6 +1002,9 @@ impl Session {
             thread_id.to_string(),
             thread_extension_init,
         );
+        thread_extension_data.insert(crate::agent::api::GoalContinuationReadiness(
+            local_agent_runtime.outcome_publisher(thread_id),
+        ));
         thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
@@ -1186,6 +1195,19 @@ impl Session {
             error!("failed to initialize thread persistence: {e:#}");
             e
         })?;
+        if let Some(state_db) = state_db_ctx.as_ref() {
+            let lineage = UsageThreadRecord {
+                thread_id: thread_id.to_string(),
+                parent_thread_id: parent_thread_id.map(|id| id.to_string()),
+                root_thread_id: (parent_thread_id.is_none() && forked_from_id.is_none())
+                    .then(|| thread_id.to_string()),
+                fork_parent_thread_id: forked_from_id.map(|id| id.to_string()),
+                source: Some(session_configuration.session_source.to_string()),
+            };
+            if let Err(err) = state_db.record_usage_thread(&lineage).await {
+                warn!("failed to record usage lineage for thread {thread_id}: {err}");
+            }
+        }
         let session_result: anyhow::Result<Arc<Self>> = async {
             let rollout_path = if let Some(live_thread) = live_thread.as_ref() {
                 live_thread.local_rollout_path().await?

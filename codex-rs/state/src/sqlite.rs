@@ -7,7 +7,7 @@
 )]
 
 use crate::DbTelemetry;
-use crate::migrations::repair_legacy_recency_migration_version;
+use crate::runtime::migration_repair::bridge_state_migrations;
 use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
@@ -31,6 +31,7 @@ const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
 const STATE_DB_FILENAME: &str = "state_5.sqlite";
 const THREAD_HISTORY_DB_FILENAME: &str = "thread_history_1.sqlite";
+const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
 
 #[derive(Clone, Copy)]
 struct RuntimeDbSpec {
@@ -112,7 +113,16 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     background_reclamation: false,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+    background_reclamation: false,
+};
+
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
     GOALS_DB,
@@ -120,6 +130,7 @@ const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
     MEMORIES_V2_DB,
     QUEUE_DB,
     THREAD_HISTORY_DB,
+    USAGE_DB,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,6 +202,11 @@ impl SqliteConfig {
         THREAD_HISTORY_DB.path(self.home())
     }
 
+    /// Return the path to the usage ledger database.
+    pub fn usage_db_path(&self) -> PathBuf {
+        USAGE_DB.path(self.home())
+    }
+
     /// Return the paths to every database managed by the state runtime.
     pub fn runtime_db_paths(&self) -> Vec<RuntimeDbPath> {
         RUNTIME_DBS
@@ -260,6 +276,15 @@ impl SqliteConfig {
             .await
     }
 
+    pub(super) async fn open_usage_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        self.open_runtime_db(USAGE_DB, migrator, telemetry_override)
+            .await
+    }
+
     async fn open_runtime_db(
         &self,
         spec: RuntimeDbSpec,
@@ -284,10 +309,24 @@ impl SqliteConfig {
         })?;
         let started = Instant::now();
         let migrate_result = async {
+            let usage_migrator = if matches!(spec.kind, DbKind::Usage) {
+                Some(
+                    crate::runtime::usage_migration_compat::migrator_for_usage_database(
+                        &pool, migrator,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let migration_migrator = usage_migrator.as_ref().unwrap_or(migrator);
             if matches!(spec.kind, DbKind::State) {
-                repair_legacy_recency_migration_version(&pool, migrator).await?;
+                bridge_state_migrations(&pool, migrator).await?;
             }
-            migrator.run(&pool).await.map_err(anyhow::Error::from)
+            migration_migrator
+                .run(&pool)
+                .await
+                .map_err(anyhow::Error::from)
         }
         .await;
         telemetry::record_init_result(

@@ -143,12 +143,14 @@ impl AgentsOverviewView {
                 let group = match state.grouping {
                     AgentsOverviewGrouping::Project => {
                         format_directory_display(
-                            &self.project_groups[index].heading,
+                            &self.project_groups[self.tree_roots[index]].heading,
                             /*max_width*/ None,
                         )
                     }
                     AgentsOverviewGrouping::Status => task.group.label().to_owned(),
-                    AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
+                    AgentsOverviewGrouping::Model => {
+                        model_name(&self.rows[self.tree_roots[index]].thread).to_owned()
+                    }
                 };
                 let count = indices
                     .iter()
@@ -225,7 +227,11 @@ impl AgentsOverviewView {
                 self.title_style(task.thread_id)
             };
             line(
-                Line::from(display_title(&task.thread).to_owned()).style(title_style),
+                Line::from(display_title(
+                    task,
+                    state.grouping != AgentsOverviewGrouping::Status,
+                ))
+                .style(title_style),
                 title,
                 buf,
             );

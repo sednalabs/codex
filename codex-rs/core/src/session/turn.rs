@@ -34,6 +34,7 @@ use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::ResponsesStreamRetryState;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::PreviousTurnSettings;
+use crate::session::ProviderResponseUsageContext;
 use crate::session::TurnInput;
 use crate::session::daemon_recovery::RecordedTurnInput;
 use crate::session::session::Session;
@@ -2569,6 +2570,8 @@ async fn try_run_sampling_request(
     let effort = sess
         .reasoning_effort_for_request(&step_context.settings, super::RequestEffortUsage::Sampling)
         .await;
+    let provider_request_started_at =
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut stream = client_session
         .stream(
             prompt,
@@ -2588,6 +2591,7 @@ async fn try_run_sampling_request(
     }
     let mut in_flight: FuturesOrdered<InFlightFuture<'static>> = FuturesOrdered::new();
     let mut needs_follow_up = false;
+    let mut actual_model_used: Option<String> = None;
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
@@ -2895,6 +2899,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ServerModel(server_model) => {
+                actual_model_used = Some(server_model.clone());
                 if !turn_context
                     .server_model_warning_emitted
                     .load(Ordering::Relaxed)
@@ -2977,6 +2982,12 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    ProviderResponseUsageContext {
+                        started_at: provider_request_started_at.clone(),
+                        requested_model: step_context.settings.model_info.slug.clone(),
+                        actual_model_used: actual_model_used.clone(),
+                        requested_service_tier: step_context.settings.service_tier.clone(),
+                    },
                 )
                 .await;
                 let budget_result = sess

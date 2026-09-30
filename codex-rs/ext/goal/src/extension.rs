@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_core::GoalContinuationReadiness;
+use codex_core::GoalTurnMarker;
+use codex_core::GoalTurnReadiness;
 use codex_core::ThreadManager;
 use codex_core::TurnStartOptions;
 use codex_extension_api::ConfigContributor;
@@ -65,6 +68,13 @@ pub struct GoalExtension<C> {
     thread_manager: Weak<ThreadManager>,
     goal_service: Arc<GoalService>,
     goal_config: Arc<dyn Fn(&C) -> GoalExtensionConfig + Send + Sync>,
+}
+
+/// The exact goal observed when a turn starts. This stays turn-local; it is not
+/// a durable goal claim and cannot suppress a later mismatched goal generation.
+struct GoalTurnBinding {
+    goal_id: String,
+    turn_id: String,
 }
 
 impl<C> std::fmt::Debug for GoalExtension<C> {
@@ -183,11 +193,22 @@ where
                 return;
             };
 
-            if let Err(err) = runtime.continue_if_idle().await {
-                tracing::warn!(
-                    "failed to continue active goal for idle thread {}: {err}",
-                    runtime.thread_id()
-                );
+            match runtime.try_continue_if_idle().await {
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(readiness) = input.thread_store.get::<GoalContinuationReadiness>() {
+                        readiness.mark_action_required_if_continuing();
+                    }
+                }
+                Err(err) => {
+                    if let Some(readiness) = input.thread_store.get::<GoalContinuationReadiness>() {
+                        readiness.mark_action_required_if_continuing();
+                    }
+                    tracing::warn!(
+                        "failed to continue active goal for idle thread {}: {err}",
+                        runtime.thread_id()
+                    );
+                }
             }
         })
     }
@@ -276,6 +297,10 @@ where
                         | codex_state::ThreadGoalStatus::BudgetLimited
                 )
             {
+                input.turn_store.insert(GoalTurnBinding {
+                    goal_id: goal.goal_id.clone(),
+                    turn_id: input.turn_id.to_string(),
+                });
                 accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
             }
         })
@@ -308,6 +333,15 @@ where
             }
 
             let turn_id = input.turn_store.level_id();
+            let starting_goal_id = input
+                .turn_store
+                .get::<GoalTurnBinding>()
+                .filter(|binding| binding.turn_id == turn_id)
+                .map(|binding| binding.goal_id.clone());
+            let turn_goal_id = runtime
+                .accounting_state()
+                .current_active_goal_id_for_turn(turn_id)
+                .or(starting_goal_id);
             if let Some(expected_goal_id) =
                 runtime.accounting_state().execution_failure_goal(turn_id)
                 && let Err(err) = runtime
@@ -347,9 +381,9 @@ where
                 return;
             }
             let accounting = runtime.accounting_state();
-            if accounting
-                .current_active_goal_id_for_turn(turn_id)
-                .is_some()
+            let active_goal_id = accounting.current_active_goal_id_for_turn(turn_id);
+            let expected_goal_id = active_goal_id.clone().or(turn_goal_id);
+            if active_goal_id.is_some()
                 && let Some(options) = input.thread_store.get::<TurnStartOptions>()
             {
                 input.thread_store.insert_if(
@@ -359,6 +393,38 @@ where
                     },
                     |current| current.is_some(),
                 );
+            }
+            // The host consumes this exact turn generation before publishing the raw
+            // TurnComplete status or notifying the parent. A missing/mismatched goal
+            // observation deliberately leaves legacy terminal handback in force.
+            if let Some(expected_goal_id) = expected_goal_id
+                && let Ok(Some(goal)) = self
+                    .state_dbs
+                    .thread_goals()
+                    .get_thread_goal(runtime.thread_id())
+                    .await
+                && goal.goal_id == expected_goal_id
+                && goal.status != codex_state::ThreadGoalStatus::Complete
+            {
+                let continuation_deferred = self
+                    .state_dbs
+                    .thread_goals()
+                    .has_thread_goal_continuation_deferral(runtime.thread_id())
+                    .await
+                    .unwrap_or(true);
+                let readiness = if goal.status == codex_state::ThreadGoalStatus::Active
+                    && !continuation_deferred
+                    && runtime.can_schedule_continuation().await
+                {
+                    GoalTurnReadiness::Continuing
+                } else {
+                    GoalTurnReadiness::ActionRequired
+                };
+                input.turn_store.insert(GoalTurnMarker {
+                    goal_id: expected_goal_id,
+                    turn_id: turn_id.to_string(),
+                    readiness,
+                });
             }
             accounting.finish_turn(turn_id);
         })

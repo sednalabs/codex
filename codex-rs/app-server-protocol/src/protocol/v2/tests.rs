@@ -5,6 +5,8 @@ use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmen
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::AgentWaitReason as CoreAgentWaitReason;
+use codex_protocol::items::AgentWaitWakeCause as CoreAgentWaitWakeCause;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
@@ -40,6 +42,7 @@ use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialP
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
@@ -3417,6 +3420,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
         receiver_agents: Vec::new(),
+        wait_reason: None,
+        wait_wake_cause: None,
+        queued_update_count: None,
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
@@ -3433,6 +3439,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: Vec::new(),
+            wait_reason: None,
+            wait_wake_cause: None,
+            queued_update_count: None,
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
@@ -3638,6 +3648,96 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             duration_ms: Some(42),
         }
     );
+}
+
+#[test]
+fn v2_wait_projection_preserves_actual_outcome_and_receiver_metadata() {
+    let sender = codex_protocol::ThreadId::default();
+    let receiver = codex_protocol::ThreadId::default();
+    let core_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "wait-1".to_string(),
+        tool: CoreCollabAgentTool::Wait,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id: sender,
+        receiver_thread_ids: vec![receiver],
+        receiver_agents: vec![CoreCollabAgentRef {
+            thread_id: receiver,
+            agent_nickname: Some("Ada".to_string()),
+            agent_role: Some("worker".to_string()),
+        }],
+        wait_reason: Some(CoreAgentWaitReason::MailboxActivity),
+        wait_wake_cause: Some(CoreAgentWaitWakeCause::MailboxTurnRequested),
+        queued_update_count: Some(2),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: [(receiver, CoreAgentStatus::Running)].into_iter().collect(),
+    });
+
+    let projected = ThreadItem::from(core_item);
+    assert_eq!(
+        projected,
+        ThreadItem::CollabAgentToolCall {
+            id: "wait-1".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender.to_string(),
+            receiver_thread_ids: vec![receiver.to_string()],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: receiver.to_string(),
+                agent_nickname: Some("Ada".to_string()),
+                agent_role: Some("worker".to_string()),
+            }],
+            wait_reason: Some(AgentWaitReason::MailboxActivity),
+            wait_wake_cause: Some(AgentWaitWakeCause::MailboxTurnRequested),
+            queued_update_count: Some(2),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: [(
+                receiver.to_string(),
+                CollabAgentState {
+                    status: CollabAgentStatus::Running,
+                    message: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }
+    );
+}
+
+#[test]
+fn v2_wait_projection_legacy_payload_keeps_cause_and_queue_unknown() {
+    let item: ThreadItem = serde_json::from_value(json!({
+        "type": "collabAgentToolCall",
+        "id": "wait-legacy",
+        "tool": "wait",
+        "status": "completed",
+        "senderThreadId": "00000000-0000-0000-0000-000000000001",
+        "receiverThreadIds": ["00000000-0000-0000-0000-000000000002"],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {}
+    }))
+    .expect("legacy wait item should remain readable");
+
+    match item {
+        ThreadItem::CollabAgentToolCall {
+            receiver_agents,
+            wait_reason,
+            wait_wake_cause,
+            queued_update_count,
+            ..
+        } => {
+            assert!(receiver_agents.is_empty());
+            assert_eq!(wait_reason, None);
+            assert_eq!(wait_wake_cause, None);
+            assert_eq!(queued_update_count, None);
+        }
+        _ => panic!("legacy collab wait item should preserve its variant"),
+    }
 }
 
 #[test]

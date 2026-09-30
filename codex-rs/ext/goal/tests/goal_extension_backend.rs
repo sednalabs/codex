@@ -9,6 +9,8 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use codex_analytics::AnalyticsEventsClient;
+use codex_core::GoalTurnMarker;
+use codex_core::GoalTurnReadiness;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -317,7 +319,7 @@ async fn create_goal_resets_baseline_before_turn_stop_accounting() -> anyhow::Re
             ),
         )
         .await;
-    harness.stop_turn("turn-1").await;
+    let marker = harness.stop_turn("turn-1").await;
 
     let goal = runtime
         .thread_goals()
@@ -326,6 +328,16 @@ async fn create_goal_resets_baseline_before_turn_stop_accounting() -> anyhow::Re
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(15, goal.tokens_used);
     assert_eq!(ThreadGoalStatus::Active, protocol_status(goal.status));
+    assert_eq!(
+        marker,
+        Some(GoalTurnMarker {
+            goal_id: goal.goal_id,
+            turn_id: "turn-1".to_string(),
+            // This backend fixture has no live thread manager; it must fail open
+            // to an actionable handback instead of claiming a continuation.
+            readiness: GoalTurnReadiness::ActionRequired,
+        })
+    );
     Ok(())
 }
 
@@ -1473,6 +1485,16 @@ async fn thread_resume_rehydrates_active_goal_idle_accounting() -> anyhow::Resul
         }],
         harness.sink.goal_events()
     );
+    harness.start_turn("resumed-turn", &usage).await;
+    let resumed_marker = harness.stop_turn("resumed-turn").await;
+    assert_eq!(
+        resumed_marker,
+        Some(GoalTurnMarker {
+            goal_id: goal.goal_id,
+            turn_id: "resumed-turn".to_string(),
+            readiness: GoalTurnReadiness::ActionRequired,
+        })
+    );
     Ok(())
 }
 
@@ -1788,7 +1810,7 @@ impl GoalExtensionHarness {
         }
     }
 
-    async fn stop_turn(&self, turn_id: &str) {
+    async fn stop_turn(&self, turn_id: &str) -> Option<GoalTurnMarker> {
         let turn_store = ExtensionData::new(turn_id);
         for contributor in self.registry.turn_lifecycle_contributors() {
             contributor
@@ -1799,6 +1821,9 @@ impl GoalExtensionHarness {
                 })
                 .await;
         }
+        turn_store
+            .get::<GoalTurnMarker>()
+            .map(|marker| marker.as_ref().clone())
     }
 
     async fn record_token_usage(&self, turn_id: &str, usage: &TokenUsage) {

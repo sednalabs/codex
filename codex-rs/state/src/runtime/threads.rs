@@ -197,8 +197,9 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         root_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status))
+        self.list_thread_spawn_descendants_matching(root_thread_id, Some(status), None)
             .await
+            .map(|descendants| descendants.thread_ids)
     }
 
     /// List all spawned descendants of `root_thread_id`.
@@ -208,8 +209,23 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         &self,
         root_thread_id: ThreadId,
     ) -> anyhow::Result<Vec<ThreadId>> {
-        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None)
+        self.list_thread_spawn_descendants_matching(root_thread_id, /*status*/ None, None)
             .await
+            .map(|descendants| descendants.thread_ids)
+    }
+
+    /// List persisted descendants using the recovery safety bound and report truncation.
+    pub async fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
+        self.list_thread_spawn_descendants_matching(
+            root_thread_id,
+            status,
+            Some(crate::MAX_THREAD_SPAWN_DESCENDANTS),
+        )
+        .await
     }
 
     /// Find a direct spawned child of `parent_thread_id` by canonical agent path.
@@ -294,15 +310,23 @@ LIMIT 2
         &self,
         root_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
-    ) -> anyhow::Result<Vec<ThreadId>> {
+        limit: Option<usize>,
+    ) -> anyhow::Result<crate::ThreadSpawnDescendants> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited) AS (
+    SELECT child_thread_id, 1, ',' ||
+            "#,
+        );
+        builder.push_bind(root_thread_id.to_string());
+        builder.push(
+            r#" || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
         );
+        builder.push_bind(root_thread_id.to_string());
+        builder.push(" AND child_thread_id != ");
         builder.push_bind(root_thread_id.to_string());
         if let Some(status) = status {
             let status = status.to_string();
@@ -310,38 +334,62 @@ WITH RECURSIVE subtree(child_thread_id, depth) AS (
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE edge.status =
                 "#,
             );
             builder.push_bind(status);
+            builder.push(
+                r#"
+      AND instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
+                "#,
+            );
         } else {
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id,
+           subtree.depth + 1,
+           subtree.visited || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited, ',' || edge.child_thread_id || ',') = 0
                 "#,
             );
+        }
+        if let Some(limit) = limit {
+            builder.push(" LIMIT ");
+            builder.push(limit.saturating_add(1).to_string());
         }
         builder.push(
             r#"
 )
-SELECT child_thread_id
+SELECT child_thread_id, MIN(depth) AS depth
 FROM subtree
+GROUP BY child_thread_id
 ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
 
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
-        rows.into_iter()
+        let relation_limit_reached = limit.is_some_and(|limit| rows.len() > limit);
+        let mut thread_ids = rows
+            .into_iter()
             .map(|row| {
                 ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
             })
-            .collect()
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if let Some(limit) = limit {
+            thread_ids.truncate(limit);
+        }
+        Ok(crate::ThreadSpawnDescendants {
+            thread_ids,
+            relation_limit_reached,
+        })
     }
 
     async fn insert_thread_spawn_edge_if_absent(
@@ -1603,6 +1651,7 @@ mod tests {
     use std::path::PathBuf;
 
     const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
+
     #[tokio::test]
     async fn upsert_thread_keeps_creation_memory_mode_for_existing_rows() {
         let codex_home = unique_temp_dir();

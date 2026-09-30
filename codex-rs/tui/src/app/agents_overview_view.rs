@@ -47,6 +47,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -93,14 +94,33 @@ pub(super) struct AgentsOverviewRow {
     pub(super) details: AgentsOverviewDetails,
     pub(super) thread: Thread,
     pub(super) thread_id: ThreadId,
+    pub(super) depth: usize,
+    pub(super) tree_root_thread_id: ThreadId,
     pub(super) group: AgentsOverviewGroup,
     pub(super) is_current: bool,
     pub(super) has_voice: bool,
 }
 
-fn display_title(thread: &Thread) -> &str {
-    let title = thread.name.as_deref().unwrap_or(&thread.preview);
-    title.trim().lines().next().unwrap_or("Untitled task")
+fn display_title(row: &AgentsOverviewRow, show_hierarchy: bool) -> String {
+    let thread = &row.thread;
+    let title = thread
+        .name
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("Unnamed task")
+        .trim()
+        .lines()
+        .next()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("Unnamed task");
+    if show_hierarchy && row.depth > 0 {
+        format!(
+            "{}↳ {title}",
+            "  ".repeat(row.depth.saturating_sub(1).min(8))
+        )
+    } else {
+        title.to_owned()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -163,6 +183,7 @@ pub(super) struct AgentsOverviewView {
     use_theme_colors: bool,
     pub(super) rows: Vec<AgentsOverviewRow>,
     project_groups: Vec<AgentsOverviewProjectGroup>,
+    tree_roots: Vec<usize>,
     selected: usize,
     state: Arc<Mutex<AgentsOverviewViewState>>,
     app_event_tx: AppEventSender,
@@ -194,6 +215,21 @@ impl AgentsOverviewView {
             .iter()
             .map(|row| AgentsOverviewProjectGroup::for_thread(&row.thread, worktrees_enabled))
             .collect();
+        let row_indices_by_id = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.thread_id, index))
+            .collect::<HashMap<_, _>>();
+        let tree_roots = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                row_indices_by_id
+                    .get(&row.tree_root_thread_id)
+                    .copied()
+                    .unwrap_or(index)
+            })
+            .collect();
         let center_shortcut_keys = crate::keymap::keymap_action_ids()
             .filter(|action| matches!(action.context, KeymapContext::List | KeymapContext::Agents))
             .flat_map(|action| {
@@ -218,6 +254,7 @@ impl AgentsOverviewView {
             use_theme_colors,
             rows,
             project_groups,
+            tree_roots,
             selected,
             state,
             app_event_tx,
@@ -265,11 +302,29 @@ impl AgentsOverviewView {
             .iter()
             .enumerate()
             .filter_map(|(index, row)| {
+                let path = row
+                    .thread
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                let effort = row
+                    .thread
+                    .reasoning_effort
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
                 let searchable = format!(
-                    "{} {} {}",
+                    "{} {} {} {} {} {} {} {} {}",
                     row.thread.name.as_deref().unwrap_or_default(),
-                    row.thread.preview,
+                    row.thread.id,
+                    row.thread.parent_thread_id.as_deref().unwrap_or_default(),
+                    row.thread.agent_nickname.as_deref().unwrap_or_default(),
+                    row.thread.agent_role.as_deref().unwrap_or_default(),
+                    row.thread.model.as_deref().unwrap_or_default(),
+                    effort,
                     row.thread.cwd.display(),
+                    path,
                 )
                 .to_lowercase();
                 ((search.is_empty() || searchable.contains(&search))
@@ -279,17 +334,19 @@ impl AgentsOverviewView {
             })
             .collect::<Vec<_>>();
         match state.grouping {
-            AgentsOverviewGrouping::Project => visible.sort_by_key(|index| {
-                (
-                    &self.project_groups[*index].key,
-                    std::cmp::Reverse(self.rows[*index].thread.updated_at),
-                )
-            }),
-            AgentsOverviewGrouping::Status => {}
+            // Sort branches as units so parent-first order and sibling order
+            // survive alternate groupings.
+            AgentsOverviewGrouping::Project => {
+                visible.sort_by_key(|index| &self.project_groups[self.tree_roots[*index]].key)
+            }
+            // Status is a per-thread view, so group by the displayed status
+            // rather than leaving mixed tree branches interleaved.
+            AgentsOverviewGrouping::Status => visible.sort_by_key(|index| self.rows[*index].group),
             AgentsOverviewGrouping::Model => visible.sort_by_key(|index| {
+                let root = self.tree_roots[*index];
                 (
-                    model_name(&self.rows[*index].thread),
-                    std::cmp::Reverse(self.rows[*index].thread.updated_at),
+                    model_name(&self.rows[root].thread),
+                    std::cmp::Reverse(self.rows[root].thread.updated_at),
                 )
             }),
         }
@@ -387,6 +444,7 @@ impl AgentsOverviewView {
         let Some(row) = self.selected_row() else {
             return;
         };
+        let show_hierarchy = self.state().grouping != AgentsOverviewGrouping::Status;
         let (status, dot) = Self::status(row);
         let width = usize::from(area.width);
         let mut lines = vec![
@@ -394,7 +452,7 @@ impl AgentsOverviewView {
             Line::default(),
             crate::line_truncation::truncate_line_with_ellipsis_if_overflow(
                 Line::from(Span::styled(
-                    display_title(&row.thread).to_owned(),
+                    display_title(row, show_hierarchy),
                     self.title_style(row.thread_id).bold(),
                 )),
                 width,
@@ -404,10 +462,42 @@ impl AgentsOverviewView {
             Line::from("Project".dim()),
             Line::from(row.thread.cwd.display().to_string()),
             Line::from(vec![
-                "Model: ".dim(),
+                "Configured/resolved model: ".dim(),
                 model_name(&row.thread).to_string().into(),
             ]),
+            Line::from(vec![
+                "Configured/resolved effort: ".dim(),
+                row.thread
+                    .reasoning_effort
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "Unknown".to_string())
+                    .into(),
+            ]),
+            Line::from(vec![
+                "Provider-effective identity: ".dim(),
+                "Unknown".into(),
+            ]),
+            Line::from(vec!["Thread ID: ".dim(), row.thread.id.clone().into()]),
         ];
+        if let Some(parent_thread_id) = &row.thread.parent_thread_id {
+            lines.push(Line::from(vec![
+                "Parent thread ID: ".dim(),
+                parent_thread_id.clone().into(),
+            ]));
+        }
+        if let Some(path) = &row.thread.path {
+            lines.push(Line::from(vec![
+                "Thread path: ".dim(),
+                path.display().to_string().into(),
+            ]));
+        }
+        if let Some(nickname) = row.thread.agent_nickname.as_deref() {
+            lines.push(Line::from(vec!["Agent: ".dim(), nickname.into()]));
+        }
+        if let Some(role) = row.thread.agent_role.as_deref() {
+            lines.push(Line::from(vec!["Assignment: ".dim(), role.into()]));
+        }
         lines.extend(row.details.usage_lines.clone());
         if let Some(branch) = row
             .thread
@@ -421,22 +511,26 @@ impl AgentsOverviewView {
         }
         let preview = super::agents_overview_details::preview_markdown(&row.thread.preview);
         let prompt_start = crate::wrapping::word_wrap_lines(lines.clone(), width).len();
-        lines.extend([Line::default(), Line::from("Prompt".dim())]);
-        let prompt = crate::markdown_render::render_markdown_text_with_width_and_cwd(
-            match preview.as_str() {
-                "" => "No prompt available.",
-                preview => preview,
-            },
-            Some(width),
-            Some(row.thread.cwd.as_path()),
-        )
-        .lines;
-        let mut prompt = crate::wrapping::word_wrap_lines(prompt, width);
-        if prompt.len() > 2 {
-            prompt.truncate(2);
-            prompt[1] = "…".dim().into();
+        if row.thread.parent_thread_id.is_none() {
+            // Child previews can contain inherited private instructions. The
+            // tree shows the task name and public assignment metadata instead.
+            lines.extend([Line::default(), Line::from("Prompt".dim())]);
+            let prompt = crate::markdown_render::render_markdown_text_with_width_and_cwd(
+                match preview.as_str() {
+                    "" => "No prompt available.",
+                    preview => preview,
+                },
+                Some(width),
+                Some(row.thread.cwd.as_path()),
+            )
+            .lines;
+            let mut prompt = crate::wrapping::word_wrap_lines(prompt, width);
+            if prompt.len() > 2 {
+                prompt.truncate(2);
+                prompt[1] = "…".dim().into();
+            }
+            lines.extend(prompt);
         }
-        lines.extend(prompt);
         let details_start = crate::wrapping::word_wrap_lines(lines[..4].to_vec(), width).len();
         let mut lines = crate::wrapping::word_wrap_lines(lines, width);
         if self.state().connection_notice.is_none() {

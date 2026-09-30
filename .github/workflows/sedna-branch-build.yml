@@ -1,0 +1,665 @@
+name: sedna-branch-build
+
+run-name: >-
+  sedna-branch-build
+  [mode=${{ inputs.mode }} target=${{ inputs.target_sha }} base=${{ inputs.base_sha }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build packages or prepare exact Cargo/schema source diffs only.
+        required: true
+        type: choice
+        options:
+          - build
+          - prepare-only
+        default: build
+      target_sha:
+        description: Exact 40-character product source commit SHA (T)
+        required: true
+        type: string
+      base_ref:
+        description: Base ref used to resolve the exact comparison base (B)
+        required: true
+        default: main
+        type: string
+      base_sha:
+        description: Exact 40-character comparison base commit SHA (B)
+        required: true
+        type: string
+
+concurrency:
+  group: sedna-branch-build/${{ inputs.mode }}/${{ inputs.target_sha }}/${{ inputs.base_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  runner_policy:
+    name: Verify standard runner graph and exact identities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out workflow host (H)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+      - name: Validate immutable inputs and workflow host
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          case "${MODE}" in
+            build|prepare-only) ;;
+            *) echo "unsupported workflow mode" >&2; exit 1 ;;
+          esac
+          [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "workflow host SHA must be a full lowercase commit SHA" >&2
+            exit 1
+          }
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "target_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          }
+          [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "base_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          }
+          [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || {
+            echo "base_ref is not a safe Git ref" >&2
+            exit 1
+          }
+          actual_h="$(git rev-parse HEAD)"
+          if [[ "${actual_h}" != "${EXPECTED_H}" ]]; then
+            echo "workflow host checkout does not match H" >&2
+            exit 1
+          fi
+      - name: Test the runner graph regression fixtures
+        working-directory: .workflow-src
+        shell: bash
+        run: python3 .github/scripts/test_standard_runner_graph.py
+      - name: Inspect every reachable workflow runner
+        working-directory: .workflow-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_standard_runner_graph.py \
+            .github/workflows/sedna-branch-build.yml \
+            .github/workflows/validation-named-tests.yml
+
+  prepare-only:
+    name: Prepare exact Cargo lock and app-server schema diff
+    if: ${{ inputs.mode == 'prepare-only' }}
+    needs:
+      - runner_policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      PRODUCT_ROOT: ${{ github.workspace }}/product
+      LOCK_BEFORE: ${{ runner.temp }}/Cargo.lock.before
+      DIFF_OUT: ${{ runner.temp }}/source-delta.patch
+    steps:
+      - name: Check out workflow host (H)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+      - name: Check out exact product source (T)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: product
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Verify H, B, T, and standard preparation architecture
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "lock/schema preparation requires standard ubuntu-24.04 x86_64" >&2
+            exit 1
+          }
+          [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          actual_t="$(git -C product rev-parse HEAD)"
+          [[ "${actual_h}" == "${EXPECTED_H}" ]] || {
+            echo "workflow host H does not match github.sha" >&2
+            exit 1
+          }
+          [[ "${actual_t}" == "${TARGET_SHA}" ]] || {
+            echo "product source T does not match target_sha" >&2
+            exit 1
+          }
+          git -C product fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          actual_b="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          [[ "${actual_b}" == "${BASE_SHA}" ]] || {
+            echo "comparison base B does not match base_sha" >&2
+            exit 1
+          }
+          git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Install the repository-pinned schema generator runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/schema-tools"
+          "${RUNNER_TEMP}/schema-tools/bin/python" -m pip install "uv==0.11.3"
+          echo "${RUNNER_TEMP}/schema-tools/bin" >> "${GITHUB_PATH}"
+      - name: Snapshot the input lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "${PRODUCT_ROOT}/codex-rs/Cargo.lock" "${LOCK_BEFORE}"
+          sha256sum "${LOCK_BEFORE}" > "${RUNNER_TEMP}/Cargo.lock.before.sha256"
+      - name: Refresh only workspace package records
+        working-directory: product/codex-rs
+        shell: bash
+        run: cargo update --workspace
+      - name: Generate the canonical app-server schema and SDK fixtures
+        working-directory: product
+        shell: bash
+        run: python3 codex-rs/app-server-protocol/scripts/write_schema_fixtures.py
+      - name: Validate the lock delta and generated-path allowlist
+        shell: bash
+        env:
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          PRODUCT_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          root = Path(os.environ["PRODUCT_ROOT"])
+          before_lock = Path(os.environ["LOCK_BEFORE"])
+          after_lock = root / "codex-rs/Cargo.lock"
+          with before_lock.open("rb") as stream:
+              before = tomllib.load(stream)
+          with after_lock.open("rb") as stream:
+              after = tomllib.load(stream)
+
+          with (root / "codex-rs/Cargo.toml").open("rb") as stream:
+              workspace_manifest = tomllib.load(stream)
+          package_version = workspace_manifest["workspace"]["package"]["version"]
+          expected_package_version = "0.160.0-dev.sedna.1"
+          if package_version != expected_package_version:
+              raise SystemExit(
+                  "workspace package version is not the admitted fork development version: "
+                  f"{package_version!r}"
+              )
+
+          def external_packages(lock):
+              return collections.Counter(
+                  json.dumps(package, sort_keys=True, separators=(",", ":"))
+                  for package in lock.get("package", [])
+                  if "source" in package
+              )
+
+          def local_package_names(lock):
+              return collections.Counter(
+                  package["name"]
+                  for package in lock.get("package", [])
+                  if "source" not in package
+              )
+
+          before_external = external_packages(before)
+          after_external = external_packages(after)
+          if before_external - after_external:
+              raise SystemExit(
+                  "Cargo.lock refresh removed or changed an already-locked external dependency"
+              )
+          if local_package_names(before) != local_package_names(after):
+              raise SystemExit("Cargo.lock refresh changed the local workspace package set")
+
+          exact_files = {
+              "codex-rs/Cargo.lock",
+              "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+              "sdk/python/src/openai_codex/generated/v2_all.py",
+              "sdk/python/src/openai_codex/generated/notification_registry.py",
+              "sdk/python/src/openai_codex/api.py",
+          }
+          generated_prefixes = (
+              "codex-rs/app-server-protocol/schema/typescript/",
+              "codex-rs/app-server-protocol/schema/json/",
+          )
+
+          status = subprocess.check_output(
+              ["git", "-C", str(root), "status", "--porcelain=v1", "-z", "--untracked-files=all"]
+          )
+          changed_paths = []
+          untracked_paths = []
+          for entry in status.split(b"\0"):
+              if not entry:
+                  continue
+              if len(entry) < 4 or entry[2:3] != b" ":
+                  raise SystemExit(f"unrecognized git status record: {entry!r}")
+              state = entry[:2].decode("ascii")
+              path = entry[3:].decode("utf-8", errors="strict")
+              if "R" in state or "C" in state:
+                  raise SystemExit(f"rename/copy is outside generated-path contract: {path}")
+              if path not in exact_files and not path.startswith(generated_prefixes):
+                  raise SystemExit(f"generated path is outside explicit allowlist: {path}")
+              changed_paths.append(path)
+              if state == "??":
+                  untracked_paths.append(path)
+          if "codex-rs/Cargo.lock" not in changed_paths:
+              raise SystemExit("Cargo.lock did not change; refusing to emit an incomplete prep artifact")
+          changed_paths = sorted(set(changed_paths))
+
+          if untracked_paths:
+              subprocess.run(
+                  ["git", "-C", str(root), "add", "--intent-to-add", "--", *untracked_paths],
+                  check=True,
+              )
+          diff = subprocess.check_output(
+              ["git", "-C", str(root), "diff", "--binary", "--full-index", "--no-ext-diff", "HEAD", "--"]
+          )
+          diff_path = Path(os.environ["DIFF_OUT"])
+          diff_path.write_bytes(diff)
+          Path(os.environ["RUNNER_TEMP"], "changed-paths.txt").write_text(
+              "".join(f"{path}\n" for path in changed_paths), encoding="utf-8"
+          )
+          Path(os.environ["RUNNER_TEMP"], "Cargo.lock.after").write_bytes(after_lock.read_bytes())
+          lock_sha256 = hashlib.sha256(after_lock.read_bytes()).hexdigest()
+          diff_sha256 = hashlib.sha256(diff).hexdigest()
+          identity = {
+              "schema_version": "sedna-cargo-schema-prep-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "workflow_run": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/'
+                  f'actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "workflow_host_sha": os.environ["WORKFLOW_HOST_SHA"],
+              "product_sha": os.environ["PRODUCT_SHA"],
+              "comparison_base_sha": os.environ["BASE_SHA"],
+              "runner_label": "ubuntu-24.04",
+              "architecture": "x86_64",
+              "package_version": package_version,
+              "new_external_package_records": sum((after_external - before_external).values()),
+              "cargo_lock_before_sha256": hashlib.sha256(before_lock.read_bytes()).hexdigest(),
+              "cargo_lock_after_sha256": lock_sha256,
+              "source_diff_sha256": diff_sha256,
+              "changed_paths": changed_paths,
+              "allowed_exact_paths": sorted(exact_files),
+              "allowed_generated_prefixes": list(generated_prefixes),
+          }
+          Path(os.environ["RUNNER_TEMP"], "identity.json").write_text(
+              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+      - name: Require the generated lockfile to be accepted as-is
+        working-directory: product/codex-rs
+        shell: bash
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Upload exact lock, schema, and identity diff
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-cargo-schema-prep-${{ inputs.target_sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/source-delta.patch
+            ${{ runner.temp }}/changed-paths.txt
+            ${{ runner.temp }}/identity.json
+            ${{ runner.temp }}/Cargo.lock.before
+            ${{ runner.temp }}/Cargo.lock.before.sha256
+            ${{ runner.temp }}/Cargo.lock.after
+          if-no-files-found: error
+          retention-days: 30
+
+  build-linux-x86_64:
+    name: Package native Linux x86_64
+    if: ${{ inputs.mode == 'build' }}
+    needs:
+      - runner_policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CODEX_TARGET: x86_64-unknown-linux-gnu
+      CARGO_TARGET_DIR: ${{ runner.temp }}/codex-rust-target
+      CODEX_REPO_ROOT: ${{ github.workspace }}/product
+      CODEX_PACKAGE_OUT: ${{ runner.temp }}/codex-first-binary
+    steps:
+      - name: Check out workflow host (H)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+      - name: Check out exact product source (T)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: product
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Verify H, B, T, and native architecture
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "x86_64 package job is not on a native x86_64 runner" >&2
+            exit 1
+          }
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          actual_t="$(git -C product rev-parse HEAD)"
+          if [[ "${actual_h}" != "${EXPECTED_H}" || "${actual_t}" != "${TARGET_SHA}" ]]; then
+            echo "workflow host H or product source T does not match the requested identity" >&2
+            exit 1
+          fi
+          git -C product fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          actual_b="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "${actual_b}" != "${BASE_SHA}" ]]; then
+            echo "comparison base does not resolve to the requested B SHA" >&2
+            exit 1
+          fi
+          git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Build canonical package and same-source proxy sidecar
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${CODEX_PACKAGE_OUT}"
+          CODEX_REPO_ROOT="${PWD}" python3 scripts/build_codex_package.py \
+            --target "${CODEX_TARGET}" \
+            --variant codex \
+            --cargo-profile release \
+            --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
+            --force
+          CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
+            .github/scripts/build-codex-package-archive.sh \
+              --target "${CODEX_TARGET}" \
+              --bundle primary \
+              --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
+              --archive-dir "${CODEX_PACKAGE_OUT}"
+          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "${CODEX_TARGET}" \
+            -p codex-responses-api-proxy
+          install -Dm 0755 \
+            "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release/codex-responses-api-proxy" \
+            "${CODEX_PACKAGE_OUT}/codex-responses-api-proxy"
+          cp "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}/codex-package.json" \
+            "${CODEX_PACKAGE_OUT}/codex-package.json"
+          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Build modified the exact product source worktree; refusing artifact publication." >&2
+            git status --short >&2
+            exit 1
+          fi
+      - name: Write H/B/T and artifact digest manifest
+        working-directory: product
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          RUNNER_LABEL: ubuntu-24.04
+          RUST_TARGET: x86_64-unknown-linux-gnu
+          PRODUCT_ARCH: x86_64
+          PACKAGE_OUT: ${{ runner.temp }}/codex-first-binary
+        run: |
+          set -euo pipefail
+          WORKFLOW_HOST_SHA="$(git -C "${GITHUB_WORKSPACE}/.workflow-src" rev-parse HEAD)" \
+          PRODUCT_SHA="$(git rev-parse HEAD)" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          package_out = Path(os.environ["PACKAGE_OUT"])
+          target = os.environ["RUST_TARGET"]
+          package_manifest = json.loads((package_out / "codex-package.json").read_text())
+          if package_manifest.get("version") != "0.160.0-dev.sedna.1":
+              raise SystemExit(
+                  "package manifest is not the admitted source-derived development version"
+              )
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          files = [
+              f"codex-package-{target}.tar.zst",
+              "codex-package.json",
+              "codex-responses-api-proxy",
+          ]
+          digests = {}
+          for name in files:
+              path = package_out / name
+              if not path.is_file():
+                  raise SystemExit(f"required package artifact is missing: {name}")
+              digests[name] = sha256_file(path)
+          payload = {
+              "schema_version": "sedna-first-binary-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "workflow_run": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "workflow_host_sha": os.environ["WORKFLOW_HOST_SHA"],
+              "product_sha": os.environ["PRODUCT_SHA"],
+              "comparison_base_sha": os.environ["BASE_SHA"],
+              "target": target,
+              "architecture": os.environ["PRODUCT_ARCH"],
+              "runner_label": os.environ["RUNNER_LABEL"],
+              "package_version": package_manifest["version"],
+              "artifacts_sha256": digests,
+          }
+          (package_out / "manifest.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload package and same-source proxy evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-${{ inputs.target_sha }}-x86_64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-first-binary/codex-package-x86_64-unknown-linux-gnu.tar.zst
+            ${{ runner.temp }}/codex-first-binary/codex-package.json
+            ${{ runner.temp }}/codex-first-binary/codex-responses-api-proxy
+            ${{ runner.temp }}/codex-first-binary/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux-aarch64:
+    name: Package native Linux ARM64
+    if: ${{ inputs.mode == 'build' }}
+    needs:
+      - runner_policy
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    env:
+      CODEX_TARGET: aarch64-unknown-linux-gnu
+      CARGO_TARGET_DIR: ${{ runner.temp }}/codex-rust-target
+      CODEX_REPO_ROOT: ${{ github.workspace }}/product
+      CODEX_PACKAGE_OUT: ${{ runner.temp }}/codex-first-binary
+    steps:
+      - name: Check out workflow host (H)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+      - name: Check out exact product source (T)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: product
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - name: Verify H, B, T, and native architecture
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "aarch64" ]] || {
+            echo "ARM64 package job is not on a native aarch64 runner" >&2
+            exit 1
+          }
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          actual_t="$(git -C product rev-parse HEAD)"
+          if [[ "${actual_h}" != "${EXPECTED_H}" || "${actual_t}" != "${TARGET_SHA}" ]]; then
+            echo "workflow host H or product source T does not match the requested identity" >&2
+            exit 1
+          fi
+          git -C product fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          actual_b="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "${actual_b}" != "${BASE_SHA}" ]]; then
+            echo "comparison base does not resolve to the requested B SHA" >&2
+            exit 1
+          fi
+          git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Build canonical package and same-source proxy sidecar
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${CODEX_PACKAGE_OUT}"
+          CODEX_REPO_ROOT="${PWD}" python3 scripts/build_codex_package.py \
+            --target "${CODEX_TARGET}" \
+            --variant codex \
+            --cargo-profile release \
+            --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
+            --force
+          CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
+            .github/scripts/build-codex-package-archive.sh \
+              --target "${CODEX_TARGET}" \
+              --bundle primary \
+              --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
+              --archive-dir "${CODEX_PACKAGE_OUT}"
+          cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "${CODEX_TARGET}" \
+            -p codex-responses-api-proxy
+          install -Dm 0755 \
+            "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release/codex-responses-api-proxy" \
+            "${CODEX_PACKAGE_OUT}/codex-responses-api-proxy"
+          cp "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}/codex-package.json" \
+            "${CODEX_PACKAGE_OUT}/codex-package.json"
+          if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+            echo "Build modified the exact product source worktree; refusing artifact publication." >&2
+            git status --short >&2
+            exit 1
+          fi
+      - name: Write H/B/T and artifact digest manifest
+        working-directory: product
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          RUNNER_LABEL: ubuntu-24.04-arm
+          RUST_TARGET: aarch64-unknown-linux-gnu
+          PRODUCT_ARCH: aarch64
+          PACKAGE_OUT: ${{ runner.temp }}/codex-first-binary
+        run: |
+          set -euo pipefail
+          WORKFLOW_HOST_SHA="$(git -C "${GITHUB_WORKSPACE}/.workflow-src" rev-parse HEAD)" \
+          PRODUCT_SHA="$(git rev-parse HEAD)" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          package_out = Path(os.environ["PACKAGE_OUT"])
+          target = os.environ["RUST_TARGET"]
+          package_manifest = json.loads((package_out / "codex-package.json").read_text())
+          if package_manifest.get("version") != "0.160.0-dev.sedna.1":
+              raise SystemExit(
+                  "package manifest is not the admitted source-derived development version"
+              )
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          files = [
+              f"codex-package-{target}.tar.zst",
+              "codex-package.json",
+              "codex-responses-api-proxy",
+          ]
+          digests = {}
+          for name in files:
+              path = package_out / name
+              if not path.is_file():
+                  raise SystemExit(f"required package artifact is missing: {name}")
+              digests[name] = sha256_file(path)
+          payload = {
+              "schema_version": "sedna-first-binary-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "workflow_run": (
+                  f'{os.environ["GITHUB_SERVER_URL"]}/'
+                  f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+              ),
+              "workflow_host_sha": os.environ["WORKFLOW_HOST_SHA"],
+              "product_sha": os.environ["PRODUCT_SHA"],
+              "comparison_base_sha": os.environ["BASE_SHA"],
+              "target": target,
+              "architecture": os.environ["PRODUCT_ARCH"],
+              "runner_label": os.environ["RUNNER_LABEL"],
+              "package_version": package_manifest["version"],
+              "artifacts_sha256": digests,
+          }
+          (package_out / "manifest.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Upload package and same-source proxy evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-${{ inputs.target_sha }}-aarch64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-first-binary/codex-package-aarch64-unknown-linux-gnu.tar.zst
+            ${{ runner.temp }}/codex-first-binary/codex-package.json
+            ${{ runner.temp }}/codex-first-binary/codex-responses-api-proxy
+            ${{ runner.temp }}/codex-first-binary/manifest.json
+          if-no-files-found: error
+          retention-days: 7
