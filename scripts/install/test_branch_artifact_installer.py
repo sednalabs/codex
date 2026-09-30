@@ -231,6 +231,19 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             installer.parse_args(["--run-id", "1001"])
 
+    def test_run_with_workflow_path_suffix_is_rejected(self) -> None:
+        run = {
+            "id": 1001,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "repository": {"full_name": installer.REPOSITORY},
+            "path": f"{installer.WORKFLOW_PATH}.unexpected@refs/heads/main",
+            "head_sha": WORKFLOW_SHA,
+        }
+        with self.assertRaisesRegex(installer.InstallError, "not bound"):
+            installer.validate_run(run)
+
     def test_source_mismatch_is_rejected(self) -> None:
         api = make_api((self.core_zip, action_artifact("host", 1002, source_sha="c" * 40)))
         with self.assertRaisesRegex(installer.InstallError, "do not match"):
