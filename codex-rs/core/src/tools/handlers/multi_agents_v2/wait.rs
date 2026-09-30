@@ -1,6 +1,8 @@
 use super::*;
 use crate::agent::agent_resolver::resolve_agent_target;
+use crate::agent::api::AgentWaitStatus;
 use crate::agent::status::is_final;
+use crate::agent::status::is_final_for_wait;
 use crate::session::InputQueueActivity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
@@ -23,7 +25,7 @@ type StatusFuture = futures::future::BoxFuture<
     'static,
     (
         ThreadId,
-        tokio::sync::watch::Receiver<AgentStatus>,
+        tokio::sync::watch::Receiver<AgentWaitStatus>,
         Result<(), tokio::sync::watch::error::RecvError>,
     ),
 >;
@@ -168,22 +170,29 @@ impl Handler {
             })
             .collect::<Vec<_>>();
         let mut statuses = HashMap::new();
+        let mut ready_targets = HashSet::new();
+        let mut status_snapshots = HashMap::new();
         let mut status_futures: StatusFutures = FuturesUnordered::new();
         for id in &target_ids {
-            let mut status_rx = match session.services.agent_control.subscribe_status(*id).await {
+            let mut status_rx = match session
+                .services
+                .agent_control
+                .subscribe_wait_status(*id)
+                .await
+            {
                 Ok(rx) => rx,
                 Err(err) => {
                     if err.to_string().to_ascii_lowercase().contains("not found") {
                         statuses.insert(*id, AgentStatus::NotFound);
+                        ready_targets.insert(*id);
                         continue;
                     }
                     return Err(FunctionCallError::RespondToModel(err.to_string()));
                 }
             };
             let status = status_rx.borrow().clone();
-            if is_final(&status) {
-                statuses.insert(*id, status);
-            }
+            update_target_wait_state(*id, &status, &mut statuses, &mut ready_targets);
+            status_snapshots.insert(*id, status_rx.clone());
             let id = *id;
             status_futures.push(
                 async move {
@@ -224,6 +233,8 @@ impl Handler {
             target_paths: &target_paths,
             return_when: args.return_when,
             statuses: &mut statuses,
+            ready_targets: &mut ready_targets,
+            status_snapshots: &status_snapshots,
             status_futures: &mut status_futures,
             deadline,
             native_event_wait: args.native_event_wait,
@@ -423,6 +434,8 @@ struct WaitEventContext<'a> {
     target_paths: &'a [codex_protocol::AgentPath],
     return_when: ReturnWhen,
     statuses: &'a mut HashMap<ThreadId, AgentStatus>,
+    ready_targets: &'a mut HashSet<ThreadId>,
+    status_snapshots: &'a HashMap<ThreadId, tokio::sync::watch::Receiver<AgentWaitStatus>>,
     status_futures: &'a mut StatusFutures,
     deadline: Instant,
     native_event_wait: bool,
@@ -439,12 +452,14 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
         target_paths,
         return_when,
         statuses,
+        ready_targets,
+        status_snapshots,
         status_futures,
         mut deadline,
         native_event_wait,
         pending_mailbox,
     } = context;
-    if terminal_rule_satisfied(target_ids, return_when, statuses) {
+    if terminal_rule_satisfied(target_ids, return_when, ready_targets) {
         return (WaitReason::TargetTerminal(return_when), false);
     }
     if matches!(
@@ -491,19 +506,19 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                 }
                 if matches!(activity, InputQueueActivity::Mailbox) {
                     for id in target_ids {
-                        let status = session.services.agent_control.get_status(*id).await;
-                        if is_final(&status) {
-                            statuses.insert(*id, status);
+                        if let Some(status_rx) = status_snapshots.get(id) {
+                            let status = status_rx.borrow().clone();
+                            update_target_wait_state(*id, &status, statuses, ready_targets);
                         }
                     }
-                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
+                    if terminal_rule_satisfied(target_ids, return_when, ready_targets) {
                         return (WaitReason::TargetTerminal(return_when), false);
                     }
                 }
                 if matches!(activity, InputQueueActivity::Mailbox | InputQueueActivity::TerminalCompletion)
                     && !native_event_wait
                 {
-                    if terminal_rule_satisfied(target_ids, return_when, statuses) {
+                    if terminal_rule_satisfied(target_ids, return_when, ready_targets) {
                         return (WaitReason::TargetTerminal(return_when), false);
                     }
                     return (
@@ -531,8 +546,8 @@ async fn wait_for_event(context: WaitEventContext<'_>) -> (WaitReason, bool) {
                 let Some((id, mut rx, changed)) = status else { continue; };
                 if changed.is_err() { return (WaitReason::SubscriptionLoss, false); }
                 let value = rx.borrow().clone();
-                if is_final(&value) { statuses.insert(id, value); }
-                if terminal_rule_satisfied(target_ids, return_when, statuses) { return (WaitReason::TargetTerminal(return_when), false); }
+                update_target_wait_state(id, &value, statuses, ready_targets);
+                if terminal_rule_satisfied(target_ids, return_when, ready_targets) { return (WaitReason::TargetTerminal(return_when), false); }
                 status_futures.push(async move { let changed = rx.changed().await; (id, rx, changed) }.boxed());
             }
             _ = tokio::time::sleep_until(deadline) => {
@@ -626,21 +641,36 @@ fn receiver_agent_refs(
         .collect()
 }
 
+fn update_target_wait_state(
+    target_id: ThreadId,
+    status: &AgentWaitStatus,
+    statuses: &mut HashMap<ThreadId, AgentStatus>,
+    ready_targets: &mut HashSet<ThreadId>,
+) {
+    // `statuses` remains the raw per-turn view exposed to app-server/TUI. A
+    // successful intermediate goal turn is still recorded as Completed; only
+    // the separate readiness set consumes the producer-owned projection.
+    if is_final(&status.status) {
+        statuses.insert(target_id, status.status.clone());
+    }
+    if is_final_for_wait(status) {
+        ready_targets.insert(target_id);
+    } else {
+        ready_targets.remove(&target_id);
+    }
+}
+
 fn terminal_rule_satisfied(
     target_ids: &[ThreadId],
     return_when: ReturnWhen,
-    statuses: &HashMap<ThreadId, AgentStatus>,
+    ready_targets: &HashSet<ThreadId>,
 ) -> bool {
     if target_ids.is_empty() {
         return false;
     }
     match return_when {
-        ReturnWhen::Any => target_ids
-            .iter()
-            .any(|id| statuses.get(id).is_some_and(is_final)),
-        ReturnWhen::All => target_ids
-            .iter()
-            .all(|id| statuses.get(id).is_some_and(is_final)),
+        ReturnWhen::Any => target_ids.iter().any(|id| ready_targets.contains(id)),
+        ReturnWhen::All => target_ids.iter().all(|id| ready_targets.contains(id)),
     }
 }
 
@@ -733,27 +763,24 @@ mod tests {
     fn completion_rule_distinguishes_any_from_all() {
         let first = ThreadId::new();
         let second = ThreadId::new();
-        let statuses = HashMap::from([(first, AgentStatus::Shutdown)]);
+        let ready_targets = HashSet::from([first]);
 
         assert!(terminal_rule_satisfied(
             &[first, second],
             ReturnWhen::Any,
-            &statuses,
+            &ready_targets,
         ));
         assert!(!terminal_rule_satisfied(
             &[first, second],
             ReturnWhen::All,
-            &statuses,
+            &ready_targets,
         ));
 
-        let statuses = HashMap::from([
-            (first, AgentStatus::Shutdown),
-            (second, AgentStatus::Shutdown),
-        ]);
+        let ready_targets = HashSet::from([first, second]);
         assert!(terminal_rule_satisfied(
             &[first, second],
             ReturnWhen::All,
-            &statuses,
+            &ready_targets,
         ));
     }
 
@@ -788,9 +815,19 @@ mod tests {
             session.input_queue.subscribe_native_activity().await;
         let first = ThreadId::new();
         let second = ThreadId::new();
-        let (first_tx, mut first_rx) = tokio::sync::watch::channel(AgentStatus::Running);
-        let (second_tx, mut second_rx) = tokio::sync::watch::channel(AgentStatus::Running);
+        let (first_tx, mut first_rx) = tokio::sync::watch::channel(AgentWaitStatus {
+            status: AgentStatus::Running,
+            turn_id: None,
+            logical_terminality: None,
+        });
+        let (second_tx, mut second_rx) = tokio::sync::watch::channel(AgentWaitStatus {
+            status: AgentStatus::Running,
+            turn_id: None,
+            logical_terminality: None,
+        });
         let mut statuses = HashMap::new();
+        let mut ready_targets = HashSet::new();
+        let status_snapshots = HashMap::new();
         let mut status_futures: StatusFutures = FuturesUnordered::new();
         status_futures.push(
             async move {
@@ -817,6 +854,8 @@ mod tests {
             target_paths: &target_paths,
             return_when: ReturnWhen::All,
             statuses: &mut statuses,
+            ready_targets: &mut ready_targets,
+            status_snapshots: &status_snapshots,
             status_futures: &mut status_futures,
             deadline: Instant::now() + NATIVE_WAIT_LEASE,
             native_event_wait: true,
@@ -825,7 +864,11 @@ mod tests {
         tokio::pin!(wait);
 
         first_tx
-            .send(AgentStatus::Shutdown)
+            .send(AgentWaitStatus {
+                status: AgentStatus::Shutdown,
+                turn_id: None,
+                logical_terminality: None,
+            })
             .expect("first status receiver");
         tokio::select! {
             biased;
@@ -834,9 +877,96 @@ mod tests {
         }
 
         second_tx
-            .send(AgentStatus::Shutdown)
+            .send(AgentWaitStatus {
+                status: AgentStatus::Shutdown,
+                turn_id: None,
+                logical_terminality: None,
+            })
             .expect("second status receiver");
         assert_eq!(wait.await, (WaitReason::TargetTerminal(ReturnWhen::All), false));
+    }
+
+    #[tokio::test]
+    async fn native_wait_keeps_active_goal_turn_raw_visible_but_not_ready() {
+        let (session, _) = make_session_and_context().await;
+        let (mut activity_rx, pending_activity, mailbox_generation, pending_mailbox) =
+            session.input_queue.subscribe_native_activity().await;
+        let target = ThreadId::new();
+        let active_goal_status = AgentWaitStatus {
+            status: AgentStatus::Completed(Some("intermediate result".to_string())),
+            turn_id: Some("turn-1".to_string()),
+            logical_terminality: Some(crate::agent::api::AgentTurnLogicalTerminality {
+                turn_id: "turn-1".to_string(),
+                goal_id: "goal-1".to_string(),
+            }),
+        };
+        let (status_tx, mut status_rx) = tokio::sync::watch::channel(active_goal_status.clone());
+        let mut statuses = HashMap::new();
+        let mut ready_targets = HashSet::new();
+        update_target_wait_state(
+            target,
+            &active_goal_status,
+            &mut statuses,
+            &mut ready_targets,
+        );
+        let status_snapshots = HashMap::from([(target, status_rx.clone())]);
+        let mut status_futures: StatusFutures = FuturesUnordered::new();
+        status_futures.push(
+            async move {
+                let changed = status_rx.changed().await;
+                (target, status_rx, changed)
+            }
+            .boxed(),
+        );
+        let target_ids = [target];
+        let target_paths = Vec::new();
+        let wait = wait_for_event(WaitEventContext {
+            session: &session,
+            activity_rx: &mut activity_rx,
+            pending_activity,
+            mailbox_generation,
+            target_ids: &target_ids,
+            target_paths: &target_paths,
+            return_when: ReturnWhen::Any,
+            statuses: &mut statuses,
+            ready_targets: &mut ready_targets,
+            status_snapshots: &status_snapshots,
+            status_futures: &mut status_futures,
+            deadline: Instant::now() + NATIVE_WAIT_LEASE,
+            native_event_wait: true,
+            pending_mailbox: &pending_mailbox,
+        });
+        tokio::pin!(wait);
+
+        assert_eq!(
+            statuses.get(&target),
+            Some(&AgentStatus::Completed(Some(
+                "intermediate result".to_string()
+            )))
+        );
+        assert!(!ready_targets.contains(&target));
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("active goal continuation completed native wait: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        status_tx
+            .send(AgentWaitStatus {
+                status: AgentStatus::Completed(Some("final result".to_string())),
+                turn_id: Some("turn-2".to_string()),
+                logical_terminality: None,
+            })
+            .expect("status receiver");
+        assert_eq!(
+            wait.await,
+            (WaitReason::TargetTerminal(ReturnWhen::Any), false)
+        );
+        assert!(ready_targets.contains(&target));
+        assert_eq!(
+            statuses.get(&target),
+            Some(&AgentStatus::Completed(Some("final result".to_string())))
+        );
     }
 
     #[tokio::test]
@@ -847,6 +977,8 @@ mod tests {
         let target_ids = Vec::new();
         let target_paths = Vec::new();
         let mut statuses = HashMap::new();
+        let mut ready_targets = HashSet::new();
+        let status_snapshots = HashMap::new();
         let mut status_futures: StatusFutures = FuturesUnordered::new();
 
         tokio::time::pause();
@@ -859,6 +991,8 @@ mod tests {
             target_paths: &target_paths,
             return_when: ReturnWhen::Any,
             statuses: &mut statuses,
+            ready_targets: &mut ready_targets,
+            status_snapshots: &status_snapshots,
             status_futures: &mut status_futures,
             deadline: Instant::now() + Duration::from_millis(5),
             native_event_wait: true,
