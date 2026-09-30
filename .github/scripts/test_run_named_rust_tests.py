@@ -85,6 +85,58 @@ class NamedRustTests(TestCase):
         self.assertTrue(result["tests"][0]["execution_reconciled"])
         self.assertEqual(result["tests"][0]["result_counts"]["passed"], 1)
 
+    def test_ansi_csi_controls_are_normalized_for_parsing_not_raw_evidence(
+        self,
+    ) -> None:
+        output = (
+            "\x1b[32mtest suite::known ... \x1b[0 qok\x1b[0m\n\n"
+            "\x1b[32mtest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out\x1b[0m\n"
+        )
+        result, _ = self.run_exact([(output, 0)])
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["tests"][0]["execution_reconciled"])
+        self.assertIn("\x1b[0 q", result["tests"][0]["diagnostics"]["stdout_tail"])
+
+    def test_ansi_normalization_preserves_exact_name_and_one_test_gates(self) -> None:
+        cases = (
+            (
+                "test suite::other ... \x1b[0 qok\n\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                0,
+                "execution_reconciliation_failed",
+            ),
+            (
+                "test suite::known ... \x1b[0 qok\n"
+                "test suite::other ... ok\n\n"
+                "test result: ok. 2 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                0,
+                "execution_reconciliation_failed",
+            ),
+            (
+                "test suite::known ... \x1b[0 qFAILED\n\n"
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                101,
+                "named_test_failed",
+            ),
+            (
+                "\x1b]0;title\x07test suite::known ... ok\n\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                0,
+                "execution_reconciliation_failed",
+            ),
+        )
+        for output, code, failure_code in cases:
+            with self.subTest(failure_code=failure_code, output=output):
+                result, _ = self.run_exact([(output, code)])
+                self.assertEqual(result["status"], "failure")
+                self.assertEqual(result["failure_code"], failure_code)
+
     def test_ignored_test_cannot_report_success_from_exit_zero(self) -> None:
         result = self.run_request(
             "test suite::known ... ignored\n"

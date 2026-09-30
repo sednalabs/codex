@@ -17,16 +17,18 @@ from typing import Any
 from unittest import mock
 
 
-PLAN_SHA256 = "8a8c5412e5c486246822954165593eb821b5860a3a57c26534ce0ba47300c93c"
+PLAN_SHA256 = "df6814f67721401bbadf45d08643a0ef4ab430544a8c7dc140d79a1a93cff27f"
 HARNESS_BASE_SHA = "a32e5c594e6759185c08fcbd75b0e9f6fdee4f1c"
-PRODUCT_SHA = "8272e3951cc5189070ec8ea867fba0ff6b2bb8a9"
+PRODUCT_SHA = "8e09dcb3848e3de4666e751233f01d467c651891"
 COMPARISON_BASE_SHA = "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7"
 RUNNER = "ubuntu-24.04"
 EXPECTED_PATHS = {
-    ".github/validation-frontier-soak.json",
-    ".github/workflows/validation-named-tests.yml",
-    ".github/workflows/_validation-named-tests.yml",
+    ".github/scripts/run_named_rust_tests.py",
     ".github/scripts/test_frontier_soak_contract.py",
+    ".github/scripts/test_run_named_rust_tests.py",
+    ".github/validation-frontier-soak.json",
+    ".github/workflows/_validation-named-tests.yml",
+    ".github/workflows/validation-named-tests.yml",
 }
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / ".github" / "validation-frontier-soak.json"

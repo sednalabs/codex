@@ -131,7 +131,7 @@ jobs:
             echo "profile must be rust_integration for frontier_soak" >&2
             exit 1
           fi
-          if [[ "${VALIDATION_TARGET_SHA}" != "8272e3951cc5189070ec8ea867fba0ff6b2bb8a9" ]]; then
+          if [[ "${VALIDATION_TARGET_SHA}" != "8e09dcb3848e3de4666e751233f01d467c651891" ]]; then
             echo "target_sha does not match the fixed frontier manifest" >&2
             exit 1
           fi
@@ -156,13 +156,15 @@ jobs:
             exit 1
           fi
           expected_paths="$(printf '%s\n' \
+            .github/scripts/run_named_rust_tests.py \
             .github/scripts/test_frontier_soak_contract.py \
+            .github/scripts/test_run_named_rust_tests.py \
             .github/validation-frontier-soak.json \
             .github/workflows/_validation-named-tests.yml \
             .github/workflows/validation-named-tests.yml)"
           actual_paths="$(git diff --name-only "${base_sha}" "${harness_sha}")"
           if [[ "${actual_paths}" != "${expected_paths}" ]]; then
-            echo "harness candidate path set differs from the admitted four-path cutline" >&2
+            echo "harness candidate path set differs from the admitted six-path cutline" >&2
             printf '%s\n' "${actual_paths}" >&2
             exit 1
           fi

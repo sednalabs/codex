@@ -40,6 +40,13 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def normalize_terminal_controls(output: str) -> str:
+    """Remove CSI controls from a parse copy, leaving captured evidence intact."""
+
+    return ANSI_CSI_RE.sub("", output)
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -60,7 +67,7 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str
 
 
 def test_result_counts(output: str) -> dict[str, int] | None:
-    matches = list(TEST_RESULT_RE.finditer(output))
+    matches = list(TEST_RESULT_RE.finditer(normalize_terminal_controls(output)))
     if len(matches) != 1:
         return None
     match = matches[0]
@@ -322,7 +329,7 @@ def test_outcomes(output: str) -> dict[str, list[str]]:
     """Index each exact Cargo test result without trusting a summary count."""
 
     outcomes: dict[str, list[str]] = {}
-    for line in output.splitlines():
+    for line in normalize_terminal_controls(output).splitlines():
         match = TEST_OUTCOME_RE.match(line.strip())
         if match:
             outcomes.setdefault(match.group("name"), []).append(match.group("status"))
