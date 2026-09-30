@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -7,9 +8,12 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use http::Method;
+use http::StatusCode;
+use http::header::CONTENT_TYPE;
+use oauth2::HttpRequest;
 use oauth2::PkceCodeChallenge;
-use reqwest::Client;
-use reqwest::StatusCode;
+use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
@@ -18,16 +22,20 @@ use url::Url;
 
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
+use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::oauth::compute_expires_at_millis;
 use crate::oauth::save_oauth_tokens;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::utils::build_default_headers;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_exec_server::HttpClient;
 
 const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const DEFAULT_DEVICE_EXPIRES_IN_SECS: u64 = 900;
 const DEFAULT_DEVICE_POLL_INTERVAL_SECS: u64 = 5;
 const MAX_ERROR_BODY_PREVIEW_CHARS: usize = 500;
+const DEVICE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAuthorizationPrompt {
@@ -67,6 +75,7 @@ pub async fn perform_oauth_device_login(
     server_name: &str,
     server_url: &str,
     issuer: &str,
+    http_client: Arc<dyn HttpClient>,
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
@@ -87,11 +96,24 @@ pub async fn perform_oauth_device_login(
         token_endpoint,
         supports_issuer_parameter,
     )?;
+    let has_configured_headers = http_headers
+        .as_ref()
+        .is_some_and(|headers| !headers.is_empty())
+        || env_http_headers
+            .as_ref()
+            .is_some_and(|headers| !headers.is_empty());
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let http_client = Client::builder()
-        .default_headers(default_headers)
-        .build()
-        .context("failed to build OAuth device HTTP client")?;
+    // OAuth endpoints may be on a different origin from the MCP resource. Keep
+    // resource credentials origin-scoped and bound every outbound operation.
+    let http_client = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client,
+        default_headers,
+        server_url,
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        has_configured_headers,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .context("failed to build OAuth device HTTP client")?;
     let client_id = match oauth_client_id.filter(|client_id| !client_id.trim().is_empty()) {
         Some(client_id) => client_id.trim().to_string(),
         None => {
@@ -179,7 +201,7 @@ fn validate_device_endpoints(
 }
 
 async fn register_device_client(
-    http_client: &Client,
+    http_client: &OAuthHttpClientAdapter,
     registration_endpoint: &str,
     scopes: &[String],
     supports_refresh_token: bool,
@@ -194,24 +216,26 @@ async fn register_device_client(
         token_endpoint_auth_method: "none",
         scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
     };
-    let response = http_client
-        .post(registration_endpoint)
-        .json(&request)
-        .send()
-        .await
-        .context("failed to dynamically register OAuth device client")?;
+    let request_body = serde_json::to_vec(&request)
+        .context("failed to encode OAuth device client registration request")?;
+    let response = execute_oauth_request(
+        http_client,
+        registration_endpoint,
+        request_body,
+        "application/json",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+    )
+    .await
+    .context("failed to dynamically register OAuth device client")?;
     let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read OAuth client registration response")?;
+    let body = response.body();
     if !status.is_success() {
         bail!(
             "OAuth dynamic client registration failed with HTTP {status}. Response: {}",
             body_preview(&body)
         );
     }
-    let response = serde_json::from_slice::<DeviceClientRegistrationResponse>(&body)
+    let response = serde_json::from_slice::<DeviceClientRegistrationResponse>(body)
         .context("failed to parse OAuth dynamic client registration response")?;
     if response.client_id.trim().is_empty() {
         bail!("OAuth dynamic client registration response did not include a client_id");
@@ -220,7 +244,7 @@ async fn register_device_client(
 }
 
 async fn request_device_authorization_with_pkce_fallback(
-    http_client: &Client,
+    http_client: &OAuthHttpClientAdapter,
     endpoint: &str,
     client_id: &str,
     scopes: &[String],
@@ -249,7 +273,7 @@ async fn request_device_authorization_with_pkce_fallback(
 }
 
 async fn request_device_authorization(
-    http_client: &Client,
+    http_client: &OAuthHttpClientAdapter,
     endpoint: &str,
     client_id: &str,
     scopes: &[String],
@@ -267,25 +291,25 @@ async fn request_device_authorization(
         form.push(("code_challenge", pkce.code_challenge.clone()));
         form.push(("code_challenge_method", "S256".to_string()));
     }
-    let response = http_client
-        .post(endpoint)
-        .form(&form)
-        .send()
-        .await
-        .context("failed to request OAuth device authorization")?;
+    let response = execute_oauth_request(
+        http_client,
+        endpoint,
+        encode_form(&form),
+        "application/x-www-form-urlencoded",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+    )
+    .await
+    .context("failed to request OAuth device authorization")?;
     let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read OAuth device authorization response")?;
+    let body = response.body();
     if !status.is_success() {
         return Err(provider_error_from_body(
             status,
-            &body,
+            body,
             "device authorization",
         ));
     }
-    let details = serde_json::from_slice::<DeviceAuthorizationResponse>(&body)
+    let details = serde_json::from_slice::<DeviceAuthorizationResponse>(body)
         .context("failed to parse OAuth device authorization response")?;
     if details.device_code.trim().is_empty()
         || details.user_code.trim().is_empty()
@@ -309,7 +333,7 @@ async fn request_device_authorization(
 }
 
 async fn poll_device_token(
-    http_client: &Client,
+    http_client: &OAuthHttpClientAdapter,
     endpoint: &str,
     client_id: &str,
     resource: Option<&str>,
@@ -342,22 +366,24 @@ async fn poll_device_token(
         if let Some(pkce) = pkce {
             form.push(("code_verifier", pkce.code_verifier.clone()));
         }
-        let response = http_client
-            .post(endpoint)
-            .form(&form)
-            .send()
-            .await
-            .context("failed to poll OAuth device token")?;
+        let request_timeout =
+            DEVICE_HTTP_REQUEST_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
+        let response = execute_oauth_request(
+            http_client,
+            endpoint,
+            encode_form(&form),
+            "application/x-www-form-urlencoded",
+            request_timeout,
+        )
+        .await
+        .context("failed to poll OAuth device token")?;
         let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .context("failed to read OAuth device token response")?;
+        let body = response.body();
         if status.is_success() {
-            return serde_json::from_slice::<OAuthTokenResponse>(&body)
+            return serde_json::from_slice::<OAuthTokenResponse>(body)
                 .context("failed to parse OAuth device token response");
         }
-        let error = parse_provider_error(status, &body, "device token")?;
+        let error = parse_provider_error(status, body, "device token")?;
         match error.error.as_str() {
             "authorization_pending" => sleep_until_next_poll(interval, deadline).await?,
             "slow_down" => {
@@ -375,6 +401,32 @@ async fn poll_device_token(
             }
         }
     }
+}
+
+async fn execute_oauth_request(
+    http_client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    body: Vec<u8>,
+    content_type: &str,
+    timeout: Duration,
+) -> Result<oauth2::HttpResponse> {
+    let request = HttpRequest::builder()
+        .method(Method::POST)
+        .uri(endpoint)
+        .header(CONTENT_TYPE, content_type)
+        .body(body)
+        .context("failed to build OAuth device request")?;
+    Ok(http_client
+        .execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(timeout))
+        .await?)
+}
+
+fn encode_form(fields: &[(impl AsRef<str>, String)]) -> Vec<u8> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in fields {
+        serializer.append_pair(name.as_ref(), value);
+    }
+    serializer.finish().into_bytes()
 }
 
 async fn sleep_until_next_poll(interval: Duration, deadline: Instant) -> Result<()> {

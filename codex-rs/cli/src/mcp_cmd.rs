@@ -621,6 +621,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             credential_name.as_ref(),
             &url,
             issuer,
+            http_client,
             config.mcp_oauth_credentials_store_mode,
             config.auth_keyring_backend_kind(),
             http_headers,
