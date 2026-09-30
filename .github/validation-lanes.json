@@ -1820,7 +1820,7 @@
       "working_directory": ".",
       "script_path": ".github/scripts/validation-lanes/build-policy-sanity.sh",
       "script_args": [],
-      "needs_just": false,
+      "needs_just": true,
       "needs_node": false,
       "needs_nextest": false,
       "needs_linux_build_deps": false,
