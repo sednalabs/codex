@@ -24,13 +24,23 @@ on:
         required: false
         default: false
         type: boolean
+      package_smoke:
+        description: Verify approved packaged Linux artifacts without rebuilding them
+        required: false
+        default: false
+        type: boolean
+      package_inputs_json:
+        description: Exact approved core/helper artifact identities for the two-platform package smoke
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}-${{ inputs.host_only }}-${{ inputs.package_smoke }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   metadata:
@@ -83,7 +93,7 @@ jobs:
 
   build-linux-x86_64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-x86_64' }}
+    if: ${{ !inputs.package_smoke && inputs.platform == 'linux-x86_64' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -208,7 +218,7 @@ jobs:
 
   build-linux-aarch64:
     needs: metadata
-    if: ${{ inputs.platform == 'linux-aarch64' }}
+    if: ${{ !inputs.package_smoke && inputs.platform == 'linux-aarch64' }}
     uses: ./.github/workflows/_sedna-linux-rust.yml
     with:
       checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
@@ -337,7 +347,7 @@ jobs:
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
     needs: metadata
-    if: ${{ inputs.platform == 'macos' }}
+    if: ${{ !inputs.package_smoke && inputs.platform == 'macos' }}
     runs-on: macos-15-intel
     timeout-minutes: 210
     permissions:
@@ -547,3 +557,73 @@ jobs:
         with:
           path: ${{ github.workspace }}/.sccache/
           key: sedna-preview-sccache-macos-15-intel-x86_64-apple-darwin-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+
+  package-linux-smoke:
+    name: Verify packaged Linux artifacts (${{ matrix.platform }})
+    if: ${{ inputs.package_smoke }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout workflow tooling identity
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-source
+
+      - name: Checkout exact product source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          path: product-source
+
+      - name: Require packaged-smoke-only input shape
+        shell: bash
+        env:
+          PRODUCT_SHA: ${{ inputs.ref }}
+          SELECTED_PLATFORM: ${{ inputs.platform }}
+          HOST_ONLY: ${{ inputs.host_only }}
+          PACKAGE_SMOKE: ${{ inputs.package_smoke }}
+          PACKAGE_INPUTS_JSON: ${{ inputs.package_inputs_json }}
+        run: |
+          set -euo pipefail
+          test "${PACKAGE_SMOKE}" = "true"
+          test "${HOST_ONLY}" = "false"
+          test "${SELECTED_PLATFORM}" = "linux-x86_64"
+          test "${PRODUCT_SHA}" = "def481c8fef0ca460b997238f1edbf39e7f33ed9"
+          test -n "${PACKAGE_INPUTS_JSON}"
+
+      - name: Verify exact artifacts and exercise packaged binaries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PRODUCT_SHA: ${{ inputs.ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          PACKAGE_INPUTS_JSON: ${{ inputs.package_inputs_json }}
+          PRODUCT_DIR: ${{ github.workspace }}/product-source
+          WORKFLOW_DIR: ${{ github.workspace }}/workflow-source
+        run: bash workflow-source/.github/scripts/sedna/packaged-linux-smoke.sh
+
+      - name: Upload package verification evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-smoke-${{ matrix.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/codex-packaged-smoke/
+          if-no-files-found: error
+          retention-days: 7
