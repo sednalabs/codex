@@ -1027,7 +1027,11 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
 
 #[tokio::test]
 async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
-    let (home, mut config) = test_config().await;
+    let (home, mut config) = test_config_with_cli_overrides(vec![(
+        "agents.max_threads".to_string(),
+        TomlValue::Integer(8),
+    )])
+    .await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
     let harness = AgentControlHarness::new_with_config(home, config).await;
