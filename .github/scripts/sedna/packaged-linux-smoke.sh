@@ -18,6 +18,10 @@ mkdir -p "${EVIDENCE_DIR}"
 mkdir -p -m 700 "${WORK_DIR}"
 printf '%s\n' "${PACKAGE_INPUTS_JSON}" > "${EVIDENCE_DIR}/package-inputs.json"
 
+run_without_github_token() {
+  env -u GH_TOKEN "$@"
+}
+
 if [[ "${PRODUCT_SHA}" != "${EXPECTED_PRODUCT_SHA}" ]]; then
   echo "unexpected product SHA: ${PRODUCT_SHA}" >&2
   exit 2
@@ -52,7 +56,7 @@ fetch_component() {
   local component="$1"
   local record run_id artifact_id expected_name expected_digest expected_host_sha expected_host_branch
   local run_json artifacts_json artifact_json zip_path zip_digest extract_dir
-  local archive_name metadata_name archive_sha_name binary_sha_name
+  local archive_name metadata_name archive_sha_name binary_sha_name allow_missing_target=false
 
   record="$(jq -ce --arg platform "${PLATFORM}" --arg component "${component}" '.artifacts[$platform][$component]' "${EVIDENCE_DIR}/package-inputs.json")"
   run_id="$(jq -er '.run_id | tostring' <<<"${record}")"
@@ -63,6 +67,16 @@ fetch_component() {
   expected_host_branch="$(jq -er '.workflow_head_branch' <<<"${record}")"
   archive_name="$(jq -er '.archive_name' <<<"${record}")"
   metadata_name="$(jq -er '.metadata_name' <<<"${record}")"
+
+  # The exact existing x86 producers predate the metadata target field. Only
+  # these two already-qualified artifacts may omit it; their API run identity,
+  # product SHA, and later ELF-machine check still bind the architecture.
+  if [[ "${PLATFORM}:${component}:${run_id}:${artifact_id}:${expected_host_sha}:${expected_host_branch}" == \
+    "linux-x86_64:core:36638886323:11067062939:88799989233d9c2b7d6340633089e19da96d3327:main" || \
+    "${PLATFORM}:${component}:${run_id}:${artifact_id}:${expected_host_sha}:${expected_host_branch}" == \
+    "linux-x86_64:host:36638896832:11066191765:88799989233d9c2b7d6340633089e19da96d3327:main" ]]; then
+    allow_missing_target=true
+  fi
 
   run_json="${artifact_root}/${component}-run.json"
   artifacts_json="${artifact_root}/${component}-artifacts.json"
@@ -156,7 +170,8 @@ PY
   fi
 
   jq -e --arg sha "${PRODUCT_SHA}" --arg target "${TARGET}" --arg repo "${GITHUB_REPOSITORY}" \
-    --arg run "${run_id}" '.repository == $repo and .commit == $sha and .ref == $sha and .target == $target and (.workflow | endswith($run))' \
+    --arg run "${run_id}" --argjson allow_missing_target "${allow_missing_target}" \
+    '.repository == $repo and .commit == $sha and .ref == $sha and (if has("target") then .target == $target else $allow_missing_target end) and (.workflow | endswith($run))' \
     "${extract_dir}/${metadata_name}" >/dev/null
   if [[ "${component}" == "host" ]]; then
     jq -e --arg host_sha "${expected_host_sha}" '.workflowCommit == $host_sha and .artifact == "codex-code-mode-host"' \
@@ -211,6 +226,22 @@ PY
 fetch_component core
 fetch_component host
 
+# Download/API access is complete. Do not pass the Actions token to the test,
+# packaged binaries, or provider mock. Exercise this boundary with a synthetic
+# value before removing the real token from this process environment.
+if ! GH_TOKEN="codex-package-smoke-synthetic-token" run_without_github_token \
+  python3 -c 'import os; raise SystemExit("GH_TOKEN" in os.environ)'; then
+  echo "credential-exclusion check failed: child observed GH_TOKEN" >&2
+  exit 1
+fi
+unset GH_TOKEN
+if [[ "${GH_TOKEN+x}" == x ]]; then
+  echo "credential-exclusion check failed: GH_TOKEN remains exported" >&2
+  exit 1
+fi
+printf '{"synthetic_child_did_not_observe_github_token":true,"real_github_token_unset_before_product_execution":true}\n' \
+  > "${EVIDENCE_DIR}/credential-boundary.json"
+
 package_dir="${WORK_DIR}/package"
 mkdir -m 700 "${package_dir}"
 install -m 755 "${WORK_DIR}/core/unpacked/codex" "${package_dir}/codex"
@@ -233,7 +264,7 @@ stdio_build_log="${EVIDENCE_DIR}/code-mode-stdio-build.jsonl"
 stdio_build_stderr="${EVIDENCE_DIR}/code-mode-stdio-build.stderr.log"
 stdio_test_log="${EVIDENCE_DIR}/code-mode-stdio-test.log"
 stdio_target_dir="${WORK_DIR}/cargo-target"
-if ! CARGO_TARGET_DIR="${stdio_target_dir}" cargo test \
+if ! run_without_github_token env CARGO_TARGET_DIR="${stdio_target_dir}" cargo test \
   --manifest-path "${PRODUCT_DIR}/codex-rs/Cargo.toml" \
   --package codex-code-mode-host \
   --test stdio \
@@ -252,7 +283,7 @@ if [[ ! -x "${stdio_test_binary}" ]]; then
   echo "compiled stdio integration-test binary is not executable: ${stdio_test_binary}" >&2
   exit 1
 fi
-if ! env \
+if ! run_without_github_token env \
   "CARGO_BIN_EXE_codex-code-mode-host=${package_dir}/codex-code-mode-host" \
   "CARGO_BIN_EXE_codex_code_mode_host=${package_dir}/codex-code-mode-host" \
   "${stdio_test_binary}" \
@@ -275,12 +306,12 @@ printf '{"selected_test":"remote_session_persists_values_forwards_delegates_and_
 
 fixture_home="${WORK_DIR}/codex-home"
 mkdir -m 700 "${fixture_home}"
-python3 "${WORKFLOW_DIR}/.github/scripts/sedna/create-legacy-state-fixture.py" \
+run_without_github_token python3 "${WORKFLOW_DIR}/.github/scripts/sedna/create-legacy-state-fixture.py" \
   --migrations-dir "${PRODUCT_DIR}/codex-rs/state/migrations" \
   --database-path "${fixture_home}/state_5.sqlite" \
   --receipt-path "${EVIDENCE_DIR}/legacy-fixture.json"
 
-python3 - "${package_dir}/codex" "${fixture_home}" "${PRODUCT_DIR}/codex-rs/state/migrations" "${EVIDENCE_DIR}" <<'PY'
+run_without_github_token python3 - "${package_dir}/codex" "${fixture_home}" "${PRODUCT_DIR}/codex-rs/state/migrations" "${EVIDENCE_DIR}" <<'PY'
 import hashlib
 import json
 import os
@@ -445,9 +476,10 @@ jq -n --arg product_sha "${PRODUCT_SHA}" --arg workflow_sha "${WORKFLOW_SHA}" --
   --slurpfile core "${EVIDENCE_DIR}/core-identity.json" \
   --slurpfile host "${EVIDENCE_DIR}/host-identity.json" \
   --slurpfile fixture "${EVIDENCE_DIR}/legacy-fixture.json" \
+  --slurpfile credential_boundary "${EVIDENCE_DIR}/credential-boundary.json" \
   --slurpfile host_stdio_test "${EVIDENCE_DIR}/code-mode-stdio-test.json" \
   --slurpfile bundled_models "${EVIDENCE_DIR}/debug-models-bundled.json" \
   --slurpfile app_server "${EVIDENCE_DIR}/packaged-app-server.json" \
-  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],code_mode_host_stdio_test:$host_stdio_test[0],bundled_models:$bundled_models[0],app_server:$app_server[0]}' \
+  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],credential_boundary:$credential_boundary[0],code_mode_host_stdio_test:$host_stdio_test[0],bundled_models:$bundled_models[0],app_server:$app_server[0]}' \
   > "${EVIDENCE_DIR}/package-verification.json"
 echo "packaged smoke passed for ${PLATFORM} at product ${PRODUCT_SHA} (workflow host ${WORKFLOW_SHA})"
