@@ -705,12 +705,12 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
             if visible_codex.exists() and not visible_codex.is_symlink():
                 visible_backup = backups_dir / f"codex.{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}.{uuid.uuid4().hex}"
                 os.replace(visible_codex, visible_backup)
-            atomic_symlink(str(current_path / "codex"), visible_codex, "codex")
+            atomic_symlink(str(current_path / "bin" / "codex"), visible_codex, "codex")
             visible_replaced = True
             if os.environ.get("SEDNA_BRANCH_INSTALLER_TESTING") == "1" and os.environ.get("SEDNA_BRANCH_INSTALLER_TEST_FAIL_AT") == "after-visible":
                 fail("injected activation failure after launcher switch")
         except BaseException:
-            if visible_replaced and visible_codex.is_symlink() and os.readlink(visible_codex) == str(current_path / "codex"):
+            if visible_replaced and visible_codex.is_symlink() and os.readlink(visible_codex) == str(current_path / "bin" / "codex"):
                 visible_codex.unlink()
             if visible_backup is not None and visible_backup.exists() and not visible_codex.exists() and not visible_codex.is_symlink():
                 os.replace(visible_backup, visible_codex)
