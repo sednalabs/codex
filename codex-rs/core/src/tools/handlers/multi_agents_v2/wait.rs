@@ -8,6 +8,7 @@ use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentWaitReason;
 use codex_protocol::items::AgentWaitWakeCause;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;

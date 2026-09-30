@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::Prompt;
+use crate::ResponseStream;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::context::CompactionSummary;
@@ -13,6 +14,7 @@ use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CompactionTurnMetadata;
+use crate::session::ProviderResponseUsageContext;
 use crate::session::RequestEffortUsage;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -752,16 +754,24 @@ async fn drain_to_completed(
     prompt: &Prompt,
     phase: CompactionPhase,
 ) -> CodexResult<CompactionResponse> {
-    let mut stream = client_session
+    let effort = sess
+        .reasoning_effort_for_request(
+            &turn_context.initial_settings,
+            RequestEffortUsage::Compaction,
+        )
+        .await;
+    let usage_context = ProviderResponseUsageContext {
+        started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        requested_model: turn_context.model_info().slug.clone(),
+        actual_model_used: None,
+        requested_service_tier: turn_context.config.service_tier.clone(),
+    };
+    let stream = client_session
         .stream(
             prompt,
             turn_context.model_info(),
             &turn_context.session_telemetry,
-            sess.reasoning_effort_for_request(
-                &turn_context.initial_settings,
-                RequestEffortUsage::Compaction,
-            )
-            .await,
+            effort,
             turn_context.reasoning_summary(),
             turn_context.config.service_tier.clone(),
             responses_metadata,
@@ -770,6 +780,16 @@ async fn drain_to_completed(
             &InferenceTraceContext::disabled(),
         )
         .await?;
+    collect_local_compaction_output(sess, turn_context, stream, phase, usage_context).await
+}
+
+async fn collect_local_compaction_output(
+    sess: &Session,
+    turn_context: &TurnContext,
+    mut stream: ResponseStream,
+    phase: CompactionPhase,
+    mut usage_context: ProviderResponseUsageContext,
+) -> CodexResult<CompactionResponse> {
     let mut output = Vec::new();
     loop {
         let maybe_event = stream.next().await;
@@ -805,6 +825,9 @@ async fn drain_to_completed(
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
             }
+            Ok(ResponseEvent::ServerModel(server_model)) => {
+                usage_context.actual_model_used = Some(server_model);
+            }
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
@@ -816,6 +839,7 @@ async fn drain_to_completed(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    usage_context,
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
@@ -834,3 +858,91 @@ async fn drain_to_completed(
 #[cfg(test)]
 #[path = "compact_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod completion_usage_tests {
+    use super::*;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    fn response_stream(events: Vec<CodexResult<ResponseEvent>>) -> ResponseStream {
+        let (tx_event, rx_event) = mpsc::channel(events.len().max(1));
+        for event in events {
+            tx_event.try_send(event).expect("test stream has capacity");
+        }
+        drop(tx_event);
+        ResponseStream {
+            rx_event,
+            interrupt: None,
+            consumer_dropped: CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_compaction_completion_preserves_observed_or_absent_server_model() {
+        for observed_model in [Some("actual-compact-model"), None] {
+            let sqlite_home = tempfile::tempdir().expect("isolated usage database home");
+            let state_db = codex_state::StateRuntime::init(
+                codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs()),
+                "openai".to_string(),
+            )
+            .await
+            .expect("initialize usage database");
+            let (mut sess, turn_context, rx) =
+                crate::session::tests::make_session_and_context_with_rx().await;
+            Arc::get_mut(&mut sess)
+                .expect("test session has one owner")
+                .services
+                .state_db = Some(Arc::clone(&state_db));
+            let mut events = Vec::new();
+            if let Some(model) = observed_model {
+                events.push(Ok(ResponseEvent::ServerModel(model.to_string())));
+            }
+            events.push(Ok(ResponseEvent::Completed {
+                response_id: "resp-local-compact".to_string(),
+                token_usage: None,
+                usage_metadata: None,
+                end_turn: Some(true),
+            }));
+            let output = collect_local_compaction_output(
+                &sess,
+                &turn_context,
+                response_stream(events),
+                CompactionPhase::PostTurn,
+                ProviderResponseUsageContext {
+                    started_at: "2026-10-01T00:00:00.000Z".to_string(),
+                    requested_model: "requested-compact-model".to_string(),
+                    actual_model_used: None,
+                    requested_service_tier: None,
+                },
+            )
+            .await
+            .expect("local compaction completion");
+            assert_eq!(output.response_id, "resp-local-compact");
+            let event = rx
+                .recv()
+                .await
+                .expect("completion consumer must emit event");
+            let EventMsg::RawResponseCompleted(completed) = event.msg else {
+                panic!("expected raw response completion, got {:?}", event.msg);
+            };
+            assert_eq!(completed.response_id, "resp-local-compact");
+            let rows = sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT requested_model, actual_model_used FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+            )
+            .bind(sess.thread_id.to_string())
+            .bind("resp-local-compact")
+            .fetch_all(state_db.usage_pool().as_ref())
+            .await
+            .expect("read persisted provider usage");
+            assert_eq!(
+                rows,
+                vec![(
+                    "requested-compact-model".to_string(),
+                    observed_model.map(str::to_string),
+                )]
+            );
+        }
+    }
+}

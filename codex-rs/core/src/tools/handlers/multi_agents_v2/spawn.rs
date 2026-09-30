@@ -251,7 +251,7 @@ async fn handle_spawn_agent(
             task_name,
             agent_id: new_thread_id.to_string(),
             nickname,
-            agent_status,
+            agent_status: agent_status.clone(),
             configured_model: agent_snapshot.model.clone(),
             configured_reasoning_effort: agent_snapshot.reasoning_effort.clone(),
         }
