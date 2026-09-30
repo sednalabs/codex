@@ -402,6 +402,8 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             {
                 "HOME": str(fake_home),
                 "GH_TOKEN": "synthetic-fixture-token",
+                "NO_PROXY": "127.0.0.1,localhost,::1",
+                "no_proxy": "127.0.0.1,localhost,::1",
                 "SEDNA_BRANCH_INSTALLER_TESTING": "1",
                 "SEDNA_BRANCH_INSTALLER_TEST_API_ROOT": fixture_api_root,
             }
