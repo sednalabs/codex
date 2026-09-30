@@ -395,14 +395,20 @@ class NamedRustTests(TestCase):
         self.assertEqual([test["name"] for test in result["tests"]], ["suite::first"])
 
     def test_exact_continue_succeeds_only_when_every_test_passes(self) -> None:
-        passed = (
+        passed_known = (
             "test suite::known ... ok\n\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored; "
             "0 measured; 4 filtered out\n",
             0,
         )
+        passed_other = (
+            "test suite::other ... ok\n\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            0,
+        )
         result, run = self.run_exact(
-            [passed, passed],
+            [passed_known, passed_other],
             names=["suite::known", "suite::other"],
             request={"execution_mode": "exact_continue"},
         )
@@ -491,6 +497,7 @@ class NamedRustTests(TestCase):
         inventory = self.completed(stdout="-list: test\n")
         with (
             mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
             result = MODULE.run_request(request, Path("/validation-target"))
