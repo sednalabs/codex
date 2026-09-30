@@ -751,17 +751,34 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     );
     assert_eq!(std::fs::read_to_string(&effect_path)?, "first\ndistinct\n");
 
+    fn accepted_assistant_messages(items: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        items
+            .iter()
+            .filter(|item| {
+                item["type"] == "message"
+                    && item["role"] == "assistant"
+                    && item["content"].as_array().is_some_and(|content| {
+                        content.len() == 1
+                            && content[0]["type"] == "output_text"
+                            && content[0]["text"] == "accepted before failure"
+                    })
+            })
+            .collect()
+    }
+
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
     let retry_body = requests[1].body_json();
     let retry_items = retry_body["input"].as_array().expect("retry prompt input");
+    let retry_accepted_messages = accepted_assistant_messages(retry_items);
     assert_eq!(
-        retry_items
-            .iter()
-            .filter(|item| item["type"] == "message" && item["id"] == partial_id)
-            .count(),
+        retry_accepted_messages.len(),
         1,
-        "the completed assistant item, not merely its draft delta, entered history",
+        "the completed assistant output, not merely its draft delta, entered retry history",
+    );
+    assert!(
+        retry_accepted_messages[0].get("id").is_none(),
+        "the non-prefixed provider item ID must be stripped only at the wire boundary",
     );
     assert_eq!(
         retry_items
@@ -781,6 +798,16 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     );
     let follow_up_body = requests[2].body_json();
     let follow_up_items = follow_up_body["input"].as_array().expect("follow-up input");
+    let follow_up_accepted_messages = accepted_assistant_messages(follow_up_items);
+    assert_eq!(
+        follow_up_accepted_messages.len(),
+        1,
+        "the accepted assistant output must survive once into follow-up history",
+    );
+    assert!(
+        follow_up_accepted_messages[0].get("id").is_none(),
+        "the non-prefixed provider item ID remains absent on the follow-up wire request",
+    );
     assert_eq!(
         follow_up_items
             .iter()
