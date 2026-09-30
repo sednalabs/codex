@@ -11,7 +11,6 @@ use anyhow::bail;
 use http::Method;
 use http::StatusCode;
 use http::header::CONTENT_TYPE;
-use oauth2::HttpRequest;
 use oauth2::PkceCodeChallenge;
 use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthTokenResponse;
@@ -410,15 +409,16 @@ async fn execute_oauth_request(
     content_type: &str,
     timeout: Duration,
 ) -> Result<oauth2::HttpResponse> {
-    let request = HttpRequest::builder()
+    let request = http::Request::builder()
         .method(Method::POST)
         .uri(endpoint)
         .header(CONTENT_TYPE, content_type)
         .body(body)
         .context("failed to build OAuth device request")?;
-    Ok(http_client
+    http_client
         .execute_request(request, OAuthHttpRedirectPolicy::Stop, Some(timeout))
-        .await?)
+        .await
+        .map_err(|error| anyhow!(error.to_string()))
 }
 
 fn encode_form(fields: &[(impl AsRef<str>, String)]) -> Vec<u8> {
