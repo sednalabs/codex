@@ -125,10 +125,10 @@ mod tests {
     use crate::migrations::runtime_usage_migrator;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
-    use sqlx::migrate::Migration;
     use sqlx::AssertSqlSafe;
     use sqlx::SqlSafeStr;
     use sqlx::SqlitePool;
+    use sqlx::migrate::Migration;
     use sqlx::raw_sql;
     use std::collections::BTreeSet;
 
@@ -216,6 +216,7 @@ mod tests {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-6-astra",
+            "gpt-6.1-sol",
             "gpt-6-luna",
             "gpt-6-sol",
             "gpt-daybreak-blue",
@@ -223,6 +224,7 @@ mod tests {
             "gpt-daybreak-red",
             "gpt-daybreak-red-latest",
             "gpt-image-2",
+            "gpt-rosalind-research",
         ])
         .into_iter()
         .map(str::to_string)
@@ -318,6 +320,13 @@ mod tests {
                 "300.000",
             ),
             (
+                "gpt-6.1-sol",
+                "codex_token_based",
+                "50.000",
+                "2.500",
+                "250.000",
+            ),
+            (
                 "gpt-6-astra",
                 "codex_token_based",
                 "250.000",
@@ -337,6 +346,13 @@ mod tests {
                 "50.000",
                 "5.000",
                 "250.000",
+            ),
+            (
+                "gpt-rosalind-research",
+                "codex_token_based",
+                "125.000",
+                "12.500",
+                "625.000",
             ),
             (
                 "gpt-daybreak-blue",

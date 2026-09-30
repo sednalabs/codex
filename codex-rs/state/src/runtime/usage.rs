@@ -227,4 +227,216 @@ mod tests {
         reopened.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
+
+    #[tokio::test]
+    async fn adopted_rate_card_is_effective_dated_and_fails_closed_on_unknown_modes() {
+        let codex_home = unique_temp_dir();
+        let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string())
+            .await
+            .expect("initialize isolated state runtime");
+
+        let one_million_each = Some((1_000_000, 1_000_000, 0, 1_000_000, 3_000_000));
+        let current_rates = [
+            ("gpt-6.1-sol", "default", false, 302.5),
+            ("gpt-6.1-sol", "priority", true, 605.0),
+            ("gpt-6-astra", "priority", true, 3_050.0),
+            ("gpt-6-sol", "priority", true, 610.0),
+            ("gpt-6-luna", "priority", true, 30.5),
+            ("gpt-rosalind-research", "default", false, 762.5),
+        ];
+        for (index, (model, service_tier, fast, _)) in current_rates.iter().enumerate() {
+            let call_id = format!("adopted-rate-{index}");
+            let mut record = completed_record(
+                &call_id,
+                "adopted-rate-thread",
+                &format!("response-{call_id}"),
+                "ok",
+                one_million_each,
+            );
+            record.requested_model = "gpt-6-sol".to_string();
+            record.actual_model_used = Some((*model).to_string());
+            record.actual_service_tier = Some((*service_tier).to_string());
+            record.fast_mode_used = Some(*fast);
+            record.started_at = "2026-09-29T23:52:00Z".to_string();
+            runtime
+                .record_provider_call_usage(&record)
+                .await
+                .expect("persist rate-card fixture");
+        }
+
+        let mut historical_fast = completed_record(
+            "historical-fast",
+            "adopted-rate-thread",
+            "response-historical-fast",
+            "ok",
+            one_million_each,
+        );
+        historical_fast.actual_model_used = Some("gpt-6-sol".to_string());
+        historical_fast.actual_service_tier = Some("priority".to_string());
+        historical_fast.fast_mode_used = Some(true);
+        historical_fast.started_at = "2026-09-29T23:51:59Z".to_string();
+        runtime
+            .record_provider_call_usage(&historical_fast)
+            .await
+            .expect("persist pre-adoption historical fixture");
+
+        let mut mixed_tokens = completed_record(
+            "mixed-token-call",
+            "adopted-rate-thread",
+            "response-mixed-token-call",
+            "ok",
+            Some((2_000_000, 3_000_000, 0, 4_000_000, 9_000_000)),
+        );
+        mixed_tokens.actual_model_used = Some("gpt-6.1-sol".to_string());
+        mixed_tokens.started_at = "2026-09-29T23:52:00Z".to_string();
+        runtime
+            .record_provider_call_usage(&mixed_tokens)
+            .await
+            .expect("persist mixed-token fixture");
+
+        let mut reported_credits = completed_record(
+            "provider-credits-call",
+            "adopted-rate-thread",
+            "response-provider-credits-call",
+            "ok",
+            one_million_each,
+        );
+        reported_credits.actual_model_used = Some("gpt-6-sol".to_string());
+        reported_credits.actual_service_tier = Some("priority".to_string());
+        reported_credits.fast_mode_used = Some(true);
+        reported_credits.started_at = "2026-09-29T23:52:00Z".to_string();
+        runtime
+            .record_provider_call_usage(&reported_credits)
+            .await
+            .expect("persist provider-credit fixture");
+        sqlx::query(
+            "UPDATE usage_provider_calls SET provider_reported_credits = ? WHERE provider_call_id = ?",
+        )
+        .bind(42.25_f64)
+        .bind("provider-credits-call")
+        .execute(runtime.usage_pool().as_ref())
+        .await
+        .expect("attach provider-reported credit evidence");
+
+        for (call_id, model, service_tier, fast) in [
+            ("unsupported-fast", "gpt-5.5", "priority", true),
+            ("unsupported-ultrafast", "gpt-6-astra", "ultrafast", true),
+            ("image-without-modality", "gpt-image-2", "default", false),
+        ] {
+            let mut record = completed_record(
+                call_id,
+                "adopted-rate-thread",
+                &format!("response-{call_id}"),
+                "ok",
+                one_million_each,
+            );
+            record.actual_model_used = Some(model.to_string());
+            record.actual_service_tier = Some(service_tier.to_string());
+            record.fast_mode_used = Some(fast);
+            record.started_at = "2026-09-29T23:52:00Z".to_string();
+            runtime
+                .record_provider_call_usage(&record)
+                .await
+                .expect("persist partial-coverage fixture");
+        }
+        runtime.close().await;
+
+        let reopened = StateRuntime::init(sqlite, "openai".to_string())
+            .await
+            .expect("reopen isolated state runtime");
+        let mut expected = current_rates
+            .iter()
+            .enumerate()
+            .map(|(index, (_, _, _, credits))| {
+                (
+                    format!("adopted-rate-{index}"),
+                    "priced_estimate".to_string(),
+                    Some(*credits),
+                )
+            })
+            .collect::<Vec<_>>();
+        expected.extend([
+            (
+                "historical-fast".to_string(),
+                "priced_estimate".to_string(),
+                Some(762.5),
+            ),
+            (
+                "mixed-token-call".to_string(),
+                "priced_estimate".to_string(),
+                Some(1_107.5),
+            ),
+            (
+                "provider-credits-call".to_string(),
+                "provider_reported".to_string(),
+                Some(42.25),
+            ),
+            (
+                "unsupported-fast".to_string(),
+                "fast_rate_unknown".to_string(),
+                None,
+            ),
+            (
+                "unsupported-ultrafast".to_string(),
+                "fast_rate_unknown".to_string(),
+                None,
+            ),
+            (
+                "image-without-modality".to_string(),
+                "model_rate_missing".to_string(),
+                None,
+            ),
+        ]);
+        for (call_id, pricing_status, credits) in expected {
+            let actual = sqlx::query_as::<_, (String, Option<f64>)>(
+                "SELECT pricing_status, estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+            )
+            .bind(&call_id)
+            .fetch_one(reopened.usage_pool().as_ref())
+            .await
+            .expect("read effective credit result after reopen");
+            assert_eq!(actual, (pricing_status, credits), "call {call_id}");
+        }
+
+        let actual_identity = sqlx::query_as::<_, (String, String)>(
+            "SELECT requested_model, pricing_model FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        )
+        .bind("adopted-rate-0")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("read request and observed model separately");
+        assert_eq!(
+            actual_identity,
+            ("gpt-6-sol".to_string(), "gpt-6.1-sol".to_string())
+        );
+
+        let provider_credit_detail = sqlx::query_as::<_, (Option<f64>, Option<f64>, Option<String>)>(
+            "SELECT rate_card_estimated_total_credits, estimated_total_credits, credit_source FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        )
+        .bind("provider-credits-call")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("read provider-credit precedence after reopen");
+        assert_eq!(
+            provider_credit_detail,
+            (
+                Some(610.0),
+                Some(42.25),
+                Some("provider_reported".to_string())
+            )
+        );
+
+        let summary = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT provider_call_count, priced_call_count, unpriced_call_count, partial FROM usage_thread_credit_summary WHERE thread_id = ?",
+        )
+        .bind("adopted-rate-thread")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("read reopened thread credit summary");
+        assert_eq!(summary, (12, 9, 3, 1));
+
+        reopened.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
 }
