@@ -57,6 +57,42 @@ class Artifact:
     target: str
 
 
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urllib.parse.urlsplit(url)
+        try:
+            port = parsed.port
+        except ValueError:
+            raise urllib.error.HTTPError(url, 403, "invalid redirect authority", None, None)
+        default_port = 443 if parsed.scheme == "https" else 80 if parsed.scheme == "http" else None
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), port or default_port
+
+    @staticmethod
+    def _allowed_test_http(url: str) -> bool:
+        parsed = urllib.parse.urlsplit(url)
+        return (
+            os.environ.get("SEDNA_BRANCH_INSTALLER_TESTING") == "1"
+            and parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+            and parsed.username is None
+            and parsed.password is None
+        )
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        old_allowed = old.scheme == "https" or self._allowed_test_http(req.full_url)
+        new_allowed = new.scheme == "https" or self._allowed_test_http(newurl)
+        if not old_allowed or not new_allowed or new.username is not None or new.password is not None:
+            raise urllib.error.HTTPError(newurl, 403, "refusing unsafe or non-HTTPS redirect", headers, fp)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and self._origin(req.full_url) != self._origin(newurl):
+            for header in ("Authorization", "Proxy-Authorization", "Cookie"):
+                redirected.remove_header(header)
+        return redirected
+
+
 def fail(message: str) -> None:
     raise InstallError(message)
 
@@ -130,6 +166,7 @@ class GitHubApi:
                 fail("test API root is allowed only for loopback synthetic fixtures")
             self.root = fixture_root.rstrip("/")
         self.token = token
+        self.opener = urllib.request.build_opener(SafeRedirectHandler())
 
     def json(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -142,7 +179,7 @@ class GitHubApi:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with self.opener.open(request, timeout=30) as response:
                 payload = json.load(response)
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
@@ -168,7 +205,7 @@ class GitHubApi:
         )
         digest = hashlib.sha256()
         try:
-            with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
+            with self.opener.open(request, timeout=60) as response, destination.open("xb") as output:
                 while chunk := response.read(1024 * 1024):
                     digest.update(chunk)
                     output.write(chunk)
