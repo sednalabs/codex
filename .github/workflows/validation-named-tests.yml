@@ -1,11 +1,19 @@
 name: validation-named-tests
 
 run-name: >-
-  validation-named-tests/${{ inputs.profile }}
+  validation-named-tests/${{ inputs.suite }}/${{ inputs.profile }}
 
 on:
   workflow_dispatch:
     inputs:
+      suite:
+        description: Closed validation suite
+        required: false
+        type: choice
+        options:
+          - named
+          - frontier_soak
+        default: named
       target_sha:
         description: Exact 40-character candidate commit SHA to validate
         required: true
@@ -25,18 +33,44 @@ on:
         default: rust_minimal
       request_json:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
-        required: true
+        required: false
+        default: ""
         type: string
 
 concurrency:
-  group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
+  group: validation-named-tests/${{ inputs.suite }}/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  named_request:
+    if: inputs.suite == 'named'
+    name: Validate named-test request
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject blank named-test request
+        shell: bash
+        env:
+          REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${REQUEST_JSON//[[:space:]]/}" ]]; then
+            echo "request_json is required for the named suite" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          request = json.loads(os.environ["REQUEST_JSON"])
+          if not isinstance(request, dict):
+              raise SystemExit("named-test request must be a JSON object")
+          PY
+
   named_tests:
+    if: inputs.suite == 'named'
+    needs: named_request
     uses: ./.github/workflows/_validation-named-tests.yml
     with:
       target_sha: ${{ inputs.target_sha }}
@@ -45,3 +79,132 @@ jobs:
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
       artifact_name: validation-named-tests-${{ github.run_id }}
+
+  frontier_contract:
+    if: inputs.suite == 'frontier_soak'
+    name: Validate and emit frontier matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    env:
+      VALIDATION_HARNESS_BASE_SHA: a32e5c594e6759185c08fcbd75b0e9f6fdee4f1c
+      VALIDATION_TARGET_SHA: ${{ inputs.target_sha }}
+      VALIDATION_BASE_SHA: ${{ inputs.base_ref }}
+      VALIDATION_HARNESS_SHA: ${{ github.sha }}
+      VALIDATION_PROFILE: ${{ inputs.profile }}
+      VALIDATION_TARGET_ROOT: ${{ github.workspace }}/validation-target
+      RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+    steps:
+      - name: Check out harness candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact product candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          path: validation-target
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact H/B/T identity and four-path cutline
+        shell: bash
+        env:
+          SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REPOSITORY}" != "sednalabs/codex" ]]; then
+            echo "frontier suite must run in sednalabs/codex" >&2
+            exit 1
+          fi
+          if [[ "${SUITE}" != "frontier_soak" ]]; then
+            echo "suite must be frontier_soak" >&2
+            exit 1
+          fi
+          if [[ -n "${RUST_TEST_REQUEST_JSON}" ]]; then
+            echo "request_json must be empty for frontier_soak" >&2
+            exit 1
+          fi
+          if [[ "${VALIDATION_PROFILE}" != "rust_integration" ]]; then
+            echo "profile must be rust_integration for frontier_soak" >&2
+            exit 1
+          fi
+          if [[ "${VALIDATION_TARGET_SHA}" != "8272e3951cc5189070ec8ea867fba0ff6b2bb8a9" ]]; then
+            echo "target_sha does not match the fixed frontier manifest" >&2
+            exit 1
+          fi
+          if [[ "${VALIDATION_BASE_SHA}" != "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7" ]]; then
+            echo "base_ref must be the exact frontier comparison base SHA" >&2
+            exit 1
+          fi
+          harness_sha="$(git rev-parse HEAD)"
+          target_sha="$(git -C validation-target rev-parse HEAD)"
+          if [[ "${harness_sha}" != "${VALIDATION_HARNESS_SHA}" ]]; then
+            echo "harness checkout does not match workflow event SHA" >&2
+            exit 1
+          fi
+          if [[ "${target_sha}" != "${VALIDATION_TARGET_SHA}" ]]; then
+            echo "product checkout does not match the exact dispatched target SHA" >&2
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "${VALIDATION_HARNESS_BASE_SHA}"
+          base_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "${base_sha}" != "${VALIDATION_HARNESS_BASE_SHA}" ]]; then
+            echo "harness base does not match the frozen source base SHA" >&2
+            exit 1
+          fi
+          expected_paths="$(printf '%s\n' \
+            .github/scripts/test_frontier_soak_contract.py \
+            .github/validation-frontier-soak.json \
+            .github/workflows/_validation-named-tests.yml \
+            .github/workflows/validation-named-tests.yml)"
+          actual_paths="$(git diff --name-only "${base_sha}" "${harness_sha}")"
+          if [[ "${actual_paths}" != "${expected_paths}" ]]; then
+            echo "harness candidate path set differs from the admitted four-path cutline" >&2
+            printf '%s\n' "${actual_paths}" >&2
+            exit 1
+          fi
+
+      - name: Verify and emit closed frontier requests
+        id: matrix
+        shell: bash
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          output="$(python3 .github/scripts/test_frontier_soak_contract.py --emit-matrix 2>&1)" || {
+            printf '%s\n' "${output}"
+            exit 1
+          }
+          printf '%s\n' "${output}"
+          if ! grep -Eq '^Ran [1-9][0-9]* tests? in ' <<< "${output}"; then
+            echo "frontier contract preflight executed zero tests" >&2
+            exit 1
+          fi
+          matrix="$(sed -n 's/^matrix=//p' <<< "${output}")"
+          if [[ -z "${matrix}" || "$(grep -c '^matrix=' <<< "${output}")" != 1 ]]; then
+            echo "frontier contract did not emit exactly one matrix" >&2
+            exit 1
+          fi
+          printf 'matrix=%s\n' "${matrix}" >> "${GITHUB_OUTPUT}"
+
+  frontier_observations:
+    if: inputs.suite == 'frontier_soak'
+    name: ${{ matrix.lane_id }}
+    needs: frontier_contract
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.frontier_contract.outputs.matrix) }}
+    uses: ./.github/workflows/_validation-named-tests.yml
+    with:
+      target_sha: ${{ inputs.target_sha }}
+      base_ref: ${{ inputs.base_ref }}
+      base_sha: ${{ inputs.base_ref }}
+      harness_sha: ${{ github.sha }}
+      profile: ${{ inputs.profile }}
+      request_json: ${{ matrix.request_json }}
+      artifact_name: ${{ matrix.artifact_name }}
+      repetitions: ${{ matrix.repetitions }}

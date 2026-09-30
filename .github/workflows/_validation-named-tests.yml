@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: validation-named-tests
+      repetitions:
+        description: Exact-test observations on this runner (bounded to 1 or 3)
+        required: false
+        type: string
+        default: "1"
 
 permissions:
   contents: read
@@ -44,6 +49,8 @@ jobs:
       VALIDATION_EXPECTED_HARNESS_SHA: ${{ inputs.harness_sha }}
       VALIDATION_PROFILE: ${{ inputs.profile }}
       RUST_TEST_REQUEST_JSON: ${{ inputs.request_json }}
+      VALIDATION_REPETITIONS: ${{ inputs.repetitions }}
+      VALIDATION_ARTIFACT_NAME: ${{ inputs.artifact_name }}
     steps:
       - name: Check out trusted workflow helpers
         uses: actions/checkout@v7
@@ -127,6 +134,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${VALIDATION_REPETITIONS}" != "1" && "${VALIDATION_REPETITIONS}" != "3" ]]; then
+            echo "repetitions must be exactly 1 or 3" >&2
+            exit 1
+          fi
           if ! output="$(python3 .workflow-src/.github/scripts/test_run_named_rust_tests.py 2>&1)"; then
             printf '%s\n' "${output}"
             exit 1
@@ -154,46 +165,153 @@ jobs:
         id: named_tests
         continue-on-error: true
         working-directory: validation-target
+        env:
+          VALIDATION_REPETITIONS: ${{ inputs.repetitions }}
+          VALIDATION_ARTIFACT_NAME: ${{ inputs.artifact_name }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "../.workflow-src/.github/scripts")
+          from test_frontier_soak_contract import run_frontier_observation
+
+          repetitions = int(os.environ["VALIDATION_REPETITIONS"])
+          artifact_name = os.environ["VALIDATION_ARTIFACT_NAME"]
+          runner = ["python3", "../.workflow-src/.github/scripts/run_named_rust_tests.py"]
+          result_path = Path("rust-tests-v1-results.json")
+          manifest_path = Path("../.workflow-src/.github/validation-frontier-soak.json")
+          manifest_sha256 = ""
+          if manifest_path.is_file():
+              manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+              canonical = json.dumps(
+                  manifest, ensure_ascii=False, separators=(",", ":")
+              ).encode("utf-8")
+              manifest_sha256 = hashlib.sha256(canonical).hexdigest()
+          catalog_path = Path(".github/validation-named-tests.json")
+          catalog_sha256 = (
+              hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+              if catalog_path.is_file()
+              else ""
+          )
+
+          failure = False
+          for iteration in range(1, repetitions + 1):
+              if repetitions == 1:
+                  output_path = result_path
+              else:
+                  output_path = Path("frontier-results") / f"iteration-{iteration}.json"
+              iteration_failed = run_frontier_observation(
+                  runner=runner,
+                  result_path=result_path,
+                  output_path=output_path,
+                  iteration=iteration,
+                  repetitions=repetitions,
+                  artifact_name=artifact_name,
+                  manifest_sha256=manifest_sha256,
+                  catalog_sha256=catalog_sha256,
+              )
+              failure = failure or iteration_failed
+
+          raise SystemExit(1 if failure else 0)
+          PY
 
       - name: Append named-test evidence
         if: ${{ always() }}
         shell: bash
         env:
-          RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
+          VALIDATION_REPETITIONS: ${{ inputs.repetitions }}
+          VALIDATION_ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          RESULTS_DIRECTORY: ${{ github.workspace }}/validation-target
         run: |
           set -euo pipefail
-          RESULT_PATH="${RESULT_PATH}" python3 - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
+          python3 - <<'PY' >> "${GITHUB_STEP_SUMMARY}"
           import json
           import os
           from pathlib import Path
 
-          path = Path(os.environ["RESULT_PATH"])
-          if not path.exists():
-              print("### Named test evidence\n- No result artifact was produced.")
-          else:
+          results = Path(os.environ["RESULTS_DIRECTORY"])
+          repetitions = int(os.environ["VALIDATION_REPETITIONS"])
+          for iteration in range(1, repetitions + 1):
+              path = (
+                  results / "rust-tests-v1-results.json"
+                  if repetitions == 1
+                  else results / "frontier-results" / f"iteration-{iteration}.json"
+              )
+              if not path.exists():
+                  print(f"### Named test evidence — iteration {iteration}")
+                  print("- No result artifact was produced.")
+                  continue
               payload = json.loads(path.read_text(encoding="utf-8"))
               identity = payload.get("identity") or {}
-              print("### Named test evidence")
+              tests = payload.get("tests") or []
+              observed = [
+                  test for test in tests
+                  if any(outcome in ("ok", "FAILED", "ignored")
+                         for outcome in test.get("observed_outcomes", []))
+              ]
+              ignored = sum(
+                  1 for test in tests if "ignored" in test.get("observed_outcomes", [])
+              )
+              not_run = sum(1 for test in tests if test.get("status") == "not_run")
+              print(f"### Named test evidence — iteration {iteration}/{repetitions}")
+              print(f"- Lane/artifact: `{os.environ['VALIDATION_ARTIFACT_NAME']}`")
               print(f"- Status: `{payload.get('status', 'unknown')}`")
               print(f"- Request fingerprint: `{payload.get('request_fingerprint', '')}`")
               print(f"- Harness SHA: `{identity.get('harness_sha', '')}`")
               print(f"- Base SHA: `{identity.get('base_sha', '')}`")
               print(f"- Candidate SHA: `{identity.get('target_sha', '')}`")
-              print(f"- Executed tests: `{len(payload.get('tests') or [])}`")
+              frontier = payload.get("frontier_iteration") or {}
+              if frontier.get("manifest_sha256"):
+                  print(f"- Manifest SHA-256: `{frontier['manifest_sha256']}`")
+                  print(f"- Target catalog SHA-256: `{frontier.get('target_catalog_sha256', '')}`")
+                  print(f"- Elapsed monotonic ms: `{frontier.get('elapsed_ns', 0) / 1_000_000:.3f}`")
+              print(f"- Selected tests: `{len((payload.get('request') or {}).get('tests') or [])}`")
+              print(f"- Executed outcomes: `{len(observed)}`")
+              print(f"- Ignored tests: `{ignored}`")
+              print(f"- Not run: `{not_run}`")
               if payload.get("failure_code"):
                   print(f"- Failure code: `{payload['failure_code']}`")
           PY
 
-      - name: Upload named-test evidence
-        if: ${{ always() }}
+      - name: Upload named-test evidence (single observation)
+        if: ${{ always() && inputs.repetitions == '1' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
           path: validation-target/rust-tests-v1-results.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload frontier observation 1
+        if: ${{ always() && inputs.repetitions == '3' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-iteration-1
+          path: validation-target/frontier-results/iteration-1.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload frontier observation 2
+        if: ${{ always() && inputs.repetitions == '3' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-iteration-2
+          path: validation-target/frontier-results/iteration-2.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload frontier observation 3
+        if: ${{ always() && inputs.repetitions == '3' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-iteration-3
+          path: validation-target/frontier-results/iteration-3.json
           if-no-files-found: error
           retention-days: 3
 
