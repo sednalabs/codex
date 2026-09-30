@@ -273,6 +273,17 @@ stdio_build_log="${EVIDENCE_DIR}/code-mode-stdio-build.jsonl"
 stdio_build_stderr="${EVIDENCE_DIR}/code-mode-stdio-build.stderr.log"
 stdio_test_log="${EVIDENCE_DIR}/code-mode-stdio-test.log"
 stdio_target_dir="${WORK_DIR}/cargo-target"
+original_github_workspace="${GITHUB_WORKSPACE:-}"
+had_github_workspace="${GITHUB_WORKSPACE+x}"
+export GITHUB_WORKSPACE="${PRODUCT_DIR}"
+source "${PRODUCT_DIR}/.github/scripts/validation-lanes/setup-rusty-v8.sh" "${TARGET}"
+if [[ "${had_github_workspace}" == x ]]; then
+  export GITHUB_WORKSPACE="${original_github_workspace}"
+else
+  unset GITHUB_WORKSPACE
+fi
+printf '{"setup_script":"product-source/.github/scripts/validation-lanes/setup-rusty-v8.sh","target":"%s","trusted_checksums_verified":true}\n' \
+  "${TARGET}" > "${EVIDENCE_DIR}/rusty-v8-setup.json"
 if ! run_without_github_token env CARGO_TARGET_DIR="${stdio_target_dir}" cargo test \
   --manifest-path "${PRODUCT_DIR}/codex-rs/Cargo.toml" \
   --package codex-code-mode-host \
@@ -486,9 +497,10 @@ jq -n --arg product_sha "${PRODUCT_SHA}" --arg workflow_sha "${WORKFLOW_SHA}" --
   --slurpfile host "${EVIDENCE_DIR}/host-identity.json" \
   --slurpfile fixture "${EVIDENCE_DIR}/legacy-fixture.json" \
   --slurpfile credential_boundary "${EVIDENCE_DIR}/credential-boundary.json" \
+  --slurpfile rusty_v8 "${EVIDENCE_DIR}/rusty-v8-setup.json" \
   --slurpfile host_stdio_test "${EVIDENCE_DIR}/code-mode-stdio-test.json" \
   --slurpfile bundled_models "${EVIDENCE_DIR}/debug-models-bundled.json" \
   --slurpfile app_server "${EVIDENCE_DIR}/packaged-app-server.json" \
-  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],credential_boundary:$credential_boundary[0],code_mode_host_stdio_test:$host_stdio_test[0],bundled_models:$bundled_models[0],app_server:$app_server[0]}' \
+  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],credential_boundary:$credential_boundary[0],rusty_v8_setup:$rusty_v8[0],code_mode_host_stdio_test:$host_stdio_test[0],bundled_models:$bundled_models[0],app_server:$app_server[0]}' \
   > "${EVIDENCE_DIR}/package-verification.json"
 echo "packaged smoke passed for ${PLATFORM} at product ${PRODUCT_SHA} (workflow host ${WORKFLOW_SHA})"
