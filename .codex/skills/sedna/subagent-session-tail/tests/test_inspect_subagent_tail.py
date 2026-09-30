@@ -160,33 +160,55 @@ class SessionRecordTest(unittest.TestCase):
         self.assertEqual(malformed_info["session_state"], "unknown")
 
     def test_parent_path_lookup_reads_metadata_before_transcript_records(self) -> None:
-        wrong = write_session(self.root / "rollout-wrong.jsonl", metadata("wrong", agent_path="/root/other"), [
+        day_dir = self.root / "2026" / "09" / "30"
+        wrong = write_session(day_dir / "rollout-wrong.jsonl", metadata("wrong", agent_path="/root/other"), [
             b'{"type":"response_item","payload":{"text":"' + b"z" * 2048 + b'"}}\n',
         ])
-        right = write_session(self.root / "rollout-right.jsonl", metadata("right"), [
+        right = write_session(day_dir / "rollout-right.jsonl", metadata("right"), [
             event("task_started", "2026-09-30T00:00:00Z", turn_id="selected"),
         ])
-        with patch.object(inspect_subagent_tail, "MAX_RECORD_BYTES", 512):
-            # Exercise the common resolver over the same candidate set without a real session tree.
-            selected, stats = inspect_subagent_tail._resolve_candidates(
-                [wrong, right], tail=8, parent_thread_id="parent-id", agent_path="/root/child",
+        with patch.object(inspect_subagent_tail, "MAX_RECORD_BYTES", 512), \
+             patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root):
+            selected, stats = inspect_subagent_tail.find_by_parent_and_agent(
+                "parent-id", "/root/child", days=1, tail=8,
             )
         self.assertEqual(selected["path"], right)
         self.assertEqual(selected["session_state"], "active")
         self.assertEqual(stats["candidate_files_inspected"], 2)
+        self.assertEqual(stats["directory_entries_inspected"], 3)
         self.assertLess(stats["candidate_metadata_bytes"], 2048)
+        self.assertLess(stats["candidate_transcript_bytes_inspected"], 1024)
         self.assertLess(selected["transcript_bytes_inspected"], 1024)
+
+    def test_day_directory_search_is_newest_first_and_honors_window(self) -> None:
+        for day in ("28", "29", "30"):
+            (self.root / "2026" / "09" / day).mkdir(parents=True)
+        with patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root):
+            days, diagnostics, inspected = inspect_subagent_tail.recent_day_dirs(2)
+        self.assertEqual([path.name for path in days], ["30", "29"])
+        self.assertEqual(diagnostics, [])
+        self.assertGreater(inspected, 0)
+
+    def test_directory_enumeration_cap_is_explicit(self) -> None:
+        for year in ("2024", "2025", "2026"):
+            (self.root / year).mkdir()
+        with patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root), \
+             patch.object(inspect_subagent_tail, "MAX_DIRECTORY_ENTRIES_PER_DIR", 2):
+            days, diagnostics, inspected = inspect_subagent_tail.recent_day_dirs(1)
+        self.assertEqual(days, [])
+        self.assertIn("directory_entry_limit_reached", diagnostics)
+        self.assertEqual(inspected, 2)
 
     def test_multiple_exact_sessions_report_ambiguity_and_choose_newest(self) -> None:
         thread_id = "same-child"
-        first = write_session(self.root / "day-a" / f"rollout-a-{thread_id}.jsonl", metadata(thread_id), [
+        first = write_session(self.root / "2026" / "09" / "29" / f"rollout-a-{thread_id}.jsonl", metadata(thread_id), [
             event("task_complete", "2026-09-30T00:00:01Z", turn_id="a"),
         ])
-        second = write_session(self.root / "day-b" / f"rollout-b-{thread_id}.jsonl", metadata(thread_id), [
+        second = write_session(self.root / "2026" / "09" / "30" / f"rollout-b-{thread_id}.jsonl", metadata(thread_id), [
             event("task_started", "2026-09-30T00:00:02Z", turn_id="b"),
         ])
         with patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root):
-            selected, stats = inspect_subagent_tail.find_by_child_thread_id(thread_id, 8)
+            selected, stats = inspect_subagent_tail.find_by_child_thread_id(thread_id, 8, days=2)
         self.assertEqual(selected["path"], second)
         self.assertEqual(stats["matched_session_files"], 2)
         self.assertEqual(stats["lookup_state"], "ambiguous")

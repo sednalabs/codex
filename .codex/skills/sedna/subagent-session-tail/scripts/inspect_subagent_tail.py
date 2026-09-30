@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from collections import deque
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ MAX_LOOKUP_TRANSCRIPT_BYTES = 16 * 1024 * 1024
 MAX_SESSION_RECORDS = 50_000
 MAX_SEARCH_DAYS = 30
 MAX_CANDIDATE_FILES = 500
+MAX_DIRECTORY_ENTRIES_PER_DIR = 500
+MAX_DIRECTORY_ENTRIES_TOTAL = 10_000
 MAX_TAIL_ROWS = 100
 
 
@@ -46,10 +49,63 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def recent_day_dirs(days: int) -> list[Path]:
-    bounded_days = max(1, min(days, MAX_SEARCH_DAYS))
-    day_dirs = (p for p in SESSIONS_ROOT.glob("*/*/*") if p.is_dir())
-    return sorted(day_dirs, reverse=True)[:bounded_days]
+def _bounded_child_dirs(parent: Path, remaining_entries: int) -> tuple[list[Path], int, list[str]]:
+    limit = min(MAX_DIRECTORY_ENTRIES_PER_DIR, remaining_entries)
+    children = []
+    inspected = 0
+    diagnostics = []
+    if limit <= 0:
+        return children, inspected, ["directory_entry_limit_reached"]
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if inspected >= limit:
+                    diagnostics.append("directory_entry_limit_reached")
+                    break
+                inspected += 1
+                if entry.is_dir(follow_symlinks=False):
+                    children.append(Path(entry.path))
+    except OSError:
+        diagnostics.append("session_directory_unreadable")
+    children.sort(key=lambda path: path.name, reverse=True)
+    return children, inspected, diagnostics
+
+
+def recent_day_dirs(days: int) -> tuple[list[Path], list[str], int]:
+    """Find recent YYYY/MM/DD directories without traversing the whole archive."""
+    wanted = max(1, min(days, MAX_SEARCH_DAYS))
+    found: list[Path] = []
+    inspected_total = 0
+    years, inspected, issues = _bounded_child_dirs(SESSIONS_ROOT, MAX_DIRECTORY_ENTRIES_TOTAL)
+    inspected_total += inspected
+    if issues:
+        return [], issues, inspected_total
+
+    for year in years:
+        if len(year.name) != 4 or not year.name.isdigit():
+            continue
+        months, inspected, issues = _bounded_child_dirs(
+            year, MAX_DIRECTORY_ENTRIES_TOTAL - inspected_total,
+        )
+        inspected_total += inspected
+        if issues:
+            return [], issues, inspected_total
+        for month in months:
+            if len(month.name) != 2 or not month.name.isdigit() or not 1 <= int(month.name) <= 12:
+                continue
+            day_dirs, inspected, issues = _bounded_child_dirs(
+                month, MAX_DIRECTORY_ENTRIES_TOTAL - inspected_total,
+            )
+            inspected_total += inspected
+            if issues:
+                return [], issues, inspected_total
+            for day in day_dirs:
+                if len(day.name) != 2 or not day.name.isdigit() or not 1 <= int(day.name) <= 31:
+                    continue
+                found.append(day)
+                if len(found) >= wanted:
+                    return found, [], inspected_total
+    return found, [], inspected_total
 
 
 def ensure_dict(value: Any) -> dict:
@@ -414,20 +470,37 @@ def _resolve_candidates(paths: Iterable[Path], *, tail: int,
     }
 
 
-def find_by_child_thread_id(child_thread_id: str, tail: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    paths = SESSIONS_ROOT.rglob(f"rollout-*{child_thread_id}.jsonl")
-    return _resolve_candidates(paths, tail=tail, child_thread_id=child_thread_id)
+def _with_directory_search(info: dict[str, Any] | None, lookup: dict[str, Any],
+                           days: int, directory_diagnostics: list[str],
+                           directory_entries_inspected: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    lookup["search_window_days"] = days
+    lookup["directory_entries_inspected"] = directory_entries_inspected
+    if directory_diagnostics:
+        lookup["diagnostics"] = sorted(set(lookup["diagnostics"] + directory_diagnostics))
+        lookup["lookup_state"] = "partial"
+    return info, lookup
+
+
+def find_by_child_thread_id(child_thread_id: str, tail: int,
+                             days: int = 3) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    day_dirs, diagnostics, inspected = recent_day_dirs(days)
+    paths = (path for day_dir in day_dirs for path in day_dir.glob(f"rollout-*{child_thread_id}.jsonl"))
+    info, lookup = _resolve_candidates(paths, tail=tail, child_thread_id=child_thread_id)
+    return _with_directory_search(info, lookup, days, diagnostics, inspected)
 
 
 def find_by_parent_and_agent(parent_thread_id: str, agent_path: str, days: int,
                              tail: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    day_dirs, diagnostics, inspected = recent_day_dirs(days)
+
     def candidates() -> Iterator[Path]:
-        for day_dir in recent_day_dirs(days):
+        for day_dir in day_dirs:
             yield from day_dir.glob("rollout-*.jsonl")
 
-    return _resolve_candidates(
+    info, lookup = _resolve_candidates(
         candidates(), tail=tail, parent_thread_id=parent_thread_id, agent_path=agent_path,
     )
+    return _with_directory_search(info, lookup, days, diagnostics, inspected)
 
 
 def usage_summary(child_thread_id: str) -> list[str]:
@@ -466,7 +539,11 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
                    now: datetime, include_usage: bool, json_output: bool) -> None:
     if session_info is None:
         diagnostics = list(lookup.get("diagnostics", []))
-        diagnostics.append("no_matching_session")
+        diagnostics.append(
+            "no_matching_session_within_search_window"
+            if lookup.get("search_window_days") is not None
+            else "no_matching_session"
+        )
         result = {
             "schema_version": 1,
             "session_state": "unknown",
@@ -476,6 +553,8 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
             "candidate_files_inspected": lookup.get("candidate_files_inspected", 0),
             "candidate_metadata_bytes": lookup.get("candidate_metadata_bytes", 0),
             "candidate_transcript_bytes_inspected": lookup.get("candidate_transcript_bytes_inspected", 0),
+            "directory_entries_inspected": lookup.get("directory_entries_inspected", 0),
+            "search_window_days": lookup.get("search_window_days"),
         }
         if json_output:
             print(json.dumps(result, sort_keys=True))
@@ -507,6 +586,8 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
         "candidate_files_inspected": lookup.get("candidate_files_inspected", 0),
         "candidate_metadata_bytes": lookup.get("candidate_metadata_bytes", 0),
         "candidate_transcript_bytes_inspected": lookup.get("candidate_transcript_bytes_inspected", 0),
+        "directory_entries_inspected": lookup.get("directory_entries_inspected", 0),
+        "search_window_days": lookup.get("search_window_days"),
         "records_inspected": session_info.get("records_inspected", 0),
         "transcript_bytes_inspected": session_info.get("transcript_bytes_inspected", 0),
         "tail": session_info.get("tail_rows", []),
@@ -544,6 +625,9 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
     print(f"candidate_files_inspected: {result['candidate_files_inspected']}")
     print(f"candidate_metadata_bytes: {result['candidate_metadata_bytes']}")
     print(f"candidate_transcript_bytes_inspected: {result['candidate_transcript_bytes_inspected']}")
+    print(f"directory_entries_inspected: {result['directory_entries_inspected']}")
+    if result["search_window_days"] is not None:
+        print(f"search_window_days: {result['search_window_days']}")
     print(f"records_inspected: {result['records_inspected']}")
     print(f"transcript_bytes_inspected: {result['transcript_bytes_inspected']}")
     if result["diagnostics"]:
@@ -563,7 +647,7 @@ def main() -> None:
     session_info = None
     lookup: dict[str, Any] = {"lookup_state": "unknown", "diagnostics": []}
     if args.child_thread_id:
-        session_info, lookup = find_by_child_thread_id(args.child_thread_id, args.tail)
+        session_info, lookup = find_by_child_thread_id(args.child_thread_id, args.tail, args.days)
     elif args.parent_thread_id and args.agent_path:
         session_info, lookup = find_by_parent_and_agent(
             args.parent_thread_id, args.agent_path, args.days, args.tail,
