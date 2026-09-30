@@ -84,6 +84,13 @@ install:
     rustup show active-toolchain
     cargo fetch
 
+# Install the exact same-source Linux core and code-mode host from a successful
+# branch-build workflow. Exact core runs require their exact host-only companion.
+[no-cd]
+[positional-arguments]
+install-branch-artifact *args:
+    python3 "{{ justfile_directory() }}/scripts/install_branch_artifact" "$@"
+
 [windows]
 install:
     #!powershell.exe -File
@@ -644,6 +651,8 @@ shell-tool-mcp-ci:
 [no-cd]
 build-policy-sanity:
     cd "{{ justfile_directory() }}" && bash -n scripts/install/install.sh
+    cd "{{ justfile_directory() }}" && just install-branch-artifact --help >/dev/null
+    cd "{{ justfile_directory() }}" && python3 scripts/install/test_branch_artifact_installer.py
     cd "{{ justfile_directory() }}" && python3 -m py_compile scripts/stage_npm_packages.py .github/scripts/verify_bazel_clippy_lints.py .github/scripts/verify_cargo_workspace_manifests.py
     cd "{{ justfile_directory() }}" && python3 .github/scripts/verify_bazel_clippy_lints.py
     cd "{{ justfile_directory() }}" && python3 .github/scripts/verify_cargo_workspace_manifests.py
