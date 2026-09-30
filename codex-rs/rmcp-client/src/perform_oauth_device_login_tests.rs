@@ -1,5 +1,4 @@
 use super::*;
-use axum::Form;
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -45,9 +44,20 @@ async fn spawn_server(state: PollState) -> String {
     async fn token(
         State(state): State<PollState>,
         headers: HeaderMap,
-        Form(_form): Form<HashMap<String, String>>,
+        body: axum::body::Bytes,
     ) -> (StatusCode, Json<serde_json::Value>) {
         record_authorization_header(&state, &headers);
+        let form = url::form_urlencoded::parse(&body)
+            .into_owned()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            form.get("grant_type").map(String::as_str),
+            Some(DEVICE_CODE_GRANT_TYPE)
+        );
+        assert_eq!(
+            form.get("device_code").map(String::as_str),
+            Some("synthetic-device-code")
+        );
         let poll = state.count.fetch_add(1, Ordering::SeqCst);
         if state.outcome == "success" && poll == 0 {
             return (

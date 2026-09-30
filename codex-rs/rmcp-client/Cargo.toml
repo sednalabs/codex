@@ -67,7 +67,6 @@ webbrowser = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]
-axum = { workspace = true, default-features = false, features = ["form"] }
 codex-http-client = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
