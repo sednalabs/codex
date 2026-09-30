@@ -1,3 +1,4 @@
+use codex_protocol::ThreadId;
 use serde::Deserialize;
 use serde::Serialize;
 
