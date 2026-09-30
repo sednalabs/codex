@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from unittest import TestCase, main, mock
@@ -45,6 +46,31 @@ class NamedRustTests(TestCase):
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
             return MODULE.run_request(REQUEST, Path("/validation-target"))
+
+    def run_exact(self, test_outputs, *, names=None, request=None):
+        names = names or ["suite::known"]
+        request = {
+            **REQUEST,
+            "execution_mode": "exact",
+            "tests": names,
+            **(request or {}),
+        }
+        inventory = self.completed(
+            stdout="".join(f"{name}: test\n" for name in names)
+        )
+        executions = [
+            self.completed(stdout=output, code=code)
+            for output, code in test_outputs
+        ]
+        with (
+            mock.patch.object(
+                MODULE.subprocess, "run", side_effect=[inventory, *executions]
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+        return result, run
 
     def test_success_requires_one_non_ignored_pass(self) -> None:
         result = self.run_request(
@@ -134,6 +160,141 @@ class NamedRustTests(TestCase):
             result = MODULE.run_request(request, Path("/validation-target"))
         self.assertEqual(result["failure_code"], "target_selector_unknown")
         run.assert_not_called()
+
+    def test_default_request_keeps_whole_target_report_and_argv(self) -> None:
+        result = self.run_request(
+            "test suite::known ... ok\n\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out\n"
+        )
+
+        self.assertNotIn("execution_mode", result["request"])
+        self.assertNotIn("argv", result["tests"][0])
+
+    def test_exact_mode_runs_one_fixed_argv_per_selector(self) -> None:
+        result, run = self.run_exact(
+            [
+                (
+                    "test suite::known ... ok\n\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                    "0 measured; 4 filtered out\n",
+                    0,
+                ),
+                (
+                    "test suite::other ... ok\n\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                    "0 measured; 4 filtered out\n",
+                    0,
+                ),
+            ],
+            names=["suite::known", "suite::other"],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(run.call_args_list), 3)
+        for call, name, report in zip(
+            run.call_args_list[1:], ["suite::known", "suite::other"], result["tests"]
+        ):
+            argv = call.args[0]
+            separator = argv.index("--")
+            self.assertEqual(argv[separator - 1], name)
+            self.assertEqual(argv[separator + 1 :], ["--exact", "--test-threads=1"])
+            self.assertFalse(call.kwargs["shell"])
+            self.assertEqual(report["argv"], argv)
+            self.assertEqual(report["requested_selector"], name)
+
+    def test_exact_mode_rejects_option_like_name_even_when_in_inventory(self) -> None:
+        request = {**REQUEST, "execution_mode": "exact", "tests": ["-list"]}
+        inventory = self.completed(stdout="-list: test\n")
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["failure_code"], "exact_selector_invalid")
+        self.assertEqual(run.call_count, 1)
+
+    def test_load_request_rejects_unknown_execution_mode(self) -> None:
+        request = {**REQUEST, "execution_mode": "shell"}
+        with mock.patch.dict(
+            MODULE.os.environ,
+            {
+                "RUST_TEST_REQUEST_JSON": json.dumps(request),
+                "VALIDATION_PROFILE": "rust_minimal",
+            },
+        ):
+            _, error = MODULE.load_request()
+
+        self.assertEqual(error["failure_code"], "execution_mode_invalid")
+
+    def test_exact_mode_rejects_unknown_package_and_target(self) -> None:
+        for changed in (
+            {"package": "not-in-catalog"},
+            {"target_kind": "integration", "target": "not-in-catalog"},
+        ):
+            with self.subTest(changed=changed):
+                request = {**REQUEST, "execution_mode": "exact", **changed}
+                with (
+                    mock.patch.object(MODULE.subprocess, "run") as run,
+                    mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+                ):
+                    result = MODULE.run_request(request, Path("/validation-target"))
+                self.assertEqual(result["failure_code"], "target_selector_unknown")
+                run.assert_not_called()
+
+    def test_exact_mode_requires_unique_inventory_match(self) -> None:
+        cases = (
+            ("", "inventory_reconciliation_failed"),
+            (
+                "suite::known: test\nsuite::known: test\n",
+                "inventory_reconciliation_failed",
+            ),
+        )
+        for listed, failure in cases:
+            with self.subTest(listed=listed):
+                inventory = self.completed(stdout=listed)
+                with (
+                    mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+                    mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+                ):
+                    result = MODULE.run_request(
+                        {**REQUEST, "execution_mode": "exact"},
+                        Path("/validation-target"),
+                    )
+                self.assertEqual(result["failure_code"], failure)
+                self.assertEqual(run.call_count, 1)
+
+    def test_exact_mode_rejects_ignored_missing_summary_and_nonzero(self) -> None:
+        cases = (
+            (
+                "test suite::known ... ignored\n\n"
+                "test result: ok. 0 passed; 0 failed; 1 ignored; "
+                "0 measured; 0 filtered out\n",
+                0,
+                "named_test_ignored",
+            ),
+            ("test completed without a summary\n", 0, "execution_reconciliation_failed"),
+            (
+                "test suite::known ... FAILED\n\n"
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                0,
+                "named_test_failed",
+            ),
+            (
+                "test suite::known ... ok\n\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n",
+                101,
+                "named_test_failed",
+            ),
+        )
+        for output, code, failure in cases:
+            with self.subTest(failure=failure):
+                result, _ = self.run_exact([(output, code)])
+                self.assertEqual(result["status"], "failure")
+                self.assertEqual(result["failure_code"], failure)
 
 
 if __name__ == "__main__":

@@ -213,6 +213,7 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     target = payload.get("target", "")
     profile = payload.get("profile")
     tests = payload.get("tests")
+    execution_mode = payload.get("execution_mode", "whole_target")
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
         return None, fail("package_invalid", "package must be a safe Cargo package name")
     if target_kind not in ALLOWED_TARGET_KINDS:
@@ -224,6 +225,11 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
+    if execution_mode not in ("whole_target", "exact"):
+        return None, fail(
+            "execution_mode_invalid",
+            "execution_mode must be whole_target or exact",
+        )
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
@@ -241,6 +247,8 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         "target": "" if target in (None, "lib") else target,
         "tests": tests,
     }
+    if "execution_mode" in payload:
+        normalized["execution_mode"] = execution_mode
     return normalized, None
 
 
@@ -283,6 +291,32 @@ def listed_tests(stdout: str) -> list[str]:
     return names
 
 
+def exact_test_command(
+    request: dict[str, Any],
+    test_name: str,
+    command_record: dict[str, Any],
+) -> list[str]:
+    """Insert one validated selector into the fixed catalog command shape."""
+
+    if (
+        not isinstance(test_name, str)
+        or not TEST_RE.fullmatch(test_name)
+        or test_name.startswith("-")
+    ):
+        raise ValueError("test selector is not a safe fully-qualified name")
+    command = cargo_args(
+        request, list_only=False, command_record=command_record
+    )
+    separator = command.index("--")
+    return [
+        *command[:separator],
+        test_name,
+        "--",
+        "--exact",
+        "--test-threads=1",
+    ]
+
+
 def test_outcomes(output: str) -> dict[str, list[str]]:
     """Index each exact Cargo test result without trusting a summary count."""
 
@@ -300,6 +334,12 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         command_record = select_target(request, load_manifest(repo_root))
     except ValueError as exc:
         return fail("target_selector_unknown", str(exc))
+    execution_mode = request.get("execution_mode", "whole_target")
+    if execution_mode not in ("whole_target", "exact"):
+        return fail(
+            "execution_mode_invalid",
+            "execution_mode must be whole_target or exact",
+        )
     env = os.environ.copy()
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
@@ -356,6 +396,82 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "ambiguous_tests": ambiguous,
             }
         )
+        return result
+    if execution_mode == "exact" and any(name.startswith("-") for name in request["tests"]):
+        result.update(
+            {
+                "status": "failure",
+                "failure_code": "exact_selector_invalid",
+                "message": "exact-mode test selectors must not begin with a hyphen",
+            }
+        )
+        return result
+    if execution_mode == "exact":
+        for name in request["tests"]:
+            test_command = exact_test_command(request, name, command_record)
+            completed = subprocess.run(
+                test_command,
+                cwd=manifest_root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+            output = "\n".join(
+                value for value in (completed.stdout, completed.stderr) if value
+            )
+            counts = test_result_counts(output)
+            outcomes = test_outcomes(output)
+            observed = outcomes.get(name, [])
+            reconciled = (
+                completed.returncode == 0
+                and counts is not None
+                and counts["passed"] == 1
+                and counts["failed"] == 0
+                and counts["ignored"] == 0
+                and counts["measured"] == 0
+                and sum(
+                    counts[key]
+                    for key in ("passed", "failed", "ignored", "measured")
+                )
+                == 1
+                and len(outcomes) == 1
+                and len(observed) == 1
+                and observed[0] == "ok"
+            )
+            test_result = {
+                "name": name,
+                "requested_selector": name,
+                "status": "success" if reconciled else "failure",
+                "argv": test_command,
+                "exit_code": completed.returncode,
+                "execution_reconciled": reconciled,
+                "observed_outcomes": observed,
+                "result_counts": counts,
+                "diagnostics": command_diagnostics(completed),
+            }
+            result["tests"].append(test_result)
+            if not reconciled:
+                result.update(
+                    {
+                        "status": "failure",
+                        "failure_code": (
+                            "named_test_ignored"
+                            if len(observed) == 1 and observed[0] == "ignored"
+                            else "named_test_failed"
+                            if completed.returncode != 0
+                            or (len(observed) == 1 and observed[0] == "FAILED")
+                            else "execution_reconciliation_failed"
+                        ),
+                        "message": (
+                            "exact named test did not produce exactly one non-ignored "
+                            "passing result with a one-test summary; see bounded "
+                            "diagnostics and the hosted job log"
+                        ),
+                    }
+                )
+                break
         return result
     # Run the complete immutable target command.  This keeps the command
     # surface closed while the requested names remain exact post-run selectors.

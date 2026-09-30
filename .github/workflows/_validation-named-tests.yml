@@ -123,6 +123,20 @@ jobs:
             echo "VALIDATION_HARNESS_SHA=${harness_sha}"
           } >> "${GITHUB_ENV}"
 
+      - name: Preflight named-test harness tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! output="$(python3 .workflow-src/.github/scripts/test_run_named_rust_tests.py 2>&1)"; then
+            printf '%s\n' "${output}"
+            exit 1
+          fi
+          printf '%s\n' "${output}"
+          if ! grep -Eq '^Ran [1-9][0-9]* tests? in ' <<< "${output}"; then
+            echo "named-test harness preflight executed zero tests" >&2
+            exit 1
+          fi
+
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
