@@ -8,7 +8,7 @@ import sqlite3
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable
 
 SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 USAGE_DB = Path.home() / ".codex" / "usage_1.sqlite"
@@ -25,6 +25,8 @@ MAX_SEARCH_DAYS = 30
 MAX_CANDIDATE_FILES = 500
 MAX_DIRECTORY_ENTRIES_PER_DIR = 500
 MAX_DIRECTORY_ENTRIES_TOTAL = 10_000
+MAX_SESSION_FILE_ENTRIES_PER_DIR = 5_000
+MAX_SESSION_FILE_ENTRIES_TOTAL = 10_000
 MAX_TAIL_ROWS = 100
 
 
@@ -470,11 +472,47 @@ def _resolve_candidates(paths: Iterable[Path], *, tail: int,
     }
 
 
+def _bounded_session_files(day_dirs: Iterable[Path], child_thread_id: str | None = None
+                           ) -> tuple[list[Path], list[str], int]:
+    paths: list[Path] = []
+    diagnostics: list[str] = []
+    inspected_total = 0
+    for day_dir in day_dirs:
+        per_dir = 0
+        try:
+            with os.scandir(day_dir) as entries:
+                for entry in entries:
+                    if (per_dir >= MAX_SESSION_FILE_ENTRIES_PER_DIR
+                            or inspected_total >= MAX_SESSION_FILE_ENTRIES_TOTAL):
+                        diagnostics.append("session_file_entry_limit_reached")
+                        return paths, diagnostics, inspected_total
+                    per_dir += 1
+                    inspected_total += 1
+                    name = entry.name
+                    if not name.startswith("rollout-") or not name.endswith(".jsonl"):
+                        continue
+                    if child_thread_id is not None and not name.endswith(f"{child_thread_id}.jsonl"):
+                        continue
+                    if entry.is_file(follow_symlinks=False):
+                        paths.append(Path(entry.path))
+                        if len(paths) > MAX_CANDIDATE_FILES:
+                            diagnostics.append("candidate_limit_reached")
+                            return paths[:-1], diagnostics, inspected_total
+                    else:
+                        diagnostics.append("session_candidate_not_regular_file")
+        except OSError:
+            diagnostics.append("session_directory_unreadable")
+            return paths, diagnostics, inspected_total
+    return paths, sorted(set(diagnostics)), inspected_total
+
+
 def _with_directory_search(info: dict[str, Any] | None, lookup: dict[str, Any],
                            days: int, directory_diagnostics: list[str],
-                           directory_entries_inspected: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+                           directory_entries_inspected: int,
+                           file_entries_inspected: int = 0) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     lookup["search_window_days"] = days
     lookup["directory_entries_inspected"] = directory_entries_inspected
+    lookup["session_file_entries_inspected"] = file_entries_inspected
     if directory_diagnostics:
         lookup["diagnostics"] = sorted(set(lookup["diagnostics"] + directory_diagnostics))
         lookup["lookup_state"] = "partial"
@@ -484,23 +522,23 @@ def _with_directory_search(info: dict[str, Any] | None, lookup: dict[str, Any],
 def find_by_child_thread_id(child_thread_id: str, tail: int,
                              days: int = 3) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     day_dirs, diagnostics, inspected = recent_day_dirs(days)
-    paths = (path for day_dir in day_dirs for path in day_dir.glob(f"rollout-*{child_thread_id}.jsonl"))
+    paths, file_diagnostics, file_inspected = _bounded_session_files(day_dirs, child_thread_id)
     info, lookup = _resolve_candidates(paths, tail=tail, child_thread_id=child_thread_id)
-    return _with_directory_search(info, lookup, days, diagnostics, inspected)
+    return _with_directory_search(
+        info, lookup, days, diagnostics + file_diagnostics, inspected, file_inspected,
+    )
 
 
 def find_by_parent_and_agent(parent_thread_id: str, agent_path: str, days: int,
                              tail: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     day_dirs, diagnostics, inspected = recent_day_dirs(days)
-
-    def candidates() -> Iterator[Path]:
-        for day_dir in day_dirs:
-            yield from day_dir.glob("rollout-*.jsonl")
-
+    paths, file_diagnostics, file_inspected = _bounded_session_files(day_dirs)
     info, lookup = _resolve_candidates(
-        candidates(), tail=tail, parent_thread_id=parent_thread_id, agent_path=agent_path,
+        paths, tail=tail, parent_thread_id=parent_thread_id, agent_path=agent_path,
     )
-    return _with_directory_search(info, lookup, days, diagnostics, inspected)
+    return _with_directory_search(
+        info, lookup, days, diagnostics + file_diagnostics, inspected, file_inspected,
+    )
 
 
 def usage_summary(child_thread_id: str) -> list[str]:
@@ -554,6 +592,7 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
             "candidate_metadata_bytes": lookup.get("candidate_metadata_bytes", 0),
             "candidate_transcript_bytes_inspected": lookup.get("candidate_transcript_bytes_inspected", 0),
             "directory_entries_inspected": lookup.get("directory_entries_inspected", 0),
+            "session_file_entries_inspected": lookup.get("session_file_entries_inspected", 0),
             "search_window_days": lookup.get("search_window_days"),
         }
         if json_output:
@@ -587,6 +626,7 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
         "candidate_metadata_bytes": lookup.get("candidate_metadata_bytes", 0),
         "candidate_transcript_bytes_inspected": lookup.get("candidate_transcript_bytes_inspected", 0),
         "directory_entries_inspected": lookup.get("directory_entries_inspected", 0),
+        "session_file_entries_inspected": lookup.get("session_file_entries_inspected", 0),
         "search_window_days": lookup.get("search_window_days"),
         "records_inspected": session_info.get("records_inspected", 0),
         "transcript_bytes_inspected": session_info.get("transcript_bytes_inspected", 0),
@@ -626,6 +666,7 @@ def _render_result(session_info: dict[str, Any] | None, lookup: dict[str, Any],
     print(f"candidate_metadata_bytes: {result['candidate_metadata_bytes']}")
     print(f"candidate_transcript_bytes_inspected: {result['candidate_transcript_bytes_inspected']}")
     print(f"directory_entries_inspected: {result['directory_entries_inspected']}")
+    print(f"session_file_entries_inspected: {result['session_file_entries_inspected']}")
     if result["search_window_days"] is not None:
         print(f"search_window_days: {result['search_window_days']}")
     print(f"records_inspected: {result['records_inspected']}")

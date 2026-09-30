@@ -199,6 +199,21 @@ class SessionRecordTest(unittest.TestCase):
         self.assertIn("directory_entry_limit_reached", diagnostics)
         self.assertEqual(inspected, 2)
 
+    def test_session_file_entry_cap_is_explicit(self) -> None:
+        day_dir = self.root / "2026" / "09" / "30"
+        day_dir.mkdir(parents=True)
+        for name in ("noise-a.txt", "noise-b.txt", "noise-c.txt"):
+            (day_dir / name).write_text("synthetic")
+        with patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root), \
+             patch.object(inspect_subagent_tail, "MAX_SESSION_FILE_ENTRIES_PER_DIR", 2):
+            selected, stats = inspect_subagent_tail.find_by_parent_and_agent(
+                "parent-id", "/root/child", days=1, tail=8,
+            )
+        self.assertIsNone(selected)
+        self.assertEqual(stats["lookup_state"], "partial")
+        self.assertIn("session_file_entry_limit_reached", stats["diagnostics"])
+        self.assertEqual(stats["session_file_entries_inspected"], 2)
+
     def test_multiple_exact_sessions_report_ambiguity_and_choose_newest(self) -> None:
         thread_id = "same-child"
         first = write_session(self.root / "2026" / "09" / "29" / f"rollout-a-{thread_id}.jsonl", metadata(thread_id), [
