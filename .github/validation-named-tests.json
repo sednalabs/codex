@@ -2,6 +2,22 @@
   "schema_version": "rust-tests-command-manifest-v1",
   "targets": [
     {
+      "package": "codex-cli",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-cli", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-cli", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-rmcp-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-app-server",
       "target_kind": "lib",
       "target": "",
