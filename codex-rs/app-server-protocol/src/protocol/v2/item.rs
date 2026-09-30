@@ -388,6 +388,7 @@ pub enum ThreadItem {
         receiver_thread_ids: Vec<String>,
         /// Resolved receiver identity metadata when available.
         #[serde(default)]
+        #[ts(as = "Option<_>")]
         #[ts(optional)]
         receiver_agents: Vec<CollabAgentRef>,
         /// Producer-reported wait reason; missing on legacy history.

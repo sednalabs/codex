@@ -1289,4 +1289,296 @@ mod tests {
         reopened.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
+
+    #[tokio::test]
+    async fn operator_standard_rate_scenario_uses_observed_model_and_fails_closed() {
+        let codex_home = unique_temp_dir();
+        let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string())
+            .await
+            .expect("initialize isolated state runtime");
+
+        let mut priced = completed_record(
+            "scenario-priced",
+            "scenario-thread",
+            "response-scenario-priced",
+            "ok",
+            Some((800, 200, 0, 25, 1_025)),
+        );
+        priced.requested_model = "gpt-6-luna".to_string();
+        priced.actual_model_used = Some("GPT-6.1-SOL".to_string());
+        priced.actual_service_tier = None;
+        priced.actual_service_tier_source = None;
+        priced.fast_mode_used = None;
+        priced.billing_surface = None;
+        priced.account_plan = None;
+        priced.started_at = "2026-09-29T23:52:00Z".to_string();
+        assert_eq!(
+            runtime
+                .record_provider_call_usage(&priced)
+                .await
+                .expect("persist observed response for standard-rate scenario"),
+            ProviderCallUsageWriteOutcome::Inserted
+        );
+
+        let mut replay = priced.clone();
+        replay.provider_call_id = "scenario-priced-replay".to_string();
+        assert_eq!(
+            runtime
+                .record_provider_call_usage(&replay)
+                .await
+                .expect("same response replay must not create another estimate row"),
+            ProviderCallUsageWriteOutcome::Duplicate
+        );
+        let mut conflict = replay.clone();
+        conflict.provider_call_id = "scenario-priced-conflict".to_string();
+        conflict.input_tokens_uncached = Some(801);
+        assert!(runtime.record_provider_call_usage(&conflict).await.is_err());
+
+        let mut before_adoption = completed_record(
+            "scenario-before-adoption",
+            "scenario-thread",
+            "response-before-adoption",
+            "ok",
+            Some((800, 200, 0, 25, 1_025)),
+        );
+        before_adoption.actual_model_used = Some("gpt-6.1-sol".to_string());
+        before_adoption.actual_service_tier = None;
+        before_adoption.actual_service_tier_source = None;
+        before_adoption.fast_mode_used = None;
+        before_adoption.billing_surface = None;
+        before_adoption.account_plan = None;
+        before_adoption.started_at = "2026-09-29T23:51:59Z".to_string();
+
+        let mut unknown_model = completed_record(
+            "scenario-unknown-model",
+            "scenario-thread",
+            "response-unknown-model",
+            "ok",
+            Some((800, 200, 0, 25, 1_025)),
+        );
+        unknown_model.actual_model_used = Some("gpt-unlisted-fixture".to_string());
+        unknown_model.actual_service_tier = None;
+        unknown_model.actual_service_tier_source = None;
+        unknown_model.fast_mode_used = None;
+        unknown_model.billing_surface = None;
+        unknown_model.account_plan = None;
+
+        let mut requested_only = completed_record(
+            "scenario-requested-only",
+            "scenario-thread",
+            "response-requested-only",
+            "ok",
+            Some((800, 200, 0, 25, 1_025)),
+        );
+        requested_only.requested_model = "gpt-6.1-sol".to_string();
+        requested_only.actual_model_used = None;
+        requested_only.actual_service_tier = None;
+        requested_only.actual_service_tier_source = None;
+        requested_only.fast_mode_used = None;
+        requested_only.billing_surface = None;
+        requested_only.account_plan = None;
+
+        let mut missing_usage = completed_record(
+            "scenario-missing-usage",
+            "scenario-thread",
+            "response-missing-usage",
+            "provider_usage_missing",
+            None,
+        );
+        missing_usage.actual_model_used = Some("gpt-6.1-sol".to_string());
+        missing_usage.actual_service_tier = None;
+        missing_usage.actual_service_tier_source = None;
+        missing_usage.fast_mode_used = None;
+        missing_usage.billing_surface = None;
+        missing_usage.account_plan = None;
+
+        let mut cache_write = completed_record(
+            "scenario-cache-write",
+            "scenario-thread",
+            "response-cache-write",
+            "ok",
+            Some((800, 200, 1, 25, 1_026)),
+        );
+        cache_write.actual_model_used = Some("gpt-6.1-sol".to_string());
+        cache_write.actual_service_tier = None;
+        cache_write.actual_service_tier_source = None;
+        cache_write.fast_mode_used = None;
+        cache_write.billing_surface = None;
+        cache_write.account_plan = None;
+
+        let mut ambiguous = completed_record(
+            "scenario-ambiguous-rate",
+            "scenario-thread",
+            "response-ambiguous-rate",
+            "ok",
+            Some((800, 200, 0, 25, 1_025)),
+        );
+        ambiguous.actual_model_used = Some("gpt-6.1-sol".to_string());
+        ambiguous.actual_service_tier = None;
+        ambiguous.actual_service_tier_source = None;
+        ambiguous.fast_mode_used = None;
+        ambiguous.billing_surface = None;
+        ambiguous.account_plan = None;
+        ambiguous.started_at = "2026-10-01T00:00:00Z".to_string();
+
+        for record in [
+            before_adoption,
+            unknown_model,
+            requested_only,
+            missing_usage,
+            cache_write,
+            ambiguous,
+        ] {
+            runtime
+                .record_provider_call_usage(&record)
+                .await
+                .expect("persist scenario negative fixture");
+        }
+
+        // Differently cased legacy rate data can bypass the historical
+        // case-sensitive overlap trigger while matching the scenario's
+        // case-insensitive model comparison. The estimate must fail closed.
+        sqlx::query(
+            r#"
+            INSERT INTO usage_codex_credit_rates (
+                rate_id, provider, model, service_tier, speed_mode,
+                rate_card_kind, credits_per_1m_uncached_input,
+                credits_per_1m_cached_input, credits_per_1m_output,
+                effective_from, effective_to, source_url, source_observed_at
+            )
+            SELECT
+                'fixture-casefold-ambiguous', provider, upper(model),
+                service_tier, speed_mode, rate_card_kind,
+                credits_per_1m_uncached_input, credits_per_1m_cached_input,
+                credits_per_1m_output, '2026-10-01T00:00:00Z',
+                '2026-10-02T00:00:00Z', source_url, source_observed_at
+            FROM usage_codex_credit_rates
+            WHERE rate_id = 'openai-gpt-6.1-sol-standard-20260930'
+            "#,
+        )
+        .execute(runtime.usage_pool().as_ref())
+        .await
+        .expect("seed a case-normalized ambiguous rate negative");
+
+        let strict = sqlx::query_as::<_, (String, Option<f64>)>(
+            "SELECT pricing_status, estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        )
+        .bind("scenario-priced")
+        .fetch_one(runtime.usage_pool().as_ref())
+        .await
+        .expect("read strict billing-context view independently");
+        assert_eq!(strict, ("actual_tier_missing".to_string(), None));
+
+        runtime.close().await;
+        let reopened = StateRuntime::init(sqlite, "openai".to_string())
+            .await
+            .expect("reopen isolated state runtime");
+        type StandardScenarioRow = (
+            String,
+            Option<f64>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            String,
+            String,
+        );
+        let priced = sqlx::query_as::<_, StandardScenarioRow>(
+            r#"
+            SELECT scenario_status, estimated_total_credits,
+                   estimate_scenario, assumption_source,
+                   assumed_rate_provider, assumed_rate_card_kind,
+                   estimate_unit, rate_source_observed_at, model_evidence,
+                   requested_model, observed_model, assumed_service_tier,
+                   assumed_speed_mode
+            FROM usage_provider_call_standard_rate_estimates
+            WHERE provider_call_id = ?
+            "#,
+        )
+        .bind("scenario-priced")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("read separate standard-rate scenario after reopen");
+        assert_eq!(priced.0, "priced_scenario_estimate");
+        assert!((priced.1.expect("priced total") - 0.04675).abs() < 1e-12);
+        assert_eq!(
+            (
+                priced.2.as_str(),
+                priced.3.as_str(),
+                priced.4.as_str(),
+                priced.5.as_str(),
+                priced.6.as_str(),
+                priced.7.as_deref(),
+                priced.8.as_deref(),
+                priced.9.as_str(),
+                priced.10.as_deref(),
+                priced.11.as_str(),
+                priced.12.as_str(),
+            ),
+            (
+                "operator_supplied_standard_rate_card_scenario",
+                "operator_supplied_credit_rate_guide",
+                "openai",
+                "codex_token_based",
+                "credits",
+                Some("2026-09-29T23:52:00Z"),
+                Some("actual_model_used"),
+                "gpt-6-luna",
+                Some("GPT-6.1-SOL"),
+                "default",
+                "standard",
+            )
+        );
+
+        for (provider_call_id, expected_status) in [
+            ("scenario-before-adoption", "rate_not_effective"),
+            ("scenario-unknown-model", "model_rate_missing"),
+            ("scenario-requested-only", "actual_model_missing"),
+            ("scenario-missing-usage", "provider_usage_missing"),
+            ("scenario-cache-write", "cache_write_unsupported"),
+            ("scenario-ambiguous-rate", "ambiguous_rate"),
+        ] {
+            let actual = sqlx::query_as::<_, (String, Option<f64>)>(
+                "SELECT scenario_status, estimated_total_credits FROM usage_provider_call_standard_rate_estimates WHERE provider_call_id = ?",
+            )
+            .bind(provider_call_id)
+            .fetch_one(reopened.usage_pool().as_ref())
+            .await
+            .expect("read explicit scenario partial/unpriced reason");
+            assert_eq!(actual, (expected_status.to_string(), None));
+        }
+
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind("scenario-thread")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("count durable response rows after replay and conflict");
+        assert_eq!(count, 7);
+        assert_eq!(
+            reopened
+                .record_provider_call_usage(&replay)
+                .await
+                .expect("replay after reopen stays idempotent"),
+            ProviderCallUsageWriteOutcome::Duplicate
+        );
+        let reopened_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind("scenario-thread")
+        .fetch_one(reopened.usage_pool().as_ref())
+        .await
+        .expect("count remains stable after replay");
+        assert_eq!(reopened_count, 7);
+
+        reopened.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
 }

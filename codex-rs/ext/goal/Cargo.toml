@@ -32,7 +32,11 @@ tracing = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
+codex-features = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
+core_test_support = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+zstd = { workspace = true }
