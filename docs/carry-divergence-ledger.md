@@ -3776,7 +3776,9 @@ replaces `current` and `.local/bin/codex` links. A failed switch restores the
 previous links/launcher. `--dry-run` verifies and reports the selected pair
 without inspecting or changing managed installation paths under `HOME` (the
 GitHub CLI may still read its configured token when no token environment
-variable is supplied). Synthetic API/artifact, malformed archive,
+variable is supplied). The synthetic hosted fixture invokes the public just
+recipe through a test-only loopback API endpoint and isolated home path;
+production requests remain pinned to GitHub's API. Synthetic API/artifact, malformed archive,
 pair mismatch, dry-run, activation, and rollback fixtures run through
 `just build-policy-sanity` on hosted CI; they never download a real build or
 touch an operator home.

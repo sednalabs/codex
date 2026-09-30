@@ -114,6 +114,21 @@ def github_token() -> str:
 class GitHubApi:
     def __init__(self, token: str):
         self.root = API_ROOT
+        fixture_root = os.environ.get("SEDNA_BRANCH_INSTALLER_TEST_API_ROOT")
+        if fixture_root is not None:
+            parsed = urllib.parse.urlsplit(fixture_root)
+            if (
+                os.environ.get("SEDNA_BRANCH_INSTALLER_TESTING") != "1"
+                or parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or parsed.path not in ("", "/")
+            ):
+                fail("test API root is allowed only for loopback synthetic fixtures")
+            self.root = fixture_root.rstrip("/")
         self.token = token
 
     def json(self, path: str) -> dict[str, Any]:
@@ -569,13 +584,11 @@ def activation_lock(install_root: Path) -> Iterator[None]:
             os.close(fd)
 
 
-def ensure_safe_directory(path: Path, home: Path) -> None:
-    try:
-        relative = path.relative_to(home)
-    except ValueError:
-        fail("installer path escaped the home directory")
-    current = home
-    for part in relative.parts:
+def ensure_safe_directory(path: Path) -> None:
+    if not path.is_absolute():
+        fail("installer directory must be absolute")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
         current = current / part
         try:
             mode = os.lstat(current).st_mode
@@ -612,8 +625,14 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
     if not home.is_absolute() or not home.exists() or not home.is_dir() or home.is_symlink():
         fail("HOME must name an existing non-symlink directory")
     home = home.resolve(strict=True)
-    install_root = home / ".codex" / "packages" / "standalone"
-    bin_dir = home / ".local" / "bin"
+    codex_home = Path(os.environ.get("CODEX_HOME") or (home / ".codex"))
+    if not codex_home.is_absolute():
+        codex_home = Path(os.path.abspath(codex_home))
+    configured_bin_dir = Path(os.environ.get("CODEX_INSTALL_DIR") or (home / ".local" / "bin"))
+    if not configured_bin_dir.is_absolute():
+        configured_bin_dir = Path(os.path.abspath(configured_bin_dir))
+    install_root = codex_home / "packages" / "standalone"
+    bin_dir = configured_bin_dir
     releases_dir = install_root / "releases"
     backups_dir = install_root / "backups"
     release_name = (
@@ -625,11 +644,11 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
     current_path = install_root / "current"
     stage_parent = install_root / ".branch-staging"
 
-    ensure_safe_directory(install_root, home)
-    ensure_safe_directory(releases_dir, home)
-    ensure_safe_directory(backups_dir, home)
-    ensure_safe_directory(bin_dir, home)
-    ensure_safe_directory(stage_parent, home)
+    ensure_safe_directory(install_root)
+    ensure_safe_directory(releases_dir)
+    ensure_safe_directory(backups_dir)
+    ensure_safe_directory(bin_dir)
+    ensure_safe_directory(stage_parent)
     with activation_lock(install_root):
         for path in (current_path, visible_codex, release_dir):
             if path.exists() or path.is_symlink():

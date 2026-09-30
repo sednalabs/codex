@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.server
 import importlib.machinery
 import importlib.util
 import io
 import json
 import os
+import platform
 import stat
 import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -30,8 +34,9 @@ LOADER.exec_module(installer)
 
 SOURCE_SHA = "a" * 40
 WORKFLOW_SHA = "b" * 40
-TARGET = "x86_64-unknown-linux-gnu"
-MACHINE = 62
+NATIVE_MACHINE = platform.machine().lower()
+TARGET = "aarch64-unknown-linux-gnu" if NATIVE_MACHINE in ("aarch64", "arm64") else "x86_64-unknown-linux-gnu"
+MACHINE = 183 if TARGET.startswith("aarch64") else 62
 BRANCH = "feature/installer-test"
 
 
@@ -69,6 +74,36 @@ def rewrite_json_member(archive_bytes: bytes, member_name: str, update) -> bytes
 
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+class FixtureHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        fixture_api: FakeApi = self.server.fixture_api  # type: ignore[attr-defined]
+        if self.headers.get("Authorization") != "Bearer synthetic-fixture-token":
+            self.send_error(401)
+            return
+        if "/actions/artifacts/" in self.path and self.path.endswith("/zip"):
+            artifact_id = int(self.path.rsplit("/", 2)[1])
+            body = fixture_api.payloads[artifact_id]
+            content_type = "application/zip"
+            status = 200
+        else:
+            try:
+                body = json.dumps(fixture_api.json(self.path)).encode()
+                content_type = "application/json"
+                status = 200
+            except (AssertionError, KeyError, ValueError):
+                body = b"{}"
+                content_type = "application/json"
+                status = 404
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
 
 
 def action_artifact(kind: str, run_id: int, source_sha: str = SOURCE_SHA, ref: str = BRANCH, target: str = TARGET):
@@ -287,20 +322,72 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         self.assertFalse(fake_home.exists())
         self.assertIn("dry-run: verified", output.getvalue())
 
+    def test_public_just_recipe_dry_run_uses_loopback_fixture_api(self) -> None:
+        api = make_api((self.core_zip, self.host_zip))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        server.fixture_api = api  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        fake_home = self.root / "recipe-home"
+        fixture_api_root = f"http://127.0.0.1:{server.server_port}"
+        env = os.environ.copy()
+        env.update(
+            {
+                "HOME": str(fake_home),
+                "GH_TOKEN": "synthetic-fixture-token",
+                "SEDNA_BRANCH_INSTALLER_TESTING": "1",
+                "SEDNA_BRANCH_INSTALLER_TEST_API_ROOT": fixture_api_root,
+            }
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "just",
+                    "install-branch-artifact",
+                    "--run-id",
+                    "1001",
+                    "--host-run-id",
+                    "1002",
+                    "--dry-run",
+                ],
+                cwd=INSTALLER_PATH.parents[1],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertIn("dry-run: verified", result.stdout)
+        self.assertIn("core run 1001 and host run 1002", result.stdout)
+        self.assertFalse(fake_home.exists())
+
     def test_activation_preserves_previous_package_and_switches_launcher(self) -> None:
         core, host = self.resolve_exact()
         files, manifest = installer.package_files(core, host, self.root / "activate-package")
         home = self.root / "home"
         home.mkdir()
-        old = home / ".codex" / "packages" / "standalone" / "releases" / "old"
+        codex_home = home / "custom-codex-home"
+        install_root = codex_home / "packages" / "standalone"
+        old = install_root / "releases" / "old"
         old.mkdir(parents=True)
         (old / "codex").write_text("old binary", encoding="utf-8")
-        install_root = home / ".codex" / "packages" / "standalone"
         (install_root / "current").symlink_to(old)
-        visible = home / ".local" / "bin"
+        visible = home / "custom-install-bin"
         visible.mkdir(parents=True)
         (visible / "codex").symlink_to(old / "codex")
-        with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "HOME": str(home),
+                "CODEX_HOME": str(codex_home),
+                "CODEX_INSTALL_DIR": str(visible),
+            },
+            clear=False,
+        ):
             installer.install_package(files, manifest, dry_run=False)
         new_release = install_root / "releases" / f"branch-{SOURCE_SHA}-{TARGET}-r1001-h1002"
         self.assertTrue((new_release / "bin" / "codex").is_file())
@@ -315,16 +402,19 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         files, manifest = installer.package_files(core, host, self.root / "rollback-package")
         home = self.root / "rollback-home"
         home.mkdir()
-        old = home / ".codex" / "packages" / "standalone" / "releases" / "old"
+        codex_home = home / "custom-codex-home"
+        install_root = codex_home / "packages" / "standalone"
+        old = install_root / "releases" / "old"
         old.mkdir(parents=True)
         (old / "codex").write_text("old binary", encoding="utf-8")
-        install_root = home / ".codex" / "packages" / "standalone"
         (install_root / "current").symlink_to(old)
-        visible = home / ".local" / "bin"
+        visible = home / "custom-install-bin"
         visible.mkdir(parents=True)
         (visible / "codex").symlink_to(old / "codex")
         env = {
             "HOME": str(home),
+            "CODEX_HOME": str(codex_home),
+            "CODEX_INSTALL_DIR": str(visible),
             "SEDNA_BRANCH_INSTALLER_TESTING": "1",
             "SEDNA_BRANCH_INSTALLER_TEST_FAIL_AT": "after-visible",
         }

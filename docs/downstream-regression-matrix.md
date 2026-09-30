@@ -630,8 +630,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     inferred safely from one run ID because core and host-only runs share the
     Actions artifact name. `--dry-run` verifies provenance and architecture
     without inspecting or modifying managed install paths under the home directory.
-    The fixture-only installer
-    checks are included in hosted `just build-policy-sanity`; they cover paired
+    The fixture-only installer checks are included in hosted
+    `just build-policy-sanity`; they invoke the public recipe against a
+    loopback-only synthetic API endpoint and isolated home and cover paired
     source identity, run/artifact linkage, checksums, archive safety, x86_64 and
     AArch64 targets, and activation rollback without installing a real artifact.
 

@@ -3675,7 +3675,7 @@
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "sedna-branch-artifact-installer-contract",
-      "tests": ["just build-policy-sanity synthetic installer fixtures and dry-run recipe invocation"],
+      "tests": ["just build-policy-sanity synthetic installer fixtures and public recipe dry-run via a loopback-only API fixture"],
       "owner": "downstream",
       "notes": "Exact --run-id requires --host-run-id because normal and host-only runs reuse the artifact name. AArch64 installs require a retained matching host-only artifact; absence fails closed. This helper installs disposable branch previews, not releases.",
       "upstreamability_tier": "downstream-tooling",
