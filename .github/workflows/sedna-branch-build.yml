@@ -605,6 +605,9 @@ jobs:
           test "${PRODUCT_SHA}" = "def481c8fef0ca460b997238f1edbf39e7f33ed9"
           test -n "${PACKAGE_INPUTS_JSON}"
 
+      - name: Set up Rust 1.95 for the focused code-mode-host protocol test
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
       - name: Verify exact artifacts and exercise packaged binaries
         shell: bash
         env:

@@ -77,7 +77,7 @@ def create_fixture(migrations_dir: Path, database_path: Path) -> dict[str, objec
                     (version, description, success, checksum, execution_time)
                 VALUES (?, ?, TRUE, ?, 0)
                 """,
-                (version, description, hashlib.sha256(sql).digest()),
+                (version, description, hashlib.sha384(sql).digest()),
             )
 
         # These rows and values are copied from the immutable Rust fixture.
@@ -132,7 +132,7 @@ def create_fixture(migrations_dir: Path, database_path: Path) -> dict[str, objec
                 (
                     source_version,
                     description,
-                    hashlib.sha256(target_sql).digest(),
+                    hashlib.sha384(target_sql).digest(),
                 ),
             )
         connection.commit()

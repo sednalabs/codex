@@ -15,7 +15,7 @@ readonly EVIDENCE_DIR="${RUNNER_TEMP}/codex-packaged-smoke/${PLATFORM}"
 readonly WORK_DIR="${RUNNER_TEMP}/codex-packaged-work/${PLATFORM}"
 umask 077
 mkdir -p "${EVIDENCE_DIR}"
-mkdir -m 700 "${WORK_DIR}"
+mkdir -p -m 700 "${WORK_DIR}"
 printf '%s\n' "${PACKAGE_INPUTS_JSON}" > "${EVIDENCE_DIR}/package-inputs.json"
 
 if [[ "${PRODUCT_SHA}" != "${EXPECTED_PRODUCT_SHA}" ]]; then
@@ -229,105 +229,49 @@ for binary in codex codex-responses-api-proxy codex-code-mode-host; do
 done
 test -x "${package_dir}/codex" -a -x "${package_dir}/codex-code-mode-host" -a -x "${package_dir}/codex-responses-api-proxy"
 
-python3 - "${package_dir}/codex-code-mode-host" "${EVIDENCE_DIR}/code-mode-host.stderr.log" "${EVIDENCE_DIR}/code-mode-protocol.json" <<'PY'
-import json
-import os
-import select
-import struct
-import subprocess
-import sys
-
-host, stderr_path, receipt_path = sys.argv[1:]
-process = subprocess.Popen(
-    [host, "--listen", "stdio"],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=open(stderr_path, "wb"),
-    bufsize=0,
-)
-
-def read_exact(size: int, timeout: int = 30) -> bytes:
-    chunks = bytearray()
-    while len(chunks) < size:
-        ready, _, _ = select.select([process.stdout], [], [], timeout)
-        if not ready:
-            raise TimeoutError("timed out waiting for packaged code-mode host protocol")
-        chunk = os.read(process.stdout.fileno(), size - len(chunks))
-        if not chunk:
-            raise EOFError("packaged code-mode host closed its protocol stream")
-        chunks.extend(chunk)
-    return bytes(chunks)
-
-def send(value: dict) -> None:
-    payload = json.dumps(value, separators=(",", ":")).encode()
-    process.stdin.write(struct.pack("<I", len(payload)) + payload)
-    process.stdin.flush()
-
-def receive() -> dict:
-    size = struct.unpack("<I", read_exact(4))[0]
-    if size > 64 * 1024 * 1024:
-        raise ValueError("packaged code-mode host frame exceeds the protocol limit")
-    return json.loads(read_exact(size))
-
-def receive_until(predicate) -> dict:
-    for _ in range(8):
-        message = receive()
-        if predicate(message):
-            return message
-    raise AssertionError("expected packaged code-mode host response was not received")
-
-try:
-    send({"type":"connection/hello","supportedVersions":[1],"requiredCapabilities":[],"optionalCapabilities":[]})
-    hello = receive()
-    assert hello == {"type":"connection/ready","selectedVersion":1,"capabilities":[]}, hello
-    session_id = "packaged-smoke-session"
-    send({"type":"operation/request","id":1,"request":{"method":"session/open","sessionId":session_id}})
-    opened = receive_until(lambda item: item.get("type") == "operation/response" and item.get("id") == 1)
-    assert opened.get("result", {}).get("status") == "ok", opened
-    assert opened["result"]["value"] == {"type":"session/ready","sessionId":session_id}, opened
-    send({
-        "type":"operation/request",
-        "id":2,
-        "request":{
-            "method":"session/execute",
-            "sessionId":session_id,
-            "request":{
-                "tool_call_id":"packaged-smoke-call",
-                "enabled_tools":[],
-                "source":"text('packaged-code-mode-host-ok');",
-                "yield_time_ms":10000,
-                "max_output_tokens":128,
-            },
-        },
-    })
-    started = receive_until(lambda item: item.get("type") == "operation/response" and item.get("id") == 2)
-    assert started.get("result", {}).get("status") == "ok", started
-    assert started["result"]["value"].get("type") == "execution/started", started
-    executed = receive_until(lambda item: item.get("type") == "execute/initialResponse" and item.get("id") == 2)
-    runtime = executed.get("result", {}).get("value", {}).get("Result", {})
-    assert executed.get("result", {}).get("status") == "ok", executed
-    assert runtime.get("error_text") is None, executed
-    assert any(item.get("text") == "packaged-code-mode-host-ok" for item in runtime.get("content_items", [])), executed
-    send({"type":"operation/request","id":3,"request":{"method":"session/shutdown","sessionId":session_id}})
-    closed = receive_until(lambda item: item.get("type") == "operation/response" and item.get("id") == 3)
-    assert closed.get("result", {}).get("status") == "ok", closed
-    assert closed["result"]["value"] == {"type":"session/closed","sessionId":session_id}, closed
-    process.stdin.close()
-    exit_code = process.wait(timeout=15)
-    if exit_code != 0:
-        raise RuntimeError(f"packaged code-mode host exited with status {exit_code}")
-    with open(receipt_path, "w", encoding="utf-8") as receipt:
-        json.dump({"protocol_version":1,"session_open":True,"code_execution":True,"session_shutdown":True,"output":"packaged-code-mode-host-ok"}, receipt, sort_keys=True, indent=2)
-except BaseException:
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-    raise
-PY
+stdio_build_log="${EVIDENCE_DIR}/code-mode-stdio-build.jsonl"
+stdio_build_stderr="${EVIDENCE_DIR}/code-mode-stdio-build.stderr.log"
+stdio_test_log="${EVIDENCE_DIR}/code-mode-stdio-test.log"
+stdio_target_dir="${WORK_DIR}/cargo-target"
+if ! CARGO_TARGET_DIR="${stdio_target_dir}" cargo test \
+  --manifest-path "${PRODUCT_DIR}/codex-rs/Cargo.toml" \
+  --package codex-code-mode-host \
+  --test stdio \
+  --no-run \
+  --message-format=json-render-diagnostics \
+  >"${stdio_build_log}" 2>"${stdio_build_stderr}"; then
+  tail -n 80 "${stdio_build_stderr}" >&2
+  exit 1
+fi
+stdio_test_binary="$(jq -ser '
+  [ .[] | select(.reason == "compiler-artifact" and .target.name == "stdio" and .executable != null) | .executable ]
+  | unique
+  | if length == 1 then .[0] else error("expected exactly one stdio integration-test binary") end
+' "${stdio_build_log}")"
+if [[ ! -x "${stdio_test_binary}" ]]; then
+  echo "compiled stdio integration-test binary is not executable: ${stdio_test_binary}" >&2
+  exit 1
+fi
+if ! env \
+  "CARGO_BIN_EXE_codex-code-mode-host=${package_dir}/codex-code-mode-host" \
+  "CARGO_BIN_EXE_codex_code_mode_host=${package_dir}/codex-code-mode-host" \
+  "${stdio_test_binary}" \
+  remote_session_persists_values_forwards_delegates_and_controls_cells \
+  --exact --test-threads=1 \
+  >"${stdio_test_log}" 2>&1; then
+  cat "${stdio_test_log}" >&2
+  exit 1
+fi
+test_line="test remote_session_persists_values_forwards_delegates_and_controls_cells ... ok"
+test_count="$(grep -Fxc "${test_line}" "${stdio_test_log}")"
+if [[ "${test_count}" != "1" ]] || ! grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored;' "${stdio_test_log}"; then
+  cat "${stdio_test_log}" >&2
+  echo "expected exactly one passing packaged-host stdio test" >&2
+  exit 1
+fi
+printf '{"selected_test":"remote_session_persists_values_forwards_delegates_and_controls_cells","passed":1,"failed":0,"ignored":0,"packaged_host":"%s"}\n' \
+  "${package_dir}/codex-code-mode-host" \
+  > "${EVIDENCE_DIR}/code-mode-stdio-test.json"
 
 fixture_home="${WORK_DIR}/codex-home"
 mkdir -m 700 "${fixture_home}"
@@ -351,12 +295,39 @@ codex, codex_home, migrations_dir, evidence_dir = sys.argv[1:]
 database_path = Path(codex_home) / "state_5.sqlite"
 migrations_dir = Path(migrations_dir)
 evidence_dir = Path(evidence_dir)
+
+catalog_env = os.environ.copy()
+catalog_env["CODEX_HOME"] = codex_home
+catalog_env["CODEX_SQLITE_HOME"] = codex_home
+bundled_models = subprocess.run(
+    [codex, "debug", "models", "--bundled"],
+    check=True,
+    capture_output=True,
+    text=True,
+    env=catalog_env,
+    timeout=30,
+)
+catalog = json.loads(bundled_models.stdout)
+catalog_models = catalog.get("models")
+if not isinstance(catalog_models, list) or not any(
+    isinstance(model, dict) and model.get("slug") == "gpt-6-luna"
+    for model in catalog_models
+):
+    raise AssertionError("codex debug models --bundled omitted gpt-6-luna")
+(evidence_dir / "debug-models-bundled.json").write_text(
+    json.dumps(
+        {"command": "codex debug models --bundled", "gpt-6-luna-present": True},
+        sort_keys=True,
+        indent=2,
+    )
+)
+
 migrations = {}
 for path in migrations_dir.glob("*.sql"):
     match = re.fullmatch(r"(\d+)_([a-z0-9_]+)\.sql", path.name)
     if not match:
         raise AssertionError(f"unexpected state migration filename: {path.name}")
-    migrations[int(match.group(1))] = (match.group(2).replace("_", " "), hashlib.sha256(path.read_bytes()).digest())
+    migrations[int(match.group(1))] = (match.group(2).replace("_", " "), hashlib.sha384(path.read_bytes()).digest())
 
 def request(process, request_id, method, params):
     process.stdin.write((json.dumps({"jsonrpc":"2.0","id":request_id,"method":method,"params":params}, separators=(",", ":")) + "\n").encode())
@@ -406,11 +377,18 @@ def start_and_query(round_number):
             model_ids = [model_id for model_id in model_ids if isinstance(model_id, str)]
             if "gpt-6-luna" not in model_ids:
                 raise AssertionError("model/list did not expose the expected gpt-6-luna catalog entry")
+            threads = request(process, 3, "thread/list", {"limit":100,"useStateDbOnly":True})
+            thread_rows = threads.get("data") if isinstance(threads, dict) else None
+            if not isinstance(thread_rows, list) or not any(
+                isinstance(thread, dict) and thread.get("id") == "thread-preserved"
+                for thread in thread_rows
+            ):
+                raise AssertionError("thread/list omitted the preserved legacy thread")
             process.stdin.close()
             exit_code = process.wait(timeout=30)
             if exit_code != 0:
                 raise RuntimeError(f"packaged app-server exited with status {exit_code}")
-            return {"initialize":True,"model_count":len(model_ids),"expected_catalog_entry":"gpt-6-luna","catalog_entry_present":True}
+            return {"initialize":True,"model_count":len(model_ids),"expected_catalog_entry":"gpt-6-luna","catalog_entry_present":True,"thread_list_includes_preserved_legacy_thread":True}
         except BaseException:
             if process.poll() is None:
                 process.terminate()
@@ -467,8 +445,9 @@ jq -n --arg product_sha "${PRODUCT_SHA}" --arg workflow_sha "${WORKFLOW_SHA}" --
   --slurpfile core "${EVIDENCE_DIR}/core-identity.json" \
   --slurpfile host "${EVIDENCE_DIR}/host-identity.json" \
   --slurpfile fixture "${EVIDENCE_DIR}/legacy-fixture.json" \
-  --slurpfile host_protocol "${EVIDENCE_DIR}/code-mode-protocol.json" \
+  --slurpfile host_stdio_test "${EVIDENCE_DIR}/code-mode-stdio-test.json" \
+  --slurpfile bundled_models "${EVIDENCE_DIR}/debug-models-bundled.json" \
   --slurpfile app_server "${EVIDENCE_DIR}/packaged-app-server.json" \
-  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],code_mode_host_protocol:$host_protocol[0],app_server:$app_server[0]}' \
+  '{product_sha:$product_sha,workflow_host_sha:$workflow_sha,platform:$platform,target:$target,core_artifact:$core[0],host_artifact:$host[0],fixture:$fixture[0],code_mode_host_stdio_test:$host_stdio_test[0],bundled_models:$bundled_models[0],app_server:$app_server[0]}' \
   > "${EVIDENCE_DIR}/package-verification.json"
 echo "packaged smoke passed for ${PLATFORM} at product ${PRODUCT_SHA} (workflow host ${WORKFLOW_SHA})"
