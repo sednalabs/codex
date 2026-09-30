@@ -193,7 +193,7 @@ def validate_run(run: dict[str, Any], expected_run_id: int | None = None) -> int
     if not isinstance(repository, dict) or repository.get("full_name", "").lower() != REPOSITORY:
         fail(f"workflow run {run_id} is not from {REPOSITORY}")
     path = run.get("path")
-    if not isinstance(path, str) or WORKFLOW_PATH not in path:
+    if not isinstance(path, str) or path.partition("@")[0] != WORKFLOW_PATH:
         fail(f"workflow run {run_id} is not bound to {WORKFLOW_PATH}")
     full_sha(run.get("head_sha"), f"workflow run {run_id} head_sha")
     return run_id
