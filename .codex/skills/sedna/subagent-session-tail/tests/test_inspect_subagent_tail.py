@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_subagent_tail.py"
@@ -12,6 +17,36 @@ spec = importlib.util.spec_from_file_location("inspect_subagent_tail", SCRIPT)
 assert spec and spec.loader
 inspect_subagent_tail = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inspect_subagent_tail)
+
+
+def metadata(thread_id: str, *, parent: str = "parent-id", agent_path: str = "/root/child") -> dict:
+    return {
+        "type": "session_meta",
+        "payload": {
+            "id": thread_id,
+            "agent_path": agent_path,
+            "source": {"subagent": {"thread_spawn": {
+                "parent_thread_id": parent,
+                "agent_path": agent_path,
+            }}},
+        },
+    }
+
+
+def event(kind: str, timestamp: str, **payload: object) -> dict:
+    return {"type": "event_msg", "timestamp": timestamp, "payload": {"type": kind, **payload}}
+
+
+def write_session(path: Path, meta: dict, records: list[dict | bytes]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.write(json.dumps(meta).encode() + b"\n")
+        for record in records:
+            if isinstance(record, bytes):
+                f.write(record)
+            else:
+                f.write(json.dumps(record).encode() + b"\n")
+    return path
 
 
 class TimestampParsingTest(unittest.TestCase):
@@ -22,27 +57,159 @@ class TimestampParsingTest(unittest.TestCase):
 
     def test_time_since_subtracts_aware_datetimes_directly(self) -> None:
         now = datetime(2026, 1, 1, 0, 2, 3, tzinfo=timezone.utc)
-
         self.assertEqual(
             inspect_subagent_tail.time_since("2026-01-01T00:00:00Z", now),
             "2m 3s",
         )
 
 
-class OutputSummarizationTest(unittest.TestCase):
-    def test_summarizes_string_list_dict_and_scalar_outputs(self) -> None:
-        cases = [
-            ("first\nsecond", "first"),
-            (["first", "second"], "[first]"),
-            ([{"type": "text", "text": "ready"}], '[{"type": "text", "text": "ready"}]'),
-            ({"success": True}, '{"success": true}'),
-            (7, "7"),
-            (None, "None"),
-        ]
+class SessionRecordTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
 
-        for output, expected in cases:
-            with self.subTest(output=output):
-                self.assertEqual(inspect_subagent_tail.summarize_output(output), expected)
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_multiline_records_keep_terminal_state_and_bounded_tail(self) -> None:
+        path = write_session(self.root / "rollout-a.jsonl", metadata("child-a"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="turn-1"),
+            {"type": "response_item", "timestamp": "2026-09-30T00:00:01Z", "payload": {
+                "type": "function_call", "name": "browser_step",
+            }},
+            event("task_complete", "2026-09-30T00:00:02Z", turn_id="turn-1"),
+        ])
+        info = inspect_subagent_tail.inspect_session(path, tail=2)
+        self.assertEqual(info["session_state"], "completed")
+        self.assertEqual(info["last_terminal"]["event_type"], "task_complete")
+        self.assertEqual(len(info["tail_rows"]), 2)
+        self.assertEqual(info["records_inspected"], 3)
+        self.assertEqual(info["diagnostics"], [])
+
+    def test_interrupted_is_distinct_from_completed(self) -> None:
+        path = write_session(self.root / "rollout-b.jsonl", metadata("child-b"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="turn-2"),
+            event("turn_aborted", "2026-09-30T00:00:01Z", turn_id="turn-2", reason="operator"),
+        ])
+        info = inspect_subagent_tail.inspect_session(path, tail=8)
+        self.assertEqual(info["session_state"], "interrupted")
+        self.assertEqual(info["last_terminal"]["reason"], "operator")
+
+    def test_later_start_wins_by_record_order_not_timestamp_lexical_order(self) -> None:
+        path = write_session(self.root / "rollout-c.jsonl", metadata("child-c"), [
+            event("task_complete", "2026-09-30T00:00:02Z", turn_id="old"),
+            event("task_started", "2026-09-30T00:00:01Z", turn_id="new"),
+        ])
+        info = inspect_subagent_tail.inspect_session(path, tail=8)
+        self.assertEqual(info["session_state"], "active")
+        self.assertEqual(info["last_task_started"]["turn_id"], "new")
+
+    def test_text_that_mentions_terminal_event_does_not_create_one(self) -> None:
+        path = write_session(self.root / "rollout-d.jsonl", metadata("child-d"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="turn-4"),
+            {"type": "response_item", "timestamp": "2026-09-30T00:00:01Z", "payload": {
+                "type": "message", "role": "assistant", "content": [
+                    {"type": "text", "text": "the literal words task_complete are explanatory text"},
+                ],
+            }},
+        ])
+        info = inspect_subagent_tail.inspect_session(path, tail=8)
+        self.assertEqual(info["session_state"], "active")
+        self.assertIsNone(info["last_terminal"])
+
+    def test_oversized_record_stops_at_cap_and_makes_status_unknown(self) -> None:
+        path = write_session(self.root / "rollout-e.jsonl", metadata("child-e"), [
+            b'{"type":"response_item","payload":{"type":"message","text":"' + b"x" * 4096 + b'"}}\n',
+            event("task_complete", "2026-09-30T00:00:02Z", turn_id="hidden"),
+        ])
+        with patch.object(inspect_subagent_tail, "MAX_RECORD_BYTES", 512):
+            info = inspect_subagent_tail.inspect_session(path, tail=8)
+        self.assertEqual(info["session_state"], "unknown")
+        self.assertEqual(info["diagnostics"], ["record_oversized"])
+        self.assertLessEqual(
+            info["transcript_bytes_inspected"],
+            inspect_subagent_tail.MAX_RECORD_BYTES + 1 + info["candidate_metadata_bytes"],
+        )
+        self.assertIsNone(info["last_terminal"])
+
+    def test_oversized_session_is_not_scanned_or_misreported_complete(self) -> None:
+        path = write_session(self.root / "rollout-e2.jsonl", metadata("child-e2"), [
+            event("task_complete", "2026-09-30T00:00:01Z", turn_id="visible"),
+            {"type": "response_item", "payload": {"type": "opaque", "padding": "x" * 4096}},
+        ])
+        with patch.object(inspect_subagent_tail, "MAX_SESSION_BYTES", 512):
+            info = inspect_subagent_tail.inspect_session(path, tail=8)
+        self.assertEqual(info["session_state"], "unknown")
+        self.assertEqual(info["diagnostics"], ["session_byte_limit_reached"])
+        self.assertEqual(info["records_inspected"], 0)
+        self.assertEqual(info["transcript_bytes_inspected"], 0)
+
+    def test_truncated_and_malformed_records_are_explicit_unknowns(self) -> None:
+        truncated = write_session(self.root / "rollout-f.jsonl", metadata("child-f"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="turn-6"),
+            b'{"type":"event_msg","payload":{"type":"task_complete"}}',
+        ])
+        malformed = write_session(self.root / "rollout-g.jsonl", metadata("child-g"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="turn-7"),
+            b"{ definitely not json }\n",
+            event("task_complete", "2026-09-30T00:00:02Z", turn_id="turn-7"),
+        ])
+        self.assertIn("record_truncated", inspect_subagent_tail.inspect_session(truncated, 8)["diagnostics"])
+        malformed_info = inspect_subagent_tail.inspect_session(malformed, 8)
+        self.assertIn("record_malformed", malformed_info["diagnostics"])
+        self.assertEqual(malformed_info["session_state"], "unknown")
+
+    def test_parent_path_lookup_reads_metadata_before_transcript_records(self) -> None:
+        wrong = write_session(self.root / "rollout-wrong.jsonl", metadata("wrong", agent_path="/root/other"), [
+            b'{"type":"response_item","payload":{"text":"' + b"z" * 2048 + b'"}}\n',
+        ])
+        right = write_session(self.root / "rollout-right.jsonl", metadata("right"), [
+            event("task_started", "2026-09-30T00:00:00Z", turn_id="selected"),
+        ])
+        with patch.object(inspect_subagent_tail, "MAX_RECORD_BYTES", 512):
+            # Exercise the common resolver over the same candidate set without a real session tree.
+            selected, stats = inspect_subagent_tail._resolve_candidates(
+                [wrong, right], tail=8, parent_thread_id="parent-id", agent_path="/root/child",
+            )
+        self.assertEqual(selected["path"], right)
+        self.assertEqual(selected["session_state"], "active")
+        self.assertEqual(stats["candidate_files_inspected"], 2)
+        self.assertLess(stats["candidate_metadata_bytes"], 2048)
+        self.assertLess(selected["transcript_bytes_inspected"], 1024)
+
+    def test_multiple_exact_sessions_report_ambiguity_and_choose_newest(self) -> None:
+        thread_id = "same-child"
+        first = write_session(self.root / "day-a" / f"rollout-a-{thread_id}.jsonl", metadata(thread_id), [
+            event("task_complete", "2026-09-30T00:00:01Z", turn_id="a"),
+        ])
+        second = write_session(self.root / "day-b" / f"rollout-b-{thread_id}.jsonl", metadata(thread_id), [
+            event("task_started", "2026-09-30T00:00:02Z", turn_id="b"),
+        ])
+        with patch.object(inspect_subagent_tail, "SESSIONS_ROOT", self.root):
+            selected, stats = inspect_subagent_tail.find_by_child_thread_id(thread_id, 8)
+        self.assertEqual(selected["path"], second)
+        self.assertEqual(stats["matched_session_files"], 2)
+        self.assertEqual(stats["lookup_state"], "ambiguous")
+        self.assertIn("multiple_matching_sessions", stats["diagnostics"])
+
+    def test_json_output_has_versioned_status_and_work_counters(self) -> None:
+        path = write_session(self.root / "rollout-h.jsonl", metadata("child-h"), [
+            event("task_complete", "2026-09-30T00:00:01Z", turn_id="h"),
+        ])
+        info = inspect_subagent_tail.inspect_session(path, 8)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            inspect_subagent_tail._render_result(
+                info,
+                {"lookup_state": "complete", "diagnostics": [], "matched_session_files": 1,
+                 "candidate_files_inspected": 1, "candidate_metadata_bytes": 128},
+                datetime(2026, 9, 30, tzinfo=timezone.utc), False, True,
+            )
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(result["session_state"], "completed")
+        self.assertEqual(result["records_inspected"], 1)
+        self.assertIn("diagnostics", result)
 
 
 if __name__ == "__main__":
