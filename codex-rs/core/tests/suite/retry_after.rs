@@ -273,6 +273,28 @@ async fn submit_user_input(test: &TestCodex, text: &str) -> Result<()> {
     Ok(())
 }
 
+async fn submit_effectful_user_input(test: &TestCodex, text: &str) -> Result<()> {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    ..Default::default()
+                },
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn submit_plan_input(test: &TestCodex, text: &str) -> Result<()> {
     let cwd = std::env::current_dir()?.abs();
     let (sandbox_policy, permission_profile) =
@@ -624,13 +646,13 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let first_args = json!({
-        "command": format!("printf 'first\\n' >> {effect_path:?}"),
+        "cmd": format!("printf 'first\\n' >> {effect_path:?}"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let distinct_args = json!({
-        "command": format!("printf 'distinct\\n' >> {effect_path:?}"),
+        "cmd": format!("printf 'distinct\\n' >> {effect_path:?}"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -643,7 +665,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
                 json!({
                     "type": "response.failed",
                     "response": {
@@ -660,8 +682,8 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 responses::ev_message_item_added(partial_id, ""),
                 responses::ev_output_text_delta("accepted before failure"),
                 responses::ev_assistant_message(partial_id, "accepted before failure"),
-                responses::ev_function_call(first_call_id, "shell_command", &first_args),
-                responses::ev_function_call(distinct_call_id, "shell_command", &distinct_args),
+                responses::ev_function_call(first_call_id, "exec_command", &first_args),
+                responses::ev_function_call(distinct_call_id, "exec_command", &distinct_args),
                 responses::ev_completed("capacity-replay-recovery"),
             ])),
             responses::sse_response(responses::sse(vec![
@@ -680,9 +702,10 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "recover the accepted effects").await?;
+    submit_effectful_user_input(&test, "recover the accepted effects").await?;
 
     let mut accepted_message_ids = Vec::new();
+    let mut command_completions = Vec::new();
     let mut streamed_partial_deltas = 0;
     let mut retry_events = 0;
     loop {
@@ -699,6 +722,7 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
                 streamed_partial_deltas += 1;
             }
             EventMsg::StreamError(_) => retry_events += 1,
+            EventMsg::ExecCommandEnd(event) => command_completions.push(event),
             EventMsg::Error(error) => panic!("capacity replay became terminal: {error:?}"),
             EventMsg::TurnComplete(event) => {
                 assert_eq!(event.error, None);
@@ -708,6 +732,14 @@ async fn capacity_retry_deduplicates_accepted_output_and_tool_ids() -> Result<()
         }
     }
     assert_eq!(retry_events, 1);
+    assert_eq!(
+        command_completions
+            .iter()
+            .map(|event| (event.call_id.as_str(), event.exit_code))
+            .collect::<Vec<_>>(),
+        vec![(first_call_id, 0), (distinct_call_id, 0)],
+        "accepted and distinct commands must each complete successfully: {command_completions:?}",
+    );
     assert_eq!(streamed_partial_deltas, 1);
     assert_eq!(
         accepted_message_ids
@@ -780,13 +812,13 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
     let effects_dir = tempfile::tempdir()?;
     let effect_path = effects_dir.path().join("effect.txt");
     let accepted_args = json!({
-        "command": format!("printf 'accepted\\n' >> {effect_path:?}"),
+        "cmd": format!("printf 'accepted\\n' >> {effect_path:?}"),
         "login": false,
         "timeout_ms": 5_000,
     })
     .to_string();
     let conflicting_args = json!({
-        "command": format!("printf 'conflict\\n' >> {effect_path:?}"),
+        "cmd": format!("printf 'conflict\\n' >> {effect_path:?}"),
         "login": false,
         "timeout_ms": 5_000,
     })
@@ -798,7 +830,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                 responses::ev_response_created("capacity-conflict-failed"),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &accepted_args,
                 ),
                 json!({
@@ -816,7 +848,7 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
                 responses::ev_response_created("capacity-conflict-replayed"),
                 responses::ev_function_call(
                     "capacity-conflict-call",
-                    "shell_command",
+                    "exec_command",
                     &conflicting_args,
                 ),
                 responses::ev_completed("capacity-conflict-replayed"),
@@ -832,10 +864,12 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         })
         .build_with_auto_env(&server)
         .await?;
-    submit_user_input(&test, "reject a changed accepted call").await?;
+    submit_effectful_user_input(&test, "reject a changed accepted call").await?;
     let mut terminal_errors = 0;
+    let mut command_completions = Vec::new();
     loop {
         match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ExecCommandEnd(event) => command_completions.push(event),
             EventMsg::Error(error) => {
                 terminal_errors += 1;
                 assert!(error.message.contains("different arguments"));
@@ -848,6 +882,14 @@ async fn capacity_retry_rejects_conflicting_tool_call_id() -> Result<()> {
         }
     }
     assert_eq!(terminal_errors, 1);
+    assert_eq!(
+        command_completions
+            .iter()
+            .map(|event| (event.call_id.as_str(), event.exit_code))
+            .collect::<Vec<_>>(),
+        vec![("capacity-conflict-call", 0)],
+        "only the accepted command may complete: {command_completions:?}",
+    );
     assert_eq!(std::fs::read_to_string(&effect_path)?, "accepted\n");
     assert_eq!(response_mock.requests().len(), 2);
     Ok(())
