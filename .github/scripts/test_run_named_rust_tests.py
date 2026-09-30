@@ -208,6 +208,7 @@ class NamedRustTests(TestCase):
         inventory = self.completed(stdout="-list: test\n")
         with (
             mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
             mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
         ):
             result = MODULE.run_request(request, Path("/validation-target"))
@@ -256,6 +257,7 @@ class NamedRustTests(TestCase):
                 inventory = self.completed(stdout=listed)
                 with (
                     mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+                    mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
                     mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
                 ):
                     result = MODULE.run_request(
