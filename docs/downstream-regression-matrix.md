@@ -633,8 +633,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     The fixture-only installer checks are included in hosted
     `just build-policy-sanity`; they invoke the public recipe against a
     loopback-only synthetic API endpoint and isolated home and cover paired
-    source identity, run/artifact linkage, cross-origin authorization stripping,
-    HTTPS downgrade rejection, checksums, archive safety, x86_64 and
+    source identity, run/artifact linkage, cross-origin authorization,
+    proxy-authorization and cookie stripping, HTTPS downgrade rejection,
+    checksums, archive safety, x86_64 and
     AArch64 targets, and activation rollback without installing a real artifact.
 
 ## Divergence mapping

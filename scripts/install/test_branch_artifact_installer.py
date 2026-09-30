@@ -81,7 +81,11 @@ def sha(data: bytes) -> str:
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         fixture_api: FakeApi = self.server.fixture_api  # type: ignore[attr-defined]
-        if self.headers.get("Authorization") != "Bearer synthetic-fixture-token":
+        if (
+            self.headers.get("Authorization") != "Bearer synthetic-fixture-token"
+            or self.headers.get("Proxy-authorization") != "synthetic-proxy-token"
+            or self.headers.get("Cookie") != "synthetic-fixture-cookie"
+        ):
             self.send_error(401)
             return
         if "/actions/artifacts/" in self.path and self.path.endswith("/zip"):
@@ -119,7 +123,13 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
 class RedirectArtifactHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         fixture_api: FakeApi = self.server.fixture_api  # type: ignore[attr-defined]
-        self.server.authorization_headers.append(self.headers.get("Authorization"))  # type: ignore[attr-defined]
+        self.server.authorization_headers.append(
+            (
+                self.headers.get("Authorization"),
+                self.headers.get("Proxy-authorization"),
+                self.headers.get("Cookie"),
+            )
+        )  # type: ignore[attr-defined]
         artifact_id = int(self.path.rsplit("/", 2)[1])
         body = fixture_api.payloads[artifact_id]
         self.send_response(200)
@@ -423,7 +433,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             artifact_thread.join(timeout=5)
         self.assertIn("dry-run: verified", result.stdout)
         self.assertIn("core run 1001 and host run 1002", result.stdout)
-        self.assertEqual(artifact_server.authorization_headers, [None, None])
+        self.assertEqual(artifact_server.authorization_headers, [(None, None, None), (None, None, None)])
         self.assertFalse(fake_home.exists())
 
     def test_activation_preserves_previous_package_and_switches_launcher(self) -> None:
