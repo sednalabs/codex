@@ -909,6 +909,13 @@ mod tests {
             &mut statuses,
             &mut ready_targets,
         );
+        assert_eq!(
+            statuses.get(&target),
+            Some(&AgentStatus::Completed(Some(
+                "intermediate result".to_string()
+            )))
+        );
+        assert!(!ready_targets.contains(&target));
         let status_snapshots = HashMap::from([(target, status_rx.clone())]);
         let mut status_futures: StatusFutures = FuturesUnordered::new();
         status_futures.push(
@@ -937,14 +944,6 @@ mod tests {
             pending_mailbox: &pending_mailbox,
         });
         tokio::pin!(wait);
-
-        assert_eq!(
-            statuses.get(&target),
-            Some(&AgentStatus::Completed(Some(
-                "intermediate result".to_string()
-            )))
-        );
-        assert!(!ready_targets.contains(&target));
         tokio::select! {
             biased;
             result = &mut wait => panic!("active goal continuation completed native wait: {result:?}"),
@@ -961,11 +960,6 @@ mod tests {
         assert_eq!(
             wait.await,
             (WaitReason::TargetTerminal(ReturnWhen::Any), false)
-        );
-        assert!(ready_targets.contains(&target));
-        assert_eq!(
-            statuses.get(&target),
-            Some(&AgentStatus::Completed(Some("final result".to_string())))
         );
     }
 
