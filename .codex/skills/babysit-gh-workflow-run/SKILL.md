@@ -116,7 +116,7 @@ Optional:
 
 ### GitHub authentication and rate-limit recovery
 
-For workstation runs, a future local integration may set the provisional
+A configured installation-token integration may set
 `CODEX_GITHUB_APP_TOKEN_COMMAND` to an executable
 command that prints one short-lived GitHub App installation token on stdout.
 The watcher invokes it without a shell, passes `CODEX_GITHUB_REPOSITORY` when
@@ -130,11 +130,14 @@ if GitHub reports a rate limit, the watcher reads the authoritative
 the same exact run/target operation. It never retries recursively or changes the
 watched run or validation-target identity.
 
-This hook is not an active broker integration: the accepted broker work exists
-on repository `main`, while this installed skill currently lacks the broker
-module and direct local compatibility/expiry continuity remain open. Do not
-invent credentials or claim App-token use until that integration is installed
-and read back.
+Determine integration support from the installed helper and its configured
+hook. Check their version/interface compatibility and the current authoritative
+repository, permission, expiry and refresh evidence before relying on an
+installation-token integration. Source-branch status and module presence alone
+do not establish active use or continuity across a long wait. If that evidence
+is unavailable, report the capability as unknown; preserve the configured
+transport's failure behavior. Never invent credentials, print a token to test
+the hook, or silently fall back after a configured hook fails.
 
 ### One-shot snapshot for the current branch
 
