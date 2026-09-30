@@ -428,13 +428,24 @@ def start_and_query(round_number):
             model_ids = [model_id for model_id in model_ids if isinstance(model_id, str)]
             if "gpt-6-luna" not in model_ids:
                 raise AssertionError("model/list did not expose the expected gpt-6-luna catalog entry")
-            threads = request(process, 3, "thread/list", {"limit":100,"useStateDbOnly":True})
+            threads = request(process, 3, "thread/list", {
+                "limit":100,
+                "modelProviders":[],
+                "sourceKinds":["cli"],
+                "useStateDbOnly":True,
+            })
             thread_rows = threads.get("data") if isinstance(threads, dict) else None
             if not isinstance(thread_rows, list) or not any(
                 isinstance(thread, dict) and thread.get("id") == "thread-preserved"
                 for thread in thread_rows
             ):
-                raise AssertionError("thread/list omitted the preserved legacy thread")
+                observed_ids = [
+                    thread.get("id") for thread in thread_rows
+                    if isinstance(thread, dict) and isinstance(thread.get("id"), str)
+                ] if isinstance(thread_rows, list) else []
+                raise AssertionError(
+                    f"thread/list omitted the preserved legacy thread; observed IDs: {observed_ids!r}"
+                )
             process.stdin.close()
             exit_code = process.wait(timeout=30)
             if exit_code != 0:
