@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -114,6 +115,28 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["status"], "failure")
         self.assertEqual(result["failure_code"], "inventory_failed")
         self.assertIn("manifest could not be loaded", result["inventory"]["diagnostics"]["stderr_tail"])
+
+    def test_inventory_failure_emits_full_stderr_while_artifact_stays_bounded(self) -> None:
+        early_diagnostic = "early compiler diagnostic outside the retained tail"
+        stderr = f"{early_diagnostic}\n" + "x" * (MODULE.MAX_DIAGNOSTIC_CHARS + 100)
+        inventory = self.completed(stderr=stderr, code=101)
+        step_stderr = io.StringIO()
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+            mock.patch.object(MODULE.sys, "stderr", step_stderr),
+        ):
+            result = MODULE.run_request(REQUEST, Path("/validation-target"))
+
+        artifact_stderr = result["inventory"]["diagnostics"]["stderr_tail"]
+        self.assertEqual(result["failure_code"], "inventory_failed")
+        self.assertEqual(step_stderr.getvalue(), stderr)
+        self.assertNotIn(early_diagnostic, artifact_stderr)
+        self.assertIn("see hosted job log", artifact_stderr)
+        self.assertLessEqual(
+            len(artifact_stderr), MODULE.MAX_DIAGNOSTIC_CHARS + 60
+        )
+        run.assert_called_once()
 
     def test_diagnostic_tail_is_bounded(self) -> None:
         value = MODULE.bounded_diagnostic("x" * (MODULE.MAX_DIAGNOSTIC_CHARS + 100))

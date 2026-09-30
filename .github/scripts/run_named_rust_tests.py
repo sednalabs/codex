@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -360,6 +361,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     )
     names = listed_tests(inventory.stdout)
     if inventory.returncode != 0:
+        if inventory.stderr:
+            sys.stderr.write(inventory.stderr)
+            sys.stderr.flush()
         result = fail("inventory_failed", "Cargo test inventory failed")
         result["inventory"] = {
             "status": "failure",
