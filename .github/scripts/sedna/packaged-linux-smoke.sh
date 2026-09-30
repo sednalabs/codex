@@ -401,6 +401,7 @@ def start_and_query(round_number):
     stderr_path = evidence_dir / f"app-server-round-{round_number}.stderr.log"
     env = os.environ.copy()
     env["CODEX_HOME"] = codex_home
+    env["CODEX_SQLITE_HOME"] = codex_home
     env.pop("CODEX_CODE_MODE_HOST_PATH", None)
     env["PATH"] = str(Path(codex).parent) + os.pathsep + env.get("PATH", "")
     with open(stderr_path, "wb") as stderr:
