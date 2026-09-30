@@ -239,7 +239,13 @@ if [[ "${GH_TOKEN+x}" == x ]]; then
   echo "credential-exclusion check failed: GH_TOKEN remains exported" >&2
   exit 1
 fi
-printf '{"synthetic_child_did_not_observe_github_token":true,"real_github_token_unset_before_product_execution":true}\n' \
+for checkout_dir in "${WORKFLOW_DIR}" "${PRODUCT_DIR}"; do
+  if git -C "${checkout_dir}" config --local --get-regexp '^http\..*\.extraheader$' >/dev/null 2>&1; then
+    echo "credential-exclusion check failed: checkout retained an HTTP extraheader" >&2
+    exit 1
+  fi
+done
+printf '{"synthetic_child_did_not_observe_github_token":true,"real_github_token_unset_before_product_execution":true,"checkout_credential_headers_absent":true}\n' \
   > "${EVIDENCE_DIR}/credential-boundary.json"
 
 package_dir="${WORK_DIR}/package"

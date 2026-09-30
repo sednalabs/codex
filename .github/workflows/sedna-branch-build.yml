@@ -582,12 +582,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: workflow-source
+          persist-credentials: false
 
       - name: Checkout exact product source
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           path: product-source
+          persist-credentials: false
 
       - name: Require packaged-smoke-only input shape
         shell: bash
