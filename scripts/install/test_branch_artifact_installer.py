@@ -328,7 +328,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         self.assertEqual(host.run["id"], 1002)
 
     def test_branch_mode_fails_closed_when_companion_is_missing(self) -> None:
-        api = FakeApi({21: ("core", self.core_zip)})
+        api = FakeApi({21: ("core", action_artifact("core", 1021))})
         args = SimpleNamespace(run_id=None, host_run_id=None, branch=BRANCH)
         with self.assertRaisesRegex(installer.InstallError, "provide --host-run-id"):
             installer.resolve_artifacts(api, args, TARGET, self.root / "branch-no-host")
