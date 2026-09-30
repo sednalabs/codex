@@ -9,10 +9,12 @@ use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
+use codex_app_server_protocol::CollabAgentRef;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::WaitAgentOutcome;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyCode;
@@ -209,6 +211,9 @@ pub(crate) fn tool_call_history_cell(
         tool,
         status,
         receiver_thread_ids,
+        receiver_agents,
+        wait_outcome,
+        queued_update_count,
         prompt,
         agents_states,
         ..
@@ -264,11 +269,18 @@ pub(crate) fn tool_call_history_cell(
         }),
         CollabAgentTool::Wait => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                Some(waiting_begin(receiver_thread_ids, &mut agent_metadata))
+                Some(waiting_begin(
+                    receiver_thread_ids,
+                    receiver_agents.as_deref().unwrap_or_default(),
+                    &mut agent_metadata,
+                ))
             } else {
                 Some(waiting_end(
                     receiver_thread_ids,
+                    receiver_agents.as_deref().unwrap_or_default(),
                     agents_states,
+                    *wait_outcome,
+                    *queued_update_count,
                     &mut agent_metadata,
                 ))
             }
@@ -408,12 +420,18 @@ fn interaction_end(
 
 fn waiting_begin(
     receiver_thread_ids: &[String],
+    receiver_agents: &[CollabAgentRef],
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let receiver_agents = receiver_thread_ids
         .iter()
         .filter_map(|thread_id| parse_thread_id(thread_id))
-        .map(|thread_id| (thread_id, agent_metadata(thread_id)))
+        .map(|thread_id| {
+            (
+                thread_id,
+                receiver_agent_metadata(thread_id, receiver_agents, agent_metadata),
+            )
+        })
         .collect::<Vec<_>>();
 
     let title = match receiver_agents.as_slice() {
@@ -440,11 +458,64 @@ fn waiting_begin(
 
 fn waiting_end(
     receiver_thread_ids: &[String],
+    receiver_agents: &[CollabAgentRef],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    wait_outcome: Option<WaitAgentOutcome>,
+    queued_update_count: Option<u32>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
+    let mut details = wait_complete_lines(
+        receiver_thread_ids,
+        receiver_agents,
+        agents_states,
+        agent_metadata,
+    );
+    if let Some(outcome) = wait_outcome {
+        details.push(wait_outcome_line(outcome));
+    }
+    if let Some(count) = queued_update_count {
+        details.push(queued_update_count_line(count));
+    }
     collab_event(title_text("Finished waiting"), details)
+}
+
+fn receiver_agent_metadata(
+    thread_id: ThreadId,
+    receiver_agents: &[CollabAgentRef],
+    agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
+) -> AgentMetadata {
+    receiver_agents
+        .iter()
+        .find(|agent| agent.thread_id == thread_id.to_string())
+        .map(|agent| AgentMetadata {
+            agent_nickname: agent.agent_nickname.clone(),
+            agent_role: agent.agent_role.clone(),
+        })
+        .unwrap_or_else(|| agent_metadata(thread_id))
+}
+
+fn wait_outcome_line(outcome: WaitAgentOutcome) -> Line<'static> {
+    let label = match outcome {
+        WaitAgentOutcome::TargetTerminalAny => "Target terminal (any)",
+        WaitAgentOutcome::TargetTerminalAll => "Targets terminal (all)",
+        WaitAgentOutcome::ExactTargetActionableMessage => "Exact-target actionable message",
+        WaitAgentOutcome::TargetlessActionableMessage => "Targetless actionable message",
+        WaitAgentOutcome::UnattributedMailboxActivity => "Unattributed mailbox activity",
+        WaitAgentOutcome::AmbiguousMailboxActivity => "Ambiguous mailbox activity",
+        WaitAgentOutcome::TerminalCompletion => "Terminal completion",
+        WaitAgentOutcome::OperatorSteer => "Operator input",
+        WaitAgentOutcome::Timeout => "Timeout",
+        WaitAgentOutcome::SubscriptionLoss => "Event subscription lost",
+    };
+    Line::from(vec![Span::from("Wait outcome: ").dim(), Span::from(label)])
+}
+
+fn queued_update_count_line(count: u32) -> Line<'static> {
+    Line::from(vec![
+        Span::from("Quiet queued updates: ").dim(),
+        Span::from(count.to_string()),
+        Span::from(" (did not wake this wait)").dim(),
+    ])
 }
 
 fn close_end(
@@ -594,6 +665,7 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
 
 fn wait_complete_lines(
     receiver_thread_ids: &[String],
+    receiver_agents: &[CollabAgentRef],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> Vec<Line<'static>> {
@@ -604,7 +676,11 @@ fn wait_complete_lines(
             let parsed_thread_id = parse_thread_id(thread_id)?;
             let status = agents_states.get(thread_id)?;
             seen.insert(parsed_thread_id);
-            Some((parsed_thread_id, agent_metadata(parsed_thread_id), status))
+            Some((
+                parsed_thread_id,
+                receiver_agent_metadata(parsed_thread_id, receiver_agents, agent_metadata),
+                status,
+            ))
         })
         .collect::<Vec<_>>();
 
@@ -613,7 +689,13 @@ fn wait_complete_lines(
         .filter_map(|(thread_id, status)| {
             let parsed_thread_id = parse_thread_id(thread_id)?;
             (!seen.contains(&parsed_thread_id))
-                .then(|| (parsed_thread_id, agent_metadata(parsed_thread_id), status))
+                .then(|| {
+                    (
+                        parsed_thread_id,
+                        receiver_agent_metadata(parsed_thread_id, receiver_agents, agent_metadata),
+                        status,
+                    )
+                })
         })
         .collect::<Vec<_>>();
     extras.sort_by_key(|entry| entry.0.to_string());
@@ -764,6 +846,9 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -784,6 +869,9 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
@@ -804,6 +892,13 @@ mod tests {
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: Some(vec![CollabAgentRef {
+                    thread_id: robie_id.to_string(),
+                    agent_nickname: Some("Projected Robie".to_string()),
+                    agent_role: Some("researcher".to_string()),
+                }]),
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -821,6 +916,13 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string(), bob_id.to_string()],
+                receiver_agents: Some(vec![CollabAgentRef {
+                    thread_id: robie_id.to_string(),
+                    agent_nickname: Some("Projected Robie".to_string()),
+                    agent_role: Some("researcher".to_string()),
+                }]),
+                wait_outcome: Some(WaitAgentOutcome::ExactTargetActionableMessage),
+                queued_update_count: Some(2),
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -847,6 +949,9 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
@@ -931,6 +1036,9 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
@@ -970,6 +1078,9 @@ mod tests {
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![robie_id.to_string()],
+                receiver_agents: None,
+                wait_outcome: None,
+                queued_update_count: None,
                 prompt: None,
                 model: None,
                 reasoning_effort: None,

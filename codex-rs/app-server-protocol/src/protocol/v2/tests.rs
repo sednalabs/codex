@@ -5,6 +5,7 @@ use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmen
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
+use codex_protocol::protocol::CollabAgentRef as CoreCollabAgentRef;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
@@ -19,6 +20,7 @@ use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::ReasoningItem;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::items::TurnItem;
+use codex_protocol::items::WaitAgentOutcome as CoreWaitAgentOutcome;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::items::WebSearchItem as CoreWebSearchItem;
 use codex_protocol::mcp::CallToolResult;
@@ -3342,6 +3344,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
         receiver_agents: Vec::new(),
+        wait_outcome: None,
+        queued_update_count: None,
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
@@ -3358,6 +3362,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
             receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: None,
+            wait_outcome: None,
+            queued_update_count: None,
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
@@ -3567,6 +3574,82 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             duration_ms: Some(42),
         }
     );
+}
+
+#[test]
+fn v2_wait_call_projects_receiver_and_observed_outcome() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let receiver_thread_id = codex_protocol::ThreadId::default();
+    let wait_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "wait-1".to_string(),
+        tool: CoreCollabAgentTool::Wait,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids: vec![receiver_thread_id],
+        receiver_agents: vec![CoreCollabAgentRef {
+            thread_id: receiver_thread_id,
+            agent_nickname: Some("Ada".to_string()),
+            agent_role: Some("worker".to_string()),
+        }],
+        wait_outcome: Some(CoreWaitAgentOutcome::ExactTargetActionableMessage),
+        queued_update_count: Some(2),
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(wait_item),
+        ThreadItem::CollabAgentToolCall {
+            id: "wait-1".to_string(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            receiver_agents: Some(vec![CollabAgentRef {
+                thread_id: receiver_thread_id.to_string(),
+                agent_nickname: Some("Ada".to_string()),
+                agent_role: Some("worker".to_string()),
+            }]),
+            wait_outcome: Some(WaitAgentOutcome::ExactTargetActionableMessage),
+            queued_update_count: Some(2),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        }
+    );
+}
+
+#[test]
+fn v2_legacy_wait_item_defaults_projection_fields() {
+    let item: ThreadItem = serde_json::from_value(json!({
+        "type": "collabAgentToolCall",
+        "id": "wait-legacy",
+        "tool": "wait",
+        "status": "inProgress",
+        "senderThreadId": "00000000-0000-0000-0000-000000000001",
+        "receiverThreadIds": [],
+        "prompt": null,
+        "model": null,
+        "reasoningEffort": null,
+        "agentsStates": {},
+    }))
+    .expect("deserialize legacy wait item");
+
+    let ThreadItem::CollabAgentToolCall {
+        receiver_agents,
+        wait_outcome,
+        queued_update_count,
+        ..
+    } = item
+    else {
+        panic!("legacy wait item should remain a collab tool call");
+    };
+    assert_eq!(receiver_agents, None);
+    assert_eq!(wait_outcome, None);
+    assert_eq!(queued_update_count, None);
 }
 
 #[test]

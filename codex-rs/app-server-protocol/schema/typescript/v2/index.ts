@@ -65,6 +65,7 @@ export type { ChatgptAuthTokensRefreshReason } from "./ChatgptAuthTokensRefreshR
 export type { ChatgptAuthTokensRefreshResponse } from "./ChatgptAuthTokensRefreshResponse";
 export type { CliAuthCredentialsStoreMode } from "./CliAuthCredentialsStoreMode";
 export type { CodexErrorInfo } from "./CodexErrorInfo";
+export type { CollabAgentRef } from "./CollabAgentRef";
 export type { CollabAgentState } from "./CollabAgentState";
 export type { CollabAgentStatus } from "./CollabAgentStatus";
 export type { CollabAgentTool } from "./CollabAgentTool";
@@ -619,6 +620,7 @@ export type { TurnSteerResponse } from "./TurnSteerResponse";
 export type { TurnToolOutput } from "./TurnToolOutput";
 export type { TurnsPage } from "./TurnsPage";
 export type { UserInput } from "./UserInput";
+export type { WaitAgentOutcome } from "./WaitAgentOutcome";
 export type { WarningNotification } from "./WarningNotification";
 export type { WebSearchAction } from "./WebSearchAction";
 export type { WindowsSandboxImplementation } from "./WindowsSandboxImplementation";
