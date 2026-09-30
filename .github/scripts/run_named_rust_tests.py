@@ -226,10 +226,10 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
-    if execution_mode not in ("whole_target", "exact"):
+    if execution_mode not in ("whole_target", "exact", "exact_continue"):
         return None, fail(
             "execution_mode_invalid",
-            "execution_mode must be whole_target or exact",
+            "execution_mode must be whole_target, exact, or exact_continue",
         )
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
@@ -336,10 +336,10 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     except ValueError as exc:
         return fail("target_selector_unknown", str(exc))
     execution_mode = request.get("execution_mode", "whole_target")
-    if execution_mode not in ("whole_target", "exact"):
+    if execution_mode not in ("whole_target", "exact", "exact_continue"):
         return fail(
             "execution_mode_invalid",
-            "execution_mode must be whole_target or exact",
+            "execution_mode must be whole_target, exact, or exact_continue",
         )
     env = os.environ.copy()
     # These are the established hosted-runner contracts.  Do not accept them
@@ -401,7 +401,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    if execution_mode == "exact" and any(name.startswith("-") for name in request["tests"]):
+    if execution_mode in ("exact", "exact_continue") and any(
+        name.startswith("-") for name in request["tests"]
+    ):
         result.update(
             {
                 "status": "failure",
@@ -410,18 +412,54 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    if execution_mode == "exact":
-        for name in request["tests"]:
+    if execution_mode in ("exact", "exact_continue"):
+        continue_after_test_failure = execution_mode == "exact_continue"
+        for index, name in enumerate(request["tests"]):
             test_command = exact_test_command(request, name, command_record)
-            completed = subprocess.run(
-                test_command,
-                cwd=manifest_root,
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
-                shell=False,
-            )
+            try:
+                completed = subprocess.run(
+                    test_command,
+                    cwd=manifest_root,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    shell=False,
+                )
+            except OSError as exc:
+                if not continue_after_test_failure:
+                    raise
+                result.update(
+                    {
+                        "status": "failure",
+                        "failure_code": "execution_prerequisite_failed",
+                        "message": "exact named test command could not be started",
+                    }
+                )
+                result["tests"].append(
+                    {
+                        "name": name,
+                        "requested_selector": name,
+                        "status": "failure",
+                        "argv": test_command,
+                        "exit_code": None,
+                        "execution_reconciled": False,
+                        "observed_outcomes": [],
+                        "result_counts": None,
+                        "diagnostics": {"error": bounded_diagnostic(str(exc))},
+                    }
+                )
+                result["tests"].extend(
+                    {
+                        "name": remaining_name,
+                        "requested_selector": remaining_name,
+                        "status": "not_run",
+                        "execution_reconciled": False,
+                        "reason": "stopped_after_execution_prerequisite_failure",
+                    }
+                    for remaining_name in request["tests"][index + 1 :]
+                )
+                break
             output = "\n".join(
                 value for value in (completed.stdout, completed.stderr) if value
             )
@@ -444,6 +482,22 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 and len(observed) == 1
                 and observed[0] == "ok"
             )
+            credible_test_failure = (
+                completed.returncode != 0
+                and counts is not None
+                and counts["passed"] == 0
+                and counts["failed"] == 1
+                and counts["ignored"] == 0
+                and counts["measured"] == 0
+                and sum(
+                    counts[key]
+                    for key in ("passed", "failed", "ignored", "measured")
+                )
+                == 1
+                and len(outcomes) == 1
+                and len(observed) == 1
+                and observed[0] == "FAILED"
+            )
             test_result = {
                 "name": name,
                 "requested_selector": name,
@@ -457,17 +511,22 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
             result["tests"].append(test_result)
             if not reconciled:
+                named_test_failure = (
+                    credible_test_failure
+                    if continue_after_test_failure
+                    else completed.returncode != 0
+                    or (len(observed) == 1 and observed[0] == "FAILED")
+                )
+                if len(observed) == 1 and observed[0] == "ignored":
+                    failure_code = "named_test_ignored"
+                elif named_test_failure:
+                    failure_code = "named_test_failed"
+                else:
+                    failure_code = "execution_reconciliation_failed"
                 result.update(
                     {
                         "status": "failure",
-                        "failure_code": (
-                            "named_test_ignored"
-                            if len(observed) == 1 and observed[0] == "ignored"
-                            else "named_test_failed"
-                            if completed.returncode != 0
-                            or (len(observed) == 1 and observed[0] == "FAILED")
-                            else "execution_reconciliation_failed"
-                        ),
+                        "failure_code": failure_code,
                         "message": (
                             "exact named test did not produce exactly one non-ignored "
                             "passing result with a one-test summary; see bounded "
@@ -475,6 +534,19 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                         ),
                     }
                 )
+                if continue_after_test_failure and credible_test_failure:
+                    continue
+                if continue_after_test_failure:
+                    result["tests"].extend(
+                        {
+                            "name": remaining_name,
+                            "requested_selector": remaining_name,
+                            "status": "not_run",
+                            "execution_reconciled": False,
+                            "reason": "stopped_after_unreconciled_execution",
+                        }
+                        for remaining_name in request["tests"][index + 1 :]
+                    )
                 break
         return result
     # Run the complete immutable target command.  This keeps the command

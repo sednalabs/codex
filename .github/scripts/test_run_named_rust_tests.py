@@ -252,20 +252,36 @@ class NamedRustTests(TestCase):
 
         self.assertEqual(error["failure_code"], "execution_mode_invalid")
 
+    def test_load_request_accepts_exact_continue_mode(self) -> None:
+        request = {**REQUEST, "execution_mode": "exact_continue"}
+        with mock.patch.dict(
+            MODULE.os.environ,
+            {
+                "RUST_TEST_REQUEST_JSON": json.dumps(request),
+                "VALIDATION_PROFILE": "rust_minimal",
+            },
+        ):
+            normalized, error = MODULE.load_request()
+
+        self.assertIsNone(error)
+        self.assertEqual(normalized["execution_mode"], "exact_continue")
+
     def test_exact_mode_rejects_unknown_package_and_target(self) -> None:
         for changed in (
             {"package": "not-in-catalog"},
             {"target_kind": "integration", "target": "not-in-catalog"},
         ):
             with self.subTest(changed=changed):
-                request = {**REQUEST, "execution_mode": "exact", **changed}
-                with (
-                    mock.patch.object(MODULE.subprocess, "run") as run,
-                    mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
-                ):
-                    result = MODULE.run_request(request, Path("/validation-target"))
-                self.assertEqual(result["failure_code"], "target_selector_unknown")
-                run.assert_not_called()
+                for mode in ("exact", "exact_continue"):
+                    with self.subTest(mode=mode):
+                        request = {**REQUEST, "execution_mode": mode, **changed}
+                        with (
+                            mock.patch.object(MODULE.subprocess, "run") as run,
+                            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+                        ):
+                            result = MODULE.run_request(request, Path("/validation-target"))
+                        self.assertEqual(result["failure_code"], "target_selector_unknown")
+                        run.assert_not_called()
 
     def test_exact_mode_requires_unique_inventory_match(self) -> None:
         cases = (
@@ -276,19 +292,20 @@ class NamedRustTests(TestCase):
             ),
         )
         for listed, failure in cases:
-            with self.subTest(listed=listed):
-                inventory = self.completed(stdout=listed)
-                with (
-                    mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
-                    mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
-                    mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
-                ):
-                    result = MODULE.run_request(
-                        {**REQUEST, "execution_mode": "exact"},
-                        Path("/validation-target"),
-                    )
-                self.assertEqual(result["failure_code"], failure)
-                self.assertEqual(run.call_count, 1)
+            for mode in ("exact", "exact_continue"):
+                with self.subTest(listed=listed, mode=mode):
+                    inventory = self.completed(stdout=listed)
+                    with (
+                        mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+                        mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+                        mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+                    ):
+                        result = MODULE.run_request(
+                            {**REQUEST, "execution_mode": mode},
+                            Path("/validation-target"),
+                        )
+                    self.assertEqual(result["failure_code"], failure)
+                    self.assertEqual(run.call_count, 1)
 
     def test_exact_mode_rejects_ignored_missing_summary_and_nonzero(self) -> None:
         cases = (
@@ -320,6 +337,166 @@ class NamedRustTests(TestCase):
                 result, _ = self.run_exact([(output, code)])
                 self.assertEqual(result["status"], "failure")
                 self.assertEqual(result["failure_code"], failure)
+
+    def test_exact_continue_collects_all_results_and_keeps_failed_aggregate(
+        self,
+    ) -> None:
+        failed = (
+            "test suite::first ... FAILED\n\n"
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            101,
+        )
+        passed = (
+            "test suite::second ... ok\n\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            0,
+        )
+        failed_again = (
+            "test suite::third ... FAILED\n\n"
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            101,
+        )
+        result, run = self.run_exact(
+            [failed, passed, failed_again],
+            names=["suite::first", "suite::second", "suite::third"],
+            request={"execution_mode": "exact_continue"},
+        )
+
+        self.assertEqual(len(run.call_args_list), 4)
+        self.assertEqual(
+            [test["status"] for test in result["tests"]],
+            ["failure", "success", "failure"],
+        )
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "named_test_failed")
+        self.assertEqual(
+            [test["requested_selector"] for test in result["tests"]],
+            ["suite::first", "suite::second", "suite::third"],
+        )
+
+    def test_exact_mode_keeps_stop_on_first_failure_behavior(self) -> None:
+        failed = (
+            "test suite::first ... FAILED\n\n"
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            101,
+        )
+        result, run = self.run_exact(
+            [failed],
+            names=["suite::first", "suite::second"],
+            request={"execution_mode": "exact"},
+        )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(len(run.call_args_list), 2)
+        self.assertEqual([test["name"] for test in result["tests"]], ["suite::first"])
+
+    def test_exact_continue_succeeds_only_when_every_test_passes(self) -> None:
+        passed = (
+            "test suite::known ... ok\n\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 4 filtered out\n",
+            0,
+        )
+        result, run = self.run_exact(
+            [passed, passed],
+            names=["suite::known", "suite::other"],
+            request={"execution_mode": "exact_continue"},
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            [test["status"] for test in result["tests"]], ["success", "success"]
+        )
+        self.assertEqual(len(run.call_args_list), 3)
+
+    def test_exact_continue_stops_on_unreconciled_execution_and_marks_remainder(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "compiler failed before test summary\n",
+                101,
+                "execution_reconciliation_failed",
+            ),
+            (
+                "test suite::known ... FAILED\n\n"
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+                "0 measured; 4 filtered out\n",
+                0,
+                "execution_reconciliation_failed",
+            ),
+            (
+                "test suite::known ... ignored\n\n"
+                "test result: ok. 0 passed; 0 failed; 1 ignored; "
+                "0 measured; 4 filtered out\n",
+                0,
+                "named_test_ignored",
+            ),
+        )
+        for output, code, failure_code in cases:
+            with self.subTest(code=code, output=output):
+                result, run = self.run_exact(
+                    [(output, code)],
+                    names=["suite::known", "suite::other", "suite::last"],
+                    request={"execution_mode": "exact_continue"},
+                )
+
+                self.assertEqual(result["status"], "failure")
+                self.assertEqual(result["failure_code"], failure_code)
+                self.assertEqual(len(run.call_args_list), 2)
+                self.assertEqual(
+                    [test["status"] for test in result["tests"]],
+                    ["failure", "not_run", "not_run"],
+                )
+
+    def test_exact_continue_stops_on_command_start_failure(self) -> None:
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, OSError("cargo executable unavailable")],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(
+                {
+                    **REQUEST,
+                    "execution_mode": "exact_continue",
+                    "tests": ["suite::known", "suite::other"],
+                },
+                Path("/validation-target"),
+            )
+
+        self.assertEqual(result["failure_code"], "execution_prerequisite_failed")
+        self.assertEqual(len(run.call_args_list), 2)
+        self.assertEqual(
+            [test["status"] for test in result["tests"]], ["failure", "not_run"]
+        )
+        self.assertIn(
+            "cargo executable unavailable", result["tests"][0]["diagnostics"]["error"]
+        )
+
+    def test_exact_continue_reuses_exact_selector_gates(self) -> None:
+        request = {
+            **REQUEST,
+            "execution_mode": "exact_continue",
+            "tests": ["-list"],
+        }
+        inventory = self.completed(stdout="-list: test\n")
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=inventory) as run,
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["failure_code"], "exact_selector_invalid")
+        self.assertEqual(run.call_count, 1)
 
 
 if __name__ == "__main__":
