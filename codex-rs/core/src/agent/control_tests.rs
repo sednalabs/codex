@@ -1133,6 +1133,22 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
         assert!(resumed_control.ensure_agent_known(thread_id).is_ok());
     }
 
+    let resumed_worker_id = resumed_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            worker_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            }),
+        )
+        .await
+        .expect("the restored child should resume by its persisted ID");
+    assert_eq!(resumed_worker_id, worker_thread_id);
+
     resumed_control
         .close_agent(worker_thread_id)
         .await
@@ -1143,6 +1159,105 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert!(closed_worker.is_err());
     assert!(surviving_sibling.is_ok());
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
+}
+
+#[tokio::test]
+async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_limit() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+    let worker_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("persisted child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::root().join("worker").expect("worker path")),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("worker spawn should succeed");
+    let worker_thread = harness
+        .manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("worker thread should exist");
+    persist_thread_for_tree_resume(&parent_thread, "parent persisted").await;
+    persist_thread_for_tree_resume(&worker_thread, "worker persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, parent_thread_id, &[worker_thread_id])
+        .await;
+
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be enabled");
+    for suffix in 10_000..13_200 {
+        let ghost_thread_id =
+            ThreadId::from_string(&format!("ffffffff-ffff-ffff-ffff-{suffix:012}"))
+                .expect("generated descendant ID should be valid");
+        state_db
+            .upsert_thread_spawn_edge(
+                worker_thread_id,
+                ghost_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("over-limit graph edge should persist");
+    }
+
+    let oversized =
+        codex_agent_graph_store::LocalAgentGraphStore::new(std::sync::Arc::clone(state_db))
+            .list_thread_spawn_descendants_bounded(
+                parent_thread_id,
+                Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+            .expect("over-limit persisted graph should return its bounded result");
+    assert!(oversized.relation_limit_reached);
+    assert!(oversized.thread_ids.contains(&worker_thread_id));
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    let resumed_manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        harness.config.model_provider.clone(),
+        harness.config.codex_home.to_path_buf(),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        harness.state_db.clone(),
+    );
+    let resumed_control = resumed_manager.agent_control();
+    let resumed_parent_thread_id = resumed_control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            parent_thread_id,
+            SessionSource::Exec,
+        )
+        .await
+        .expect("root resume should succeed");
+    assert_eq!(resumed_parent_thread_id, parent_thread_id);
+    assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
+
+    resumed_control
+        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .await;
+
+    assert!(
+        resumed_control
+            .ensure_agent_known(worker_thread_id)
+            .is_err()
+    );
+    assert_thread_not_loaded(&resumed_manager, worker_thread_id).await;
 }
 
 struct TestThreadInstructionsProvider {

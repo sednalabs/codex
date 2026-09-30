@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::AgentGraphStore;
 use crate::AgentGraphStoreError;
 use crate::AgentGraphStoreFuture;
+use crate::ThreadSpawnDescendants;
 use crate::ThreadSpawnEdgeStatus;
 
 /// SQLite-backed implementation of [`AgentGraphStore`] using an existing state runtime.
@@ -105,6 +106,26 @@ impl AgentGraphStore for LocalAgentGraphStore {
                     .await
                     .map_err(internal_error),
             }
+        })
+    }
+
+    fn list_thread_spawn_descendants_bounded(
+        &self,
+        root_thread_id: ThreadId,
+        status_filter: Option<ThreadSpawnEdgeStatus>,
+    ) -> AgentGraphStoreFuture<'_, ThreadSpawnDescendants> {
+        Box::pin(async move {
+            self.state_db
+                .list_thread_spawn_descendants_bounded(
+                    root_thread_id,
+                    status_filter.map(to_state_status),
+                )
+                .await
+                .map(|descendants| ThreadSpawnDescendants {
+                    thread_ids: descendants.thread_ids,
+                    relation_limit_reached: descendants.relation_limit_reached,
+                })
+                .map_err(internal_error)
         })
     }
 }
@@ -339,6 +360,110 @@ mod tests {
         assert_eq!(
             closed_descendants,
             vec![closed_child_thread_id, closed_great_grandchild_thread_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn local_store_bounds_descendant_recovery_and_terminates_root_cycle() {
+        let fixture = state_runtime().await;
+        let state_db = fixture.state_db;
+        let store = LocalAgentGraphStore::new(state_db);
+        let root_thread_id = thread_id(/*suffix*/ 9_999);
+        let cycle_child_id = thread_id(/*suffix*/ 1);
+
+        let empty = store
+            .list_thread_spawn_descendants_bounded(
+                root_thread_id,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+            .expect("empty bounded descendants should load");
+        assert!(empty.thread_ids.is_empty());
+        assert!(!empty.relation_limit_reached);
+
+        store
+            .upsert_thread_spawn_edge(root_thread_id, cycle_child_id, ThreadSpawnEdgeStatus::Open)
+            .await
+            .expect("root cycle edge should insert");
+        store
+            .upsert_thread_spawn_edge(cycle_child_id, root_thread_id, ThreadSpawnEdgeStatus::Open)
+            .await
+            .expect("schema-valid root-reentry edge should insert");
+        store
+            .upsert_thread_spawn_edge(
+                root_thread_id,
+                thread_id(5_001),
+                ThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed child edge should insert");
+        store
+            .upsert_thread_spawn_edge(
+                thread_id(5_001),
+                thread_id(5_002),
+                ThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open descendant beneath a closed edge should insert");
+
+        for suffix in 100..3_299 {
+            store
+                .upsert_thread_spawn_edge(
+                    root_thread_id,
+                    thread_id(suffix),
+                    ThreadSpawnEdgeStatus::Open,
+                )
+                .await
+                .expect("descendant edge should insert");
+        }
+
+        let exact = store
+            .list_thread_spawn_descendants_bounded(
+                root_thread_id,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+            .expect("exact-bound descendants should load");
+        assert_eq!(
+            exact.thread_ids.len(),
+            codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+        );
+        assert!(!exact.relation_limit_reached);
+        assert!(!exact.thread_ids.contains(&root_thread_id));
+        assert!(
+            exact
+                .thread_ids
+                .windows(2)
+                .all(|pair| pair[0].to_string() < pair[1].to_string())
+        );
+
+        store
+            .upsert_thread_spawn_edge(
+                root_thread_id,
+                thread_id(5_000),
+                ThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("overflow sentinel edge should insert");
+
+        let over_limit = store
+            .list_thread_spawn_descendants_bounded(
+                root_thread_id,
+                Some(ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+            .expect("over-limit descendants should return a bounded result");
+        assert_eq!(
+            over_limit.thread_ids.len(),
+            codex_state::MAX_THREAD_SPAWN_DESCENDANTS
+        );
+        assert!(over_limit.relation_limit_reached);
+        assert!(!over_limit.thread_ids.contains(&root_thread_id));
+        assert!(
+            over_limit
+                .thread_ids
+                .windows(2)
+                .all(|pair| pair[0].to_string() < pair[1].to_string())
         );
     }
 }

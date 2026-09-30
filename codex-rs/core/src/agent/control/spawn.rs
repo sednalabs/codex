@@ -192,21 +192,28 @@ impl LocalAgentControl {
         let Some(agent_graph_store) = state.agent_graph_store() else {
             return;
         };
-        let descendant_ids = match agent_graph_store
-            .list_thread_spawn_descendants(
+        let descendants = match agent_graph_store
+            .list_thread_spawn_descendants_bounded(
                 root_thread_id,
                 Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
             )
             .await
         {
-            Ok(descendant_ids) => descendant_ids,
+            Ok(descendants) => descendants,
             Err(err) => {
                 warn!("failed to restore persisted V2 agent metadata for {root_thread_id}: {err}");
                 return;
             }
         };
 
-        for thread_id in descendant_ids {
+        if descendants.relation_limit_reached {
+            warn!(
+                "persisted V2 agent metadata restoration reached the descendant safety limit for {root_thread_id}; retaining the incomplete result instead of registering a partial agent tree"
+            );
+            return;
+        }
+
+        for thread_id in descendants.thread_ids {
             if self.state.agent_metadata_for_thread(thread_id).is_some() {
                 continue;
             }
