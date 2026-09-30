@@ -373,12 +373,13 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         codex_home = home / "custom-codex-home"
         install_root = codex_home / "packages" / "standalone"
         old = install_root / "releases" / "old"
-        old.mkdir(parents=True)
-        (old / "codex").write_text("old binary", encoding="utf-8")
+        (old / "bin").mkdir(parents=True)
+        (old / "bin" / "codex").write_text("old binary", encoding="utf-8")
+        (old / "codex").symlink_to("bin/codex")
         (install_root / "current").symlink_to(old)
         visible = home / "custom-install-bin"
         visible.mkdir(parents=True)
-        (visible / "codex").symlink_to(old / "codex")
+        (visible / "codex").symlink_to(old / "bin" / "codex")
         with patch.dict(
             os.environ,
             {
@@ -394,7 +395,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         self.assertTrue((new_release / "bin" / "codex-code-mode-host").is_file())
         self.assertEqual(os.readlink(new_release / "codex"), "bin/codex")
         self.assertEqual(os.readlink(install_root / "current"), str(new_release))
-        self.assertEqual(os.readlink(visible / "codex"), str(install_root / "current" / "codex"))
+        self.assertEqual(os.readlink(visible / "codex"), str(install_root / "current" / "bin" / "codex"))
         self.assertTrue((old / "codex").exists())
 
     def test_activation_failure_rolls_back_both_symlinks(self) -> None:
@@ -405,12 +406,13 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         codex_home = home / "custom-codex-home"
         install_root = codex_home / "packages" / "standalone"
         old = install_root / "releases" / "old"
-        old.mkdir(parents=True)
-        (old / "codex").write_text("old binary", encoding="utf-8")
+        (old / "bin").mkdir(parents=True)
+        (old / "bin" / "codex").write_text("old binary", encoding="utf-8")
+        (old / "codex").symlink_to("bin/codex")
         (install_root / "current").symlink_to(old)
         visible = home / "custom-install-bin"
         visible.mkdir(parents=True)
-        (visible / "codex").symlink_to(old / "codex")
+        (visible / "codex").symlink_to(old / "bin" / "codex")
         env = {
             "HOME": str(home),
             "CODEX_HOME": str(codex_home),
@@ -422,7 +424,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             with self.assertRaisesRegex(installer.InstallError, "injected activation failure"):
                 installer.install_package(files, manifest, dry_run=False)
         self.assertEqual(os.readlink(install_root / "current"), str(old))
-        self.assertEqual(os.readlink(visible / "codex"), str(old / "codex"))
+        self.assertEqual(os.readlink(visible / "codex"), str(old / "bin" / "codex"))
         self.assertTrue((old / "codex").exists())
 
     def test_aarch64_elf_machine_is_supported(self) -> None:
