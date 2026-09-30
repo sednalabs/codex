@@ -14,6 +14,26 @@
     "AgentPath": {
       "type": "string"
     },
+    "AgentWaitReason": {
+      "enum": [
+        "targetTerminal",
+        "mailboxActivity",
+        "steered",
+        "timedOut",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "AgentWaitWakeCause": {
+      "enum": [
+        "targetStatus",
+        "mailboxTurnRequested",
+        "operatorSteer",
+        "timeout",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "AsyncUserInputQuestion": {
       "additionalProperties": false,
       "properties": {
@@ -195,6 +215,29 @@
           "type": "object"
         }
       ]
+    },
+    "CollabAgentRef": {
+      "properties": {
+        "agentNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "CollabAgentState": {
       "properties": {
@@ -1908,6 +1951,16 @@
                 "null"
               ]
             },
+            "queuedUpdateCount": {
+              "default": null,
+              "description": "Observed quiet updates still queued at return; this does not imply a wake.",
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "reasoningEffort": {
               "anyOf": [
                 {
@@ -1918,6 +1971,14 @@
                 }
               ],
               "description": "Reasoning effort requested for the spawned agent, when applicable."
+            },
+            "receiverAgents": {
+              "default": [],
+              "description": "Resolved receiver identity metadata when available.",
+              "items": {
+                "$ref": "#/definitions/CollabAgentRef"
+              },
+              "type": "array"
             },
             "receiverThreadIds": {
               "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
@@ -1952,6 +2013,30 @@
               ],
               "title": "CollabAgentToolCallThreadItemType",
               "type": "string"
+            },
+            "waitReason": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentWaitReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Producer-reported wait reason; missing on legacy history."
+            },
+            "waitWakeCause": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentWaitWakeCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Producer-reported actual wake cause; quiet queue updates are not causes."
             }
           },
           "required": [

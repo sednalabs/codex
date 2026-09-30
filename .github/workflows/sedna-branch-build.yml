@@ -674,3 +674,824 @@ jobs:
             ${{ runner.temp }}/codex-first-binary/manifest.json
           if-no-files-found: error
           retention-days: 7
+
+  consume-linux-x86_64:
+    name: Consume native Linux x86_64 package
+    if: ${{ inputs.mode == 'build' }}
+    needs:
+      - runner_policy
+      - build-linux-x86_64
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    timeout-minutes: 180
+    env:
+      PRODUCT_ARCH: x86_64
+      RUST_TARGET: x86_64-unknown-linux-gnu
+      EXPECTED_RUNNER_LABEL: ubuntu-24.04
+    steps:
+      - name: Initialize runner-local consumer paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          printf 'ARTIFACT_DIR=%s/first-binary-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_JUNIT=%s/first-binary-consumer-results.xml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_IDENTITY=%s/first-binary-consumer-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check out exact product source (T)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: product
+      - name: Verify H, B, T, and native consumer architecture
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "x86_64 consumer is not on its native standard runner" >&2
+            exit 1
+          }
+          [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || exit 1
+          case "${GITHUB_REF}" in
+            refs/heads/*) ;;
+            *) echo "consumer qualification requires a branch dispatch" >&2; exit 1 ;;
+          esac
+          actual_t="$(git -C product rev-parse HEAD)"
+          [[ "${actual_t}" == "${TARGET_SHA}" ]] || {
+            echo "product source T does not match target_sha" >&2
+            exit 1
+          }
+          git -C product fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          actual_b="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          [[ "${actual_b}" == "${BASE_SHA}" ]] || {
+            echo "comparison base B does not match base_sha" >&2
+            exit 1
+          }
+          git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Verify dispatch run and select exactly one uploaded artifact by API
+        id: artifact_api
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          API_URL: ${{ github.api_url }}
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          SHA = re.compile(r"[0-9a-f]{40}\Z")
+          DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+          def fail(message: str) -> None:
+              raise SystemExit(message)
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+              fail("invalid repository identity in runner environment")
+          api_url = os.environ["API_URL"].rstrip("/")
+          token = os.environ["GITHUB_TOKEN"]
+          run_id_text = os.environ["EXPECTED_RUN_ID"]
+          if not run_id_text.isdecimal():
+              fail("invalid workflow run identity")
+          run_id = int(run_id_text)
+          expected_h = os.environ["EXPECTED_H"]
+          target_sha = os.environ["TARGET_SHA"]
+          base_sha = os.environ["BASE_SHA"]
+          base_ref = os.environ["BASE_REF"]
+          branch = os.environ["EXPECTED_BRANCH"]
+          architecture = os.environ["PRODUCT_ARCH"]
+          target = os.environ["RUST_TARGET"]
+          runner_label = os.environ["EXPECTED_RUNNER_LABEL"]
+          if not all(SHA.fullmatch(value) for value in (expected_h, target_sha, base_sha)):
+              fail("invalid H/T/B SHA input")
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", base_ref):
+              fail("invalid comparison base ref")
+          if not os.environ["GITHUB_REF"].startswith("refs/heads/"):
+              fail("consumer workflow was not dispatched from a branch")
+
+          def get_json(path: str) -> dict[str, object]:
+              request = Request(
+                  f"{api_url}{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      return json.loads(response.read())
+              except HTTPError as error:
+                  fail(f"GitHub Actions API returned HTTP {error.code} for {path}")
+              except URLError as error:
+                  fail(f"GitHub Actions API request failed for {path}: {error.reason}")
+
+          run = get_json(f"/repos/{repository}/actions/runs/{run_id}")
+          if run.get("id") != run_id:
+              fail("Actions API run ID differs from the active workflow run")
+          if run.get("event") != "workflow_dispatch":
+              fail("consumer route requires an explicit workflow_dispatch event")
+          workflow_id = run.get("workflow_id")
+          if type(workflow_id) is not int or workflow_id <= 0:
+              fail("Actions API run omitted a valid numeric workflow ID")
+          workflow = get_json(f"/repos/{repository}/actions/workflows/{workflow_id}")
+          if workflow.get("id") != workflow_id:
+              fail("Actions API workflow ID differs from the active workflow run")
+          if workflow.get("path") != ".github/workflows/sedna-branch-build.yml":
+              fail("active Actions run is not the registered sedna-branch-build workflow")
+          if run.get("head_sha") != expected_h or run.get("head_branch") != branch:
+              fail("Actions API workflow host H or branch differs from the active dispatch")
+          if os.environ["GITHUB_REF_NAME"] != branch:
+              fail("workflow ref name differs from the requested branch identity")
+
+          listing = get_json(f"/repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100")
+          artifacts = listing.get("artifacts")
+          if not isinstance(artifacts, list) or listing.get("total_count") != len(artifacts):
+              fail("artifact API listing is malformed or incomplete")
+          expected_name = f"sedna-first-binary-{target_sha}-{architecture}-{run_id}"
+          matches = [item for item in artifacts if item.get("name") == expected_name]
+          if len(matches) != 1:
+              fail("Actions API did not return exactly one expected package artifact")
+          artifact = matches[0]
+          association = artifact.get("workflow_run")
+          if not isinstance(association, dict):
+              fail("artifact API response omitted its workflow-run association")
+          if (
+              association.get("id") != run_id
+              or association.get("head_sha") != expected_h
+              or association.get("head_branch") != branch
+          ):
+              fail("artifact workflow association does not match exact H/run/branch")
+          artifact_id = artifact.get("id")
+          artifact_digest = artifact.get("digest")
+          size = artifact.get("size_in_bytes")
+          if type(artifact_id) is not int or artifact_id <= 0:
+              fail("artifact API returned an invalid numeric artifact ID")
+          if artifact.get("expired") is not False or type(size) is not int or size <= 0:
+              fail("expected package artifact is expired or empty")
+          if not isinstance(artifact_digest, str) or not DIGEST.fullmatch(artifact_digest):
+              fail("artifact API omitted a valid SHA-256 digest")
+
+          identity = {
+              "schema_version": "sedna-first-binary-consumer-api-v1",
+              "repository": repository,
+              "workflow_path": workflow["path"],
+              "event": run["event"],
+              "workflow_host_sha": expected_h,
+              "product_sha": target_sha,
+              "comparison_base_ref": base_ref,
+              "comparison_base_sha": base_sha,
+              "branch": branch,
+              "run_id": run_id,
+              "artifact_id": artifact_id,
+              "artifact_name": expected_name,
+              "artifact_digest": artifact_digest,
+              "artifact_size_bytes": size,
+              "architecture": architecture,
+              "target": target,
+              "runner_label": runner_label,
+          }
+          Path(os.environ["CONSUMER_IDENTITY"]).write_text(
+              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"artifact_id={artifact_id}\n")
+              output.write(f"artifact_name={expected_name}\n")
+              output.write(f"artifact_digest={artifact_digest}\n")
+          PY
+      - name: Download the API-verified artifact outside the checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.artifact_api.outputs.artifact_id }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/first-binary-artifact
+          digest-mismatch: error
+      - name: Install and verify the pinned consumer Python toolchain
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          python-version: "3.12.14"
+          enable-cache: false
+      - name: Verify uv and managed Python versions
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+        run: |
+          set -euo pipefail
+          [[ "$(uv --version)" == "uv 0.12.17" ]] || {
+            echo "unexpected uv version" >&2
+            exit 1
+          }
+          uv python install 3.12.14
+          selected_python="$(uv run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
+          [[ "${selected_python}" == "3.12.14" ]] || {
+            echo "uv did not select the pinned Python 3.12.14 runtime" >&2
+            exit 1
+          }
+      - name: Run packaged first-binary consumers and preserve pytest status
+        id: consumer_tests
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          ARTIFACT_ID: ${{ steps.artifact_api.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ steps.artifact_api.outputs.artifact_name }}
+          PRODUCER_RUN_ID: ${{ github.run_id }}
+          PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
+          CODEX_STATE_HISTORY_ACCEPTANCE: "1"
+          UV_MANAGED_PYTHON: "1"
+        run: |
+          set -euo pipefail
+          export TMPDIR="${RUNNER_TEMP}"
+          set +e
+          uv run --locked \
+            --project "${PRODUCT_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            --with "zstandard==0.25.0" \
+            pytest -q \
+              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              --artifact-dir "${ARTIFACT_DIR}" \
+              --artifact-id "${ARTIFACT_ID}" \
+              --artifact-name "${ARTIFACT_NAME}" \
+              --target-sha "${TARGET_SHA}" \
+              --base-ref "${BASE_REF}" \
+              --base-sha "${BASE_SHA}" \
+              --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
+              --run-id "${PRODUCER_RUN_ID}" \
+              --junitxml "${CONSUMER_JUNIT}"
+          pytest_status=$?
+          set -e
+          PYTEST_EXIT_CODE="${pytest_status}" python3 - "${CONSUMER_JUNIT}" "${CONSUMER_IDENTITY}" "${RUNNER_TEMP}" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+
+          junit_path = Path(sys.argv[1])
+          identity_path = Path(sys.argv[2])
+          basetemp = Path(sys.argv[3])
+          identity = json.loads(identity_path.read_text(encoding="utf-8"))
+          pytest_exit = int(os.environ["PYTEST_EXIT_CODE"])
+          issues: list[str] = []
+          cases = []
+          if junit_path.is_file():
+              try:
+                  cases = list(ET.parse(junit_path).getroot().iter("testcase"))
+              except ET.ParseError:
+                  issues.append("JUnit report is malformed")
+          else:
+              issues.append("pytest did not produce a JUnit report")
+          failures = sum(len(case.findall("failure")) for case in cases)
+          errors = sum(len(case.findall("error")) for case in cases)
+          skipped = sum(len(case.findall("skipped")) for case in cases)
+          if pytest_exit != 0:
+              issues.append(f"pytest exited with status {pytest_exit}")
+          if not cases:
+              issues.append("JUnit report contains zero executed test cases")
+          if failures or errors:
+              issues.append(f"JUnit reports failures={failures} errors={errors}")
+          if skipped:
+              issues.append(f"JUnit reports {skipped} skipped cases")
+
+          positive_prefix = "test_packaged_historical_upgrade_and_reopen"
+          negative_prefix = "test_packaged_historical_rejection_preserves_preimage"
+          expected_positive = {
+              "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
+              "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38",
+              "shift45", "shift50",
+          }
+          expected_negative = {
+              "bad_checksum", "mixed_ids", "missing_middle", "failed_row",
+              "incomplete_f58", "partial_alias", "partial_upstream_schema", "unknown_id",
+          }
+
+          def labels(prefix: str) -> list[str]:
+              result = []
+              for case in cases:
+                  name = case.attrib.get("name", "")
+                  if name.startswith(prefix):
+                      if not name.startswith(prefix + "[") or not name.endswith("]"):
+                          issues.append("state-history JUnit name is not a parameterized case")
+                          continue
+                      result.append(name[len(prefix) + 1 : -1])
+              return result
+
+          positive = labels(positive_prefix)
+          negative = labels(negative_prefix)
+          if len(positive) != 16 or set(positive) != expected_positive:
+              issues.append("JUnit does not contain the exact 16 positive state-history cases")
+          if len(negative) != 8 or set(negative) != expected_negative:
+              issues.append("JUnit does not contain the exact 8 negative state-history cases")
+
+          witness_paths = sorted(basetemp.glob("pytest-of-*/pytest-*/**/state-history-witnesses/*.json"))
+          witness_hashes: dict[str, str] = {}
+          witness_cases: set[str] = set()
+          expected_cases = expected_positive | expected_negative
+          for path in witness_paths:
+              try:
+                  witness = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  issues.append("state-history witness JSON is missing or malformed")
+                  continue
+              case_name = witness.get("case")
+              if not isinstance(case_name, str) or case_name not in expected_cases:
+                  issues.append("state-history witness has an unexpected case identity")
+                  continue
+              witness_cases.add(case_name)
+              expected_fields = {
+                  "target_sha": identity["product_sha"],
+                  "base_sha": identity["comparison_base_sha"],
+                  "workflow_host_sha": identity["workflow_host_sha"],
+                  "run_id": identity["run_id"],
+                  "artifact_id": identity["artifact_id"],
+                  "artifact_name": identity["artifact_name"],
+                  "target": identity["target"],
+              }
+              if any(witness.get(key) != value for key, value in expected_fields.items()):
+                  issues.append(f"state-history witness {case_name} identity mismatch")
+              witness_hashes[case_name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          if len(witness_paths) != 24 or witness_cases != expected_cases:
+              issues.append("expected all 24 redacted state-history witness records")
+
+          test_result = {
+              "pytest_exit_code": pytest_exit,
+              "junit_sha256": hashlib.sha256(junit_path.read_bytes()).hexdigest()
+              if junit_path.is_file() else None,
+              "executed_cases": len(cases),
+              "failures": failures,
+              "errors": errors,
+              "skipped": skipped,
+              "state_history_positive_cases": len(positive),
+              "state_history_negative_cases": len(negative),
+              "state_history_witnesses": len(witness_hashes),
+              "state_history_witness_sha256": dict(sorted(witness_hashes.items())),
+              "issues": issues,
+          }
+          identity["consumer_test_result"] = test_result
+          identity_path.write_text(
+              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(
+              "consumer test gate: "
+              f"exit={pytest_exit} cases={len(cases)} failures={failures} "
+              f"errors={errors} skipped={skipped} "
+              f"state_positive={len(positive)} state_negative={len(negative)} "
+              f"state_witnesses={len(witness_hashes)}"
+          )
+          for issue in issues:
+              print(f"consumer test gate failed: {issue}", file=sys.stderr)
+          if issues:
+              raise SystemExit(1)
+          PY
+      - name: Upload consumer result and redacted state witnesses
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-consumer-${{ inputs.target_sha }}-x86_64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/first-binary-consumer-identity.json
+            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/pytest-of-*/pytest-*/**/state-history-witnesses/*.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  consume-linux-aarch64:
+    name: Consume native Linux ARM64 package
+    if: ${{ inputs.mode == 'build' }}
+    needs:
+      - runner_policy
+      - build-linux-aarch64
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      actions: read
+      contents: read
+    timeout-minutes: 180
+    env:
+      PRODUCT_ARCH: aarch64
+      RUST_TARGET: aarch64-unknown-linux-gnu
+      EXPECTED_RUNNER_LABEL: ubuntu-24.04-arm
+    steps:
+      - name: Initialize runner-local consumer paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          printf 'ARTIFACT_DIR=%s/first-binary-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_JUNIT=%s/first-binary-consumer-results.xml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_IDENTITY=%s/first-binary-consumer-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check out exact product source (T)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: product
+      - name: Verify H, B, T, and native consumer architecture
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "aarch64" ]] || {
+            echo "ARM64 consumer is not on its native standard runner" >&2
+            exit 1
+          }
+          [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || exit 1
+          case "${GITHUB_REF}" in
+            refs/heads/*) ;;
+            *) echo "consumer qualification requires a branch dispatch" >&2; exit 1 ;;
+          esac
+          actual_t="$(git -C product rev-parse HEAD)"
+          [[ "${actual_t}" == "${TARGET_SHA}" ]] || {
+            echo "product source T does not match target_sha" >&2
+            exit 1
+          }
+          git -C product fetch --no-tags --depth=1 origin -- "${BASE_REF}"
+          actual_b="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          [[ "${actual_b}" == "${BASE_SHA}" ]] || {
+            echo "comparison base B does not match base_sha" >&2
+            exit 1
+          }
+          git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Verify dispatch run and select exactly one uploaded artifact by API
+        id: artifact_api
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          API_URL: ${{ github.api_url }}
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          SHA = re.compile(r"[0-9a-f]{40}\Z")
+          DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+          def fail(message: str) -> None:
+              raise SystemExit(message)
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+              fail("invalid repository identity in runner environment")
+          api_url = os.environ["API_URL"].rstrip("/")
+          token = os.environ["GITHUB_TOKEN"]
+          run_id_text = os.environ["EXPECTED_RUN_ID"]
+          if not run_id_text.isdecimal():
+              fail("invalid workflow run identity")
+          run_id = int(run_id_text)
+          expected_h = os.environ["EXPECTED_H"]
+          target_sha = os.environ["TARGET_SHA"]
+          base_sha = os.environ["BASE_SHA"]
+          base_ref = os.environ["BASE_REF"]
+          branch = os.environ["EXPECTED_BRANCH"]
+          architecture = os.environ["PRODUCT_ARCH"]
+          target = os.environ["RUST_TARGET"]
+          runner_label = os.environ["EXPECTED_RUNNER_LABEL"]
+          if not all(SHA.fullmatch(value) for value in (expected_h, target_sha, base_sha)):
+              fail("invalid H/T/B SHA input")
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", base_ref):
+              fail("invalid comparison base ref")
+          if not os.environ["GITHUB_REF"].startswith("refs/heads/"):
+              fail("consumer workflow was not dispatched from a branch")
+
+          def get_json(path: str) -> dict[str, object]:
+              request = Request(
+                  f"{api_url}{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      return json.loads(response.read())
+              except HTTPError as error:
+                  fail(f"GitHub Actions API returned HTTP {error.code} for {path}")
+              except URLError as error:
+                  fail(f"GitHub Actions API request failed for {path}: {error.reason}")
+
+          run = get_json(f"/repos/{repository}/actions/runs/{run_id}")
+          if run.get("id") != run_id:
+              fail("Actions API run ID differs from the active workflow run")
+          if run.get("event") != "workflow_dispatch":
+              fail("consumer route requires an explicit workflow_dispatch event")
+          workflow_id = run.get("workflow_id")
+          if type(workflow_id) is not int or workflow_id <= 0:
+              fail("Actions API run omitted a valid numeric workflow ID")
+          workflow = get_json(f"/repos/{repository}/actions/workflows/{workflow_id}")
+          if workflow.get("id") != workflow_id:
+              fail("Actions API workflow ID differs from the active workflow run")
+          if workflow.get("path") != ".github/workflows/sedna-branch-build.yml":
+              fail("active Actions run is not the registered sedna-branch-build workflow")
+          if run.get("head_sha") != expected_h or run.get("head_branch") != branch:
+              fail("Actions API workflow host H or branch differs from the active dispatch")
+          if os.environ["GITHUB_REF_NAME"] != branch:
+              fail("workflow ref name differs from the requested branch identity")
+
+          listing = get_json(f"/repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100")
+          artifacts = listing.get("artifacts")
+          if not isinstance(artifacts, list) or listing.get("total_count") != len(artifacts):
+              fail("artifact API listing is malformed or incomplete")
+          expected_name = f"sedna-first-binary-{target_sha}-{architecture}-{run_id}"
+          matches = [item for item in artifacts if item.get("name") == expected_name]
+          if len(matches) != 1:
+              fail("Actions API did not return exactly one expected package artifact")
+          artifact = matches[0]
+          association = artifact.get("workflow_run")
+          if not isinstance(association, dict):
+              fail("artifact API response omitted its workflow-run association")
+          if (
+              association.get("id") != run_id
+              or association.get("head_sha") != expected_h
+              or association.get("head_branch") != branch
+          ):
+              fail("artifact workflow association does not match exact H/run/branch")
+          artifact_id = artifact.get("id")
+          artifact_digest = artifact.get("digest")
+          size = artifact.get("size_in_bytes")
+          if type(artifact_id) is not int or artifact_id <= 0:
+              fail("artifact API returned an invalid numeric artifact ID")
+          if artifact.get("expired") is not False or type(size) is not int or size <= 0:
+              fail("expected package artifact is expired or empty")
+          if not isinstance(artifact_digest, str) or not DIGEST.fullmatch(artifact_digest):
+              fail("artifact API omitted a valid SHA-256 digest")
+
+          identity = {
+              "schema_version": "sedna-first-binary-consumer-api-v1",
+              "repository": repository,
+              "workflow_path": workflow["path"],
+              "event": run["event"],
+              "workflow_host_sha": expected_h,
+              "product_sha": target_sha,
+              "comparison_base_ref": base_ref,
+              "comparison_base_sha": base_sha,
+              "branch": branch,
+              "run_id": run_id,
+              "artifact_id": artifact_id,
+              "artifact_name": expected_name,
+              "artifact_digest": artifact_digest,
+              "artifact_size_bytes": size,
+              "architecture": architecture,
+              "target": target,
+              "runner_label": runner_label,
+          }
+          Path(os.environ["CONSUMER_IDENTITY"]).write_text(
+              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"artifact_id={artifact_id}\n")
+              output.write(f"artifact_name={expected_name}\n")
+              output.write(f"artifact_digest={artifact_digest}\n")
+          PY
+      - name: Download the API-verified artifact outside the checkout
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.artifact_api.outputs.artifact_id }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/first-binary-artifact
+          digest-mismatch: error
+      - name: Install and verify the pinned consumer Python toolchain
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          python-version: "3.12.14"
+          enable-cache: false
+      - name: Verify uv and managed Python versions
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+        run: |
+          set -euo pipefail
+          [[ "$(uv --version)" == "uv 0.12.17" ]] || {
+            echo "unexpected uv version" >&2
+            exit 1
+          }
+          uv python install 3.12.14
+          selected_python="$(uv run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
+          [[ "${selected_python}" == "3.12.14" ]] || {
+            echo "uv did not select the pinned Python 3.12.14 runtime" >&2
+            exit 1
+          }
+      - name: Run packaged first-binary consumers and preserve pytest status
+        id: consumer_tests
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+          ARTIFACT_ID: ${{ steps.artifact_api.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ steps.artifact_api.outputs.artifact_name }}
+          PRODUCER_RUN_ID: ${{ github.run_id }}
+          PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
+          CODEX_STATE_HISTORY_ACCEPTANCE: "1"
+          UV_MANAGED_PYTHON: "1"
+        run: |
+          set -euo pipefail
+          export TMPDIR="${RUNNER_TEMP}"
+          set +e
+          uv run --locked \
+            --project "${PRODUCT_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            --with "zstandard==0.25.0" \
+            pytest -q \
+              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              --artifact-dir "${ARTIFACT_DIR}" \
+              --artifact-id "${ARTIFACT_ID}" \
+              --artifact-name "${ARTIFACT_NAME}" \
+              --target-sha "${TARGET_SHA}" \
+              --base-ref "${BASE_REF}" \
+              --base-sha "${BASE_SHA}" \
+              --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
+              --run-id "${PRODUCER_RUN_ID}" \
+              --junitxml "${CONSUMER_JUNIT}"
+          pytest_status=$?
+          set -e
+          PYTEST_EXIT_CODE="${pytest_status}" python3 - "${CONSUMER_JUNIT}" "${CONSUMER_IDENTITY}" "${RUNNER_TEMP}" <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          junit_path = Path(sys.argv[1])
+          identity_path = Path(sys.argv[2])
+          basetemp = Path(sys.argv[3])
+          identity = json.loads(identity_path.read_text(encoding="utf-8"))
+          pytest_exit = int(os.environ["PYTEST_EXIT_CODE"])
+          issues: list[str] = []
+          cases = []
+          if junit_path.is_file():
+              try:
+                  cases = list(ET.parse(junit_path).getroot().iter("testcase"))
+              except ET.ParseError:
+                  issues.append("JUnit report is malformed")
+          else:
+              issues.append("pytest did not produce a JUnit report")
+          failures = sum(len(case.findall("failure")) for case in cases)
+          errors = sum(len(case.findall("error")) for case in cases)
+          skipped = sum(len(case.findall("skipped")) for case in cases)
+          if pytest_exit != 0:
+              issues.append(f"pytest exited with status {pytest_exit}")
+          if not cases:
+              issues.append("JUnit report contains zero executed test cases")
+          if failures or errors:
+              issues.append(f"JUnit reports failures={failures} errors={errors}")
+          if skipped:
+              issues.append(f"JUnit reports {skipped} skipped cases")
+
+          positive_prefix = "test_packaged_historical_upgrade_and_reopen"
+          negative_prefix = "test_packaged_historical_rejection_preserves_preimage"
+          expected_positive = {
+              "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
+              "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38",
+              "shift45", "shift50",
+          }
+          expected_negative = {
+              "bad_checksum", "mixed_ids", "missing_middle", "failed_row",
+              "incomplete_f58", "partial_alias", "partial_upstream_schema", "unknown_id",
+          }
+
+          def labels(prefix: str) -> list[str]:
+              result = []
+              for case in cases:
+                  name = case.attrib.get("name", "")
+                  if name.startswith(prefix):
+                      if not name.startswith(prefix + "[") or not name.endswith("]"):
+                          issues.append("state-history JUnit name is not a parameterized case")
+                          continue
+                      result.append(name[len(prefix) + 1 : -1])
+              return result
+
+          positive = labels(positive_prefix)
+          negative = labels(negative_prefix)
+          if len(positive) != 16 or set(positive) != expected_positive:
+              issues.append("JUnit does not contain the exact 16 positive state-history cases")
+          if len(negative) != 8 or set(negative) != expected_negative:
+              issues.append("JUnit does not contain the exact 8 negative state-history cases")
+
+          witness_paths = sorted(basetemp.glob("pytest-of-*/pytest-*/**/state-history-witnesses/*.json"))
+          witness_hashes: dict[str, str] = {}
+          witness_cases: set[str] = set()
+          expected_cases = expected_positive | expected_negative
+          for path in witness_paths:
+              try:
+                  witness = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  issues.append("state-history witness JSON is missing or malformed")
+                  continue
+              case_name = witness.get("case")
+              if not isinstance(case_name, str) or case_name not in expected_cases:
+                  issues.append("state-history witness has an unexpected case identity")
+                  continue
+              witness_cases.add(case_name)
+              expected_fields = {
+                  "target_sha": identity["product_sha"],
+                  "base_sha": identity["comparison_base_sha"],
+                  "workflow_host_sha": identity["workflow_host_sha"],
+                  "run_id": identity["run_id"],
+                  "artifact_id": identity["artifact_id"],
+                  "artifact_name": identity["artifact_name"],
+                  "target": identity["target"],
+              }
+              if any(witness.get(key) != value for key, value in expected_fields.items()):
+                  issues.append(f"state-history witness {case_name} identity mismatch")
+              witness_hashes[case_name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          if len(witness_paths) != 24 or witness_cases != expected_cases:
+              issues.append("expected all 24 redacted state-history witness records")
+
+          test_result = {
+              "pytest_exit_code": pytest_exit,
+              "junit_sha256": hashlib.sha256(junit_path.read_bytes()).hexdigest()
+              if junit_path.is_file() else None,
+              "executed_cases": len(cases),
+              "failures": failures,
+              "errors": errors,
+              "skipped": skipped,
+              "state_history_positive_cases": len(positive),
+              "state_history_negative_cases": len(negative),
+              "state_history_witnesses": len(witness_hashes),
+              "state_history_witness_sha256": dict(sorted(witness_hashes.items())),
+              "issues": issues,
+          }
+          identity["consumer_test_result"] = test_result
+          identity_path.write_text(
+              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print(
+              "consumer test gate: "
+              f"exit={pytest_exit} cases={len(cases)} failures={failures} "
+              f"errors={errors} skipped={skipped} "
+              f"state_positive={len(positive)} state_negative={len(negative)} "
+              f"state_witnesses={len(witness_hashes)}"
+          )
+          for issue in issues:
+              print(f"consumer test gate failed: {issue}", file=sys.stderr)
+          if issues:
+              raise SystemExit(1)
+          PY
+      - name: Upload consumer result and redacted state witnesses
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-consumer-${{ inputs.target_sha }}-aarch64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/first-binary-consumer-identity.json
+            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/pytest-of-*/pytest-*/**/state-history-witnesses/*.json
+          if-no-files-found: warn
+          retention-days: 7

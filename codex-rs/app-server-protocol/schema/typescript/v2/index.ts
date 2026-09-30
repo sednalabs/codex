@@ -17,6 +17,8 @@ export type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermission
 export type { AdditionalPermissionProfile } from "./AdditionalPermissionProfile";
 export type { AgentMessageDelivery } from "./AgentMessageDelivery";
 export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
+export type { AgentWaitReason } from "./AgentWaitReason";
+export type { AgentWaitWakeCause } from "./AgentWaitWakeCause";
 export type { AllowDenyRequirement } from "./AllowDenyRequirement";
 export type { AnalyticsConfig } from "./AnalyticsConfig";
 export type { AppBranding } from "./AppBranding";
@@ -65,6 +67,7 @@ export type { ChatgptAuthTokensRefreshReason } from "./ChatgptAuthTokensRefreshR
 export type { ChatgptAuthTokensRefreshResponse } from "./ChatgptAuthTokensRefreshResponse";
 export type { CliAuthCredentialsStoreMode } from "./CliAuthCredentialsStoreMode";
 export type { CodexErrorInfo } from "./CodexErrorInfo";
+export type { CollabAgentRef } from "./CollabAgentRef";
 export type { CollabAgentState } from "./CollabAgentState";
 export type { CollabAgentStatus } from "./CollabAgentStatus";
 export type { CollabAgentTool } from "./CollabAgentTool";

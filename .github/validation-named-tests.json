@@ -58,6 +58,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-exec", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-goal-extension",
+      "target_kind": "integration",
+      "target": "capacity_retry_continuity",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "capacity_retry_continuity", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-goal-extension", "--test", "capacity_retry_continuity", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-mcp",
       "target_kind": "lib",
       "target": "",

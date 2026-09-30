@@ -352,6 +352,7 @@ pub(crate) async fn run_turn(
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            &cancellation_token,
         )
         .await?;
         world_state = sess
@@ -623,6 +624,7 @@ pub(crate) async fn run_turn(
                         },
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
+                        &cancellation_token,
                     )
                     .await
                     {
@@ -732,6 +734,7 @@ pub(crate) async fn run_turn(
                             InitialContextInjection::DoNotInject,
                             CompactionReason::ContextLimit,
                             CompactionPhase::PostTurn,
+                            &cancellation_token,
                         )
                         .await
                     {
@@ -786,6 +789,7 @@ pub(crate) async fn run_turn(
                     },
                     CompactionReason::ContextLimit,
                     CompactionPhase::MidTurn,
+                    &cancellation_token,
                 )
                 .await?;
                 can_drain_pending_input = false;
@@ -1321,6 +1325,7 @@ async fn run_pre_sampling_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
     }
@@ -1410,6 +1415,7 @@ async fn maybe_run_previous_model_inline_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::CompHashChanged,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
         return Ok(());
@@ -1458,6 +1464,7 @@ async fn maybe_run_previous_model_inline_compact(
             InitialContextInjection::DoNotInject,
             CompactionReason::ModelDownshift,
             CompactionPhase::PreTurn,
+            cancellation_token,
         )
         .await?;
     }
@@ -1477,6 +1484,7 @@ async fn run_auto_compact(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
@@ -1513,6 +1521,7 @@ async fn run_auto_compact(
                 initial_context_injection,
                 reason,
                 phase,
+                cancellation_token,
             )
             .await?;
         }
@@ -1651,6 +1660,10 @@ async fn run_sampling_request(
     let mut initial_input = Some(input);
     let mut original_input = None;
     let mut executed_tool_calls_by_output = HashMap::new();
+    // Survives only retries of this one logical sampling request. A provider
+    // replay may echo already accepted output items or tool calls after a
+    // stream fails; those accepted effects must not be emitted or run twice.
+    let mut accepted_retry_items = AcceptedRetryItems::default();
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
@@ -1692,6 +1705,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
+            &mut accepted_retry_items,
         )
         .await
         {
@@ -1991,12 +2005,17 @@ impl ProposedPlanItemState {
         sess.emit_turn_item_started(turn_context, &item).await;
     }
 
-    async fn push_delta(&mut self, sess: &Session, turn_context: &TurnContext, delta: &str) {
+    async fn push_delta(
+        &mut self,
+        sess: &Session,
+        turn_context: &TurnContext,
+        delta: &str,
+    ) -> bool {
         if self.completed {
-            return;
+            return false;
         }
         if delta.is_empty() {
-            return;
+            return false;
         }
         let event = PlanDeltaEvent {
             thread_id: sess.thread_id.to_string(),
@@ -2006,6 +2025,7 @@ impl ProposedPlanItemState {
         };
         sess.send_event(turn_context, EventMsg::PlanDelta(event))
             .await;
+        true
     }
 
     async fn complete_with_text(
@@ -2198,7 +2218,8 @@ async fn handle_plan_segments(
     state: &mut PlanModeStreamState,
     item_id: &str,
     segments: Vec<ProposedPlanSegment>,
-) {
+) -> bool {
+    let mut emitted_visible_delta = false;
     for segment in segments {
         match segment {
             ProposedPlanSegment::Normal(delta) => {
@@ -2233,6 +2254,7 @@ async fn handle_plan_segments(
                 };
                 sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
                     .await;
+                emitted_visible_delta = true;
             }
             ProposedPlanSegment::ProposedPlanStart => {
                 if !state.plan_item_state.completed {
@@ -2244,7 +2266,7 @@ async fn handle_plan_segments(
                     if !state.plan_item_state.started {
                         state.plan_item_state.start(sess, turn_context).await;
                     }
-                    state
+                    emitted_visible_delta |= state
                         .plan_item_state
                         .push_delta(sess, turn_context, &delta)
                         .await;
@@ -2253,6 +2275,7 @@ async fn handle_plan_segments(
             ProposedPlanSegment::ProposedPlanEnd => {}
         }
     }
+    emitted_visible_delta
 }
 
 async fn emit_streamed_assistant_text_delta(
@@ -2261,9 +2284,9 @@ async fn emit_streamed_assistant_text_delta(
     plan_mode_state: Option<&mut PlanModeStreamState>,
     item_id: &str,
     parsed: ParsedAssistantTextDelta,
-) {
+) -> bool {
     if parsed.is_empty() {
-        return;
+        return false;
     }
     if !parsed.citations.is_empty() {
         // Citation extraction is intentionally local for now; we strip citations from display text
@@ -2272,12 +2295,13 @@ async fn emit_streamed_assistant_text_delta(
     }
     if let Some(state) = plan_mode_state {
         if !parsed.plan_segments.is_empty() {
-            handle_plan_segments(sess, turn_context, state, item_id, parsed.plan_segments).await;
+            return handle_plan_segments(sess, turn_context, state, item_id, parsed.plan_segments)
+                .await;
         }
-        return;
+        return false;
     }
     if parsed.visible_text.is_empty() {
-        return;
+        return false;
     }
     let event = AgentMessageContentDeltaEvent {
         thread_id: sess.thread_id.to_string(),
@@ -2287,6 +2311,7 @@ async fn emit_streamed_assistant_text_delta(
     };
     sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
         .await;
+    true
 }
 
 /// Flush buffered assistant text parser state when an assistant message item ends.
@@ -2296,9 +2321,9 @@ async fn flush_assistant_text_segments_for_item(
     plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
     item_id: &str,
-) {
+) -> bool {
     let parsed = parsers.finish_item(item_id);
-    emit_streamed_assistant_text_delta(sess, turn_context, plan_mode_state, item_id, parsed).await;
+    emit_streamed_assistant_text_delta(sess, turn_context, plan_mode_state, item_id, parsed).await
 }
 
 /// Flush any remaining buffered assistant text parser state at response completion.
@@ -2307,17 +2332,22 @@ async fn flush_assistant_text_segments_all(
     turn_context: &TurnContext,
     mut plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
-) {
+) -> HashSet<String> {
+    let mut emitted_ids = HashSet::new();
     for (item_id, parsed) in parsers.drain_finished() {
-        emit_streamed_assistant_text_delta(
+        if emit_streamed_assistant_text_delta(
             sess,
             turn_context,
             plan_mode_state.as_deref_mut(),
             &item_id,
             parsed,
         )
-        .await;
+        .await
+        {
+            emitted_ids.insert(item_id);
+        }
     }
+    emitted_ids
 }
 
 /// Emit completion for plan items by parsing the finalized assistant message.
@@ -2515,6 +2545,79 @@ fn assign_missing_streamed_response_item_id(
     Session::assign_missing_response_item_id(item);
 }
 
+#[derive(Default)]
+struct AcceptedRetryItems {
+    by_item_id: HashMap<String, serde_json::Value>,
+    by_tool_call_id: HashMap<String, serde_json::Value>,
+    // Only stable provider IDs whose assistant text was actually streamed.
+    // An unfinished draft can be shown to a client before a failed response;
+    // its replay is held until the authoritative OutputItemDone.
+    streamed_draft_ids: HashSet<String>,
+}
+
+impl AcceptedRetryItems {
+    fn tool_call_id(item: &ResponseItem) -> Option<&str> {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
+            ResponseItem::LocalShellCall { call_id, .. }
+            | ResponseItem::ToolSearchCall { call_id, .. } => call_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn contains_identity(&self, item: &ResponseItem) -> bool {
+        item.id()
+            .is_some_and(|id| self.by_item_id.contains_key(id.as_str()))
+            || Self::tool_call_id(item)
+                .is_some_and(|call_id| self.by_tool_call_id.contains_key(call_id))
+    }
+
+    fn check_replay(&self, item: &ResponseItem) -> CodexResult<(bool, serde_json::Value)> {
+        // IDs, not text equality, identify a replay. Ignore only the optional
+        // item ID when comparing a repeated call ID: providers may omit it in
+        // one attempt and include it in another.
+        let mut payload = serde_json::to_value(item).map_err(|_| {
+            CodexErr::InvalidRequest("could not inspect replayed provider output".into())
+        })?;
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("id");
+        }
+        let mut replayed = false;
+        if let Some(id) = item.id()
+            && let Some(prior) = self.by_item_id.get(id.as_str())
+        {
+            if prior != &payload {
+                return Err(CodexErr::InvalidRequest(
+                    "provider replayed an accepted item ID with different content".into(),
+                ));
+            }
+            replayed = true;
+        }
+        if let Some(call_id) = Self::tool_call_id(item)
+            && let Some(prior) = self.by_tool_call_id.get(call_id)
+        {
+            if prior != &payload {
+                return Err(CodexErr::InvalidRequest(
+                    "provider replayed an accepted tool call ID with different arguments".into(),
+                ));
+            }
+            replayed = true;
+        }
+        Ok((replayed, payload))
+    }
+
+    fn record(&mut self, item: &ResponseItem, payload: serde_json::Value) {
+        if let Some(id) = item.id() {
+            self.by_item_id
+                .insert(id.as_str().to_string(), payload.clone());
+        }
+        if let Some(call_id) = Self::tool_call_id(item) {
+            self.by_tool_call_id.insert(call_id.to_string(), payload);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace",
     skip_all,
@@ -2533,6 +2636,7 @@ async fn try_run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
+    accepted_retry_items: &mut AcceptedRetryItems,
 ) -> CodexResult<SamplingRequestResult> {
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
@@ -2618,6 +2722,8 @@ async fn try_run_sampling_request(
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
+    let mut suppress_replayed_item = false;
+    let mut stable_streamed_agent_item_ids = HashSet::new();
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -2681,6 +2787,20 @@ async fn try_run_sampling_request(
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
 
+        if suppress_replayed_item
+            && matches!(
+                &event,
+                ResponseEvent::OutputTextDelta(_)
+                    | ResponseEvent::ToolCallInputDelta { .. }
+                    | ResponseEvent::ReasoningSummaryDelta { .. }
+                    | ResponseEvent::ReasoningSummaryPartAdded { .. }
+                    | ResponseEvent::ReasoningSummaryDone { .. }
+                    | ResponseEvent::ReasoningContentDelta { .. }
+            )
+        {
+            continue;
+        }
+
         match event {
             ResponseEvent::Created { response_id } => {
                 if let Some(response_id) = response_id {
@@ -2691,6 +2811,18 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+                suppress_replayed_item = false;
+                let (replayed, accepted_payload) = match accepted_retry_items.check_replay(&item) {
+                    Ok(checked) => checked,
+                    Err(err) => break Err(err),
+                };
+                if replayed {
+                    active_item = None;
+                    active_item_is_streaming_to_client = false;
+                    active_tool_argument_diff_consumer = None;
+                    continue;
+                }
+                let accepted_item = item.clone();
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
@@ -2725,7 +2857,7 @@ async fn try_run_sampling_request(
                     && matches!(previous, TurnItem::AgentMessage(_))
                 {
                     let item_id = previous.id();
-                    flush_assistant_text_segments_for_item(
+                    let emitted = flush_assistant_text_segments_for_item(
                         &sess,
                         &turn_context,
                         plan_mode_state.as_mut(),
@@ -2733,6 +2865,9 @@ async fn try_run_sampling_request(
                         &item_id,
                     )
                     .await;
+                    if emitted && stable_streamed_agent_item_ids.contains(&item_id) {
+                        accepted_retry_items.streamed_draft_ids.insert(item_id);
+                    }
                 }
                 if let Some(state) = plan_mode_state.as_mut()
                     && handle_assistant_item_done_in_plan_mode(
@@ -2746,6 +2881,7 @@ async fn try_run_sampling_request(
                     )
                     .await
                 {
+                    accepted_retry_items.record(&accepted_item, accepted_payload);
                     continue;
                 }
 
@@ -2785,7 +2921,10 @@ async fn try_run_sampling_request(
                         .instrument(handle_responses)
                         .await
                     {
-                        Ok(output_result) => output_result,
+                        Ok(output_result) => {
+                            accepted_retry_items.record(&accepted_item, accepted_payload);
+                            output_result
+                        }
                         Err(err) => break Err(err),
                     };
                 if let Some(tool_future) = output_result.tool_future {
@@ -2819,7 +2958,25 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(mut item) => {
+                // An ID synthesized below cannot correlate two provider
+                // attempts. Only provider-supplied IDs protect draft replay.
+                let stable_item_id = item
+                    .id()
+                    .filter(|id| !id.is_empty())
+                    .map(|id| id.as_str().to_string());
                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
+                if accepted_retry_items.contains_identity(&item)
+                    || stable_item_id
+                        .as_ref()
+                        .is_some_and(|id| accepted_retry_items.streamed_draft_ids.contains(id))
+                {
+                    suppress_replayed_item = true;
+                    active_item = None;
+                    active_item_is_streaming_to_client = false;
+                    active_tool_argument_diff_consumer = None;
+                    continue;
+                }
+                suppress_replayed_item = false;
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
                 if let ResponseItem::CustomToolCall {
@@ -2846,8 +3003,15 @@ async fn try_run_sampling_request(
                 {
                     let mut turn_item = turn_item;
                     let stream_item_to_client = !defer_streamed_turn_items_for_contributors;
+                    if stream_item_to_client
+                        && matches!(&turn_item, TurnItem::AgentMessage(_))
+                        && let Some(id) = stable_item_id
+                    {
+                        stable_streamed_agent_item_ids.insert(id);
+                    }
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
+                    let mut seeded_visible_on_start = false;
                     if stream_item_to_client
                         && matches!(turn_item, TurnItem::AgentMessage(_))
                         && let Some(raw_text) = raw_assistant_output_text_from_item(&item)
@@ -2856,6 +3020,7 @@ async fn try_run_sampling_request(
                         let mut seeded =
                             assistant_message_stream_parsers.seed_item_text(&item_id, &raw_text);
                         if let TurnItem::AgentMessage(agent_message) = &mut turn_item {
+                            seeded_visible_on_start = !plan_mode && !seeded.visible_text.is_empty();
                             agent_message.content =
                                 vec![codex_protocol::items::AgentMessageContent::Text {
                                     text: if plan_mode {
@@ -2878,13 +3043,20 @@ async fn try_run_sampling_request(
                                 .insert(item_id, turn_item.clone());
                         } else {
                             sess.emit_turn_item_started(&turn_context, &turn_item).await;
+                            if seeded_visible_on_start
+                                && stable_streamed_agent_item_ids.contains(&turn_item.id())
+                            {
+                                accepted_retry_items
+                                    .streamed_draft_ids
+                                    .insert(turn_item.id());
+                            }
                         }
                         if let (Some(state), Some(item_id), Some(parsed)) = (
                             plan_mode_state.as_mut(),
                             seeded_item_id.as_deref(),
                             seeded_parsed,
                         ) {
-                            emit_streamed_assistant_text_delta(
+                            let emitted = emit_streamed_assistant_text_delta(
                                 &sess,
                                 &turn_context,
                                 Some(state),
@@ -2892,6 +3064,11 @@ async fn try_run_sampling_request(
                                 parsed,
                             )
                             .await;
+                            if emitted && stable_streamed_agent_item_ids.contains(item_id) {
+                                accepted_retry_items
+                                    .streamed_draft_ids
+                                    .insert(item_id.to_string());
+                            }
                         }
                     }
                     active_item = Some(turn_item);
@@ -2970,13 +3147,18 @@ async fn try_run_sampling_request(
                             tool_call_ids: std::mem::take(&mut analytics_tool_call_ids),
                         },
                     );
-                flush_assistant_text_segments_all(
+                let emitted_on_flush = flush_assistant_text_segments_all(
                     &sess,
                     &turn_context,
                     plan_mode_state.as_mut(),
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
+                for id in emitted_on_flush {
+                    if stable_streamed_agent_item_ids.contains(&id) {
+                        accepted_retry_items.streamed_draft_ids.insert(id);
+                    }
+                }
                 sess.record_observed_response_completed(
                     &turn_context,
                     &response_id,
@@ -3020,7 +3202,7 @@ async fn try_run_sampling_request(
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
-                        emit_streamed_assistant_text_delta(
+                        let emitted = emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,
                             plan_mode_state.as_mut(),
@@ -3028,6 +3210,9 @@ async fn try_run_sampling_request(
                             parsed,
                         )
                         .await;
+                        if emitted && stable_streamed_agent_item_ids.contains(&item_id) {
+                            accepted_retry_items.streamed_draft_ids.insert(item_id);
+                        }
                     } else {
                         let event = AgentMessageContentDeltaEvent {
                             thread_id: sess.thread_id.to_string(),
@@ -3162,13 +3347,18 @@ async fn try_run_sampling_request(
     drop(sampling_span);
     drop(sampling_timing_guard);
 
-    flush_assistant_text_segments_all(
+    let emitted_on_flush = flush_assistant_text_segments_all(
         &sess,
         &turn_context,
         plan_mode_state.as_mut(),
         &mut assistant_message_stream_parsers,
     )
     .await;
+    for id in emitted_on_flush {
+        if stable_streamed_agent_item_ids.contains(&id) {
+            accepted_retry_items.streamed_draft_ids.insert(id);
+        }
+    }
 
     if !in_flight.is_empty() {
         let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();

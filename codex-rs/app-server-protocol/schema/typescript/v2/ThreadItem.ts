@@ -10,7 +10,10 @@ import type { SleepItem } from "../SleepItem";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
+import type { AgentWaitReason } from "./AgentWaitReason";
+import type { AgentWaitWakeCause } from "./AgentWaitWakeCause";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
+import type { CollabAgentRef } from "./CollabAgentRef";
 import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
@@ -107,6 +110,22 @@ senderThreadId: string,
  * this corresponds to the newly spawned agent.
  */
 receiverThreadIds: Array<string>,
+/**
+ * Resolved receiver identity metadata when available.
+ */
+receiverAgents?: Array<CollabAgentRef>,
+/**
+ * Producer-reported wait reason; missing on legacy history.
+ */
+waitReason?: AgentWaitReason,
+/**
+ * Producer-reported actual wake cause; quiet queue updates are not causes.
+ */
+waitWakeCause?: AgentWaitWakeCause,
+/**
+ * Observed quiet updates still queued at return; this does not imply a wake.
+ */
+queuedUpdateCount?: number,
 /**
  * Prompt text sent as part of the collab tool call, when available.
  */

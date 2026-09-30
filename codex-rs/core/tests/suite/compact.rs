@@ -23,7 +23,6 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookRunStatus;
@@ -3075,6 +3074,197 @@ async fn pre_sampling_compact_falls_back_after_previous_model_stream_retries_are
     );
 }
 
+/// A transient capacity response must remain on the original pre-sampling
+/// compaction model even after its ordinary retry budget is exhausted. The
+/// user-selected model is used only for sampling after compaction succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_sampling_compact_capacity_recovers_without_model_fallback() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let previous_model = "gpt-5.4";
+    let selected_model = "gpt-5.2";
+    let _models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![
+                model_info_with_context_window(previous_model, 273_000),
+                model_info_with_context_window(selected_model, 125_000),
+            ],
+        },
+    )
+    .await;
+    let overload = wiremock::ResponseTemplate::new(503)
+        .insert_header("Retry-After", "0")
+        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            sse_response(sse(vec![
+                ev_assistant_message("capacity-before-switch", "before switch"),
+                ev_completed_with_tokens("capacity-seed", 120_000),
+            ])),
+            overload.clone(),
+            overload.clone(),
+            overload,
+            sse_response(remote_v2_compaction_response()),
+            sse_response(sse(vec![
+                ev_assistant_message("capacity-after-switch", "after switch"),
+                ev_completed_with_tokens("capacity-sampled", 100),
+            ])),
+        ],
+    )
+    .await;
+    let mut model_provider = openai_model_provider(&server);
+    model_provider.request_max_retries = Some(0);
+    model_provider.stream_max_retries = Some(1);
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model(previous_model)
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+        })
+        .build_with_auto_env(&server)
+        .await
+        .expect("build codex");
+    test.codex
+        .start_or_steer_turn(disabled_permission_user_turn(
+            "before switch",
+            test.cwd.path().to_path_buf(),
+            previous_model.to_string(),
+        ))
+        .await
+        .expect("submit seed turn");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.codex
+        .start_or_steer_turn(disabled_permission_user_turn(
+            "after switch",
+            test.cwd.path().to_path_buf(),
+            selected_model.to_string(),
+        ))
+        .await
+        .expect("submit selected-model turn");
+    assert_compaction_uses_turn_lifecycle_id(&test.codex).await;
+
+    let models = request_log
+        .requests()
+        .iter()
+        .map(|request| {
+            request.body_json()["model"]
+                .as_str()
+                .expect("request model")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        models,
+        vec![
+            previous_model,
+            previous_model,
+            previous_model,
+            previous_model,
+            previous_model,
+            selected_model,
+        ],
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_sampling_compact_capacity_wait_is_interruptible() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let previous_model = "gpt-5.4";
+    let selected_model = "gpt-5.2";
+    let _models_mock = mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![
+                model_info_with_context_window(previous_model, 273_000),
+                model_info_with_context_window(selected_model, 125_000),
+            ],
+        },
+    )
+    .await;
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            sse_response(sse(vec![
+                ev_assistant_message("capacity-cancel-seed-message", "before switch"),
+                ev_completed_with_tokens("capacity-cancel-seed", 120_000),
+            ])),
+            wiremock::ResponseTemplate::new(503)
+                .insert_header("Retry-After", "120")
+                .set_body_json(json!({ "error": { "code": "server_is_overloaded" } })),
+        ],
+    )
+    .await;
+    let mut model_provider = openai_model_provider(&server);
+    model_provider.request_max_retries = Some(0);
+    model_provider.stream_max_retries = Some(0);
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model(previous_model)
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+        })
+        .build_with_auto_env(&server)
+        .await
+        .expect("build codex");
+    test.codex
+        .start_or_steer_turn(disabled_permission_user_turn(
+            "before switch",
+            test.cwd.path().to_path_buf(),
+            previous_model.to_string(),
+        ))
+        .await
+        .expect("submit seed turn");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.codex
+        .start_or_steer_turn(disabled_permission_user_turn(
+            "after switch",
+            test.cwd.path().to_path_buf(),
+            selected_model.to_string(),
+        ))
+        .await
+        .expect("submit selected-model turn");
+    let progress = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_))
+    })
+    .await;
+    let EventMsg::StreamError(progress) = progress else {
+        unreachable!("predicate selected retry progress")
+    };
+    assert!(progress.message.contains("Model at capacity; retrying"));
+    test.codex
+        .submit(Op::Interrupt)
+        .await
+        .expect("interrupt wait");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    let models = request_log
+        .requests()
+        .iter()
+        .map(|request| {
+            request.body_json()["model"]
+                .as_str()
+                .expect("request model")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(models, vec![previous_model, previous_model]);
+}
+
 /// Both compaction models keep the configured retry budget when the server supplies advice,
 /// including the selected model's final attempt.
 #[test_case::test_case(2; "selected_model_recovers")]
@@ -3098,9 +3288,11 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
         },
     )
     .await;
-    let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
+    // An ordinary 504 remains under the finite retry/fallback policy. A
+    // structured capacity or transient 503 must stay on its original model.
+    let overload = wiremock::ResponseTemplate::new(/*s*/ 504)
         .insert_header("Retry-After", "0")
-        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
+        .set_body_json(json!({ "error": { "code": "server_error" } }));
     let mut responses = vec![
         sse_response(sse(vec![
             ev_assistant_message("m1", "before switch"),
@@ -3162,16 +3354,16 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
             match wait_for_event(&test.codex, |_| true).await {
                 EventMsg::Error(error) => errors.push(error.codex_error_info),
                 EventMsg::TurnComplete(event) => {
-                    assert_eq!(
-                        event.error.and_then(|error| error.codex_error_info),
-                        Some(CodexErrorInfo::ServerOverloaded)
+                    assert!(
+                        event.error.is_some(),
+                        "ordinary 504 exhausted finite retries"
                     );
                     break;
                 }
                 _ => {}
             }
         }
-        assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
+        assert_eq!(errors.len(), 1);
     }
     let actual_models = request_log
         .requests()
@@ -3198,19 +3390,21 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
     assert_eq!(actual_models, expected_models);
 }
 
-/// Manual compaction keeps the configured retry limit even when the server supplies advice.
+/// Manual compaction keeps the same model and task after exceeding its old retry limit.
 #[test_case::test_case(0; "no_retries")]
 #[test_case::test_case(2; "two_retries")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
+async fn manual_remote_compact_capacity_recovers_beyond_retry_limit(max_retries: u64) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
     let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
         .insert_header("Retry-After", "0")
         .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
-    let request_log =
-        mount_response_sequence(&server, vec![overload; (max_retries + 1) as usize]).await;
+    let failure_count = (max_retries + 2) as usize;
+    let mut responses = vec![overload; failure_count];
+    responses.push(sse_response(remote_v2_compaction_response()));
+    let request_log = mount_response_sequence(&server, responses).await;
     let mut model_provider = openai_model_provider(&server);
     model_provider.request_max_retries = Some(0);
     model_provider.stream_max_retries = Some(max_retries);
@@ -3226,28 +3420,23 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
         .expect("build codex");
 
     test.codex.submit(Op::Compact).await.expect("run /compact");
-    let mut errors = Vec::new();
     let mut reconnect_messages = Vec::new();
     loop {
         match wait_for_event(&test.codex, |_| true).await {
-            EventMsg::Error(error) => errors.push(error.codex_error_info),
+            EventMsg::Error(error) => panic!("capacity became terminal: {error:?}"),
             EventMsg::StreamError(error) => reconnect_messages.push(error.message),
             EventMsg::TurnComplete(event) => {
-                assert_eq!(
-                    event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::ServerOverloaded)
-                );
+                assert_eq!(event.error, None);
                 break;
             }
             _ => {}
         }
     }
-    assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
-    assert_eq!(
-        reconnect_messages,
-        (1..=max_retries)
-            .map(|retry| format!("Reconnecting... {retry}/{max_retries}"))
-            .collect::<Vec<_>>()
+    assert_eq!(reconnect_messages.len(), failure_count);
+    assert!(
+        reconnect_messages
+            .iter()
+            .all(|message| message.contains("Model at capacity; retrying"))
     );
     let models = request_log
         .requests()
@@ -3259,7 +3448,7 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
                 .to_string()
         })
         .collect::<Vec<_>>();
-    assert_eq!(models, vec!["gpt-5.4"; (max_retries + 1) as usize]);
+    assert_eq!(models, vec!["gpt-5.4"; failure_count + 1]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -159,6 +159,22 @@ class AgentPath(RootModel[str]):
     root: str
 
 
+class AgentWaitReason(Enum):
+    target_terminal = "targetTerminal"
+    mailbox_activity = "mailboxActivity"
+    steered = "steered"
+    timed_out = "timedOut"
+    unknown = "unknown"
+
+
+class AgentWaitWakeCause(Enum):
+    target_status = "targetStatus"
+    mailbox_turn_requested = "mailboxTurnRequested"
+    operator_steer = "operatorSteer"
+    timeout = "timeout"
+    unknown = "unknown"
+
+
 class AllowDenyRequirement(Enum):
     allow = "allow"
     deny = "deny"
@@ -626,6 +642,15 @@ class CodexResponseHandoffMode(Enum):
     thinking = "thinking"
     commentary = "commentary"
     bem_tags = "bemTags"
+
+
+class CollabAgentRef(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None
+    agent_role: Annotated[str | None, Field(alias="agentRole")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
 
 
 class CollabAgentStatus(Enum):
@@ -9902,6 +9927,14 @@ class CollabAgentToolCallThreadItem(BaseModel):
         str | None,
         Field(description="Prompt text sent as part of the collab tool call, when available."),
     ] = None
+    queued_update_count: Annotated[
+        int | None,
+        Field(
+            alias="queuedUpdateCount",
+            description="Observed quiet updates still queued at return; this does not imply a wake.",
+            ge=0,
+        ),
+    ] = None
     reasoning_effort: Annotated[
         ReasoningEffort | None,
         Field(
@@ -9909,6 +9942,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Reasoning effort requested for the spawned agent, when applicable.",
         ),
     ] = None
+    receiver_agents: Annotated[
+        list[CollabAgentRef] | None,
+        Field(
+            alias="receiverAgents",
+            description="Resolved receiver identity metadata when available.",
+        ),
+    ] = []
     receiver_thread_ids: Annotated[
         list[str],
         Field(
@@ -9929,6 +9969,20 @@ class CollabAgentToolCallThreadItem(BaseModel):
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
     ]
+    wait_reason: Annotated[
+        AgentWaitReason | None,
+        Field(
+            alias="waitReason",
+            description="Producer-reported wait reason; missing on legacy history.",
+        ),
+    ] = None
+    wait_wake_cause: Annotated[
+        AgentWaitWakeCause | None,
+        Field(
+            alias="waitWakeCause",
+            description="Producer-reported actual wake cause; quiet queue updates are not causes.",
+        ),
+    ] = None
 
 
 class WebSearchThreadItem(BaseModel):

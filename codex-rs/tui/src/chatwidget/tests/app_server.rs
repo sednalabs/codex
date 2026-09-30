@@ -1818,6 +1818,172 @@ async fn live_app_server_server_overloaded_error_renders_error() {
 }
 
 #[tokio::test]
+async fn live_app_server_capacity_retry_keeps_task_running() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    // Core emits StreamError for a retry, which app-server projects as
+    // ErrorNotification with will_retry=true; it is not a terminal overload.
+    let progress = "Model at capacity; retrying in 1s (attempt 1)";
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                misalignment: None,
+                message: progress.to_string(),
+                codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: None,
+                }),
+                additional_details: Some(
+                    "Selected model is at capacity. Please try a different model.".to_string(),
+                ),
+            },
+            will_retry: true,
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert_eq!(chat.status_state.current_status.header, progress);
+    assert_eq!(
+        chat.status_state.retry_status_header.as_deref(),
+        Some("Working")
+    );
+    assert!(chat.bottom_pane.is_task_running());
+
+    handle_agent_message_delta(&mut chat, "recovered");
+    assert_eq!(chat.status_state.current_status.header, "Working");
+    assert!(chat.bottom_pane.is_task_running());
+}
+
+/// Core suppresses only a same-ID unfinished draft replay. The TUI receives
+/// one live draft delta, a retry notice, and a distinct item's delta; on an
+/// interrupt it must consolidate those actual streamed sources once each.
+#[tokio::test]
+async fn live_app_server_capacity_draft_retry_interrupt_keeps_one_visible_copy() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    handle_agent_message_delta(&mut chat, "capacity draft line\n");
+    chat.run_commit_tick();
+    assert!(
+        chat.stream_controller.is_some(),
+        "the first draft streamed live"
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                misalignment: None,
+                message: "Model at capacity; retrying in 1s (attempt 1)".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: None,
+                }),
+                additional_details: None,
+            },
+            will_retry: true,
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+    // The same-ID retry has no second delta. A genuinely distinct item still
+    // streams live rather than waiting for its completed item.
+    chat.handle_server_notification(
+        ServerNotification::AgentMessageDelta(
+            codex_app_server_protocol::AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "msg-2".to_string(),
+                delta: "distinct draft line\n".to_string(),
+            },
+        ),
+        /*replay_kind*/ None,
+    );
+    chat.run_commit_tick();
+    assert!(
+        chat.stream_controller.is_some(),
+        "the distinct draft streamed live"
+    );
+    assert!(chat.bottom_pane.is_task_running());
+
+    handle_turn_interrupted(&mut chat, "turn-1");
+    let sources = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::ConsolidateAgentMessage { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].matches("capacity draft line").count(), 1);
+    assert_eq!(sources[0].matches("distinct draft line").count(), 1);
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+/// A plan-mode retry notice does not restart the visible plan stream. Core
+/// suppresses the same stable-ID replay delta, and interruption consolidates
+/// only the first streamed source.
+#[tokio::test]
+async fn live_app_server_capacity_plan_draft_retry_interrupt_keeps_one_visible_copy() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    let thread_id = ThreadId::new();
+    chat.handle_thread_session(configured_thread_session(thread_id));
+    chat.handle_server_notification(
+        ServerNotification::ThreadSettingsUpdated(thread_settings_for_test("gpt-5.2", thread_id)),
+        /*replay_kind*/ None,
+    );
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "turn-1-plan".to_string(),
+            delta: "- Step 1\n".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.run_commit_tick();
+    assert!(chat.plan_stream_controller.is_some());
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                misalignment: None,
+                message: "Model at capacity; retrying in 1s (attempt 1)".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: None,
+                }),
+                additional_details: None,
+            },
+            will_retry: true,
+            thread_id: thread_id.to_string(),
+            turn_id: "turn-1".to_string(),
+        }),
+        /*replay_kind*/ None,
+    );
+    // A replay of the same unfinished provider item emits no second PlanDelta.
+    assert_eq!(chat.transcript.plan_delta_buffer, "- Step 1\n");
+    assert!(chat.plan_stream_controller.is_some());
+    assert!(chat.bottom_pane.is_task_running());
+
+    handle_turn_interrupted(&mut chat, "turn-1");
+    let sources = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::ConsolidateProposedPlan(source) => Some(source),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].matches("- Step 1").count(), 1);
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
 async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
