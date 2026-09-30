@@ -102,6 +102,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
                     && let Some(error) = value.get("error")
                 {
+                    if let Some(flex_error) = parse_flex_unavailable(error) {
+                        return map_api_error(flex_error);
+                    }
                     match error.get("code").and_then(Value::as_str) {
                         Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
                         Some("slow_down") => {
@@ -294,6 +297,69 @@ const CLOUDFLARE_BLOCKED_MESSAGE: &str =
 #[cfg(test)]
 #[path = "api_bridge_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod flex_service_unavailable_tests {
+    use super::*;
+    use codex_http_client::RetryAfter;
+    use codex_protocol::protocol::CodexErrorInfo;
+    use std::time::Duration;
+
+    #[test]
+    fn typed_flex_503_is_terminal_despite_retry_advice() {
+        let advice = RetryAfter::from_delay(Duration::from_secs(1)).expect("retry advice");
+        let error = map_api_error(ApiError::Transport(TransportError::Http {
+            status: http::StatusCode::SERVICE_UNAVAILABLE,
+            url: None,
+            headers: None,
+            body: Some(
+                serde_json::json!({
+                    "type": "error",
+                    "status": 503,
+                    "error": {
+                        "code": "flex_unavailable",
+                        "message": "Flex capacity unavailable.",
+                        "headers": { "Retry-After": "1" }
+                    }
+                })
+                .to_string(),
+            ),
+            retry_after: Some(advice),
+        }));
+
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::FlexUnavailable
+        ));
+        assert_eq!(
+            error.to_codex_protocol_error(),
+            CodexErrorInfo::FlexUnavailable
+        );
+        assert_eq!(error.retry_after(), Some(advice));
+        assert_eq!(error.retry_delay(/*retry_count*/ 1), None);
+    }
+
+    #[test]
+    fn ordinary_503_overload_retains_its_existing_classification() {
+        let error = map_api_error(ApiError::Transport(TransportError::Http {
+            status: http::StatusCode::SERVICE_UNAVAILABLE,
+            url: None,
+            headers: None,
+            body: Some(
+                serde_json::json!({
+                    "error": { "code": "server_is_overloaded", "message": "retry later" }
+                })
+                .to_string(),
+            ),
+            retry_after: None,
+        }));
+
+        assert!(matches!(
+            error.details(),
+            CodexErrorDetails::ServerOverloaded
+        ));
+    }
+}
 
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
     extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))

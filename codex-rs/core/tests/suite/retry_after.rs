@@ -33,6 +33,8 @@ use http::StatusCode;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::TcpSocket;
@@ -1049,13 +1051,18 @@ async fn capacity_retry_interrupted_before_draft_done_keeps_one_delta() -> Resul
             }),
         ]))
     };
-    let response_mock = responses::mount_response_sequence(
-        &server,
-        (0..5)
-            .map(|index| failed_response(&format!("capacity-interrupted-{index}")))
-            .collect(),
-    )
-    .await;
+    // Cancellation intentionally stops before an exact number of requests.
+    // The sequence helper requires every supplied response to be consumed, so
+    // use an unbounded responder while retaining distinct response IDs.
+    let response_number = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = response_number.fetch_add(1, Ordering::SeqCst);
+            failed_response(&format!("capacity-interrupted-{index}"))
+        })
+        .mount(&server)
+        .await;
     let test = test_codex()
         .with_config(|config| {
             config.model_provider.request_max_retries = Some(0);
@@ -1089,7 +1096,16 @@ async fn capacity_retry_interrupted_before_draft_done_keeps_one_delta() -> Resul
     .await;
     assert_eq!(draft_deltas, vec!["interrupted draft\n"]);
     assert_eq!(completed_draft_items, 0);
-    assert!(response_mock.requests().len() >= 2);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .iter()
+            .filter(|request| request.url.path() == "/v1/responses")
+            .count()
+            >= 2
+    );
     Ok(())
 }
 
@@ -1218,13 +1234,15 @@ async fn capacity_retry_interrupted_before_seeded_plan_done_keeps_one_delta() ->
             }),
         ]))
     };
-    let response_mock = responses::mount_response_sequence(
-        &server,
-        (0..5)
-            .map(|index| failed_response(&format!("capacity-seeded-plan-{index}")))
-            .collect(),
-    )
-    .await;
+    let response_number = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = response_number.fetch_add(1, Ordering::SeqCst);
+            failed_response(&format!("capacity-seeded-plan-{index}"))
+        })
+        .mount(&server)
+        .await;
     let test = test_codex()
         .with_config(|config| {
             config.model_provider.request_max_retries = Some(0);
@@ -1261,7 +1279,16 @@ async fn capacity_retry_interrupted_before_seeded_plan_done_keeps_one_delta() ->
     assert_eq!(draft_text, "Intro\n");
     assert_eq!(plan_deltas, "- Step 1\n");
     assert_eq!(completed_plan, 0);
-    assert!(response_mock.requests().len() >= 2);
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should record requests")
+            .iter()
+            .filter(|request| request.url.path() == "/v1/responses")
+            .count()
+            >= 2
+    );
     Ok(())
 }
 
