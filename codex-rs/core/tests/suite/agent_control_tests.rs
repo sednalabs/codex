@@ -109,6 +109,10 @@ impl AgentControl for TestAgentControl {
         })
     }
 
+    fn inspect(&self, _thread_id: ThreadId) -> BoxFuture<'_, CodexResult<AgentInfo>> {
+        panic!("unexpected agent inspection")
+    }
+
     fn interrupt(
         &self,
         _caller: ThreadId,

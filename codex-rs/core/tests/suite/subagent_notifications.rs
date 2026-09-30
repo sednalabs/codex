@@ -156,6 +156,12 @@ fn decoded_body(req: &wiremock::Request) -> Option<Vec<u8>> {
     }
 }
 
+fn request_is_for_thread(req: &wiremock::Request, thread_id: ThreadId) -> bool {
+    let body = decoded_body(req).expect("decode received provider request body");
+    let body: Value = serde_json::from_slice(&body).expect("parse received provider request JSON");
+    body["client_metadata"]["thread_id"] == json!(thread_id)
+}
+
 fn log_field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let prefix = format!("{name}=");
     line.split_ascii_whitespace()
@@ -2673,7 +2679,7 @@ async fn v2_native_wait_and_parent_requests_stay_quiet_through_goal_progress() -
         .await
         .expect("mock requests")
         .iter()
-        .filter(|request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id))
+        .filter(|request| request_is_for_thread(request, parent_id))
         .count();
     assert_eq!(parent_request_count, 3);
     assert!(resumed_parent_request.requests().is_empty());
@@ -2699,9 +2705,7 @@ async fn v2_native_wait_and_parent_requests_stay_quiet_through_goal_progress() -
             .await
             .expect("mock requests")
             .iter()
-            .filter(
-                |request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id)
-            )
+            .filter(|request| request_is_for_thread(request, parent_id))
             .count(),
         parent_request_count,
         "intermediate goal turn started an extra parent provider request",
@@ -2730,9 +2734,7 @@ async fn v2_native_wait_and_parent_requests_stay_quiet_through_goal_progress() -
             .await
             .expect("mock requests")
             .iter()
-            .filter(
-                |request| request.body_json()["client_metadata"]["thread_id"] == json!(parent_id)
-            )
+            .filter(|request| request_is_for_thread(request, parent_id))
             .count(),
         parent_request_count,
         "second in-wait intermediate goal turn started an extra parent provider request",

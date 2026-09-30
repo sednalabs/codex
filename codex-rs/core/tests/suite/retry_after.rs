@@ -278,30 +278,29 @@ async fn submit_plan_input(test: &TestCodex, text: &str) -> Result<()> {
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
                 text: text.to_string(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(cwd)),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                collaboration_mode: Some(CollaborationMode {
-                    mode: ModeKind::Plan,
-                    settings: Settings {
-                        model: test.session_configured.model.clone(),
-                        reasoning_effort: None,
-                        developer_instructions: None,
-                    },
-                }),
-                ..Default::default()
-            },
-        })
+            }])
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    environments: Some(local_selections(cwd)),
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    collaboration_mode: Some(CollaborationMode {
+                        mode: ModeKind::Plan,
+                        settings: Settings {
+                            model: test.session_configured.model.clone(),
+                            reasoning_effort: None,
+                            developer_instructions: None,
+                        },
+                    }),
+                    ..Default::default()
+                },
+            ),
+        )
         .await?;
     Ok(())
 }
