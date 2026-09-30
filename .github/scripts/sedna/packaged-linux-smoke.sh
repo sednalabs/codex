@@ -176,7 +176,6 @@ PY
   if [[ "${component}" == "host" ]]; then
     jq -e --arg host_sha "${expected_host_sha}" '.workflowCommit == $host_sha and .artifact == "codex-code-mode-host"' \
       "${extract_dir}/${metadata_name}" >/dev/null
-    (cd "${extract_dir}" && sha256sum -c "${binary_sha_name}")
     (cd "${extract_dir}" && sha256sum -c "${archive_sha_name}")
   fi
 
@@ -214,6 +213,10 @@ with tarfile.open(archive, "r:gz") as package:
                 target.write(chunk)
         os.chmod(output, 0o755)
 PY
+
+  if [[ "${component}" == "host" ]]; then
+    (cd "${extract_dir}/unpacked" && sha256sum -c "../${binary_sha_name}")
+  fi
 
   jq -n --arg component "${component}" --arg run_id "${run_id}" --arg artifact_id "${artifact_id}" \
     --arg name "${expected_name}" --arg digest "${expected_digest}" --arg archive "${archive_name}" \
