@@ -3,7 +3,7 @@ name: qualified-installer-synthetic
 on:
   push:
     branches:
-      - fix/qualified-complete-package-w15234-20261002
+      - fix/qualified-complete-package-20261002
     paths:
       - .github/workflows/qualified-installer-synthetic.yml
       - justfile
