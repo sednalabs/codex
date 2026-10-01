@@ -23,6 +23,7 @@ use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_state::ThreadGoalStatus;
@@ -163,7 +164,9 @@ fn builder_with_goal(
     gate: Arc<GoalStartGate>,
 ) -> TestCodexBuilder {
     test_codex()
-        .with_model("koffing")
+        .with_model_info_override("koffing", |model_info| {
+            model_info.multi_agent_version = Some(MultiAgentVersion::V2);
+        })
         .with_extension_builder(move |registry, state_db, manager| {
             *state_slot.lock().expect("state slot") = state_db.clone();
             *gate.state_db.lock().expect("gate state") = state_db.clone();

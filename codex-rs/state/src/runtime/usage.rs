@@ -961,14 +961,25 @@ mod tests {
                 Some("gpt-6-luna".to_string()),
             )
         );
-        let unknown_model = sqlx::query_as::<_, (String, Option<f64>)>(
-            "SELECT pricing_status, estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
+        let missing_actual_model = sqlx::query_as::<
+            _,
+            (String, Option<String>, String, Option<f64>),
+        >(
+            "SELECT requested_model, actual_model_used, pricing_status, estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = ?",
         )
         .bind("local-call-child")
         .fetch_one(resumed.usage_pool().as_ref())
         .await
-        .expect("read unobserved model pricing outcome");
-        assert_eq!(unknown_model, ("model_rate_missing".to_string(), None));
+        .expect("read missing observed-model pricing outcome");
+        assert_eq!(
+            missing_actual_model,
+            (
+                "gpt-6-sol".to_string(),
+                None,
+                "actual_model_missing".to_string(),
+                None,
+            )
+        );
 
         resumed.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;

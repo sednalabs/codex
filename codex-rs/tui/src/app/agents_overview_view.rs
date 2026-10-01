@@ -458,7 +458,8 @@ impl AgentsOverviewView {
                 width,
             ),
             Line::from(vec![dot, " ".into(), status.into()]),
-            Line::from(vec!["Thread ID: ".dim(), row.thread.id.clone().into()]),
+            Line::from("Thread ID:".dim()),
+            Line::from(row.thread.id.clone()),
             Line::default(),
             Line::from("Project".dim()),
             Line::from(row.thread.cwd.display().to_string()),
@@ -481,10 +482,8 @@ impl AgentsOverviewView {
             ]),
         ];
         if let Some(parent_thread_id) = &row.thread.parent_thread_id {
-            lines.push(Line::from(vec![
-                "Parent thread ID: ".dim(),
-                parent_thread_id.clone().into(),
-            ]));
+            lines.push(Line::from("Parent thread ID:".dim()));
+            lines.push(Line::from(parent_thread_id.clone()));
         }
         if let Some(path) = &row.thread.path {
             lines.push(Line::from(vec![

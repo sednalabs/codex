@@ -1307,6 +1307,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
 }
 
+#[tokio::test]
 async fn root_resume_does_not_partially_restore_descendants_when_graph_is_over_limit() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
