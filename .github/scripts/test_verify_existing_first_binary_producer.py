@@ -223,6 +223,72 @@ def current_consumer_fixtures() -> tuple[dict[str, object], dict[str, object], d
     return run, workflow, jobs, env
 
 
+def _workflow_step_env(workflow: str, job_name: str, step_name: str) -> dict[str, str]:
+    lines = workflow.splitlines()
+    job_marker = f"  {job_name}:"
+    try:
+        job_start = lines.index(job_marker)
+    except ValueError:
+        raise ValueError(f"workflow is missing job {job_name}") from None
+    job_end = next(
+        (
+            index
+            for index in range(job_start + 1, len(lines))
+            if lines[index].startswith("  ")
+            and not lines[index].startswith("    ")
+            and lines[index].strip().endswith(":")
+        ),
+        len(lines),
+    )
+    job_lines = lines[job_start:job_end]
+    step_marker = f"      - name: {step_name}"
+    try:
+        step_start = job_lines.index(step_marker)
+    except ValueError:
+        raise ValueError(f"job {job_name} is missing step {step_name}") from None
+    step_end = next(
+        (index for index in range(step_start + 1, len(job_lines)) if job_lines[index].startswith("      - ")),
+        len(job_lines),
+    )
+    step_lines = job_lines[step_start:step_end]
+    try:
+        env_start = step_lines.index("        env:")
+    except ValueError:
+        raise ValueError(f"step {step_name} in {job_name} has no env mapping") from None
+    env: dict[str, str] = {}
+    for line in step_lines[env_start + 1 :]:
+        if not line.strip():
+            continue
+        if not line.startswith("          "):
+            break
+        key, separator, value = line.strip().partition(":")
+        if separator:
+            env[key] = value.strip()
+    return env
+
+
+def _assert_producer_verification_env(env: dict[str, str], product_arch: str) -> None:
+    expected = {
+        "MODE": "${{ inputs.mode }}",
+        "PRODUCT_ARCH": product_arch,
+        "TARGET_SHA": "${{ inputs.target_sha }}",
+        "BASE_REF": "${{ inputs.base_ref }}",
+        "BASE_SHA": "${{ inputs.base_sha }}",
+        "API_URL": "${{ github.api_url }}",
+        "GITHUB_TOKEN": "${{ github.token }}",
+        "PRODUCER_RUN_ID": "${{ inputs.producer_run_id }}",
+        "PRODUCER_WORKFLOW_HOST_SHA": "${{ inputs.producer_workflow_host_sha }}",
+        "FIXTURE_SHA": "${{ inputs.fixture_sha }}",
+        "SDK_SHA": "${{ inputs.sdk_sha }}",
+        "CONSUMER_PROFILE": "${{ inputs.consumer_profile }}",
+        "CONSUMER_CONTEXT_OUT": "${{ runner.temp }}/first-binary-consumer-context.json",
+        "PRODUCER_EVIDENCE_OUT": "${{ runner.temp }}/first-binary-producer-evidence.json",
+    }
+    for key, value in expected.items():
+        if env.get(key) != value:
+            raise ValueError(f"producer verification env {key} is missing or misbound")
+
+
 class VerifyExistingProducerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.run, self.workflow, self.jobs, self.artifacts = producer_fixtures()
@@ -434,6 +500,36 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertIn('"test_new_options_reject_unsupported_runtime_before_sending": 45', sdk_job)
         self.assertIn("skipped != 0 or failed != 0 or errored != 0", sdk_job)
         self.assertIn("first-binary-sdk-parser-results.xml", sdk_job)
+
+    def test_existing_consumer_verifier_env_binds_every_required_input(self) -> None:
+        workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        step_name = "Verify producer API evidence and write current consumer context"
+        consumers = (
+            ("consume-linux-x86_64", "x86_64"),
+            ("consume-linux-aarch64", "aarch64"),
+        )
+        for job_name, product_arch in consumers:
+            env = _workflow_step_env(workflow, job_name, step_name)
+            with self.subTest(job=job_name):
+                _assert_producer_verification_env(env, product_arch)
+            for field, wrong_value in (
+                ("FIXTURE_SHA", None),
+                ("FIXTURE_SHA", "${{ inputs.target_sha }}"),
+                ("SDK_SHA", None),
+                ("SDK_SHA", "${{ inputs.target_sha }}"),
+                ("CONSUMER_PROFILE", None),
+                ("CONSUMER_PROFILE", "${{ inputs.mode }}"),
+            ):
+                changed = dict(env)
+                if wrong_value is None:
+                    changed.pop(field, None)
+                else:
+                    changed[field] = wrong_value
+                with self.subTest(job=job_name, field=field, wrong_value=wrong_value), self.assertRaisesRegex(
+                    ValueError, field
+                ):
+                    _assert_producer_verification_env(changed, product_arch)
 
     def test_duplicate_manifest_keys_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "duplicate JSON key"):

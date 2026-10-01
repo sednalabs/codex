@@ -1034,6 +1034,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
           PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
           CONSUMER_CONTEXT_OUT: ${{ runner.temp }}/first-binary-consumer-context.json
           PRODUCER_EVIDENCE_OUT: ${{ runner.temp }}/first-binary-producer-evidence.json
         run: python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py
@@ -1956,6 +1959,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
           PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
           CONSUMER_CONTEXT_OUT: ${{ runner.temp }}/first-binary-consumer-context.json
           PRODUCER_EVIDENCE_OUT: ${{ runner.temp }}/first-binary-producer-evidence.json
         run: python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py
