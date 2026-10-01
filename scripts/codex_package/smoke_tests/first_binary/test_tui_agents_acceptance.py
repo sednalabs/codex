@@ -30,7 +30,8 @@ def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage)
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
         with PackagedTui(isolated) as tui:
-            tui.send("/agents\n")
+            tui.send("/agents")
+            tui.send("\r")
             opened = tui.until("Agent command center")
             assert "Group:" in opened
             tui.send("f")
@@ -53,7 +54,9 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             )
             root.set_name("root-package-task")
             assert root.run("Complete root seed.").final_response == "root done"
-            child = client.thread_fork(root.id, ephemeral=False)
+            child = client.thread_fork(
+                root.id, ephemeral=False, include_turns=False,
+            )
             child.set_name("child-package-task")
             assert child.run("Complete child seed.").final_response == "child done"
             nested = client.thread_fork(child.id, ephemeral=False)
@@ -67,7 +70,8 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(root_id).id == root_id
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
+            tui.send("/agents")
+            tui.send("\r")
             tree = tui.until("nested-package-task")
             assert "Agent command center" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
@@ -93,11 +97,13 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert "nested-package-task" in tui.until("nested-package-task")
             tui.send("r")
             assert "Rename ›" in tui.until("Rename ›")
-            tui.send("\x7f" * 80 + "live-renamed-package-task\n")
+            tui.send("\x7f" * 80 + "live-renamed-package-task")
+            tui.send("\r")
             assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
+            tui.send("/agents")
+            tui.send("\r")
             replay = tui.until("live-renamed-package-task")
             assert "Agent command center" in replay
             assert "root-package-task" in replay and "child-package-task" in replay
