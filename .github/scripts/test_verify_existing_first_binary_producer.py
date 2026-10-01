@@ -448,10 +448,22 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(selected["record_id"], record["record_id"])
 
     def test_diagnostic_record_is_never_eligible(self) -> None:
+        identity = DIAGNOSTIC_RECORD["identity"]
+        producer = DIAGNOSTIC_RECORD["producer"]
+        diagnostic_inputs = {
+            "product_sha": identity["product_sha"],
+            "comparison_base_ref": identity["comparison_base_ref"],
+            "comparison_base_sha": identity["comparison_base_sha"],
+            "fixture_sha": identity["fixture_sha"],
+            "sdk_sha": identity["sdk_sha"],
+            "profile": identity["profile"],
+            "producer_run_id": producer["run_id"],
+            "producer_workflow_host_sha": producer["workflow_host_sha"],
+        }
         with self.assertRaisesRegex(ValueError, "diagnostic"):
             select_accepted_record(
                 {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [copy.deepcopy(DIAGNOSTIC_RECORD)]},
-                accepted_fixture_inputs(),
+                diagnostic_inputs,
             )
         promoted = copy.deepcopy(DIAGNOSTIC_RECORD)
         promoted["disposition"] = "accepted"
@@ -472,7 +484,7 @@ class AcceptedInputManifestTests(unittest.TestCase):
             "sdk_sha": "4" * 40,
             "profile": "full",
             "producer_run_id": accepted_fixture_inputs()["producer_run_id"] + 1,
-            "producer_workflow_host_sha": "5" * 40,
+            "producer_workflow_host_sha": "7" * 40,
         }
         for field, value in wrong_values.items():
             inputs = accepted_fixture_inputs()
