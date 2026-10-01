@@ -800,6 +800,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
                 [
                     "just",
                     "install-branch-artifact",
+                    "--",
                     "--run-id",
                     "1001",
                     "--host-run-id",
@@ -808,7 +809,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
                 ],
                 cwd=INSTALLER_PATH.parents[1],
                 env=env,
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -820,6 +821,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
             artifact_server.shutdown()
             artifact_server.server_close()
             artifact_thread.join(timeout=5)
+        self.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         self.assertIn("dry-run: verified", result.stdout)
         self.assertIn("core run 1001 and host run 1002", result.stdout)
         self.assertEqual(artifact_server.authorization_headers, [(None, None, None), (None, None, None)])
