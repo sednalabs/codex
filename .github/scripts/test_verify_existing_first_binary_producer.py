@@ -17,6 +17,16 @@ from verify_existing_first_binary_producer import (
     CROSS_RUN_ARTIFACTS,
     CROSS_RUN_PRODUCER,
     DIAGNOSTIC_RECORD,
+    EXPECTED_STATE_NEGATIVE,
+    EXPECTED_STATE_POSITIVE,
+    CONSUME_EXISTING_TEST_PLANS,
+    FULL_PLAIN_TESTS,
+    Q2_FIXTURE_SHA,
+    Q3_ADDITIONAL_PLAIN_TESTS,
+    Q3_FIXTURE_SHA,
+    S0_SDK_SHA,
+    S1_SDK_SHA,
+    SDK_TEST_PLAN_BY_SHA,
     PRODUCER_JOB_CONTRACT,
     REPOSITORY,
     REPOSITORY_ID,
@@ -29,6 +39,8 @@ from verify_existing_first_binary_producer import (
     verify_current_consumer,
     verify_existing_producer,
     reconcile_consumer_results,
+    consume_existing_test_plan,
+    sdk_test_plan,
     select_accepted_record,
     _json_object_without_duplicate_keys,
     _verify_trusted_consumer_ref,
@@ -431,20 +443,23 @@ class VerifyExistingProducerTests(unittest.TestCase):
 
 
 class AcceptedInputManifestTests(unittest.TestCase):
-    def test_frozen_manifest_keeps_pair_and_full_qualification_rows_separate(self) -> None:
+    def test_frozen_manifest_keeps_q2_rows_and_adds_exact_q3_s1_full_row(self) -> None:
         manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
         rows = manifest["records"]
         old_diagnostic = next(row for row in rows if row["record_id"] == "diagnostic-producer-36800811941")
         self.assertEqual("diagnostic", old_diagnostic["disposition"])
         self.assertFalse(old_diagnostic["w14780_eligible"])
 
-        accepted = {
+        q2_rows = {
             row["identity"]["profile"]: row
             for row in rows
-            if row["producer"]["run_id"] == 36851180755 and row["disposition"] == "accepted"
+            if row["producer"]["run_id"] == 36851180755
+            and row["disposition"] == "accepted"
+            and row["identity"]["fixture_sha"] == Q2_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S0_SDK_SHA
         }
-        self.assertEqual({"pair", "full"}, set(accepted))
-        for profile, record in accepted.items():
+        self.assertEqual({"pair", "full"}, set(q2_rows))
+        for profile, record in q2_rows.items():
             with self.subTest(profile=profile):
                 self.assertTrue(record["w14780_eligible"])
                 self.assertEqual("accepted", record["disposition"])
@@ -464,6 +479,86 @@ class AcceptedInputManifestTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(record["record_id"], selected["record_id"])
+
+        q3_rows = [
+            row for row in rows
+            if row["producer"]["run_id"] == 36851180755
+            and row["identity"]["fixture_sha"] == Q3_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S1_SDK_SHA
+        ]
+        self.assertEqual(1, len(q3_rows))
+        q3_full = q3_rows[0]
+        self.assertEqual("accepted-producer-36851180755-full-q3-s1", q3_full["record_id"])
+        self.assertEqual("accepted", q3_full["disposition"])
+        self.assertTrue(q3_full["w14780_eligible"])
+        self.assertEqual("full", q3_full["identity"]["profile"])
+        for field in ("product_sha", "comparison_base_ref", "comparison_base_sha"):
+            self.assertEqual(q2_rows["full"]["identity"][field], q3_full["identity"][field])
+        self.assertEqual(q2_rows["full"]["producer"], q3_full["producer"])
+        self.assertEqual(q2_rows["full"]["jobs"], q3_full["jobs"])
+        self.assertEqual(q2_rows["full"]["artifacts"], q3_full["artifacts"])
+        q3_inputs = {
+            "product_sha": q3_full["identity"]["product_sha"],
+            "comparison_base_ref": q3_full["identity"]["comparison_base_ref"],
+            "comparison_base_sha": q3_full["identity"]["comparison_base_sha"],
+            "fixture_sha": Q3_FIXTURE_SHA,
+            "sdk_sha": S1_SDK_SHA,
+            "profile": "full",
+            "producer_run_id": q3_full["producer"]["run_id"],
+            "producer_workflow_host_sha": q3_full["producer"]["workflow_host_sha"],
+        }
+        self.assertEqual(q3_full["record_id"], select_accepted_record(manifest, q3_inputs)["record_id"])
+        for field, value in (("fixture_sha", Q2_FIXTURE_SHA), ("sdk_sha", S0_SDK_SHA), ("profile", "pair")):
+            changed = dict(q3_inputs)
+            changed[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                select_accepted_record(manifest, changed)
+
+    def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
+        q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
+        self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
+        self.assertEqual(frozenset(), q2_pair["plain"])
+        q2_full = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "full")
+        self.assertEqual(24, len(q2_full["state"]))
+        self.assertEqual(FULL_PLAIN_TESTS, q2_full["plain"])
+
+        q3_full = consume_existing_test_plan(Q3_FIXTURE_SHA, S1_SDK_SHA, "full")
+        self.assertEqual(24, len(q3_full["state"]))
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q3_full["plain"])
+        self.assertEqual(17, len(q3_full["plain"]))
+        self.assertEqual(5, len(Q3_ADDITIONAL_PLAIN_TESTS))
+        for fixture_sha, sdk_sha, profile in (
+            (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
+            (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
+            (Q2_FIXTURE_SHA, S1_SDK_SHA, "full"),
+            ("8" * 40, S0_SDK_SHA, "full"),
+        ):
+            with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
+                consume_existing_test_plan(fixture_sha, sdk_sha, profile)
+
+        s0 = sdk_test_plan(S0_SDK_SHA)
+        self.assertEqual(2, len(s0["selectors"]))
+        self.assertEqual(46, sum(s0["expected_test_cases"].values()))
+        s1 = sdk_test_plan(S1_SDK_SHA)
+        self.assertEqual(9, len(s1["selectors"]))
+        self.assertEqual(s0["selectors"], s1["selectors"][:2])
+        self.assertEqual(54, sum(s1["expected_test_cases"].values()))
+        self.assertEqual(
+            [
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_request_routes_match_exact_requests_and_wait_outside_selector_lock",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_bad_request_route_sets_fail_and_are_reported_on_teardown",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_unused_one_shot_routes_fail_at_teardown",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed",
+                "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request",
+            ],
+            s1["selectors"][2:],
+        )
+        self.assertEqual(8, sum(s1["expected_test_cases"][name] for name in s1["expected_test_cases"] if name not in s0["expected_test_cases"]))
+        self.assertEqual(2, s1["expected_test_cases"]["test_bad_request_route_sets_fail_and_are_reported_on_teardown"])
+        with self.assertRaisesRegex(ValueError, "SDK source SHA"):
+            sdk_test_plan("9" * 40)
 
     def test_workflow_restores_userns_for_both_profiles_and_runs_exact_sdk_inventory(self) -> None:
         workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
@@ -493,11 +588,16 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-24.04", sdk_job)
         self.assertIn("version: \"0.12.17\"", sdk_job)
         self.assertIn("python-version: \"3.12.14\"", sdk_job)
-        self.assertIn("test_thread_fork_accepts_cargo_sedna_dev_runtime_version", sdk_job)
-        self.assertIn("test_new_options_reject_unsupported_runtime_before_sending", sdk_job)
-        self.assertIn('"expected_test_cases": {', sdk_job)
-        self.assertIn('"test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1', sdk_job)
-        self.assertIn('"test_new_options_reject_unsupported_runtime_before_sending": 45', sdk_job)
+        self.assertIn("SDK_SHA: ${{ inputs.sdk_sha }}", sdk_job)
+        self.assertEqual(3, sdk_job.count("from verify_existing_first_binary_producer import sdk_test_plan"))
+        self.assertIn("sdk_test_plan(os.environ[\"SDK_SHA\"])", sdk_job)
+        self.assertIn("sdk_test_plan(sdk_sha)", sdk_job)
+        self.assertIn('"selectors": plan["selectors"]', sdk_job)
+        self.assertIn('"expected_test_cases": plan["expected_test_cases"]', sdk_job)
+        self.assertIn("plan[\"expected_test_cases\"]", sdk_job)
+        self.assertIn("*(str(sdk_root / selector) for selector in plan[\"selectors\"])", sdk_job)
+        self.assertIn('"pytest_exit_code": completed.returncode', sdk_job)
+        self.assertIn("first-binary-sdk-parser-status.json", sdk_job)
         self.assertIn("skipped != 0 or failed != 0 or errored != 0", sdk_job)
         self.assertIn("first-binary-sdk-parser-results.xml", sdk_job)
 
@@ -868,14 +968,20 @@ class BackwardsCompatibleBuildModeTests(unittest.TestCase):
 
 
 class ConsumerResultTests(unittest.TestCase):
-    def _write_pair_fixture(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
+    def _write_fixture(
+        self,
+        root: Path,
+        *,
+        profile: str,
+        fixture_sha: str,
+        sdk_sha: str,
+    ) -> tuple[Path, Path, Path, Path, Path]:
         runner_temp = root / "runner-temp"
         runner_temp.mkdir()
         witness_dir = runner_temp / "state-history-witnesses"
         witness_dir.mkdir(mode=0o700)
         os.chmod(witness_dir, 0o700)
-        q_sha = "9" * 40
-        sdk_sha = "8" * 40
+        q_sha = fixture_sha
         consumer = {
             "schema_version": "sedna-first-binary-consumer-api-v1",
             "repository": REPOSITORY,
@@ -918,12 +1024,23 @@ class ConsumerResultTests(unittest.TestCase):
         result_path = runner_temp / "result.json"
         consumer_path.write_text(json.dumps(consumer), encoding="utf-8")
         producer_path.write_text(json.dumps(producer), encoding="utf-8")
-        junit_path.write_text(
-            "<testsuite><testcase name='test_packaged_historical_upgrade_and_reopen[fresh]'/>"
-            "<testcase name='test_packaged_historical_rejection_preserves_preimage[bad_checksum]'/></testsuite>",
-            encoding="utf-8",
+        selected_plan = consume_existing_test_plan(q_sha, sdk_sha, profile)
+        state_cases = sorted(selected_plan["state"])
+        plain_cases = sorted(selected_plan["plain"])
+        testcase_xml = [
+            f'<testcase name="test_packaged_historical_upgrade_and_reopen[{case_name}]"/>'
+            for case_name in state_cases
+            if case_name in EXPECTED_STATE_POSITIVE
+        ]
+        testcase_xml.extend(
+            f'<testcase name="test_packaged_historical_rejection_preserves_preimage[{case_name}]"/>'
+            for case_name in state_cases
+            if case_name in EXPECTED_STATE_NEGATIVE
         )
-        for name, case_name in (("fresh.json", "fresh"), ("bad_checksum.json", "bad_checksum")):
+        testcase_xml.extend(f'<testcase name="{name}"/>' for name in plain_cases)
+        junit_path.write_text(f"<testsuite>{''.join(testcase_xml)}</testsuite>", encoding="utf-8")
+        for case_name in state_cases:
+            name = f"{case_name}.json"
             witness = {
                 "case": case_name,
                 "product_target_sha": producer["product_sha"],
@@ -948,7 +1065,9 @@ class ConsumerResultTests(unittest.TestCase):
     def test_exact_pair_result_and_witness_join_are_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            junit, consumer, producer, witnesses, result_path = self._write_pair_fixture(root)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="pair", fixture_sha=Q2_FIXTURE_SHA, sdk_sha=S0_SDK_SHA
+            )
             result = reconcile_consumer_results(
                 junit_path=junit,
                 consumer_context_path=consumer,
@@ -966,10 +1085,76 @@ class ConsumerResultTests(unittest.TestCase):
             self.assertEqual(result["executed_cases"], 2)
             self.assertEqual(result["state_history_witnesses"], 2)
 
+    def test_q3_s1_full_result_accepts_exact_inventory_and_all_witnesses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="full", fixture_sha=Q3_FIXTURE_SHA, sdk_sha=S1_SDK_SHA
+            )
+            result = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="full",
+                fixture_sha=Q3_FIXTURE_SHA,
+                sdk_sha=S1_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], result["issues"])
+            self.assertEqual(41, result["executed_cases"])
+            self.assertEqual(24, result["state_history_witnesses"])
+
+    def test_q3_s1_full_result_rejects_missing_extra_skipped_and_wrong_generation(self) -> None:
+        for mutation in ("missing", "extra", "skipped", "wrong_generation"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                    root, profile="full", fixture_sha=Q3_FIXTURE_SHA, sdk_sha=S1_SDK_SHA
+                )
+                if mutation == "missing":
+                    test_name = sorted(Q3_ADDITIONAL_PLAIN_TESTS)[0]
+                    xml = junit.read_text(encoding="utf-8")
+                    junit.write_text(xml.replace(f'<testcase name="{test_name}"/>', "", 1), encoding="utf-8")
+                elif mutation == "extra":
+                    xml = junit.read_text(encoding="utf-8").replace(
+                        "</testsuite>", '<testcase name="test_unadmitted_fixture_generation_case"/></testsuite>'
+                    )
+                    junit.write_text(xml, encoding="utf-8")
+                elif mutation == "skipped":
+                    xml = junit.read_text(encoding="utf-8")
+                    junit.write_text(xml.replace("/>", "><skipped/></testcase>", 1), encoding="utf-8")
+
+                selected_sdk_sha = S0_SDK_SHA if mutation == "wrong_generation" else S1_SDK_SHA
+                result = reconcile_consumer_results(
+                    junit_path=junit,
+                    consumer_context_path=consumer,
+                    producer_evidence_path=producer,
+                    witness_dir=witnesses,
+                    result_path=result_path,
+                    pytest_exit=0,
+                    mode="consume-existing",
+                    profile="full",
+                    fixture_sha=Q3_FIXTURE_SHA,
+                    sdk_sha=selected_sdk_sha,
+                    runner_temp=witnesses.parent,
+                )
+                if mutation == "skipped":
+                    self.assertTrue(any("skipped" in issue for issue in result["issues"]))
+                elif mutation == "wrong_generation":
+                    self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                else:
+                    self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
+
     def test_skips_or_wrong_witness_identity_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            junit, consumer, producer, witnesses, result_path = self._write_pair_fixture(root)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="pair", fixture_sha=Q2_FIXTURE_SHA, sdk_sha=S0_SDK_SHA
+            )
             with (witnesses / "fresh.json").open(encoding="utf-8") as stream:
                 changed = json.load(stream)
             changed["producer_run_id"] += 1

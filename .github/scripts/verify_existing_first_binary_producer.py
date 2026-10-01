@@ -58,6 +58,115 @@ PRODUCER_JOB_NAMES = {
     "Consume native Linux ARM64 package",
     "Consume native Linux x86_64 package",
 }
+Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
+Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
+S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
+S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
+EXPECTED_STATE_POSITIVE = frozenset(
+    {
+        "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
+        "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38",
+        "shift45", "shift50",
+    }
+)
+EXPECTED_STATE_NEGATIVE = frozenset(
+    {
+        "bad_checksum", "mixed_ids", "missing_middle", "failed_row", "incomplete_f58",
+        "partial_alias", "partial_upstream_schema", "unknown_id",
+    }
+)
+FULL_PLAIN_TESTS = frozenset(
+    {
+        "test_exact_single_artifact_and_native_layout",
+        "test_wrong_source_manifest_is_rejected_before_unpack",
+        "test_wrong_target_and_missing_helper_are_rejected",
+        "test_banner_native_client_and_same_source_proxy_execution",
+        "test_persistent_code_mode_and_reopen_from_real_package",
+        "test_missing_host_cannot_qualify_code_mode",
+        "test_model_receives_and_executes_root_only_agent_list",
+        "test_model_spawn_hidden_metadata_has_no_private_fields",
+        "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
+        "test_actual_tui_agents_entry_has_initial_empty_search",
+        "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+        "test_real_response_usage_joins_standard_rate_scenario_after_resume",
+    }
+)
+Q3_ADDITIONAL_PLAIN_TESTS = frozenset(
+    {
+        "test_packaged_model_wait_agent_times_out_without_activity",
+        "test_packaged_model_nested_spawn_recovery_and_list_after_resume",
+        "test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join",
+        "test_packaged_model_goal_continuation_and_terminal_transition",
+        "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
+    }
+)
+CONSUME_EXISTING_TEST_PLANS = {
+    (Q2_FIXTURE_SHA, S0_SDK_SHA): {
+        "profiles": frozenset({"pair", "full"}),
+        "full_plain": FULL_PLAIN_TESTS,
+    },
+    (Q3_FIXTURE_SHA, S1_SDK_SHA): {
+        "profiles": frozenset({"full"}),
+        "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
+    },
+}
+SDK_TEST_PLAN_BY_SHA = {
+    S0_SDK_SHA: {
+        "selectors": (
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version",
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending",
+        ),
+        "expected_test_cases": {
+            "test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "test_new_options_reject_unsupported_runtime_before_sending": 45,
+        },
+    },
+    S1_SDK_SHA: {
+        "selectors": (
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version",
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_request_routes_match_exact_requests_and_wait_outside_selector_lock",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_bad_request_route_sets_fail_and_are_reported_on_teardown",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_unused_one_shot_routes_fail_at_teardown",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request",
+        ),
+        "expected_test_cases": {
+            "test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "test_new_options_reject_unsupported_runtime_before_sending": 45,
+            "test_fifo_response_selection_remains_the_default": 1,
+            "test_request_routes_match_exact_requests_and_wait_outside_selector_lock": 1,
+            "test_bad_request_route_sets_fail_and_are_reported_on_teardown": 2,
+            "test_unused_one_shot_routes_fail_at_teardown": 1,
+            "test_one_shot_route_cannot_be_reused": 1,
+            "test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
+            "test_server_teardown_releases_a_gated_request": 1,
+        },
+    },
+}
+
+
+def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> dict[str, Any]:
+    plan = CONSUME_EXISTING_TEST_PLANS.get((fixture_sha, sdk_sha))
+    _require(plan is not None, "fixture/SDK source pair has no exact consume-existing test inventory")
+    _require(profile in plan["profiles"], "fixture/SDK source pair does not admit this consumer profile")
+    return {
+        "state": frozenset({"fresh", "bad_checksum"}) if profile == "pair" else frozenset(
+            EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE
+        ),
+        "plain": frozenset() if profile == "pair" else plan["full_plain"],
+    }
+
+
+def sdk_test_plan(sdk_sha: str) -> dict[str, Any]:
+    plan = SDK_TEST_PLAN_BY_SHA.get(sdk_sha)
+    _require(plan is not None, "SDK source SHA has no exact hosted selector inventory")
+    return {
+        "selectors": list(plan["selectors"]),
+        "expected_test_cases": dict(plan["expected_test_cases"]),
+    }
 
 
 def _require(condition: bool, message: str) -> None:
@@ -627,15 +736,8 @@ def reconcile_consumer_results(
 
     positive_prefix = "test_packaged_historical_upgrade_and_reopen"
     negative_prefix = "test_packaged_historical_rejection_preserves_preimage"
-    expected_positive = {
-        "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
-        "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38",
-        "shift45", "shift50",
-    }
-    expected_negative = {
-        "bad_checksum", "mixed_ids", "missing_middle", "failed_row",
-        "incomplete_f58", "partial_alias", "partial_upstream_schema", "unknown_id",
-    }
+    expected_positive = EXPECTED_STATE_POSITIVE
+    expected_negative = EXPECTED_STATE_NEGATIVE
 
     def labels(prefix: str) -> list[str]:
         result: list[str] = []
@@ -652,34 +754,30 @@ def reconcile_consumer_results(
     negative = labels(negative_prefix)
     if mode == "build":
         profile = "full"
-    pair = profile == "pair" and mode == "consume-existing"
-    if mode not in {"build", "consume-existing"} or profile not in {"pair", "full"}:
+        expected_state = expected_positive | expected_negative
+        expected_plain = FULL_PLAIN_TESTS
+    elif mode == "consume-existing":
+        try:
+            selected_plan = consume_existing_test_plan(fixture_sha, sdk_sha, profile)
+        except ValueError as error:
+            issues.append(str(error))
+            selected_plan = {"state": frozenset(), "plain": frozenset()}
+        expected_state = selected_plan["state"]
+        expected_plain = selected_plan["plain"]
+    else:
         issues.append("consumer result has an unsupported mode/profile")
-    if pair:
-        expected_state = {"fresh", "bad_checksum"}
+        expected_state = frozenset()
+        expected_plain = frozenset()
+    if profile not in {"pair", "full"}:
+        issues.append("consumer result has an unsupported mode/profile")
+    if mode == "consume-existing" and profile == "pair":
         if positive != ["fresh"] or negative != ["bad_checksum"]:
             issues.append("pair profile did not execute its exact positive and negative state cases")
-        expected_plain: set[str] = set()
-    else:
-        expected_state = expected_positive | expected_negative
+    elif mode in {"build", "consume-existing"} and profile == "full":
         if len(positive) != 16 or set(positive) != expected_positive:
             issues.append("JUnit does not contain the exact 16 positive state-history cases")
         if len(negative) != 8 or set(negative) != expected_negative:
             issues.append("JUnit does not contain the exact 8 negative state-history cases")
-        expected_plain = {
-            "test_exact_single_artifact_and_native_layout",
-            "test_wrong_source_manifest_is_rejected_before_unpack",
-            "test_wrong_target_and_missing_helper_are_rejected",
-            "test_banner_native_client_and_same_source_proxy_execution",
-            "test_persistent_code_mode_and_reopen_from_real_package",
-            "test_missing_host_cannot_qualify_code_mode",
-            "test_model_receives_and_executes_root_only_agent_list",
-            "test_model_spawn_hidden_metadata_has_no_private_fields",
-            "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
-            "test_actual_tui_agents_entry_has_initial_empty_search",
-            "test_actual_tui_nested_filter_clear_live_rename_and_replay",
-            "test_real_response_usage_joins_standard_rate_scenario_after_resume",
-        }
     plain_names = {
         case.attrib.get("name", "") for case in cases
         if not case.attrib.get("name", "").startswith((positive_prefix, negative_prefix))
