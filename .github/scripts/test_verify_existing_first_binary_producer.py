@@ -24,8 +24,10 @@ from verify_existing_first_binary_producer import (
     Q2_FIXTURE_SHA,
     Q3_ADDITIONAL_PLAIN_TESTS,
     Q3_FIXTURE_SHA,
+    Q4_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
+    S2_SDK_SHA,
     SDK_TEST_PLAN_BY_SHA,
     PRODUCER_JOB_CONTRACT,
     REPOSITORY,
@@ -443,7 +445,7 @@ class VerifyExistingProducerTests(unittest.TestCase):
 
 
 class AcceptedInputManifestTests(unittest.TestCase):
-    def test_frozen_manifest_keeps_q2_rows_and_adds_exact_q3_s1_full_row(self) -> None:
+    def test_frozen_manifest_keeps_prior_rows_and_adds_exact_q4_s2_pair_and_full_rows(self) -> None:
         manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
         rows = manifest["records"]
         old_diagnostic = next(row for row in rows if row["record_id"] == "diagnostic-producer-36800811941")
@@ -514,6 +516,36 @@ class AcceptedInputManifestTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 select_accepted_record(manifest, changed)
 
+        q4_rows = {
+            row["identity"]["profile"]: row
+            for row in rows
+            if row["producer"]["run_id"] == 36851180755
+            and row["identity"]["fixture_sha"] == Q4_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S2_SDK_SHA
+        }
+        self.assertEqual({"pair", "full"}, set(q4_rows))
+        for profile, record in q4_rows.items():
+            with self.subTest(q4_profile=profile):
+                self.assertEqual(f"accepted-producer-36851180755-{profile}-q4-s2", record["record_id"])
+                self.assertEqual("accepted", record["disposition"])
+                self.assertTrue(record["w14780_eligible"])
+                self.assertEqual("c3a5d1135480efc61b6c24b275ea3322e0cfa14d", record["identity"]["product_sha"])
+                self.assertEqual("4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7", record["identity"]["comparison_base_sha"])
+                self.assertEqual(q2_rows["full"]["producer"], record["producer"])
+                self.assertEqual(q2_rows["full"]["jobs"], record["jobs"])
+                self.assertEqual(q2_rows["full"]["artifacts"], record["artifacts"])
+                q4_inputs = {
+                    "product_sha": record["identity"]["product_sha"],
+                    "comparison_base_ref": record["identity"]["comparison_base_ref"],
+                    "comparison_base_sha": record["identity"]["comparison_base_sha"],
+                    "fixture_sha": Q4_FIXTURE_SHA,
+                    "sdk_sha": S2_SDK_SHA,
+                    "profile": profile,
+                    "producer_run_id": record["producer"]["run_id"],
+                    "producer_workflow_host_sha": record["producer"]["workflow_host_sha"],
+                }
+                self.assertEqual(record["record_id"], select_accepted_record(manifest, q4_inputs)["record_id"])
+
     def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
         q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
         self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
@@ -527,10 +559,19 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q3_full["plain"])
         self.assertEqual(17, len(q3_full["plain"]))
         self.assertEqual(5, len(Q3_ADDITIONAL_PLAIN_TESTS))
+        q4_pair = consume_existing_test_plan(Q4_FIXTURE_SHA, S2_SDK_SHA, "pair")
+        self.assertEqual(frozenset({"fresh", "bad_checksum"}), q4_pair["state"])
+        self.assertEqual(frozenset(), q4_pair["plain"])
+        q4_full = consume_existing_test_plan(Q4_FIXTURE_SHA, S2_SDK_SHA, "full")
+        self.assertEqual(24, len(q4_full["state"]))
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q4_full["plain"])
+        self.assertEqual(17, len(q4_full["plain"]))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
             (Q2_FIXTURE_SHA, S1_SDK_SHA, "full"),
+            (Q4_FIXTURE_SHA, S1_SDK_SHA, "full"),
+            (Q4_FIXTURE_SHA, S2_SDK_SHA, "unknown"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
@@ -543,6 +584,14 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(9, len(s1["selectors"]))
         self.assertEqual(s0["selectors"], s1["selectors"][:2])
         self.assertEqual(54, sum(s1["expected_test_cases"].values()))
+        s2 = sdk_test_plan(S2_SDK_SHA)
+        self.assertEqual(10, len(s2["selectors"]))
+        self.assertEqual(s1["selectors"], s2["selectors"][:9])
+        self.assertEqual(55, sum(s2["expected_test_cases"].values()))
+        self.assertEqual(
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_used_route_does_not_make_one_new_matching_route_ambiguous",
+            s2["selectors"][-1],
+        )
         self.assertEqual(
             [
                 "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default",
@@ -1107,6 +1156,51 @@ class ConsumerResultTests(unittest.TestCase):
             self.assertEqual([], result["issues"])
             self.assertEqual(41, result["executed_cases"])
             self.assertEqual(24, result["state_history_witnesses"])
+
+    def test_q4_s2_pair_and_full_results_accept_exact_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="pair", fixture_sha=Q4_FIXTURE_SHA, sdk_sha=S2_SDK_SHA
+            )
+            pair = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="pair",
+                fixture_sha=Q4_FIXTURE_SHA,
+                sdk_sha=S2_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], pair["issues"])
+            self.assertEqual(2, pair["executed_cases"])
+            self.assertEqual(2, pair["state_history_witnesses"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="full", fixture_sha=Q4_FIXTURE_SHA, sdk_sha=S2_SDK_SHA
+            )
+            full = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="full",
+                fixture_sha=Q4_FIXTURE_SHA,
+                sdk_sha=S2_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], full["issues"])
+            self.assertEqual(41, full["executed_cases"])
+            self.assertEqual(24, full["state_history_witnesses"])
 
     def test_q3_s1_full_result_rejects_missing_extra_skipped_and_wrong_generation(self) -> None:
         for mutation in ("missing", "extra", "skipped", "wrong_generation"):

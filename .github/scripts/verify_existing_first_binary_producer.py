@@ -60,8 +60,10 @@ PRODUCER_JOB_NAMES = {
 }
 Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
+Q4_FIXTURE_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
 S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
 S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
+S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
 EXPECTED_STATE_POSITIVE = frozenset(
     {
         "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
@@ -109,6 +111,10 @@ CONSUME_EXISTING_TEST_PLANS = {
         "profiles": frozenset({"full"}),
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
+    (Q4_FIXTURE_SHA, S2_SDK_SHA): {
+        "profiles": frozenset({"pair", "full"}),
+        "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
+    },
 }
 SDK_TEST_PLAN_BY_SHA = {
     S0_SDK_SHA: {
@@ -143,6 +149,32 @@ SDK_TEST_PLAN_BY_SHA = {
             "test_one_shot_route_cannot_be_reused": 1,
             "test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
             "test_server_teardown_releases_a_gated_request": 1,
+        },
+    },
+    S2_SDK_SHA: {
+        "selectors": (
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version",
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_request_routes_match_exact_requests_and_wait_outside_selector_lock",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_bad_request_route_sets_fail_and_are_reported_on_teardown",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_unused_one_shot_routes_fail_at_teardown",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request",
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_used_route_does_not_make_one_new_matching_route_ambiguous",
+        ),
+        "expected_test_cases": {
+            "test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "test_new_options_reject_unsupported_runtime_before_sending": 45,
+            "test_fifo_response_selection_remains_the_default": 1,
+            "test_request_routes_match_exact_requests_and_wait_outside_selector_lock": 1,
+            "test_bad_request_route_sets_fail_and_are_reported_on_teardown": 2,
+            "test_unused_one_shot_routes_fail_at_teardown": 1,
+            "test_one_shot_route_cannot_be_reused": 1,
+            "test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
+            "test_server_teardown_releases_a_gated_request": 1,
+            "test_used_route_does_not_make_one_new_matching_route_ambiguous": 1,
         },
     },
 }
