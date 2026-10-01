@@ -292,16 +292,19 @@ class MockResponsesServer:
             if self._response_mode != "request-matched":
                 return self._responses.get_nowait()
             matches = [route for route in self._request_routes if route.predicate(request)]
-            if len(matches) != 1:
-                message = (
-                    "unmatched Responses request" if not matches
-                    else f"ambiguous Responses request matched {len(matches)} routes"
-                )
+            unused_matches = [route for route in matches if not route.used]
+            if len(unused_matches) == 1:
+                route = unused_matches[0]
+            elif unused_matches:
+                message = f"ambiguous Responses request matched {len(unused_matches)} routes"
                 self._routing_errors.append(message)
                 raise AssertionError(message)
-            route = matches[0]
-            if route.used:
+            elif matches:
                 message = "one-shot Responses route was matched more than once"
+                self._routing_errors.append(message)
+                raise AssertionError(message)
+            else:
+                message = "unmatched Responses request"
                 self._routing_errors.append(message)
                 raise AssertionError(message)
             route.used = True

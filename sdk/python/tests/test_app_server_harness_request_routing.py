@@ -127,6 +127,25 @@ def test_one_shot_route_cannot_be_reused() -> None:
             )
 
 
+def test_used_route_does_not_make_one_new_matching_route_ambiguous() -> None:
+    first = b"event: response.completed\ndata: {\"response\":{\"id\":\"first\"}}\n\n"
+    second = b"event: response.completed\ndata: {\"response\":{\"id\":\"second\"}}\n\n"
+
+    with MockResponsesServer() as server:
+        server.enqueue_sse_for_request(
+            lambda request: request.body_json().get("marker") in {"first", "second"},
+            first.decode(),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: request.body_json().get("marker") == "second",
+            second.decode(),
+        )
+
+        assert _post(server, "first") == first
+        assert _post(server, "second") == second
+        assert server.routing_errors() == []
+
+
 def test_fifo_and_request_matched_modes_cannot_be_mixed() -> None:
     with MockResponsesServer() as server:
         server.enqueue_sse("event: response.completed\ndata: {}\n\n")
