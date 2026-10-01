@@ -25,9 +25,11 @@ jobs:
           - architecture: x86_64
             runner: ubuntu-24.04
             expected_machine: x86_64
+            just_architecture: x86_64
           - architecture: aarch64
             runner: ubuntu-24.04-arm
             expected_machine: aarch64
+            just_architecture: aarch64
     steps:
       - name: Checkout exact validation source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,11 +59,19 @@ jobs:
 
       - name: Install pinned just command for legacy recipe regression
         shell: bash
+        env:
+          JUST_ARCHITECTURE: ${{ matrix.just_architecture }}
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends just=1.21.0-1
-          just --version | grep -Fx 'just 1.21.0'
+          just_version=1.38.0
+          archive="just-${just_version}-${JUST_ARCHITECTURE}-unknown-linux-musl.tar.gz"
+          base_url="https://github.com/casey/just/releases/download/${just_version}"
+          curl --fail --silent --show-error --location "$base_url/$archive" --output "$RUNNER_TEMP/$archive"
+          curl --fail --silent --show-error --location "$base_url/SHA256SUMS" --output "$RUNNER_TEMP/SHA256SUMS"
+          grep -F "  $archive" "$RUNNER_TEMP/SHA256SUMS" | (cd "$RUNNER_TEMP" && sha256sum --check --status)
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" just
+          sudo install -m 0755 "$RUNNER_TEMP/just" /usr/local/bin/just
+          just --version | grep -Fx "just $just_version"
 
       - name: Run pinned undefined-name check
         shell: bash
