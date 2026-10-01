@@ -116,14 +116,8 @@ jobs:
           }
           case "${MODE}" in
             consume-existing)
-              [[ "${TARGET_SHA}" == "d0ea2de6eae3ab59d3c76787cad4d79975b71bfe" ]] || {
-                echo "consume-existing requires the admitted product source" >&2; exit 1;
-              }
-              [[ "${BASE_REF}" == "main" && "${BASE_SHA}" == "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7" ]] || {
-                echo "consume-existing requires the admitted comparison base" >&2; exit 1;
-              }
-              [[ "${PRODUCER_RUN_ID}" == "36800811941" && "${PRODUCER_WORKFLOW_HOST_SHA}" == "954251aea3d0602c72679c81aac35d88f4b350fe" ]] || {
-                echo "consume-existing producer identity is outside the admitted run" >&2; exit 1;
+              [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ && "${PRODUCER_WORKFLOW_HOST_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "consume-existing producer identity is malformed" >&2; exit 1;
               }
               [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${FIXTURE_SHA}" != "${TARGET_SHA}" ]] || {
                 echo "consume-existing requires a distinct full fixture source SHA" >&2; exit 1;
@@ -132,6 +126,14 @@ jobs:
                 echo "consume-existing requires a distinct full SDK source SHA" >&2; exit 1;
               }
               case "${CONSUMER_PROFILE}" in pair|full) ;; *) echo "unsupported consumer profile" >&2; exit 1 ;; esac
+              trusted_ref="refs/heads/reconstruct/first-binary-package-workflow-20261001"
+              trusted_workflow_ref="sednalabs/codex/.github/workflows/sedna-branch-build.yml@${trusted_ref}"
+              [[ "${GITHUB_REF}" == "${trusted_ref}" && "${GITHUB_REF_NAME}" == "reconstruct/first-binary-package-workflow-20261001" ]] || {
+                echo "consume-existing is restricted to the trusted workflow-host branch" >&2; exit 1;
+              }
+              [[ "${GITHUB_SHA}" == "${EXPECTED_H}" && "${GITHUB_WORKFLOW_REF}" == "${trusted_workflow_ref}" ]] || {
+                echo "consume-existing workflow host differs from the trusted dispatch ref" >&2; exit 1;
+              }
               ;;
             build|prepare-only)
               [[ -z "${PRODUCER_RUN_ID}${PRODUCER_WORKFLOW_HOST_SHA}${FIXTURE_SHA}${SDK_SHA}" ]] || {
@@ -146,6 +148,9 @@ jobs:
           if [[ "${actual_h}" != "${EXPECTED_H}" ]]; then
             echo "workflow host checkout does not match H" >&2
             exit 1
+          fi
+          if [[ "${MODE}" == "consume-existing" ]]; then
+            python3 .github/scripts/verify_existing_first_binary_producer.py --validate-accepted-inputs
           fi
       - name: Test the runner graph regression fixtures
         working-directory: .workflow-src
@@ -1329,8 +1334,8 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
-      - name: Temporarily enable Linux user namespaces for the existing-package pair
-        if: inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+      - name: Temporarily enable Linux user namespaces for existing-package consumers
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1353,11 +1358,11 @@ jobs:
           effective_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
           effective_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
           if [[ -n "$current_userns" && "$effective_userns" != "1" ]]; then
-            echo "could not enable Linux user namespaces for the consumer pair" >&2
+            echo "could not enable Linux user namespaces for the consumer" >&2
             exit 1
           fi
           if [[ -n "$current_apparmor" && "$effective_apparmor" != "0" ]]; then
-            echo "could not enable AppArmor-compatible user namespaces for the consumer pair" >&2
+            echo "could not enable AppArmor-compatible user namespaces for the consumer" >&2
             exit 1
           fi
       - name: Run existing-package consumers with explicit producer provenance
@@ -1431,8 +1436,9 @@ jobs:
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
+
       - name: Restore original Linux user-namespace settings
-        if: always() && inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1458,6 +1464,223 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  sdk-parser:
+    name: Verify exact SDK runtime-version parser selectors
+    if: ${{ inputs.mode == 'consume-existing' }}
+    needs:
+      - runner_policy
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - name: Initialize SDK parser evidence paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'SDK_ROOT=%s/sdk-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          printf 'SDK_PARSER_JUNIT=%s/first-binary-sdk-parser-results.xml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'SDK_PARSER_IDENTITY=%s/first-binary-sdk-parser-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'SDK_PARSER_STATUS=%s/first-binary-sdk-parser-status.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Check out workflow host (Hc)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
+      - name: Check out exact Python SDK source (S0)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sdk_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: sdk-source
+      - name: Verify workflow host, SDK source, and native runner
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          PRODUCT_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "SDK parser proof requires the native ubuntu-24.04 runner" >&2
+            exit 1
+          }
+          [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]] || exit 1
+          [[ "$GITHUB_REF" == "refs/heads/reconstruct/first-binary-package-workflow-20261001" ]] || exit 1
+          [[ "$GITHUB_REF_NAME" == "reconstruct/first-binary-package-workflow-20261001" ]] || exit 1
+          [[ "$GITHUB_WORKFLOW_REF" == "sednalabs/codex/.github/workflows/sedna-branch-build.yml@refs/heads/reconstruct/first-binary-package-workflow-20261001" ]] || exit 1
+          [[ "$GITHUB_SHA" == "$EXPECTED_H" ]] || {
+            echo "SDK parser workflow-host SHA differs from GITHUB_SHA" >&2
+            exit 1
+          }
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          [[ "$actual_h" == "$EXPECTED_H" ]] || {
+            echo "SDK parser checkout does not match workflow-host Hc" >&2
+            exit 1
+          }
+          [[ "$(git -C "$SDK_ROOT" rev-parse HEAD)" == "$SDK_SHA" ]] || {
+            echo "SDK parser checkout does not match S0" >&2
+            exit 1
+          }
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          record = {
+              "schema_version": "sedna-first-binary-sdk-parser-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow_path": ".github/workflows/sedna-branch-build.yml",
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "workflow_host_sha": os.environ["EXPECTED_H"],
+              "consumer_run_id": os.environ["GITHUB_RUN_ID"],
+              "consumer_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "ref": os.environ["GITHUB_REF"],
+              "product_sha": os.environ["PRODUCT_SHA"],
+              "comparison_base_ref": os.environ["BASE_REF"],
+              "comparison_base_sha": os.environ["BASE_SHA"],
+              "fixture_sha": os.environ["FIXTURE_SHA"],
+              "sdk_sha": os.environ["SDK_SHA"],
+              "producer_run_id": os.environ["PRODUCER_RUN_ID"],
+              "producer_workflow_host_sha": os.environ["PRODUCER_WORKFLOW_HOST_SHA"],
+              "consumer_profile": os.environ["CONSUMER_PROFILE"],
+              "runner_label": "ubuntu-24.04",
+              "selectors": [
+                  "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version",
+                  "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending",
+              ],
+              "expected_test_cases": {
+                  "test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+                  "test_new_options_reject_unsupported_runtime_before_sending": 45,
+              },
+          }
+          Path(os.environ["SDK_PARSER_IDENTITY"]).write_text(
+              json.dumps(record, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Install the pinned SDK test toolchain
+        id: sdk_setup_uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          python-version: "3.12.14"
+          enable-cache: false
+      - name: Verify pinned SDK test toolchain
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+          UV_VERSION: ${{ steps.sdk_setup_uv.outputs.uv-version }}
+          UV_PATH: ${{ steps.sdk_setup_uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          [[ "$UV_VERSION" == "0.12.17" ]] || {
+            echo "setup-uv did not resolve the pinned 0.12.17 release" >&2
+            exit 1
+          }
+          [[ -x "$UV_PATH" ]] || {
+            echo "setup-uv did not expose an executable uv path" >&2
+            exit 1
+          }
+          uv_report="$("$UV_PATH" --version)"
+          uv_version_pattern="^uv 0[.]12[.]17 \\(([0-9a-f]{9,40} [0-9]{4}-[0-9]{2}-[0-9]{2} )?x86_64-unknown-linux-gnu\\)$"
+          [[ "$uv_report" =~ $uv_version_pattern ]] || {
+            echo "SDK parser uv executable is not the pinned native release" >&2
+            exit 1
+          }
+          "$UV_PATH" python install 3.12.14
+          selected_python="$("$UV_PATH" run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
+          [[ "$selected_python" == "3.12.14" ]] || {
+            echo "SDK parser job did not select Python 3.12.14" >&2
+            exit 1
+          }
+      - name: Run the exact SDK runtime-version parser selectors
+        id: sdk_pytest
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+          UV_PATH: ${{ steps.sdk_setup_uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          set +e
+          "$UV_PATH" run --locked \
+            --project "$SDK_ROOT/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            python -m pytest -q \
+              "$SDK_ROOT/sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version" \
+              "$SDK_ROOT/sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending" \
+              --junitxml "$SDK_PARSER_JUNIT"
+          pytest_status=$?
+          set -e
+          SDK_PYTEST_EXIT_CODE="$pytest_status" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = {
+              "schema_version": "sedna-first-binary-sdk-parser-status-v1",
+              "pytest_exit_code": int(os.environ["SDK_PYTEST_EXIT_CODE"]),
+              "junit_path": os.environ["SDK_PARSER_JUNIT"],
+          }
+          Path(os.environ["SDK_PARSER_STATUS"]).write_text(
+              json.dumps(result, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit "$pytest_status"
+      - name: Verify exact SDK case inventory and zero skips
+        if: ${{ always() && inputs.mode == 'consume-existing' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from collections import Counter
+          from pathlib import Path
+
+          path = Path(os.environ["SDK_PARSER_JUNIT"])
+          if not path.is_file():
+              raise SystemExit("SDK parser JUnit output is missing")
+          root = ET.parse(path).getroot()
+          cases = list(root.iter("testcase"))
+          observed = Counter(case.attrib.get("name", "").split("[", 1)[0] for case in cases)
+          expected = Counter({
+              "test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+              "test_new_options_reject_unsupported_runtime_before_sending": 45,
+          })
+          skipped = sum(1 for case in cases if case.find("skipped") is not None)
+          failed = sum(1 for case in cases if case.find("failure") is not None)
+          errored = sum(1 for case in cases if case.find("error") is not None)
+          print(f"SDK parser cases={len(cases)} expected={sum(expected.values())} skipped={skipped} failures={failed} errors={errored}")
+          if observed != expected or skipped != 0 or failed != 0 or errored != 0:
+              print(f"SDK parser inventory mismatch: observed={dict(observed)}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+      - name: Upload exact SDK parser status and JUnit
+        if: ${{ always() && inputs.mode == 'consume-existing' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-sdk-parser-${{ inputs.sdk_sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/first-binary-sdk-parser-identity.json
+            ${{ runner.temp }}/first-binary-sdk-parser-status.json
+            ${{ runner.temp }}/first-binary-sdk-parser-results.xml
+          if-no-files-found: warn
+          retention-days: 7
   consume-linux-aarch64:
     name: Consume native Linux ARM64 package
     if: ${{ always() && needs.runner_policy.result == 'success' && (inputs.mode == 'consume-existing' || needs.build-linux-aarch64.result == 'success') }}
@@ -1968,8 +2191,8 @@ jobs:
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
-      - name: Temporarily enable Linux user namespaces for the existing-package pair
-        if: inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+      - name: Temporarily enable Linux user namespaces for existing-package consumers
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1992,11 +2215,11 @@ jobs:
           effective_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
           effective_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
           if [[ -n "$current_userns" && "$effective_userns" != "1" ]]; then
-            echo "could not enable Linux user namespaces for the consumer pair" >&2
+            echo "could not enable Linux user namespaces for the consumer" >&2
             exit 1
           fi
           if [[ -n "$current_apparmor" && "$effective_apparmor" != "0" ]]; then
-            echo "could not enable AppArmor-compatible user namespaces for the consumer pair" >&2
+            echo "could not enable AppArmor-compatible user namespaces for the consumer" >&2
             exit 1
           fi
       - name: Run existing-package consumers with explicit producer provenance
@@ -2058,7 +2281,7 @@ jobs:
             python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
               --verify-consumer-results
       - name: Restore original Linux user-namespace settings
-        if: always() && inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail

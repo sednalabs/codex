@@ -12,9 +12,11 @@ from pathlib import Path
 from unittest import mock
 
 from verify_existing_first_binary_producer import (
+    ACCEPTED_INPUTS_PATH,
     ARCHES,
     CROSS_RUN_ARTIFACTS,
     CROSS_RUN_PRODUCER,
+    DIAGNOSTIC_RECORD,
     PRODUCER_JOB_CONTRACT,
     REPOSITORY,
     REPOSITORY_ID,
@@ -27,6 +29,10 @@ from verify_existing_first_binary_producer import (
     verify_current_consumer,
     verify_existing_producer,
     reconcile_consumer_results,
+    select_accepted_record,
+    _json_object_without_duplicate_keys,
+    _verify_trusted_consumer_ref,
+    validate_runner_policy_inputs,
 )
 
 
@@ -43,28 +49,88 @@ def hosted_job(name: str, conclusion: str, runner: str, *, status: str = "comple
     }
 
 
+def accepted_fixture_record() -> dict[str, object]:
+    record = copy.deepcopy(DIAGNOSTIC_RECORD)
+    record["record_id"] = "test-accepted-producer-control"
+    record["disposition"] = "accepted"
+    record["w14780_eligible"] = True
+    identity = record["identity"]
+    identity["product_sha"] = "6" * 40
+    producer = record["producer"]
+    producer["run_id"] = 36851180755
+    producer["workflow_host_sha"] = "5" * 40
+    record["artifacts"] = {
+        "x86_64": {
+            "id": 9001,
+            "name": f"sedna-first-binary-{identity['product_sha']}-x86_64-{producer['run_id']}",
+            "digest": "sha256:" + "a" * 64,
+            "size_in_bytes": 1024,
+        },
+        "aarch64": {
+            "id": 9002,
+            "name": f"sedna-first-binary-{identity['product_sha']}-aarch64-{producer['run_id']}",
+            "digest": "sha256:" + "b" * 64,
+            "size_in_bytes": 2048,
+        },
+    }
+    return record
+
+
+def accepted_fixture_inputs() -> dict[str, object]:
+    identity = accepted_fixture_record()["identity"]
+    producer = accepted_fixture_record()["producer"]
+    return {
+        "product_sha": identity["product_sha"],
+        "comparison_base_ref": identity["comparison_base_ref"],
+        "comparison_base_sha": identity["comparison_base_sha"],
+        "fixture_sha": identity["fixture_sha"],
+        "sdk_sha": identity["sdk_sha"],
+        "profile": identity["profile"],
+        "producer_run_id": producer["run_id"],
+        "producer_workflow_host_sha": producer["workflow_host_sha"],
+    }
+
+
+def accepted_producer_args() -> dict[str, object]:
+    inputs = accepted_fixture_inputs()
+    return {
+        "producer_run_id": inputs["producer_run_id"],
+        "producer_workflow_host_sha": inputs["producer_workflow_host_sha"],
+        "product_sha": inputs["product_sha"],
+        "base_ref": inputs["comparison_base_ref"],
+        "base_sha": inputs["comparison_base_sha"],
+    }
+
+
 def producer_fixtures() -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    record = accepted_fixture_record()
+    producer = record["producer"]
     run = {
-        "id": CROSS_RUN_PRODUCER["run_id"],
+        "id": producer["run_id"],
         "workflow_id": WORKFLOW_ID,
-        "run_attempt": CROSS_RUN_PRODUCER["run_attempt"],
-        "event": CROSS_RUN_PRODUCER["event"],
-        "head_sha": CROSS_RUN_PRODUCER["workflow_host_sha"],
-        "head_branch": CROSS_RUN_PRODUCER["branch"],
-        "status": "completed",
-        "conclusion": "failure",
+        "run_attempt": producer["run_attempt"],
+        "event": producer["event"],
+        "head_sha": producer["workflow_host_sha"],
+        "head_branch": producer["branch"],
+        "status": producer["status"],
+        "conclusion": producer["conclusion"],
         "repository": {"id": REPOSITORY_ID, "full_name": REPOSITORY},
         "head_repository": {"id": REPOSITORY_ID, "full_name": REPOSITORY},
     }
     workflow = {"id": WORKFLOW_ID, "path": WORKFLOW_PATH, "state": "active"}
     jobs = {
-        "total_count": len(PRODUCER_JOB_CONTRACT),
+        "total_count": len(record["jobs"]),
         "jobs": [],
     }
-    for name, (conclusion, runner, ran) in PRODUCER_JOB_CONTRACT.items():
-        jobs["jobs"].append(hosted_job(name, conclusion, runner, ran=ran))
-    artifacts = {"total_count": len(CROSS_RUN_ARTIFACTS), "artifacts": []}
-    for arch, expected in CROSS_RUN_ARTIFACTS.items():
+    for expected in record["jobs"]:
+        jobs["jobs"].append(
+            hosted_job(
+                expected["name"], expected["conclusion"], expected["runner"],
+                status=expected["status"], ran=expected["ran"],
+            )
+        )
+    artifacts = {"total_count": len(record["artifacts"]), "artifacts": []}
+    for expected in record["artifacts"].values():
         artifacts["artifacts"].append(
             {
                 "id": expected["id"],
@@ -73,9 +139,9 @@ def producer_fixtures() -> tuple[dict[str, object], dict[str, object], dict[str,
                 "size_in_bytes": expected["size_in_bytes"],
                 "expired": False,
                 "workflow_run": {
-                    "id": CROSS_RUN_PRODUCER["run_id"],
-                    "head_sha": CROSS_RUN_PRODUCER["workflow_host_sha"],
-                    "head_branch": CROSS_RUN_PRODUCER["branch"],
+                    "id": producer["run_id"],
+                    "head_sha": producer["workflow_host_sha"],
+                    "head_branch": producer["branch"],
                     "repository_id": REPOSITORY_ID,
                     "head_repository_id": REPOSITORY_ID,
                 },
@@ -90,16 +156,20 @@ def verify_fixture(
     jobs: dict[str, object],
     artifacts: dict[str, object],
 ) -> dict[str, object]:
+    record = accepted_fixture_record()
+    identity = record["identity"]
+    producer = record["producer"]
     return verify_existing_producer(
         run,
         workflow,
         jobs,
         artifacts,
-        producer_run_id=CROSS_RUN_PRODUCER["run_id"],
-        producer_workflow_host_sha=CROSS_RUN_PRODUCER["workflow_host_sha"],
-        product_sha=CROSS_RUN_PRODUCER["product_sha"],
-        base_ref=CROSS_RUN_PRODUCER["comparison_base_ref"],
-        base_sha=CROSS_RUN_PRODUCER["comparison_base_sha"],
+        producer_run_id=producer["run_id"],
+        producer_workflow_host_sha=producer["workflow_host_sha"],
+        product_sha=identity["product_sha"],
+        base_ref=identity["comparison_base_ref"],
+        base_sha=identity["comparison_base_sha"],
+        accepted_record=record,
     )
 
 
@@ -160,27 +230,22 @@ class VerifyExistingProducerTests(unittest.TestCase):
     def test_exact_native_pair_is_accepted(self) -> None:
         selected = verify_fixture(self.run, self.workflow, self.jobs, self.artifacts)
         self.assertEqual(set(selected), {"x86_64", "aarch64"})
-        self.assertEqual(selected["x86_64"]["id"], 11137590827)
-        self.assertEqual(selected["aarch64"]["id"], 11135444900)
+        self.assertEqual(selected["x86_64"]["id"], 9001)
+        self.assertEqual(selected["aarch64"]["id"], 9002)
 
     def test_wrong_run_host_or_product_identity_is_rejected(self) -> None:
         for kwargs in (
-            {"producer_run_id": 36800811942},
+            {"producer_run_id": accepted_fixture_inputs()["producer_run_id"] + 1},
             {"producer_workflow_host_sha": "1111111111111111111111111111111111111111"},
             {"product_sha": "2222222222222222222222222222222222222222"},
             {"base_sha": "3333333333333333333333333333333333333333"},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
-                expected = dict(
-                    producer_run_id=CROSS_RUN_PRODUCER["run_id"],
-                    producer_workflow_host_sha=CROSS_RUN_PRODUCER["workflow_host_sha"],
-                    product_sha=CROSS_RUN_PRODUCER["product_sha"],
-                    base_ref=CROSS_RUN_PRODUCER["comparison_base_ref"],
-                    base_sha=CROSS_RUN_PRODUCER["comparison_base_sha"],
-                )
+                expected = accepted_producer_args()
                 expected.update(kwargs)
                 verify_existing_producer(
-                    self.run, self.workflow, self.jobs, self.artifacts, **expected
+                    self.run, self.workflow, self.jobs, self.artifacts,
+                    accepted_record=accepted_fixture_record(), **expected
                 )
 
     def test_workflow_host_identity_and_run_event_are_exact(self) -> None:
@@ -273,7 +338,8 @@ class VerifyExistingProducerTests(unittest.TestCase):
 
         changed = copy.deepcopy(self.artifacts)
         extra = copy.deepcopy(changed["artifacts"][0])
-        extra["name"] = f"sedna-first-binary-{CROSS_RUN_PRODUCER['product_sha']}-unknown-36800811941"
+        test_inputs = accepted_fixture_inputs()
+        extra["name"] = f"sedna-first-binary-{test_inputs['product_sha']}-unknown-{test_inputs['producer_run_id']}"
         extra["id"] += 2
         changed["artifacts"].append(extra)
         changed["total_count"] += 1
@@ -298,6 +364,184 @@ class VerifyExistingProducerTests(unittest.TestCase):
         self.assertIsNone(RUN_ID.fullmatch("036800811941"))
 
 
+class AcceptedInputManifestTests(unittest.TestCase):
+    def test_frozen_manifest_keeps_pair_and_full_qualification_rows_separate(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = manifest["records"]
+        old_diagnostic = next(row for row in rows if row["record_id"] == "diagnostic-producer-36800811941")
+        self.assertEqual("diagnostic", old_diagnostic["disposition"])
+        self.assertFalse(old_diagnostic["w14780_eligible"])
+
+        accepted = {
+            row["identity"]["profile"]: row
+            for row in rows
+            if row["producer"]["run_id"] == 36851180755 and row["disposition"] == "accepted"
+        }
+        self.assertEqual({"pair", "full"}, set(accepted))
+        for profile, record in accepted.items():
+            with self.subTest(profile=profile):
+                self.assertTrue(record["w14780_eligible"])
+                self.assertEqual("accepted", record["disposition"])
+                identity = record["identity"]
+                producer = record["producer"]
+                selected = select_accepted_record(
+                    manifest,
+                    {
+                        "product_sha": identity["product_sha"],
+                        "comparison_base_ref": identity["comparison_base_ref"],
+                        "comparison_base_sha": identity["comparison_base_sha"],
+                        "fixture_sha": identity["fixture_sha"],
+                        "sdk_sha": identity["sdk_sha"],
+                        "profile": profile,
+                        "producer_run_id": producer["run_id"],
+                        "producer_workflow_host_sha": producer["workflow_host_sha"],
+                    },
+                )
+                self.assertEqual(record["record_id"], selected["record_id"])
+
+    def test_workflow_restores_userns_for_both_profiles_and_runs_exact_sdk_inventory(self) -> None:
+        workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        self.assertEqual(2, workflow.count("Temporarily enable Linux user namespaces for existing-package consumers"))
+        self.assertEqual(2, workflow.count("Restore original Linux user-namespace settings"))
+        consumer_jobs = (
+            (
+                "consume-linux-x86_64",
+                "ubuntu-24.04",
+                workflow.split("  consume-linux-x86_64:", 1)[1].split("\n  sdk-parser:", 1)[0],
+            ),
+            (
+                "consume-linux-aarch64",
+                "ubuntu-24.04-arm",
+                workflow.split("  consume-linux-aarch64:", 1)[1],
+            ),
+        )
+        for job_name, expected_runner, job in consumer_jobs:
+            with self.subTest(job=job_name):
+                self.assertIn(f"runs-on: {expected_runner}", job)
+                self.assertIn("inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full'", job)
+                self.assertIn("runner.environment == 'github-hosted'", job)
+                self.assertIn("Restore original Linux user-namespace settings", job)
+
+        sdk_job = workflow.split("  sdk-parser:", 1)[1].split("\n  consume-linux-aarch64:", 1)[0]
+        self.assertIn("runs-on: ubuntu-24.04", sdk_job)
+        self.assertIn("version: \"0.12.17\"", sdk_job)
+        self.assertIn("python-version: \"3.12.14\"", sdk_job)
+        self.assertIn("test_thread_fork_accepts_cargo_sedna_dev_runtime_version", sdk_job)
+        self.assertIn("test_new_options_reject_unsupported_runtime_before_sending", sdk_job)
+        self.assertIn('"expected_test_cases": {', sdk_job)
+        self.assertIn('"test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1', sdk_job)
+        self.assertIn('"test_new_options_reject_unsupported_runtime_before_sending": 45', sdk_job)
+        self.assertIn("skipped != 0 or failed != 0 or errored != 0", sdk_job)
+        self.assertIn("first-binary-sdk-parser-results.xml", sdk_job)
+
+    def test_duplicate_manifest_keys_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            _json_object_without_duplicate_keys([("w14780_eligible", False), ("w14780_eligible", True)])
+
+    def test_exact_good_tuple_selects_eligible_record(self) -> None:
+        record = accepted_fixture_record()
+        selected = select_accepted_record(
+            {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [record]},
+            accepted_fixture_inputs(),
+        )
+        self.assertEqual(selected["record_id"], record["record_id"])
+
+    def test_diagnostic_record_is_never_eligible(self) -> None:
+        with self.assertRaisesRegex(ValueError, "diagnostic"):
+            select_accepted_record(
+                {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [copy.deepcopy(DIAGNOSTIC_RECORD)]},
+                accepted_fixture_inputs(),
+            )
+        promoted = copy.deepcopy(DIAGNOSTIC_RECORD)
+        promoted["disposition"] = "accepted"
+        promoted["w14780_eligible"] = True
+        with self.assertRaisesRegex(ValueError, "permanently ineligible"):
+            select_accepted_record(
+                {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [promoted]},
+                accepted_fixture_inputs(),
+            )
+
+    def test_wrong_t_b_q_s_producer_or_profile_is_rejected(self) -> None:
+        record = accepted_fixture_record()
+        wrong_values = {
+            "product_sha": "1" * 40,
+            "comparison_base_ref": "release",
+            "comparison_base_sha": "2" * 40,
+            "fixture_sha": "3" * 40,
+            "sdk_sha": "4" * 40,
+            "profile": "full",
+            "producer_run_id": accepted_fixture_inputs()["producer_run_id"] + 1,
+            "producer_workflow_host_sha": "5" * 40,
+        }
+        for field, value in wrong_values.items():
+            inputs = accepted_fixture_inputs()
+            inputs[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                select_accepted_record(
+                    {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [record]},
+                    inputs,
+                )
+
+    def test_runner_policy_requires_trusted_host_and_exact_manifest_tuple(self) -> None:
+        record = accepted_fixture_record()
+        branch = "reconstruct/first-binary-package-workflow-20261001"
+        ref = f"refs/heads/{branch}"
+        host = "7" * 40
+        inputs = accepted_fixture_inputs()
+        env = {
+            "MODE": "consume-existing",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": ref,
+            "GITHUB_REF_NAME": branch,
+            "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{WORKFLOW_PATH}@{ref}",
+            "GITHUB_SHA": host,
+            "EXPECTED_H": host,
+            "TARGET_SHA": inputs["product_sha"],
+            "BASE_REF": inputs["comparison_base_ref"],
+            "BASE_SHA": inputs["comparison_base_sha"],
+            "FIXTURE_SHA": inputs["fixture_sha"],
+            "SDK_SHA": inputs["sdk_sha"],
+            "CONSUMER_PROFILE": inputs["profile"],
+            "PRODUCER_RUN_ID": str(inputs["producer_run_id"]),
+            "PRODUCER_WORKFLOW_HOST_SHA": inputs["producer_workflow_host_sha"],
+        }
+        manifest = {"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [record]}
+        with mock.patch("verify_existing_first_binary_producer.subprocess.check_output", return_value=host), mock.patch(
+            "verify_existing_first_binary_producer._read_manifest", return_value=manifest
+        ):
+            validate_runner_policy_inputs(env)
+        for key, value in (("FIXTURE_SHA", "3" * 40), ("SDK_SHA", "4" * 40), ("GITHUB_REF_NAME", "other")):
+            changed = dict(env)
+            changed[key] = value
+            with mock.patch("verify_existing_first_binary_producer.subprocess.check_output", return_value=host), mock.patch(
+                "verify_existing_first_binary_producer._read_manifest", return_value=manifest
+            ), self.subTest(key=key), self.assertRaises(ValueError):
+                validate_runner_policy_inputs(changed)
+
+    def test_manifest_cannot_promote_diagnostic_or_mutate_artifact_tuple(self) -> None:
+        mutations = (
+            ("id", 123456),
+            ("name", "wrong-artifact-name"),
+            ("digest", "sha256:" + "0" * 64),
+            ("size_in_bytes", 1),
+        )
+        for field, value in mutations:
+            record = accepted_fixture_record()
+            record["artifacts"]["x86_64"][field] = value
+            run, workflow, jobs, artifacts = producer_fixtures()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verify_existing_producer(
+                    run,
+                    workflow,
+                    jobs,
+                    artifacts,
+                    **accepted_producer_args(),
+                    accepted_record=record,
+                )
+
+
 class CurrentConsumerIdentityTests(unittest.TestCase):
     def test_exact_current_consumer_api_identity_is_accepted(self) -> None:
         run, workflow, jobs, env = current_consumer_fixtures()
@@ -316,6 +560,60 @@ class CurrentConsumerIdentityTests(unittest.TestCase):
         self.assertEqual(context["run_id"], int(env["GITHUB_RUN_ID"]))
         self.assertEqual(context["workflow_host_sha"], env["GITHUB_SHA"])
         self.assertEqual(context["workflow_ref"], env["GITHUB_WORKFLOW_REF"])
+
+    def test_consume_existing_requires_trusted_current_host_and_api_head(self) -> None:
+        run, workflow, jobs, env = current_consumer_fixtures()
+        branch = "reconstruct/first-binary-package-workflow-20261001"
+        ref = f"refs/heads/{branch}"
+        env["MODE"] = "consume-existing"
+        env["EXPECTED_H"] = env["GITHUB_SHA"]
+        env["GITHUB_REF"] = ref
+        env["GITHUB_REF_NAME"] = branch
+        env["GITHUB_WORKFLOW_REF"] = f"{REPOSITORY}/{WORKFLOW_PATH}@{ref}"
+        run["head_branch"] = branch
+        with mock.patch("verify_existing_first_binary_producer.platform.system", return_value="Linux"), mock.patch(
+            "verify_existing_first_binary_producer.platform.machine", return_value="x86_64"
+        ):
+            verify_current_consumer(
+                run,
+                workflow,
+                jobs,
+                env=env,
+                architecture="x86_64",
+                product_sha=CROSS_RUN_PRODUCER["product_sha"],
+                base_sha=CROSS_RUN_PRODUCER["comparison_base_sha"],
+            )
+        for key, value in (("GITHUB_REF", "refs/heads/other"), ("EXPECTED_H", "f" * 40)):
+            bad_env = dict(env)
+            bad_env[key] = value
+            with mock.patch("verify_existing_first_binary_producer.platform.system", return_value="Linux"), mock.patch(
+                "verify_existing_first_binary_producer.platform.machine", return_value="x86_64"
+            ), self.subTest(key=key), self.assertRaises(ValueError):
+                verify_current_consumer(
+                    run,
+                    workflow,
+                    jobs,
+                    env=bad_env,
+                    architecture="x86_64",
+                    product_sha=CROSS_RUN_PRODUCER["product_sha"],
+                    base_sha=CROSS_RUN_PRODUCER["comparison_base_sha"],
+                )
+
+    def test_workflow_host_checkout_must_equal_github_sha(self) -> None:
+        branch = "reconstruct/first-binary-package-workflow-20261001"
+        ref = f"refs/heads/{branch}"
+        host = "7" * 40
+        env = {
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": ref,
+            "GITHUB_REF_NAME": branch,
+            "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/{WORKFLOW_PATH}@{ref}",
+            "GITHUB_SHA": host,
+            "EXPECTED_H": host,
+        }
+        _verify_trusted_consumer_ref(env, checkout_sha=host)
+        with self.assertRaisesRegex(ValueError, "checked-out workflow source"):
+            _verify_trusted_consumer_ref(env, checkout_sha="8" * 40)
 
     def test_current_consumer_env_and_runner_must_match_api(self) -> None:
         for key, value in (

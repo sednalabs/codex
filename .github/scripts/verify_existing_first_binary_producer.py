@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify the one admitted first-binary producer run and current consumer identity.
+"""Verify admitted first-binary producer records and current consumer identity.
 
-This helper deliberately supports one preserved cross-run producer. The build
-mode path remains same-run and resolves only the just-built native artifact.
-All provider/API material is passed through typed environment fields; secrets
-are never printed or written to the evidence records.
+Cross-run consumption is selected only by an exact eligible row in the
+workflow-host manifest; diagnostic rows can never qualify. The build-mode path
+remains same-run and resolves only the just-built native artifact. API material
+is passed through typed environment fields; secrets are never printed or
+written to the evidence records.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import os
 import platform
 import re
+import subprocess
 import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -26,6 +28,9 @@ REPOSITORY = "sednalabs/codex"
 REPOSITORY_ID = 1152496647
 WORKFLOW_ID = 250252262
 WORKFLOW_PATH = ".github/workflows/sedna-branch-build.yml"
+ACCEPTED_INPUTS_PATH = Path(__file__).resolve().parents[1] / "first-binary-accepted-inputs.json"
+TRUSTED_CONSUMER_BRANCH = "reconstruct/first-binary-package-workflow-20261001"
+PERMANENTLY_DIAGNOSTIC_PRODUCER_RUN_IDS = frozenset({36800811941})
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[1-9][0-9]*\Z")
@@ -45,41 +50,13 @@ ARCHES = {
         "consumer_job": "Consume native Linux ARM64 package",
     },
 }
-CROSS_RUN_PRODUCER = {
-    "repository": REPOSITORY,
-    "repository_id": REPOSITORY_ID,
-    "workflow_id": WORKFLOW_ID,
-    "workflow_path": WORKFLOW_PATH,
-    "run_id": 36800811941,
-    "run_attempt": 1,
-    "event": "workflow_dispatch",
-    "workflow_host_sha": "954251aea3d0602c72679c81aac35d88f4b350fe",
-    "branch": "reconstruct/first-binary-package-workflow-20261001",
-    "product_sha": "d0ea2de6eae3ab59d3c76787cad4d79975b71bfe",
-    "comparison_base_ref": "main",
-    "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
-}
-CROSS_RUN_ARTIFACTS = {
-    "x86_64": {
-        "id": 11137590827,
-        "name": "sedna-first-binary-d0ea2de6eae3ab59d3c76787cad4d79975b71bfe-x86_64-36800811941",
-        "digest": "sha256:1092ce38c57acc32762fda825c2593d34d4cf81a8e7c4164737550273a0912a9",
-        "size_in_bytes": 279686623,
-    },
-    "aarch64": {
-        "id": 11135444900,
-        "name": "sedna-first-binary-d0ea2de6eae3ab59d3c76787cad4d79975b71bfe-aarch64-36800811941",
-        "digest": "sha256:eeeead930077314435ac0bdef6c09254118c0106b15b24f5e4126f2941ecbde7",
-        "size_in_bytes": 275553014,
-    },
-}
-PRODUCER_JOB_CONTRACT = {
-    "Verify standard runner graph and exact identities": ("success", "ubuntu-24.04", True),
-    "Package native Linux x86_64": ("success", "ubuntu-24.04", True),
-    "Package native Linux ARM64": ("success", "ubuntu-24.04-arm", True),
-    "Prepare exact Cargo lock and app-server schema diff": ("skipped", "ubuntu-24.04", False),
-    "Consume native Linux ARM64 package": ("failure", "ubuntu-24.04-arm", True),
-    "Consume native Linux x86_64 package": ("failure", "ubuntu-24.04", True),
+PRODUCER_JOB_NAMES = {
+    "Verify standard runner graph and exact identities",
+    "Package native Linux x86_64",
+    "Package native Linux ARM64",
+    "Prepare exact Cargo lock and app-server schema diff",
+    "Consume native Linux ARM64 package",
+    "Consume native Linux x86_64 package",
 }
 
 
@@ -119,6 +96,208 @@ def _complete_rows(payload: Mapping[str, Any], key: str, label: str) -> list[Map
     _require(isinstance(rows, list), f"{label} API response omitted its row list")
     _require(type(total) is int and total == len(rows), f"{label} API response is incomplete")
     return [_object(row, f"{label} API row is malformed") for row in rows]
+
+
+def _validate_manifest_record(value: object) -> Mapping[str, Any]:
+    record = _object(value, "accepted-input record is malformed")
+    required = {"record_id", "disposition", "w14780_eligible", "identity", "producer", "jobs", "artifacts"}
+    _require(set(record) == required, "accepted-input record has unexpected or missing fields")
+    _require(
+        isinstance(record.get("record_id"), str)
+        and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", record["record_id"]) is not None,
+        "accepted-input record ID is invalid",
+    )
+    disposition = record.get("disposition")
+    eligible = record.get("w14780_eligible")
+    _require(isinstance(disposition, str) and disposition in {"accepted", "diagnostic"}, "accepted-input disposition is invalid")
+    _require(type(eligible) is bool, "accepted-input eligibility flag is invalid")
+    _require((disposition == "accepted") == eligible, "diagnostic records cannot be acceptance eligible")
+
+    identity = _object(record.get("identity"), "accepted-input identity is malformed")
+    identity_fields = {"product_sha", "comparison_base_ref", "comparison_base_sha", "fixture_sha", "sdk_sha", "profile"}
+    _require(set(identity) == identity_fields, "accepted-input identity has unexpected or missing fields")
+    for field in ("product_sha", "comparison_base_sha", "fixture_sha", "sdk_sha"):
+        _require(isinstance(identity.get(field), str) and SHA.fullmatch(identity[field]) is not None, f"accepted-input {field} is invalid")
+    _require(identity.get("comparison_base_ref") == "main", "accepted-input comparison base ref is unsupported")
+    _require(isinstance(identity.get("profile"), str) and identity["profile"] in {"pair", "full"}, "accepted-input consumer profile is unsupported")
+
+    producer = _object(record.get("producer"), "accepted-input producer is malformed")
+    producer_fields = {
+        "repository", "repository_id", "workflow_id", "workflow_path", "run_id", "run_attempt", "event",
+        "workflow_host_sha", "branch", "status", "conclusion",
+    }
+    _require(set(producer) == producer_fields, "accepted-input producer has unexpected or missing fields")
+    _require(producer.get("repository") == REPOSITORY and producer.get("repository_id") == REPOSITORY_ID, "accepted-input producer repository is unsupported")
+    _require(producer.get("workflow_id") == WORKFLOW_ID and producer.get("workflow_path") == WORKFLOW_PATH, "accepted-input producer workflow is unsupported")
+    _require(_is_int(producer.get("run_id")) and _is_int(producer.get("run_attempt")), "accepted-input producer run identity is invalid")
+    if producer["run_id"] in PERMANENTLY_DIAGNOSTIC_PRODUCER_RUN_IDS:
+        _require(disposition == "diagnostic" and eligible is False, "the superseded diagnostic producer run is permanently ineligible")
+    _require(producer.get("event") == "workflow_dispatch", "accepted-input producer event is unsupported")
+    _require(isinstance(producer.get("workflow_host_sha"), str) and SHA.fullmatch(producer["workflow_host_sha"]) is not None, "accepted-input producer host SHA is invalid")
+    _require(producer.get("branch") == TRUSTED_CONSUMER_BRANCH, "accepted-input producer branch is unsupported")
+    _require(
+        producer.get("status") == "completed"
+        and isinstance(producer.get("conclusion"), str)
+        and producer["conclusion"] in {"success", "failure"},
+        "accepted-input producer terminal state is invalid",
+    )
+
+    jobs_value = record.get("jobs")
+    _require(isinstance(jobs_value, list) and len(jobs_value) == len(PRODUCER_JOB_NAMES), "accepted-input producer job contract is incomplete")
+    jobs: dict[str, Mapping[str, Any]] = {}
+    for job_value in jobs_value:
+        job = _object(job_value, "accepted-input producer job contract is malformed")
+        _require(set(job) == {"name", "status", "conclusion", "runner", "ran"}, "accepted-input producer job has unexpected fields")
+        name = job.get("name")
+        _require(isinstance(name, str) and name in PRODUCER_JOB_NAMES and name not in jobs, "accepted-input producer job name is unknown or duplicated")
+        _require(job.get("status") == "completed", "accepted-input producer job is not terminal")
+        _require(isinstance(job.get("conclusion"), str) and job["conclusion"] in {"success", "failure", "skipped"}, "accepted-input producer job conclusion is invalid")
+        expected_runner = "ubuntu-24.04-arm" if name in {"Package native Linux ARM64", "Consume native Linux ARM64 package"} else "ubuntu-24.04"
+        _require(job.get("runner") == expected_runner, "accepted-input producer job runner is not a literal standard runner")
+        _require(type(job.get("ran")) is bool and job["ran"] == (job["conclusion"] != "skipped"), "accepted-input producer job execution flag is inconsistent")
+        jobs[name] = job
+    _require(set(jobs) == PRODUCER_JOB_NAMES, "accepted-input producer job inventory is not closed")
+    _require(jobs["Verify standard runner graph and exact identities"]["conclusion"] == "success", "producer runner-policy job must succeed")
+    _require(jobs["Package native Linux x86_64"]["conclusion"] == "success", "producer x86_64 package job must succeed")
+    _require(jobs["Package native Linux ARM64"]["conclusion"] == "success", "producer ARM64 package job must succeed")
+    _require(jobs["Prepare exact Cargo lock and app-server schema diff"]["conclusion"] == "skipped", "producer preparation job must be skipped")
+    expected_run_conclusion = "failure" if any(job["conclusion"] == "failure" for job in jobs.values()) else "success"
+    _require(producer["conclusion"] == expected_run_conclusion, "producer run conclusion does not match its closed job inventory")
+
+    artifacts_value = _object(record.get("artifacts"), "accepted-input artifacts are malformed")
+    _require(set(artifacts_value) == set(ARCHES), "accepted-input artifact architecture inventory is not closed")
+    artifact_ids: set[int] = set()
+    for architecture, artifact_value in artifacts_value.items():
+        artifact = _object(artifact_value, "accepted-input artifact record is malformed")
+        _require(set(artifact) == {"id", "name", "digest", "size_in_bytes"}, "accepted-input artifact has unexpected or missing fields")
+        _require(_is_int(artifact.get("id")), "accepted-input artifact ID is invalid")
+        _require(artifact["id"] not in artifact_ids, "accepted-input architecture artifacts share an ID")
+        artifact_ids.add(artifact["id"])
+        _require(artifact.get("name") == f"sedna-first-binary-{identity['product_sha']}-{architecture}-{producer['run_id']}", "accepted-input artifact name is not canonical")
+        _require(isinstance(artifact.get("digest"), str) and DIGEST.fullmatch(artifact["digest"]) is not None, "accepted-input artifact digest is invalid")
+        _require(_is_int(artifact.get("size_in_bytes")), "accepted-input artifact size is invalid")
+    return record
+
+
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        _require(key not in result, "accepted-input manifest contains a duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _read_manifest(path: Path = ACCEPTED_INPUTS_PATH) -> Mapping[str, Any]:
+    try:
+        with path.open(encoding="utf-8") as stream:
+            value = json.load(stream, object_pairs_hook=_json_object_without_duplicate_keys)
+    except (OSError, json.JSONDecodeError):
+        raise ValueError("accepted-input manifest is missing or malformed") from None
+    manifest = _object(value, "accepted-input manifest must be an object")
+    _require(set(manifest) == {"schema_version", "records"}, "accepted-input manifest has unexpected fields")
+    _require(manifest.get("schema_version") == "sedna-first-binary-accepted-inputs-v1", "accepted-input manifest schema version is unsupported")
+    rows = manifest.get("records")
+    _require(isinstance(rows, list) and rows, "accepted-input manifest has no records")
+    seen: set[str] = set()
+    for row_value in rows:
+        row = _validate_manifest_record(row_value)
+        _require(row["record_id"] not in seen, "accepted-input manifest repeats a record ID")
+        seen.add(row["record_id"])
+    return manifest
+
+
+def select_accepted_record(manifest: Mapping[str, Any], inputs: Mapping[str, Any]) -> Mapping[str, Any]:
+    _require(manifest.get("schema_version") == "sedna-first-binary-accepted-inputs-v1", "accepted-input manifest schema version is unsupported")
+    rows = manifest.get("records")
+    _require(isinstance(rows, list), "accepted-input manifest has no record list")
+    matches: list[Mapping[str, Any]] = []
+    for row_value in rows:
+        row = _validate_manifest_record(row_value)
+        identity = row["identity"]
+        producer = row["producer"]
+        if (
+            identity["product_sha"] == inputs.get("product_sha")
+            and identity["comparison_base_ref"] == inputs.get("comparison_base_ref")
+            and identity["comparison_base_sha"] == inputs.get("comparison_base_sha")
+            and identity["fixture_sha"] == inputs.get("fixture_sha")
+            and identity["sdk_sha"] == inputs.get("sdk_sha")
+            and identity["profile"] == inputs.get("profile")
+            and producer["run_id"] == inputs.get("producer_run_id")
+            and producer["workflow_host_sha"] == inputs.get("producer_workflow_host_sha")
+        ):
+            matches.append(row)
+    _require(len(matches) == 1, "no unique accepted-input record matches the exact T/B/Q/S/producer/profile tuple")
+    selected = matches[0]
+    _require(selected["disposition"] == "accepted" and selected["w14780_eligible"] is True, "matching producer record is diagnostic and cannot qualify for w14780")
+    return selected
+
+
+def _accepted_inputs_from_env(env: Mapping[str, str]) -> dict[str, Any]:
+    producer_run_text = _required_env(env, "PRODUCER_RUN_ID")
+    producer_host = _required_env(env, "PRODUCER_WORKFLOW_HOST_SHA")
+    _require(RUN_ID.fullmatch(producer_run_text) is not None, "producer run ID is invalid")
+    _require(SHA.fullmatch(producer_host) is not None, "producer workflow host SHA is invalid")
+    return {
+        "product_sha": _required_env(env, "TARGET_SHA"),
+        "comparison_base_ref": _required_env(env, "BASE_REF"),
+        "comparison_base_sha": _required_env(env, "BASE_SHA"),
+        "fixture_sha": _required_env(env, "FIXTURE_SHA"),
+        "sdk_sha": _required_env(env, "SDK_SHA"),
+        "profile": _required_env(env, "CONSUMER_PROFILE"),
+        "producer_run_id": int(producer_run_text),
+        "producer_workflow_host_sha": producer_host,
+    }
+
+
+def _verify_trusted_consumer_ref(env: Mapping[str, str], *, checkout_sha: str | None = None) -> None:
+    expected_ref = f"refs/heads/{TRUSTED_CONSUMER_BRANCH}"
+    _require(env.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "consume-existing requires workflow_dispatch")
+    _require(env.get("GITHUB_REF") == expected_ref, "consume-existing workflow host ref is not the trusted branch")
+    _require(env.get("GITHUB_REF_NAME") == TRUSTED_CONSUMER_BRANCH, "consume-existing workflow host branch is not trusted")
+    _require(env.get("GITHUB_WORKFLOW_REF") == f"{REPOSITORY}/{WORKFLOW_PATH}@{expected_ref}", "consume-existing workflow_ref is not the trusted workflow host")
+    host_sha = env.get("GITHUB_SHA", "")
+    _require(SHA.fullmatch(host_sha) is not None, "consume-existing workflow host SHA is invalid")
+    expected_h = env.get("EXPECTED_H", host_sha)
+    _require(expected_h == host_sha, "workflow host SHA differs from GITHUB_SHA")
+    if checkout_sha is not None:
+        _require(checkout_sha == host_sha, "checked-out workflow source differs from GITHUB_SHA")
+
+
+def validate_runner_policy_inputs(env: Mapping[str, str]) -> None:
+    if env.get("MODE") != "consume-existing":
+        return
+    _require(env.get("GITHUB_REPOSITORY") == REPOSITORY, "consume-existing repository is not admitted")
+    _verify_trusted_consumer_ref(env)
+    try:
+        checkout_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise ValueError("cannot read checked-out workflow host SHA") from None
+    _verify_trusted_consumer_ref(env, checkout_sha=checkout_sha)
+    selected = select_accepted_record(_read_manifest(), _accepted_inputs_from_env(env))
+    print(f"accepted-input manifest record selected: {selected['record_id']}")
+
+
+def _diagnostic_compatibility_constants() -> tuple[Mapping[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    diagnostic_records = [row for row in _read_manifest()["records"] if row["disposition"] == "diagnostic"]
+    _require(len(diagnostic_records) == 1, "manifest must retain exactly one diagnostic record for regression fixtures")
+    record = diagnostic_records[0]
+    identity = record["identity"]
+    producer = record["producer"]
+    producer_constants = {
+        **producer,
+        "product_sha": identity["product_sha"],
+        "comparison_base_ref": identity["comparison_base_ref"],
+        "comparison_base_sha": identity["comparison_base_sha"],
+        "fixture_sha": identity["fixture_sha"],
+        "sdk_sha": identity["sdk_sha"],
+        "profile": identity["profile"],
+    }
+    artifact_constants = {key: dict(value) for key, value in record["artifacts"].items()}
+    job_constants = {job["name"]: (job["conclusion"], job["runner"], job["ran"]) for job in record["jobs"]}
+    return record, producer_constants, artifact_constants, job_constants
+
+
+DIAGNOSTIC_RECORD, CROSS_RUN_PRODUCER, CROSS_RUN_ARTIFACTS, PRODUCER_JOB_CONTRACT = _diagnostic_compatibility_constants()
 
 
 def _workflow_matches(workflow: Mapping[str, Any], *, workflow_id: int) -> None:
@@ -170,13 +349,14 @@ def _job_map(payload: Mapping[str, Any], *, expected_names: set[str] | None = No
     return result
 
 
-def _verify_producer_job_set(payload: Mapping[str, Any]) -> None:
-    jobs = _job_map(payload, expected_names=set(PRODUCER_JOB_CONTRACT))
-    for name, (conclusion, runner, ran) in PRODUCER_JOB_CONTRACT.items():
+def _verify_producer_job_set(payload: Mapping[str, Any], expected_jobs: list[Mapping[str, Any]]) -> None:
+    contract = {str(item["name"]): item for item in expected_jobs}
+    jobs = _job_map(payload, expected_names=set(contract))
+    for name, expected in contract.items():
         job = jobs[name]
-        _require(job.get("status") == "completed", f"producer job {name} did not complete")
-        _require(job.get("conclusion") == conclusion, f"producer job {name} has an unexpected conclusion")
-        _validate_hosted_job(job, runner, ran=ran)
+        _require(job.get("status") == expected["status"], f"producer job {name} status differs from the accepted-input record")
+        _require(job.get("conclusion") == expected["conclusion"], f"producer job {name} conclusion differs from the accepted-input record")
+        _validate_hosted_job(job, expected["runner"], ran=expected["ran"])
 
 
 def _artifact_map(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -213,13 +393,17 @@ def verify_existing_producer(
     product_sha: str,
     base_ref: str,
     base_sha: str,
+    accepted_record: Mapping[str, Any],
 ) -> dict[str, Mapping[str, Any]]:
-    expected = CROSS_RUN_PRODUCER
-    _require(producer_run_id == expected["run_id"], "producer run is outside the admitted exact run")
-    _require(producer_workflow_host_sha == expected["workflow_host_sha"], "producer host is outside the admitted exact SHA")
-    _require(product_sha == expected["product_sha"], "product target is outside the admitted exact SHA")
-    _require(base_ref == expected["comparison_base_ref"], "comparison base ref differs from the admitted base")
-    _require(base_sha == expected["comparison_base_sha"], "comparison base SHA differs from the admitted base")
+    record = _validate_manifest_record(accepted_record)
+    _require(record["disposition"] == "accepted" and record["w14780_eligible"] is True, "producer record is not acceptance eligible")
+    identity = record["identity"]
+    expected = record["producer"]
+    _require(producer_run_id == expected["run_id"], "producer run is outside the accepted exact run")
+    _require(producer_workflow_host_sha == expected["workflow_host_sha"], "producer host is outside the accepted exact SHA")
+    _require(product_sha == identity["product_sha"], "product target is outside the accepted exact SHA")
+    _require(base_ref == identity["comparison_base_ref"], "comparison base ref differs from the accepted base")
+    _require(base_sha == identity["comparison_base_sha"], "comparison base SHA differs from the accepted base")
     _workflow_matches(workflow, workflow_id=expected["workflow_id"])
     _workflow_run_matches(
         run,
@@ -230,8 +414,8 @@ def verify_existing_producer(
         workflow_id=expected["workflow_id"],
     )
     _require(run.get("run_attempt") == expected["run_attempt"], "producer run attempt differs from the admitted attempt")
-    _require(run.get("status") == "completed" and run.get("conclusion") == "failure", "producer run is not the exact completed diagnostic build")
-    _verify_producer_job_set(jobs_payload)
+    _require(run.get("status") == expected["status"] and run.get("conclusion") == expected["conclusion"], "producer run status differs from the accepted record")
+    _verify_producer_job_set(jobs_payload, record["jobs"])
 
     artifacts = _artifact_map(artifacts_payload)
     prefix = f"sedna-first-binary-{product_sha}-"
@@ -240,7 +424,7 @@ def verify_existing_producer(
     by_name = {str(item.get("name")): item for item in package_artifacts}
     _require(len(by_name) == 2, "producer package artifacts contain duplicate names")
     selected: dict[str, Mapping[str, Any]] = {}
-    for arch, expected_artifact in CROSS_RUN_ARTIFACTS.items():
+    for arch, expected_artifact in record["artifacts"].items():
         artifact = by_name.get(expected_artifact["name"])
         _require(isinstance(artifact, dict), f"producer {arch} artifact name mismatch")
         _require(artifact.get("id") == expected_artifact["id"], f"producer {arch} artifact ID mismatch")
@@ -361,6 +545,8 @@ def verify_current_consumer(
     _require(ref == f"refs/heads/{branch}", "current consumer ref and branch disagree")
     _require(workflow_ref == f"{REPOSITORY}/{WORKFLOW_PATH}@{ref}", "current consumer workflow_ref mismatch")
     _require(run.get("conclusion") is None, "current consumer run has a terminal conclusion")
+    if env.get("MODE") == "consume-existing":
+        _verify_trusted_consumer_ref(env)
 
     job_name = arch["consumer_job"]
     jobs = _job_map(jobs_payload)
@@ -668,6 +854,15 @@ def main() -> int:
     _require(bool(token), "GitHub Actions API token is empty")
     repository = _required_env(env, "GITHUB_REPOSITORY")
     _require(repository == REPOSITORY, "workflow repository is not the admitted public repository")
+    if mode == "consume-existing":
+        _verify_trusted_consumer_ref(env)
+        try:
+            consumer_checkout_sha = subprocess.check_output(
+                ["git", "-C", ".workflow-src", "rev-parse", "HEAD"], text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            raise ValueError("cannot read checked-out workflow host SHA in consumer job") from None
+        _verify_trusted_consumer_ref(env, checkout_sha=consumer_checkout_sha)
 
     current_run_id = int(_required_env(env, "GITHUB_RUN_ID"))
     current_run = _fetch_json(api_url, token, f"/repos/{REPOSITORY}/actions/runs/{current_run_id}")
@@ -686,6 +881,7 @@ def main() -> int:
     )
 
     if mode == "consume-existing":
+        accepted_record = select_accepted_record(_read_manifest(), _accepted_inputs_from_env(env))
         producer_run_text = _required_env(env, "PRODUCER_RUN_ID")
         producer_host = _required_env(env, "PRODUCER_WORKFLOW_HOST_SHA")
         _require(RUN_ID.fullmatch(producer_run_text) is not None, "producer run ID is invalid")
@@ -708,6 +904,7 @@ def main() -> int:
             product_sha=product_sha,
             base_ref=base_ref,
             base_sha=base_sha,
+            accepted_record=accepted_record,
         )
         artifact = selected[architecture]
     elif mode == "build":
@@ -741,7 +938,7 @@ def main() -> int:
         "event": "workflow_dispatch",
         "workflow_host_sha": producer_host,
         "run_id": producer_run_id,
-        "branch": (CROSS_RUN_PRODUCER["branch"] if mode == "consume-existing" else context["branch"]),
+        "branch": (accepted_record["producer"]["branch"] if mode == "consume-existing" else context["branch"]),
         "product_sha": product_sha,
         "comparison_base_ref": base_ref,
         "comparison_base_sha": base_sha,
@@ -768,6 +965,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
+        if sys.argv[1:] == ["--validate-accepted-inputs"]:
+            validate_runner_policy_inputs(os.environ)
+            raise SystemExit(0)
         if sys.argv[1:] == ["--verify-consumer-results"]:
             environment = os.environ
             result = reconcile_consumer_results(
