@@ -185,7 +185,7 @@ class VerifyExistingProducerTests(unittest.TestCase):
 
     def test_workflow_host_identity_and_run_event_are_exact(self) -> None:
         for field, value in (
-            ("workflow_id", WORKFLOW_ID + 1),
+            ("id", WORKFLOW_ID + 1),
             ("path", ".github/workflows/other.yml"),
             ("state", "disabled_manually"),
         ):
