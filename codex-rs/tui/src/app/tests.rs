@@ -1517,6 +1517,7 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
             agent_path: "/root/live-arrival".to_string(),
             model: None,
             reasoning_effort: None,
+            interaction_kind: None,
         },
     });
     let retained_activity = ServerNotification::ItemStarted(ItemStartedNotification {
@@ -1530,6 +1531,7 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
             agent_path: "/root/retained".to_string(),
             model: Some("gpt-test".to_string()),
             reasoning_effort: None,
+            interaction_kind: None,
         },
     });
 
@@ -1549,6 +1551,7 @@ async fn receiver_and_activity_ingress_share_navigation_and_metadata_cap() {
                 agent_path: "/root/nonactive-overcap".to_string(),
                 model: None,
                 reasoning_effort: None,
+                interaction_kind: None,
             },
         },
     ));
@@ -1846,6 +1849,7 @@ async fn replayed_root_activity_registers_native_v2_descendant() {
                 agent_path: "/root/restarted-child".to_string(),
                 model: None,
                 reasoning_effort: None,
+                interaction_kind: None,
             },
         }),
     ));
@@ -1884,6 +1888,7 @@ async fn replayed_turn_activity_registers_native_v2_descendant() {
                     agent_path: "/root/restarted-child".to_string(),
                     model: None,
                     reasoning_effort: None,
+                    interaction_kind: None,
                 }],
                 status: TurnStatus::Completed,
                 error: None,
@@ -1928,6 +1933,7 @@ async fn enqueue_primary_session_registers_turn_activity() -> Result<()> {
                 agent_path: "/root/restarted-child".to_string(),
                 model: None,
                 reasoning_effort: None,
+                interaction_kind: None,
             }],
             status: TurnStatus::Completed,
             error: None,

@@ -1011,6 +1011,13 @@
       ],
       "type": "string"
     },
+    "SubAgentInteractionKind": {
+      "enum": [
+        "send_message",
+        "followup_task"
+      ],
+      "type": "string"
+    },
     "TerminalWaitInfo": {
       "properties": {
         "heartbeatIntervalMs": {
@@ -1716,6 +1723,17 @@
             },
             "id": {
               "type": "string"
+            },
+            "interactionKind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SubAgentInteractionKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Concrete mailbox operation represented by an interaction."
             },
             "kind": {
               "$ref": "#/$defs/SubAgentActivityKind"
