@@ -903,6 +903,7 @@ jobs:
           path: ${{ runner.temp }}/first-binary-artifact
           digest-mismatch: error
       - name: Install and verify the pinned consumer Python toolchain
+        id: setup_uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.17"
@@ -912,14 +913,26 @@ jobs:
         shell: bash
         env:
           UV_MANAGED_PYTHON: "1"
+          UV_VERSION: ${{ steps.setup_uv.outputs.uv-version }}
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          [[ "$(uv --version)" == "uv 0.12.17" ]] || {
-            echo "unexpected uv version" >&2
+          [[ "${UV_VERSION}" == "0.12.17" ]] || {
+            echo "setup-uv did not resolve the pinned 0.12.17 release" >&2
             exit 1
           }
-          uv python install 3.12.14
-          selected_python="$(uv run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
+          [[ -x "${UV_PATH}" ]] || {
+            echo "setup-uv did not expose an executable uv path" >&2
+            exit 1
+          }
+          uv_report="$("${UV_PATH}" --version)"
+          uv_version_pattern="^uv 0[.]12[.]17 \\(([0-9a-f]{9,40} [0-9]{4}-[0-9]{2}-[0-9]{2} )?${RUST_TARGET}\\)$"
+          [[ "${uv_report}" =~ ${uv_version_pattern} ]] || {
+            echo "uv executable release or native target does not match the pinned package consumer" >&2
+            exit 1
+          }
+          "${UV_PATH}" python install 3.12.14
+          selected_python="$("${UV_PATH}" run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
           [[ "${selected_python}" == "3.12.14" ]] || {
             echo "uv did not select the pinned Python 3.12.14 runtime" >&2
             exit 1
@@ -938,11 +951,12 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_MANAGED_PYTHON: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
           set +e
-          uv run --locked \
+          "${UV_PATH}" run --locked \
             --project "${PRODUCT_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
@@ -1314,6 +1328,7 @@ jobs:
           path: ${{ runner.temp }}/first-binary-artifact
           digest-mismatch: error
       - name: Install and verify the pinned consumer Python toolchain
+        id: setup_uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.17"
@@ -1323,14 +1338,26 @@ jobs:
         shell: bash
         env:
           UV_MANAGED_PYTHON: "1"
+          UV_VERSION: ${{ steps.setup_uv.outputs.uv-version }}
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          [[ "$(uv --version)" == "uv 0.12.17" ]] || {
-            echo "unexpected uv version" >&2
+          [[ "${UV_VERSION}" == "0.12.17" ]] || {
+            echo "setup-uv did not resolve the pinned 0.12.17 release" >&2
             exit 1
           }
-          uv python install 3.12.14
-          selected_python="$(uv run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
+          [[ -x "${UV_PATH}" ]] || {
+            echo "setup-uv did not expose an executable uv path" >&2
+            exit 1
+          }
+          uv_report="$("${UV_PATH}" --version)"
+          uv_version_pattern="^uv 0[.]12[.]17 \\(([0-9a-f]{9,40} [0-9]{4}-[0-9]{2}-[0-9]{2} )?${RUST_TARGET}\\)$"
+          [[ "${uv_report}" =~ ${uv_version_pattern} ]] || {
+            echo "uv executable release or native target does not match the pinned package consumer" >&2
+            exit 1
+          }
+          "${UV_PATH}" python install 3.12.14
+          selected_python="$("${UV_PATH}" run --no-project --python 3.12.14 python -c 'import platform; print(platform.python_version())')"
           [[ "${selected_python}" == "3.12.14" ]] || {
             echo "uv did not select the pinned Python 3.12.14 runtime" >&2
             exit 1
@@ -1349,11 +1376,12 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_MANAGED_PYTHON: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
           set +e
-          uv run --locked \
+          "${UV_PATH}" run --locked \
             --project "${PRODUCT_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
