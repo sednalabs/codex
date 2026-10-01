@@ -800,7 +800,6 @@ class BranchArtifactInstallerTests(unittest.TestCase):
                 [
                     "just",
                     "install-branch-artifact",
-                    "--",
                     "--run-id",
                     "1001",
                     "--host-run-id",
