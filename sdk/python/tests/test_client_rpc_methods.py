@@ -91,7 +91,20 @@ def _initialized_client(
         ("thread/fork", {"threadId": "thread-1", "excludeTurns": True}),
     ],
 )
-@pytest.mark.parametrize("version", ["0.147.0", "0.149.0", "0.151.0-alpha.6", "unknown", ""])
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.147.0",
+        "0.149.0",
+        "0.150.0-dev.sedna.1",
+        "0.151.0-alpha.6",
+        "0.160.0-dev.sedna.01",
+        "0.160.0-dev.sedna.beta",
+        "0.160.0-dev.sedna.1-garbage",
+        "unknown",
+        "",
+    ],
+)
 def test_new_options_reject_unsupported_runtime_before_sending(
     monkeypatch: pytest.MonkeyPatch, method: str, params: JsonObject, version: str
 ) -> None:
@@ -123,6 +136,19 @@ def test_new_options_accept_supported_runtime_metadata(
     client.request("turn/start", params, response_model=InitializeResponse)
 
     assert requests == [("turn/start", params)]
+
+
+def test_thread_fork_accepts_cargo_sedna_dev_runtime_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _initialized_client(
+        monkeypatch, {"userAgent": "codex-cli/0.160.0-dev.sedna.1"}
+    )
+    params = {"threadId": "thread-1", "excludeTurns": True}
+
+    client.request("thread/fork", params, response_model=InitializeResponse)
+
+    assert requests == [("thread/fork", params)]
 
 
 @pytest.mark.parametrize("supports_options", [True, False])
