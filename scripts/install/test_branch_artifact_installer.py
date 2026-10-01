@@ -19,6 +19,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import warnings
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,22 @@ def tar_bytes(files: dict[str, bytes]) -> bytes:
             info.mode = 0o755
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
+    return output.getvalue()
+
+
+def raw_tar(entries: list[tuple[str, bytes, str]]) -> bytes:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        for name, data, kind in entries:
+            info = tarfile.TarInfo(name)
+            info.mode = 0o755
+            if kind == "symlink":
+                info.type = tarfile.SYMTYPE
+                info.linkname = "../../outside"
+                archive.addfile(info)
+            else:
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
     return output.getvalue()
 
 
@@ -236,6 +253,18 @@ class FakeApi:
         return sha(data)
 
 
+class FakeZstdProcess:
+    def __init__(self, payload: bytes):
+        self.stdout = io.BytesIO(payload)
+        self.killed = False
+
+    def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+
 def make_api(pair: tuple[bytes, bytes]) -> FakeApi:
     return FakeApi({1: ("core", pair[0]), 2: ("host", pair[1])})
 
@@ -249,6 +278,361 @@ class BranchArtifactInstallerTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def qualified_record(self, *, profile: str = "full", disposition: str = "accepted", eligible: bool = True):
+        return {
+            "record_id": "synthetic-qualified-q3-s1",
+            "disposition": disposition,
+            "w14780_eligible": eligible,
+            "identity": {
+                "product_sha": SOURCE_SHA,
+                "comparison_base_ref": "main",
+                "comparison_base_sha": WORKFLOW_SHA,
+                "fixture_sha": installer.Q3_SHA,
+                "sdk_sha": installer.S1_SHA,
+                "profile": profile,
+            },
+            "producer": {
+                "repository": installer.REPOSITORY,
+                "workflow_id": installer.QUALIFICATION_WORKFLOW_ID,
+                "workflow_path": installer.QUALIFICATION_WORKFLOW_PATH,
+                "run_id": 4321,
+            },
+            "jobs": [],
+            "artifacts": {
+                "x86_64": {"id": 501, "name": "sedna-first-binary-example-x86_64", "digest": "sha256:" + "a" * 64, "size_in_bytes": 1024},
+                "aarch64": {"id": 502, "name": "sedna-first-binary-example-aarch64", "digest": "sha256:" + "b" * 64, "size_in_bytes": 1024},
+            },
+        }
+
+    def producer_contract_fixture(self):
+        run = {
+            "id": 4321,
+            "run_attempt": 2,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "failure",
+            "repository": {"id": 1152496647, "full_name": installer.REPOSITORY},
+            "head_repository": {"id": 1152496647, "full_name": installer.REPOSITORY},
+            "workflow_id": installer.QUALIFICATION_WORKFLOW_ID,
+            "path": f"{installer.QUALIFICATION_WORKFLOW_PATH}@refs/heads/main",
+            "head_sha": WORKFLOW_SHA,
+            "head_branch": "candidate/full-record",
+            "ref": "refs/heads/candidate/full-record",
+        }
+        contracts = []
+        actual_jobs = []
+        for name, runner in installer.QUALIFICATION_JOB_RUNNERS.items():
+            conclusion = "skipped" if name.startswith("Prepare exact") else "failure" if name.startswith("Consume native") else "success"
+            contract = {
+                "name": name,
+                "status": "completed",
+                "conclusion": conclusion,
+                "runner": runner,
+                "ran": conclusion != "skipped",
+            }
+            contracts.append(contract)
+            job = {**contract, "run_id": run["id"], "run_attempt": run["run_attempt"], "labels": [runner]}
+            if contract["ran"]:
+                job.update({"runner_group_id": 0, "runner_group_name": "GitHub Actions", "runner_name": "GitHub Actions 42"})
+            else:
+                job.update({"runner_group_id": None, "runner_group_name": None, "runner_name": None})
+            actual_jobs.append(job)
+
+        artifacts = {}
+        api_artifacts = []
+        for arch, artifact_id in (("x86_64", 501), ("aarch64", 502)):
+            name = f"sedna-first-binary-{SOURCE_SHA}-{arch}"
+            digest = "sha256:" + ("a" if arch == "x86_64" else "b") * 64
+            artifacts[arch] = {"id": artifact_id, "name": name, "digest": digest, "size_in_bytes": 1024}
+            api_artifacts.append({
+                **artifacts[arch],
+                "expired": False,
+                "workflow_run": {
+                    "id": run["id"],
+                    "head_sha": run["head_sha"],
+                    "head_branch": run["head_branch"],
+                },
+            })
+        record = {
+            "identity": {"product_sha": SOURCE_SHA},
+            "producer": {
+                "repository": installer.REPOSITORY,
+                "workflow_id": installer.QUALIFICATION_WORKFLOW_ID,
+                "workflow_path": installer.QUALIFICATION_WORKFLOW_PATH,
+                "run_id": run["id"],
+                "run_attempt": run["run_attempt"],
+                "workflow_host_sha": run["head_sha"],
+                "branch": run["head_branch"],
+                "status": run["status"],
+                "conclusion": run["conclusion"],
+            },
+            "jobs": contracts,
+            "artifacts": artifacts,
+        }
+
+        class ProducerApi:
+            def __init__(self):
+                self.jobs = actual_jobs
+                self.artifacts = api_artifacts
+
+            def json(self, path):
+                if path.endswith(f"/actions/runs/{run['id']}"):
+                    return run
+                if path.endswith(f"/actions/workflows/{installer.QUALIFICATION_WORKFLOW_ID}"):
+                    return {"id": installer.QUALIFICATION_WORKFLOW_ID, "path": installer.QUALIFICATION_WORKFLOW_PATH, "state": "active"}
+                if "/jobs?" in path:
+                    return {"total_count": len(self.jobs), "jobs": self.jobs}
+                if "/artifacts?" in path:
+                    return {"total_count": len(self.artifacts), "artifacts": self.artifacts}
+                raise AssertionError(f"unexpected producer API path: {path}")
+
+        return ProducerApi(), record, run
+
+    def qualified_stage_fixture(self):
+        package_names = (
+            "codex-package.json", "manifest.json", "bin/codex", "bin/codex-code-mode-host",
+            "codex-path/rg", "codex-resources/bwrap", "codex-responses-api-proxy",
+            f"codex-package-{TARGET}.tar.zst",
+        )
+        files = {}
+        for name in package_names:
+            path = self.root / "verified" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(
+                b"{}" if name in ("codex-package.json", "manifest.json")
+                else b"synthetic-zstd-package" if name.endswith(".tar.zst")
+                else elf()
+            )
+            files[name] = path
+        manifest = {
+            "binarySha256": {name: sha(path.read_bytes()) for name, path in files.items()},
+            "mode": "qualified-complete-package",
+            "target": TARGET,
+        }
+        temporary = self.root / "temporary"
+        temporary.mkdir()
+        return files, manifest, temporary, package_names
+
+    def test_qualified_mode_selects_only_exact_accepted_full_record(self) -> None:
+        row = self.qualified_record()
+        selected = installer._select_qualified_record({"records": [row]}, row["record_id"])
+        self.assertIs(selected, row)
+        self.assertEqual(
+            installer.QUALIFICATION_TESTS_BY_HOST[installer.QUALIFICATION_HOST_SHA][
+                (selected["identity"]["fixture_sha"], selected["identity"]["sdk_sha"])
+            ]["plain"],
+            installer.QUALIFICATION_TESTS_BY_HOST[installer.QUALIFICATION_HOST_SHA][
+                (installer.Q3_SHA, installer.S1_SHA)
+            ]["plain"],
+        )
+
+    def test_qualified_mode_rejects_non_full_or_unaccepted_records(self) -> None:
+        for row in (
+            self.qualified_record(profile="pair"),
+            self.qualified_record(disposition="diagnostic", eligible=False),
+            self.qualified_record(disposition="accepted", eligible=False),
+        ):
+            with self.subTest(profile=row["identity"]["profile"], disposition=row["disposition"]):
+                with self.assertRaises(installer.InstallError):
+                    installer._select_qualified_record({"records": [row]}, row["record_id"])
+
+    def test_qualified_mode_rejects_unsupported_fixture_sdk_generation(self) -> None:
+        row = self.qualified_record()
+        row["identity"]["sdk_sha"] = "d" * 40
+        with self.assertRaisesRegex(installer.InstallError, "does not support"):
+            installer._select_qualified_record({"records": [row]}, row["record_id"])
+
+    def test_qualified_mode_requires_exact_run_and_record_selector(self) -> None:
+        with self.assertRaises(SystemExit):
+            installer.parse_args(["--qualified-run-id", "4321"])
+        with self.assertRaises(SystemExit):
+            installer.parse_args(["--record-id", "synthetic-qualified-q3-s1"])
+        args = installer.parse_args([
+            "--qualified-run-id", "4321", "--record-id", "synthetic-qualified-q3-s1",
+            "--stage-dir", str(self.root / "qualified-stage"),
+        ])
+        self.assertEqual(args.qualified_run_id, 4321)
+
+    def test_producer_job_contract_binds_success_to_exact_run_attempt(self) -> None:
+        api, record, _ = self.producer_contract_fixture()
+        self.assertEqual(
+            set(installer._verify_producer_for_record(api, record)),
+            {"x86_64", "aarch64"},
+        )
+        api.jobs[0]["run_id"] += 1
+        with self.assertRaisesRegex(installer.InstallError, "exact producer run attempt"):
+            installer._verify_producer_for_record(api, record)
+
+    def test_producer_job_contract_rejects_mismatched_attempt(self) -> None:
+        api, record, run = self.producer_contract_fixture()
+        api.jobs[0]["run_attempt"] = run["run_attempt"] + 1
+        with self.assertRaisesRegex(installer.InstallError, "exact producer run attempt"):
+            installer._verify_producer_for_record(api, record)
+
+    def test_producer_artifact_association_and_digest_are_exact(self) -> None:
+        api, record, _ = self.producer_contract_fixture()
+        api.artifacts[0]["workflow_run"]["id"] += 1
+        with self.assertRaisesRegex(installer.InstallError, "artifact identity"):
+            installer._verify_producer_for_record(api, record)
+
+        api, record, _ = self.producer_contract_fixture()
+        api.artifacts[0]["digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(installer.InstallError, "artifact identity"):
+            installer._verify_producer_for_record(api, record)
+
+    def test_qualified_stage_persists_complete_layout_without_install_paths(self) -> None:
+        files, manifest, temporary, package_names = self.qualified_stage_fixture()
+        destination = self.root / "persisted-qualified-package"
+        fake_home = self.root / "untouched-home"
+        with patch.dict(os.environ, {"HOME": str(fake_home), "CODEX_HOME": str(fake_home / ".codex")}):
+            result = installer.stage_qualified_package(files, manifest, str(destination), temporary)
+        self.assertEqual(result, destination)
+        self.assertTrue((destination / "qualified-complete-package.json").is_file())
+        self.assertEqual(json.loads((destination / "qualified-complete-package.json").read_text()), manifest)
+        self.assertEqual({name for name in package_names if (destination / name).is_file()}, set(package_names))
+        self.assertFalse(fake_home.exists())
+        self.assertFalse((fake_home / ".codex" / "current").exists())
+
+    def test_qualified_public_command_stages_and_never_activates(self) -> None:
+        files, manifest, _, package_names = self.qualified_stage_fixture()
+        destination = self.root / "public-command-stage"
+        fake_home = self.root / "untouched-public-command-home"
+        output = io.StringIO()
+        with (
+            patch.object(installer, "native_target", return_value=TARGET),
+            patch.object(installer, "github_token", return_value="synthetic-token"),
+            patch.object(installer, "GitHubApi", return_value=object()),
+            patch.object(installer, "resolve_qualified_package", return_value=(files, manifest)),
+            patch.object(installer, "install_package", side_effect=AssertionError("qualified mode activated")),
+            patch.dict(os.environ, {"HOME": str(fake_home), "CODEX_HOME": str(fake_home / ".codex")}),
+            contextlib.redirect_stdout(output),
+        ):
+            result = installer.main([
+                "--qualified-run-id", "4321",
+                "--record-id", "synthetic-qualified-q3-s1",
+                "--stage-dir", str(destination),
+            ])
+        self.assertEqual(result, 0)
+        self.assertIn("(not installed)", output.getvalue())
+        self.assertTrue((destination / "qualified-complete-package.json").is_file())
+        self.assertTrue(all((destination / name).is_file() for name in package_names))
+        self.assertFalse(fake_home.exists())
+
+    def test_qualified_stage_copy_or_provenance_failure_leaves_destination_absent(self) -> None:
+        files, manifest, temporary, _ = self.qualified_stage_fixture()
+        destination = self.root / "copy-failure-stage"
+        with patch.object(installer.shutil, "copyfile", side_effect=OSError("synthetic copy failure")):
+            with self.assertRaisesRegex(OSError, "synthetic copy failure"):
+                installer.stage_qualified_package(files, manifest, str(destination), temporary)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(".copy-failure-stage.staging-*")), [])
+
+        destination = self.root / "provenance-failure-stage"
+        with patch.object(installer.json, "dump", side_effect=OSError("synthetic provenance failure")):
+            with self.assertRaisesRegex(OSError, "synthetic provenance failure"):
+                installer.stage_qualified_package(files, manifest, str(destination), temporary)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(".provenance-failure-stage.staging-*")), [])
+
+    def test_qualified_stage_no_replace_preserves_racing_destination(self) -> None:
+        files, manifest, temporary, _ = self.qualified_stage_fixture()
+        destination = self.root / "racing-stage"
+        original_publish = installer._publish_directory_noreplace
+
+        def create_racing_destination(source: Path, target: Path) -> None:
+            target.mkdir()
+            (target / "sentinel").write_text("pre-existing owner data")
+            original_publish(source, target)
+
+        with patch.object(installer, "_publish_directory_noreplace", side_effect=create_racing_destination):
+            with self.assertRaisesRegex(installer.InstallError, "appeared before atomic publication"):
+                installer.stage_qualified_package(files, manifest, str(destination), temporary)
+        self.assertEqual((destination / "sentinel").read_text(), "pre-existing owner data")
+        self.assertEqual(list(self.root.glob(".racing-stage.staging-*")), [])
+
+    def test_qualified_stage_rejects_existing_traversal_and_unsafe_parent(self) -> None:
+        temporary = self.root / "temporary"
+        temporary.mkdir()
+        existing = self.root / "existing-stage"
+        existing.mkdir()
+        with self.assertRaisesRegex(installer.InstallError, "already exists"):
+            installer.stage_qualified_package({}, {}, str(existing), temporary)
+        with self.assertRaisesRegex(installer.InstallError, "path traversal"):
+            installer.stage_qualified_package({}, {}, str(self.root / ".." / "outside"), temporary)
+        parent_link = self.root / "stage-parent-link"
+        parent_link.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(installer.InstallError, "unsafe qualified stage parent"):
+            installer.stage_qualified_package({}, {}, str(parent_link / "stage"), temporary)
+
+    def test_qualified_evidence_zip_rejects_wrong_digest_traversal_link_and_duplicate(self) -> None:
+        cases = []
+        cases.append((zip_bytes({"evidence.json": b"{}"}), "wrong-digest", "digest mismatch"))
+        cases.append((zip_bytes({"../outside": b"escape"}), "traversal", "unsafe qualification evidence"))
+
+        link_buffer = io.BytesIO()
+        with zipfile.ZipFile(link_buffer, "w") as archive:
+            link = zipfile.ZipInfo("evidence-link")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(link, "../../outside")
+        cases.append((link_buffer.getvalue(), "link", "unsafe qualification evidence"))
+
+        duplicate_buffer = io.BytesIO()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(duplicate_buffer, "w") as archive:
+                archive.writestr("duplicate.json", b"one")
+                archive.writestr("duplicate.json", b"two")
+        cases.append((duplicate_buffer.getvalue(), "duplicate", "unsafe qualification evidence"))
+
+        for payload, label, message in cases:
+            with self.subTest(case=label):
+                path = self.root / f"evidence-{label}.zip"
+                path.write_bytes(payload)
+                digest = "0" * 64 if label == "wrong-digest" else sha(payload)
+                with self.assertRaisesRegex(installer.InstallError, message):
+                    installer._safe_evidence_zip(path, digest, self.root / f"evidence-{label}-out")
+
+    def test_qualified_package_tar_rejects_traversal_link_and_duplicate(self) -> None:
+        required = {
+            "codex-package.json": b"{}",
+            "bin/codex": elf(),
+            "bin/codex-code-mode-host": elf(),
+            "codex-path/rg": elf(),
+            "codex-resources/bwrap": elf(),
+        }
+        cases = {
+            "traversal": [*((name, data, "file") for name, data in required.items()), ("../outside", b"escape", "file")],
+            "link": [*((name, data, "file") for name, data in required.items() if name != "bin/codex"), ("bin/codex", b"", "symlink")],
+            "duplicate": [*((name, data, "file") for name, data in required.items()), ("bin/codex", elf(), "file")],
+        }
+        for label, entries in cases.items():
+            with self.subTest(case=label):
+                payload = raw_tar(entries)
+                path = self.root / f"package-{label}.tar.zst"
+                path.write_bytes(payload)
+                process = FakeZstdProcess(payload)
+                with patch.object(installer.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(installer.InstallError):
+                        installer._safe_zstd_package(path, self.root / f"package-{label}-out", TARGET)
+
+    def test_hc_full_junit_accepts_q3_s1_inventory_and_rejects_missing_case(self) -> None:
+        plan = installer.QUALIFICATION_TESTS_BY_HOST[installer.QUALIFICATION_HOST_SHA][
+            (installer.Q3_SHA, installer.S1_SHA)
+        ]
+        cases = [
+            installer.ET.Element("testcase", name=f"test_packaged_historical_upgrade_and_reopen[{name}]")
+            for name in sorted(installer.STATE_POSITIVE)
+        ]
+        cases.extend(
+            installer.ET.Element("testcase", name=f"test_packaged_historical_rejection_preserves_preimage[{name}]")
+            for name in sorted(installer.STATE_NEGATIVE)
+        )
+        cases.extend(installer.ET.Element("testcase", name=name) for name in sorted(plan["plain"]))
+        installer._verify_full_junit(cases, plan["plain"])
+        with self.assertRaisesRegex(installer.InstallError, "inventory"):
+            installer._verify_full_junit(cases[:-1], plan["plain"])
 
     def resolve_exact(self, api: FakeApi | None = None):
         api = api or make_api((self.core_zip, self.host_zip))

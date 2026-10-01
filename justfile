@@ -86,6 +86,8 @@ install:
 
 # Install the exact same-source Linux core and code-mode host from a successful
 # branch-build workflow. Exact core runs require their exact host-only companion.
+# `--qualified-run-id` plus `--record-id` and `--stage-dir` verifies and stages
+# an accepted full package/provenance without activating or installing it.
 [no-cd]
 [positional-arguments]
 install-branch-artifact *args:

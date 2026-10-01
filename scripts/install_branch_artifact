@@ -4,7 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import collections
 import contextlib
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -17,6 +22,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +45,97 @@ TARGETS = {
     "x86_64-unknown-linux-gnu": 62,
     "aarch64-unknown-linux-gnu": 183,
 }
+QUALIFICATION_HOST_SHA = "05d4636595139c3b7ec891583d44f09522d89495"
+QUALIFICATION_MANIFEST_SHA256 = "5cfbaaceaf2ed89ec4da0ee199b2ad7d4125bc9b7ff9c225ab7822834a0d29a6"
+QUALIFICATION_MANIFEST_BLOB = "97b0e9afd4e46aa85db3647e2d6b3e633be50d52"
+QUALIFICATION_MANIFEST_PATH = ".github/first-binary-accepted-inputs.json"
+QUALIFICATION_BRANCH = "reconstruct/first-binary-package-workflow-20261001"
+QUALIFICATION_WORKFLOW_ID = 250252262
+QUALIFICATION_WORKFLOW_PATH = ".github/workflows/sedna-branch-build.yml"
+QUALIFICATION_ARCHES = {
+    "x86_64": ("x86_64-unknown-linux-gnu", 62, "ubuntu-24.04", "Consume native Linux x86_64 package"),
+    "aarch64": ("aarch64-unknown-linux-gnu", 183, "ubuntu-24.04-arm", "Consume native Linux ARM64 package"),
+}
+QUALIFICATION_JOB_RUNNERS = {
+    "Verify standard runner graph and exact identities": "ubuntu-24.04",
+    "Prepare exact Cargo lock and app-server schema diff": "ubuntu-24.04",
+    "Package native Linux x86_64": "ubuntu-24.04",
+    "Package native Linux ARM64": "ubuntu-24.04-arm",
+    "Consume native Linux x86_64 package": "ubuntu-24.04",
+    "Consume native Linux ARM64 package": "ubuntu-24.04-arm",
+}
+QUALIFICATION_PRODUCER_JOBS = frozenset(QUALIFICATION_JOB_RUNNERS)
+QUALIFICATION_CONSUMER_JOBS = {
+    "Verify standard runner graph and exact identities": "ubuntu-24.04",
+    "Package native Linux x86_64": "ubuntu-24.04",
+    "Package native Linux ARM64": "ubuntu-24.04-arm",
+    "Prepare exact Cargo lock and app-server schema diff": "ubuntu-24.04",
+    "Consume native Linux ARM64 package": "ubuntu-24.04-arm",
+    "Consume native Linux x86_64 package": "ubuntu-24.04",
+    "Verify exact SDK runtime-version parser selectors": "ubuntu-24.04",
+}
+Q2_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
+Q3_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
+S0_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
+S1_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
+QUALIFICATION_TESTS_BY_HOST = {
+    QUALIFICATION_HOST_SHA: {
+    (Q2_SHA, S0_SHA): {
+        "plain": frozenset({
+            "test_exact_single_artifact_and_native_layout",
+            "test_wrong_source_manifest_is_rejected_before_unpack",
+            "test_wrong_target_and_missing_helper_are_rejected",
+            "test_banner_native_client_and_same_source_proxy_execution",
+            "test_persistent_code_mode_and_reopen_from_real_package",
+            "test_missing_host_cannot_qualify_code_mode",
+            "test_model_receives_and_executes_root_only_agent_list",
+            "test_model_spawn_hidden_metadata_has_no_private_fields",
+            "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
+            "test_actual_tui_agents_entry_has_initial_empty_search",
+            "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+            "test_real_response_usage_joins_standard_rate_scenario_after_resume",
+        }),
+        "sdk": {
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending": 45,
+        },
+    },
+    (Q3_SHA, S1_SHA): {
+        "plain": frozenset({
+            "test_exact_single_artifact_and_native_layout",
+            "test_wrong_source_manifest_is_rejected_before_unpack",
+            "test_wrong_target_and_missing_helper_are_rejected",
+            "test_banner_native_client_and_same_source_proxy_execution",
+            "test_persistent_code_mode_and_reopen_from_real_package",
+            "test_missing_host_cannot_qualify_code_mode",
+            "test_model_receives_and_executes_root_only_agent_list",
+            "test_model_spawn_hidden_metadata_has_no_private_fields",
+            "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
+            "test_actual_tui_agents_entry_has_initial_empty_search",
+            "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+            "test_real_response_usage_joins_standard_rate_scenario_after_resume",
+            "test_packaged_model_wait_agent_times_out_without_activity",
+            "test_packaged_model_nested_spawn_recovery_and_list_after_resume",
+            "test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join",
+            "test_packaged_model_goal_continuation_and_terminal_transition",
+            "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
+        }),
+        "sdk": {
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending": 45,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_request_routes_match_exact_requests_and_wait_outside_selector_lock": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_bad_request_route_sets_fail_and_are_reported_on_teardown": 2,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_unused_one_shot_routes_fail_at_teardown": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request": 1,
+        },
+    },
+    }
+}
+STATE_POSITIVE = frozenset({"fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57", "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38", "shift45", "shift50"})
+STATE_NEGATIVE = frozenset({"bad_checksum", "mixed_ids", "missing_middle", "failed_row", "incomplete_f58", "partial_alias", "partial_upstream_schema", "unknown_id"})
 
 
 class InstallError(Exception):
@@ -206,15 +303,19 @@ class GitHubApi:
             fail("GitHub API returned an unexpected JSON value")
         return payload
 
-    def download(self, artifact_id: int, destination: Path) -> str:
+    def download(self, artifact_id: int, destination: Path, *, max_bytes: int | None = None) -> str:
         request = urllib.request.Request(
             f"{self.root}/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
             headers=self.request_headers(),
         )
         digest = hashlib.sha256()
+        size = 0
         try:
             with self.opener.open(request, timeout=60) as response, destination.open("xb") as output:
                 while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if max_bytes is not None and size > max_bytes:
+                        fail(f"GitHub artifact {artifact_id} exceeds the bounded download size")
                     digest.update(chunk)
                     output.write(chunk)
         except urllib.error.HTTPError as error:
@@ -226,6 +327,601 @@ class GitHubApi:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             fail(f"GitHub artifact download failed: {error.__class__.__name__}")
         return digest.hexdigest()
+
+
+def _complete_api_rows(payload: dict[str, Any], key: str, label: str) -> list[dict[str, Any]]:
+    rows = payload.get(key)
+    if not isinstance(rows, list) or type(payload.get("total_count")) is not int or payload["total_count"] != len(rows):
+        fail(f"{label} API response is incomplete")
+    if not all(isinstance(row, dict) for row in rows):
+        fail(f"{label} API response contains malformed rows")
+    return rows
+
+
+def _qualified_manifest(api: GitHubApi) -> dict[str, Any]:
+    response = api.json(
+        f"/repos/{REPOSITORY}/contents/{QUALIFICATION_MANIFEST_PATH}?ref={QUALIFICATION_HOST_SHA}"
+    )
+    if response.get("sha") != QUALIFICATION_MANIFEST_BLOB or response.get("encoding") != "base64":
+        fail("pinned accepted-input manifest blob identity mismatch")
+    try:
+        content = response["content"]
+        if not isinstance(content, str):
+            fail("pinned accepted-input manifest content is malformed")
+        raw = base64.b64decode("".join(content.split()), validate=True)
+        manifest = json.loads(raw)
+    except (KeyError, ValueError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error):
+        fail("pinned accepted-input manifest is malformed")
+    blob_sha = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+    if blob_sha != QUALIFICATION_MANIFEST_BLOB or hashlib.sha256(raw).hexdigest() != QUALIFICATION_MANIFEST_SHA256:
+        fail("pinned accepted-input manifest content digest mismatch")
+    if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "records"} or manifest.get("schema_version") != "sedna-first-binary-accepted-inputs-v1":
+        fail("pinned accepted-input manifest schema is unsupported")
+    if not isinstance(manifest.get("records"), list):
+        fail("pinned accepted-input manifest has no records")
+    return manifest
+
+
+def _select_qualified_record(manifest: dict[str, Any], record_id: str) -> dict[str, Any]:
+    matches = [r for r in manifest["records"] if isinstance(r, dict) and r.get("record_id") == record_id]
+    if len(matches) != 1:
+        fail("record ID is absent or duplicated in the pinned accepted-input manifest")
+    record = matches[0]
+    if record.get("disposition") != "accepted" or record.get("w14780_eligible") is not True:
+        fail("selected producer record is not accepted and w14780 eligible")
+    identity = record.get("identity")
+    producer = record.get("producer")
+    artifacts = record.get("artifacts")
+    jobs = record.get("jobs")
+    if not isinstance(identity, dict) or identity.get("profile") != "full":
+        fail("qualified package mode requires an accepted full-profile record")
+    if not isinstance(producer, dict) or producer.get("repository") != REPOSITORY or producer.get("workflow_id") != QUALIFICATION_WORKFLOW_ID or producer.get("workflow_path") != QUALIFICATION_WORKFLOW_PATH:
+        fail("selected producer record has an unsupported workflow identity")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"x86_64", "aarch64"} or not isinstance(jobs, list):
+        fail("selected producer record has an incomplete package/job inventory")
+    for arch, artifact in artifacts.items():
+        if not isinstance(artifact, dict) or type(artifact.get("id")) is not int or artifact["id"] <= 0 or not isinstance(artifact.get("name"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("digest", ""))) or type(artifact.get("size_in_bytes")) is not int or not 0 < artifact["size_in_bytes"] <= 600 * 1024 * 1024:
+            fail(f"selected producer {arch} artifact is malformed or exceeds the bounded download size")
+    pair = (identity.get("fixture_sha"), identity.get("sdk_sha"))
+    if pair not in QUALIFICATION_TESTS_BY_HOST.get(QUALIFICATION_HOST_SHA, {}):
+        fail("pinned qualification host does not support this fixture/SDK pair")
+    return record
+
+
+def _verify_qualifying_run(api: GitHubApi, run_id: int, record: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    run = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}")
+    workflow = api.json(f"/repos/{REPOSITORY}/actions/workflows/{QUALIFICATION_WORKFLOW_ID}")
+    if workflow.get("id") != QUALIFICATION_WORKFLOW_ID or workflow.get("path") != QUALIFICATION_WORKFLOW_PATH or workflow.get("state") != "active":
+        fail("qualification workflow is not the exact active workflow")
+    run_attempt = run.get("run_attempt")
+    if run.get("id") != run_id or run.get("workflow_id") != QUALIFICATION_WORKFLOW_ID or run.get("event") != "workflow_dispatch" or run.get("status") != "completed" or run.get("conclusion") != "success" or type(run_attempt) is not int or run_attempt <= 0:
+        fail("selected consumer run is not the exact completed successful attempt")
+    repo = run.get("repository")
+    head_repo = run.get("head_repository")
+    if not isinstance(repo, dict) or repo.get("full_name") != REPOSITORY or repo.get("id") != 1152496647 or not isinstance(head_repo, dict) or head_repo.get("id") != 1152496647 or head_repo.get("full_name") != REPOSITORY:
+        fail("qualification run repository identity mismatch")
+    workflow_path = run.get("path")
+    if run.get("head_sha") != QUALIFICATION_HOST_SHA or run.get("head_branch") != QUALIFICATION_BRANCH or run.get("ref") != f"refs/heads/{QUALIFICATION_BRANCH}" or not isinstance(workflow_path, str) or workflow_path.partition("@")[0] != QUALIFICATION_WORKFLOW_PATH:
+        fail("qualification run is not bound to the pinned trusted workflow host")
+    jobs_payload = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}/jobs?per_page=100")
+    jobs = _complete_api_rows(jobs_payload, "jobs", "qualification jobs")
+    job_by_name: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        name = job.get("name")
+        if not isinstance(name, str) or name in job_by_name:
+            fail("qualification job names are missing or duplicated")
+        job_by_name[name] = job
+    if set(job_by_name) != set(QUALIFICATION_CONSUMER_JOBS):
+        fail("qualification job inventory differs from the pinned closed workflow")
+    for name, label in QUALIFICATION_CONSUMER_JOBS.items():
+        job = job_by_name[name]
+        if job.get("run_id") != run_id or job.get("run_attempt") != run_attempt:
+            fail(f"qualification job is not bound to the exact run attempt: {name}")
+        conclusion = "skipped" if name.startswith(("Package native", "Prepare exact")) else "success"
+        if job.get("status") != "completed" or job.get("conclusion") != conclusion:
+            fail(f"qualification job did not reach its pinned expected outcome: {name}")
+        if conclusion == "success":
+            if job.get("labels") != [label] or job.get("runner_group_id") != 0 or job.get("runner_group_name") != "GitHub Actions" or not str(job.get("runner_name", "")).startswith("GitHub Actions "):
+                fail(f"qualification job is not on the exact hosted runner: {name}")
+        elif job.get("labels") != [label]:
+            fail(f"skipped qualification job runner label mismatch: {name}")
+        elif any(job.get(key) is not None for key in ("runner_group_id", "runner_group_name", "runner_name")):
+            fail(f"skipped qualification job unexpectedly has a runner identity: {name}")
+    return run, job_by_name
+
+
+def _run_artifact_rows(api: GitHubApi, run_id: int, label: str) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    expected_total: int | None = None
+    for page in range(1, 11):
+        payload = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page={PAGE_SIZE}&page={page}")
+        rows = _complete_api_rows(payload, "artifacts", label)
+        if expected_total is None:
+            expected_total = payload["total_count"]
+        elif payload["total_count"] != expected_total:
+            fail(f"{label} inventory changed during pagination")
+        artifacts.extend(rows)
+        if len(artifacts) >= expected_total:
+            break
+        if len(rows) < PAGE_SIZE:
+            break
+    if expected_total is None or len(artifacts) != expected_total:
+        fail(f"{label} listing is incomplete")
+    return artifacts
+
+
+def _artifact_by_name(api: GitHubApi, run_id: int, expected_name: str, *, max_size: int = 64 * 1024 * 1024) -> dict[str, Any]:
+    artifacts = _run_artifact_rows(api, run_id, "qualification artifacts")
+    matches = [a for a in artifacts if a.get("name") == expected_name]
+    if len(matches) != 1:
+        fail(f"run {run_id} does not have exactly one required attached artifact: {expected_name}")
+    item = matches[0]
+    association = item.get("workflow_run")
+    if item.get("expired") is not False or type(item.get("size_in_bytes")) is not int or not 0 < item["size_in_bytes"] <= max_size or type(item.get("id")) is not int or not isinstance(item.get("digest"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["digest"]):
+        fail(f"required qualification artifact is expired or malformed: {expected_name}")
+    if not isinstance(association, dict) or association.get("id") != run_id or association.get("head_sha") != QUALIFICATION_HOST_SHA or association.get("head_branch") != QUALIFICATION_BRANCH:
+        fail(f"required artifact is not attached to the exact qualification run: {expected_name}")
+    return item
+
+
+def _safe_evidence_zip(path: Path, digest: str, destination: Path) -> dict[str, Path]:
+    if sha256_file(path) != digest.removeprefix("sha256:"):
+        fail("qualification evidence archive digest mismatch")
+    destination.mkdir(mode=0o700)
+    files: dict[str, Path] = {}
+    total = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            if len(archive.infolist()) > 128:
+                fail("qualification evidence archive has too many members")
+            for info in archive.infolist():
+                name = info.filename
+                parts = PurePosixPath(name).parts
+                mode = (info.external_attr >> 16) & 0xFFFF
+                if info.is_dir():
+                    continue
+                if PurePosixPath(name).is_absolute() or "\\" in name or not parts or any(part in ("", ".", "..") for part in parts) or (stat.S_IFMT(mode) not in (0, stat.S_IFREG)) or stat.S_ISLNK(mode) or name in files:
+                    fail(f"unsafe qualification evidence member {name!r}")
+                total += info.file_size
+                if total > 64 * 1024 * 1024 or info.file_size > 16 * 1024 * 1024:
+                    fail("qualification evidence archive exceeds bounded size")
+                target = destination.joinpath(*parts)
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with archive.open(info) as source, target.open("xb") as output:
+                    actual_size = 0
+                    while chunk := source.read(1024 * 1024):
+                        actual_size += len(chunk)
+                        if actual_size > info.file_size or actual_size + total - info.file_size > 64 * 1024 * 1024:
+                            fail("qualification evidence archive expands beyond its bounded member size")
+                        output.write(chunk)
+                    if actual_size != info.file_size:
+                        fail("qualification evidence member size differs from its directory record")
+                files[name] = target
+    except (zipfile.BadZipFile, OSError) as error:
+        fail(f"invalid qualification evidence archive: {error.__class__.__name__}")
+    return files
+
+
+def _job_map(payload: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
+    jobs = _complete_api_rows(payload, "jobs", label)
+    result: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        name = job.get("name")
+        if not isinstance(name, str) or name in result:
+            fail(f"{label} has a missing or duplicate job name")
+        result[name] = job
+    return result
+
+
+def _verify_job_contract(
+    actual: dict[str, dict[str, Any]],
+    expected: list[dict[str, Any]],
+    run: dict[str, Any],
+    label: str,
+) -> None:
+    run_id = run.get("id")
+    run_attempt = run.get("run_attempt")
+    if type(run_id) is not int or type(run_attempt) is not int or run_id <= 0 or run_attempt <= 0:
+        fail(f"{label} run identity is incomplete")
+    if len(expected) != len(QUALIFICATION_PRODUCER_JOBS):
+        fail(f"{label} manifest job contract is not closed")
+    expected_by_name = {job.get("name"): job for job in expected if isinstance(job, dict)}
+    if set(expected_by_name) != QUALIFICATION_PRODUCER_JOBS or set(actual) != QUALIFICATION_PRODUCER_JOBS:
+        fail(f"{label} job inventory differs from the pinned producer contract")
+    for name, contract in expected_by_name.items():
+        job = actual[name]
+        runner = QUALIFICATION_JOB_RUNNERS[name]
+        if job.get("run_id") != run_id or job.get("run_attempt") != run_attempt:
+            fail(f"{label} job is not bound to the exact producer run attempt: {name}")
+        if (job.get("status"), job.get("conclusion")) != (contract.get("status"), contract.get("conclusion")):
+            fail(f"{label} job outcome differs from pinned manifest: {name}")
+        if contract.get("runner") != runner or job.get("labels") != [runner]:
+            fail(f"{label} job runner label differs from pinned manifest: {name}")
+        ran = contract.get("ran")
+        if type(ran) is not bool or ran != (contract.get("conclusion") != "skipped"):
+            fail(f"{label} job execution flag is inconsistent: {name}")
+        if ran:
+            if job.get("runner_group_id") != 0 or job.get("runner_group_name") != "GitHub Actions" or not str(job.get("runner_name", "")).startswith("GitHub Actions "):
+                fail(f"{label} job did not run on a GitHub-hosted runner: {name}")
+        elif any(job.get(key) is not None for key in ("runner_group_id", "runner_group_name", "runner_name")):
+            fail(f"{label} skipped job unexpectedly has runner identity: {name}")
+
+
+def _verify_producer_for_record(api: GitHubApi, record: dict[str, Any]) -> dict[str, Any]:
+    producer = record["producer"]
+    run_id = producer.get("run_id")
+    run = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}")
+    workflow = api.json(f"/repos/{REPOSITORY}/actions/workflows/{QUALIFICATION_WORKFLOW_ID}")
+    if workflow.get("id") != QUALIFICATION_WORKFLOW_ID or workflow.get("path") != QUALIFICATION_WORKFLOW_PATH or workflow.get("state") != "active":
+        fail("producer workflow identity mismatch")
+    repo = run.get("repository")
+    head_repo = run.get("head_repository")
+    if not isinstance(repo, dict) or repo.get("id") != 1152496647 or repo.get("full_name") != REPOSITORY or not isinstance(head_repo, dict) or head_repo.get("id") != 1152496647 or head_repo.get("full_name") != REPOSITORY:
+        fail("producer repository identity mismatch")
+    workflow_path = run.get("path")
+    if run.get("id") != run_id or run.get("workflow_id") != QUALIFICATION_WORKFLOW_ID or not isinstance(workflow_path, str) or workflow_path.partition("@")[0] != QUALIFICATION_WORKFLOW_PATH or run.get("event") != "workflow_dispatch" or run.get("run_attempt") != producer.get("run_attempt") or run.get("head_sha") != producer.get("workflow_host_sha") or run.get("head_branch") != producer.get("branch") or run.get("ref") != f"refs/heads/{producer.get('branch')}" or run.get("status") != producer.get("status") or run.get("conclusion") != producer.get("conclusion"):
+        fail("producer run identity or terminal state differs from the accepted manifest row")
+    jobs_payload = api.json(f"/repos/{REPOSITORY}/actions/runs/{run_id}/jobs?per_page=100")
+    actual_jobs = _job_map(jobs_payload, "producer jobs")
+    _verify_job_contract(actual_jobs, record["jobs"], run, "producer")
+    if actual_jobs["Verify standard runner graph and exact identities"].get("conclusion") != "success" or actual_jobs["Package native Linux x86_64"].get("conclusion") != "success" or actual_jobs["Package native Linux ARM64"].get("conclusion") != "success" or actual_jobs["Prepare exact Cargo lock and app-server schema diff"].get("conclusion") != "skipped":
+        fail("producer guard/package jobs do not satisfy the pinned qualification contract")
+    failed_jobs = {name for name, job in actual_jobs.items() if job.get("conclusion") == "failure"}
+    if failed_jobs - {"Consume native Linux x86_64 package", "Consume native Linux ARM64 package"}:
+        fail("producer run contains a failure outside the two consumer jobs")
+    if (run.get("conclusion") == "failure") != bool(failed_jobs):
+        fail("producer run conclusion is not explained by its closed job set")
+    expected_artifacts = record["artifacts"]
+    artifacts = _run_artifact_rows(api, run_id, "producer artifacts")
+    product_prefix = f"sedna-first-binary-{record['identity']['product_sha']}-"
+    if len([a for a in artifacts if isinstance(a.get("name"), str) and a["name"].startswith(product_prefix)]) != 2:
+        fail("producer package artifact inventory is not exactly the native pair")
+    selected: dict[str, dict[str, Any]] = {}
+    for arch, spec in expected_artifacts.items():
+        matches = [a for a in artifacts if a.get("name") == spec.get("name")]
+        if len(matches) != 1:
+            fail(f"producer {arch} artifact is absent or duplicated")
+        artifact = matches[0]
+        association = artifact.get("workflow_run")
+        if artifact.get("id") != spec.get("id") or artifact.get("digest") != spec.get("digest") or artifact.get("size_in_bytes") != spec.get("size_in_bytes") or artifact.get("expired") is not False or not isinstance(association, dict) or association.get("id") != run_id or association.get("head_sha") != producer.get("workflow_host_sha") or association.get("head_branch") != producer.get("branch"):
+            fail(f"producer {arch} artifact identity differs from the accepted manifest")
+        selected[arch] = artifact
+    return selected
+
+
+def _json_member(files: dict[str, Path], name: str) -> dict[str, Any]:
+    path = files.get(name)
+    if path is None:
+        fail(f"required qualification artifact member is missing: {name}")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        fail(f"qualification artifact member is malformed JSON: {name}")
+    if not isinstance(value, dict):
+        fail(f"qualification artifact member is not a JSON object: {name}")
+    return value
+
+
+def _verify_consumer_proof(api: GitHubApi, run_id: int, run_attempt: int, record: dict[str, Any], jobs: dict[str, dict[str, Any]], root: Path) -> dict[str, Any]:
+    identity = record["identity"]
+    plan = QUALIFICATION_TESTS_BY_HOST[QUALIFICATION_HOST_SHA][(identity["fixture_sha"], identity["sdk_sha"])]
+    consumer_artifacts: dict[str, dict[str, Any]] = {}
+    artifact_ids: set[int] = set()
+    for arch in ("x86_64", "aarch64"):
+        name = f"sedna-first-binary-consumer-{identity['product_sha']}-{arch}-{run_id}"
+        api_record = _artifact_by_name(api, run_id, name)
+        if api_record["id"] in artifact_ids:
+            fail("qualification artifacts do not have distinct exact IDs")
+        artifact_ids.add(api_record["id"])
+        zip_path = root / f"consumer-{arch}.zip"
+        digest = api.download(api_record["id"], zip_path, max_bytes=64 * 1024 * 1024)
+        if digest != api_record["digest"].removeprefix("sha256:") or zip_path.stat().st_size != api_record["size_in_bytes"]:
+            fail(f"consumer {arch} artifact digest mismatch")
+        files = _safe_evidence_zip(zip_path, api_record["digest"], root / f"consumer-{arch}")
+        required = {"first-binary-consumer-context.json", "first-binary-producer-evidence.json", "first-binary-consumer-result.json", "first-binary-consumer-results.xml"}
+        witness_paths = {n for n in files if n.startswith("state-history-witnesses/") and n.endswith(".json")}
+        if any(len(PurePosixPath(name).parts) != 2 for name in witness_paths):
+            fail(f"consumer {arch} witness paths are not in the expected directory")
+        if not required.issubset(files) or set(files) != required | witness_paths or len(witness_paths) != 24:
+            fail(f"consumer {arch} artifact member inventory is incomplete or unexpected")
+        context = _json_member(files, "first-binary-consumer-context.json")
+        evidence = _json_member(files, "first-binary-producer-evidence.json")
+        result = _json_member(files, "first-binary-consumer-result.json")
+        workflow_ref = f"{REPOSITORY}/{QUALIFICATION_WORKFLOW_PATH}@refs/heads/{QUALIFICATION_BRANCH}"
+        target, _, runner, _ = QUALIFICATION_ARCHES[arch]
+        expected_context = {
+            "schema_version": "sedna-first-binary-consumer-api-v1", "repository": REPOSITORY,
+            "workflow_path": QUALIFICATION_WORKFLOW_PATH, "event": "workflow_dispatch",
+            "workflow_host_sha": QUALIFICATION_HOST_SHA, "run_id": run_id, "run_attempt": run_attempt,
+            "ref": f"refs/heads/{QUALIFICATION_BRANCH}", "branch": QUALIFICATION_BRANCH,
+            "workflow_ref": workflow_ref, "product_sha": identity["product_sha"],
+            "comparison_base_sha": identity["comparison_base_sha"], "target": target,
+            "architecture": arch, "runner_label": runner,
+        }
+        if any(context.get(key) != value for key, value in expected_context.items()):
+            fail(f"consumer {arch} context identity mismatch")
+        producer = record["producer"]
+        producer_artifact = record["artifacts"][arch]
+        expected_evidence = {
+            "schema_version": "sedna-first-binary-producer-api-v1", "repository": REPOSITORY,
+            "workflow_path": QUALIFICATION_WORKFLOW_PATH, "event": "workflow_dispatch",
+            "workflow_host_sha": producer["workflow_host_sha"], "run_id": producer["run_id"],
+            "branch": producer["branch"], "product_sha": identity["product_sha"],
+            "comparison_base_ref": identity["comparison_base_ref"],
+            "comparison_base_sha": identity["comparison_base_sha"], "artifact_id": producer_artifact["id"],
+            "artifact_name": producer_artifact["name"], "artifact_digest": producer_artifact["digest"],
+            "artifact_size_bytes": producer_artifact["size_in_bytes"], "architecture": arch,
+            "target": target, "runner_label": runner,
+        }
+        if any(evidence.get(key) != value for key, value in expected_evidence.items()):
+            fail(f"consumer {arch} producer-evidence identity mismatch")
+        junit_path = files["first-binary-consumer-results.xml"]
+        if result.get("schema_version") != "sedna-first-binary-consumer-result-v1" or result.get("mode") != "consume-existing" or result.get("profile") != "full" or result.get("fixture_source_sha") != identity["fixture_sha"] or result.get("sdk_source_sha") != identity["sdk_sha"] or result.get("consumer") != context or result.get("producer") != evidence:
+            fail(f"consumer {arch} result identity mismatch")
+        hashes = {
+            "consumer_context_sha256": sha256_file(files["first-binary-consumer-context.json"]),
+            "producer_evidence_sha256": sha256_file(files["first-binary-producer-evidence.json"]),
+            "junit_sha256": sha256_file(junit_path),
+        }
+        if any(result.get(key) != value for key, value in hashes.items()) or result.get("pytest_exit_code") != 0 or result.get("failures") != 0 or result.get("errors") != 0 or result.get("skipped") != 0 or result.get("issues") != [] or result.get("state_history_positive_cases") != 16 or result.get("state_history_negative_cases") != 8 or result.get("state_history_witnesses") != 24:
+            fail(f"consumer {arch} test result did not pass the Hc result gate")
+        witness_hashes = result.get("state_history_witness_sha256")
+        observed_witnesses = {name.removeprefix("state-history-witnesses/"): sha256_file(path) for name, path in files.items() if name in witness_paths}
+        if not isinstance(witness_hashes, dict) or witness_hashes != observed_witnesses:
+            fail(f"consumer {arch} witness hash inventory mismatch")
+        cases = _parse_junit(junit_path)
+        _verify_full_junit(cases, plan["plain"])
+        if result.get("executed_cases") != 24 + len(plan["plain"]):
+            fail(f"consumer {arch} exact executed-case count mismatch")
+        consumer_artifacts[arch] = {
+            "id": api_record["id"],
+            "name": api_record["name"],
+            "digest": api_record["digest"],
+            "sizeInBytes": api_record["size_in_bytes"],
+            "resultSha256": sha256_file(files["first-binary-consumer-result.json"]),
+            "junitSha256": hashes["junit_sha256"],
+        }
+
+    sdk_name = f"sedna-first-binary-sdk-parser-{identity['sdk_sha']}-{run_id}"
+    sdk_api = _artifact_by_name(api, run_id, sdk_name)
+    if sdk_api["id"] in artifact_ids:
+        fail("SDK parser and consumer artifacts share an artifact ID")
+    sdk_zip = root / "sdk-parser.zip"
+    if api.download(sdk_api["id"], sdk_zip, max_bytes=64 * 1024 * 1024) != sdk_api["digest"].removeprefix("sha256:") or sdk_zip.stat().st_size != sdk_api["size_in_bytes"]:
+        fail("SDK parser artifact digest mismatch")
+    sdk_files = _safe_evidence_zip(sdk_zip, sdk_api["digest"], root / "sdk-parser")
+    expected_sdk_files = {"first-binary-sdk-parser-identity.json", "first-binary-sdk-parser-status.json", "first-binary-sdk-parser-results.xml"}
+    if set(sdk_files) != expected_sdk_files:
+        fail("SDK parser evidence member inventory mismatch")
+    sdk_identity = _json_member(sdk_files, "first-binary-sdk-parser-identity.json")
+    sdk_status = _json_member(sdk_files, "first-binary-sdk-parser-status.json")
+    selectors = list(plan["sdk"])
+    expected_counts = plan["sdk"]
+    if sdk_identity.get("schema_version") != "sedna-first-binary-sdk-parser-v1" or sdk_identity.get("repository") != REPOSITORY or sdk_identity.get("workflow_path") != QUALIFICATION_WORKFLOW_PATH or sdk_identity.get("workflow_host_sha") != QUALIFICATION_HOST_SHA or sdk_identity.get("consumer_run_id") != str(run_id) or sdk_identity.get("consumer_run_attempt") != str(run_attempt) or sdk_identity.get("event") != "workflow_dispatch" or sdk_identity.get("workflow_ref") != f"{REPOSITORY}/{QUALIFICATION_WORKFLOW_PATH}@refs/heads/{QUALIFICATION_BRANCH}" or sdk_identity.get("product_sha") != identity["product_sha"] or sdk_identity.get("comparison_base_ref") != identity["comparison_base_ref"] or sdk_identity.get("comparison_base_sha") != identity["comparison_base_sha"] or sdk_identity.get("fixture_sha") != identity["fixture_sha"] or sdk_identity.get("sdk_sha") != identity["sdk_sha"] or sdk_identity.get("producer_run_id") != str(record["producer"]["run_id"]) or sdk_identity.get("producer_workflow_host_sha") != record["producer"]["workflow_host_sha"] or sdk_identity.get("consumer_profile") != "full" or sdk_identity.get("runner_label") != "ubuntu-24.04" or sdk_identity.get("selectors") != selectors or sdk_identity.get("expected_test_cases") != expected_counts:
+        fail("SDK parser identity does not match the pinned Hc selector contract")
+    if sdk_status.get("schema_version") != "sedna-first-binary-sdk-parser-status-v1" or sdk_status.get("pytest_exit_code") != 0:
+        fail("SDK parser status did not pass the Hc gate")
+    _verify_sdk_junit(_parse_junit(sdk_files["first-binary-sdk-parser-results.xml"]), expected_counts)
+    if jobs["Verify exact SDK runtime-version parser selectors"].get("conclusion") != "success":
+        fail("SDK parser workflow job did not succeed")
+    return {
+        "runId": run_id,
+        "runAttempt": run_attempt,
+        "profile": "full",
+        "fixtureSha": identity["fixture_sha"],
+        "sdkSha": identity["sdk_sha"],
+        "consumerArtifacts": consumer_artifacts,
+        "sdkArtifact": {
+            "id": sdk_api["id"],
+            "name": sdk_api["name"],
+            "digest": sdk_api["digest"],
+            "sizeInBytes": sdk_api["size_in_bytes"],
+            "identitySha256": sha256_file(sdk_files["first-binary-sdk-parser-identity.json"]),
+            "statusSha256": sha256_file(sdk_files["first-binary-sdk-parser-status.json"]),
+            "junitSha256": sha256_file(sdk_files["first-binary-sdk-parser-results.xml"]),
+        },
+    }
+
+
+def _parse_junit(path: Path) -> list[ET.Element]:
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        fail("qualification JUnit report is missing or malformed")
+    return list(root.iter("testcase"))
+
+
+def _verify_full_junit(cases: list[ET.Element], plain_tests: frozenset[str]) -> None:
+    positive_prefix = "test_packaged_historical_upgrade_and_reopen"
+    negative_prefix = "test_packaged_historical_rejection_preserves_preimage"
+    positive: list[str] = []
+    negative: list[str] = []
+    plain: set[str] = set()
+    for case in cases:
+        name = case.attrib.get("name", "")
+        if case.findall("failure") or case.findall("error") or case.findall("skipped"):
+            fail("qualification JUnit contains a failed, errored, or skipped case")
+        if name.startswith(positive_prefix + "[") and name.endswith("]"):
+            positive.append(name[len(positive_prefix) + 1:-1])
+        elif name.startswith(negative_prefix + "[") and name.endswith("]"):
+            negative.append(name[len(negative_prefix) + 1:-1])
+        else:
+            plain.add(name.split("[", 1)[0])
+    if len(positive) != 16 or set(positive) != STATE_POSITIVE or len(negative) != 8 or set(negative) != STATE_NEGATIVE or plain != set(plain_tests) or len(cases) != 24 + len(plain_tests):
+        fail("consumer JUnit inventory differs from the exact Hc full-profile plan")
+
+
+def _verify_sdk_junit(cases: list[ET.Element], expected: dict[str, int]) -> None:
+    observed = collections.Counter(case.attrib.get("name", "").split("[", 1)[0] for case in cases)
+    if observed != collections.Counter(expected) or len(cases) != sum(expected.values()):
+        fail("SDK parser JUnit inventory differs from the exact Hc selector contract")
+    if any(case.findall("failure") or case.findall("error") or case.findall("skipped") for case in cases):
+        fail("SDK parser JUnit contains a failed, errored, or skipped case")
+
+
+def _verify_producer_package(api: GitHubApi, record: dict[str, Any], arch: str, target: str, root: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    expected = record["artifacts"][arch]
+    api_artifact = _artifact_by_name(api, record["producer"]["run_id"], expected["name"], max_size=600 * 1024 * 1024)
+    if api_artifact.get("id") != expected["id"] or api_artifact.get("digest") != expected["digest"] or api_artifact.get("size_in_bytes") != expected["size_in_bytes"]:
+        fail("selected producer artifact differs from the accepted manifest row")
+    zip_path = root / "producer-package.zip"
+    actual_digest = api.download(expected["id"], zip_path, max_bytes=600 * 1024 * 1024)
+    if zip_path.stat().st_size != expected["size_in_bytes"]:
+        fail("producer package archive size differs from the accepted manifest row")
+    if actual_digest != expected["digest"].removeprefix("sha256:"):
+        fail("producer package ZIP digest mismatch")
+    files = safe_zip_extract(zip_path, expected["digest"].removeprefix("sha256:"), root / "producer-package", max_total_bytes=600 * 1024 * 1024)
+    archive_name = f"codex-package-{target}.tar.zst"
+    required = {archive_name, "codex-package.json", "codex-responses-api-proxy", "manifest.json"}
+    if set(files) != required:
+        fail("producer package artifact does not contain the exact four-member layout")
+    try:
+        package_metadata = json.loads(files["codex-package.json"].read_text(encoding="utf-8"))
+        metadata = json.loads(files["manifest.json"].read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        fail("producer package metadata is malformed")
+    if not isinstance(package_metadata, dict) or not isinstance(metadata, dict):
+        fail("producer package metadata must contain JSON objects")
+    identity = record["identity"]
+    producer = record["producer"]
+    _, _, runner, _ = QUALIFICATION_ARCHES[arch]
+    digest_members = {archive_name, "codex-package.json", "codex-responses-api-proxy"}
+    expected_manifest = {
+        "schema_version": "sedna-first-binary-v1",
+        "repository": REPOSITORY,
+        "workflow": "sedna-branch-build",
+        "workflow_run": f"https://github.com/{REPOSITORY}/actions/runs/{producer['run_id']}",
+        "workflow_host_sha": producer["workflow_host_sha"],
+        "product_sha": identity["product_sha"],
+        "comparison_base_sha": identity["comparison_base_sha"],
+        "target": target,
+        "architecture": arch,
+        "runner_label": runner,
+    }
+    if set(metadata) != set(expected_manifest) | {"package_version", "artifacts_sha256"} or any(metadata.get(key) != value for key, value in expected_manifest.items()):
+        fail("producer package manifest identity differs from the accepted row")
+    if set(package_metadata) != {"layoutVersion", "version", "target", "variant", "entrypoint", "resourcesDir", "pathDir"}:
+        fail("canonical package metadata has unexpected fields")
+    artifact_hashes = metadata.get("artifacts_sha256")
+    if not isinstance(artifact_hashes, dict) or set(artifact_hashes) != digest_members:
+        fail("producer manifest payload digest inventory is not closed")
+    for name in digest_members:
+        if artifact_hashes[name] != sha256_file(files[name]):
+            fail(f"producer manifest digest mismatch for {name}")
+    if package_metadata.get("version") != metadata.get("package_version") or package_metadata.get("target") != target or package_metadata.get("variant") != "codex" or package_metadata.get("entrypoint") != "bin/codex" or package_metadata.get("layoutVersion") != 1:
+        fail("outer package metadata disagrees with the pinned package layout")
+    package_root = root / "canonical-package"
+    extracted = _safe_zstd_package(files[archive_name], package_root, target)
+    embedded = extracted.get("codex-package.json")
+    if embedded is None or json.loads(embedded.read_text(encoding="utf-8")) != package_metadata:
+        fail("embedded and outer codex-package.json metadata disagree")
+    if package_metadata["target"] != target:
+        fail("package target does not match the native target")
+    proxy = files["codex-responses-api-proxy"]
+    elf_machine(proxy, target)
+    extracted["codex-responses-api-proxy"] = proxy
+    extracted["manifest.json"] = files["manifest.json"]
+    extracted[archive_name] = files[archive_name]
+    return extracted, {
+        "schemaVersion": 1,
+        "mode": "qualified-complete-package",
+        "target": target,
+        "recordId": record["record_id"],
+        "repository": REPOSITORY,
+        "productSha": identity["product_sha"],
+        "comparisonBaseSha": identity["comparison_base_sha"],
+        "fixtureSha": identity["fixture_sha"],
+        "sdkSha": identity["sdk_sha"],
+        "profile": identity["profile"],
+        "producerRun": producer["run_id"],
+        "producerWorkflowHostSha": producer["workflow_host_sha"],
+        "qualificationHostSha": QUALIFICATION_HOST_SHA,
+        "packageArtifact": {"id": expected["id"], "name": expected["name"], "digest": expected["digest"]},
+        "binarySha256": {name: sha256_file(path) for name, path in sorted(extracted.items())},
+        "packageVersion": package_metadata["version"],
+    }
+
+
+def _safe_zstd_package(archive_path: Path, destination: Path, target: str) -> dict[str, Path]:
+    destination.mkdir(mode=0o700)
+    allowed = {
+        "codex-package.json", "bin/codex", "bin/codex-code-mode-host",
+        "codex-path/rg", "codex-resources/bwrap",
+    }
+    extracted: dict[str, Path] = {}
+    try:
+        process = subprocess.Popen(["zstd", "-dc", "--", str(archive_path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        fail("zstd is required to safely inspect the qualified package archive")
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        fail("zstd did not provide a package archive stream")
+    total = 0
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            for index, member in enumerate(archive):
+                if index >= 64:
+                    fail("package archive contains too many entries")
+                if member.isdir():
+                    normalized = PurePosixPath(member.name)
+                    if normalized.is_absolute() or "\\" in member.name or any(p in ("", ".", "..") for p in normalized.parts) or normalized.as_posix().rstrip("/") not in {"bin", "codex-path", "codex-resources"}:
+                        fail(f"unsafe package directory entry {member.name!r}")
+                    continue
+                path = PurePosixPath(member.name)
+                name = path.as_posix()
+                if path.is_absolute() or "\\" in member.name or any(p in ("", ".", "..") for p in path.parts) or name not in allowed or name in extracted or not member.isfile() or member.mode & 0o7000 or member.mode & 0o022 or member.size <= 0 or member.size > 1024 * 1024 * 1024:
+                    fail(f"unsafe or unexpected package archive entry {member.name!r}")
+                total += member.size
+                if total > 2 * 1024 * 1024 * 1024:
+                    fail("package archive exceeds the bounded unpack size")
+                source = archive.extractfile(member)
+                if source is None:
+                    fail(f"cannot read package archive entry {member.name!r}")
+                output = destination / name
+                output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with source, output.open("xb") as target_file:
+                    shutil.copyfileobj(source, target_file, length=1024 * 1024)
+                output.chmod(0o700 if member.mode & 0o111 else 0o600)
+                extracted[name] = output
+    except (tarfile.TarError, OSError) as error:
+        process.kill()
+        process.wait()
+        fail(f"invalid zstd package archive: {error.__class__.__name__}")
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    process.stdout.close()
+    if process.wait() != 0:
+        fail("zstd rejected the qualified package archive")
+    required = allowed
+    if set(extracted) != required:
+        fail("canonical Linux package layout is incomplete or contains unsupported resources")
+    for name in ("bin/codex", "bin/codex-code-mode-host", "codex-path/rg", "codex-resources/bwrap"):
+        elf_machine(extracted[name], target)
+    return extracted
+
+
+def resolve_qualified_package(api: GitHubApi, args: argparse.Namespace, target: str, temp: Path) -> tuple[dict[str, Path], dict[str, Any]]:
+    manifest = _qualified_manifest(api)
+    record = _select_qualified_record(manifest, args.record_id)
+    target_arch = "aarch64" if target.startswith("aarch64") else "x86_64"
+    consumer_run, jobs = _verify_qualifying_run(api, args.qualified_run_id, record)
+    producer_artifacts = _verify_producer_for_record(api, record)
+    qualification_evidence = _verify_consumer_proof(api, args.qualified_run_id, consumer_run["run_attempt"], record, jobs, temp / "qualification-proof")
+    files, metadata = _verify_producer_package(api, record, target_arch, target, temp / "selected-package")
+    metadata["producerArtifacts"] = {
+        arch: {"id": artifact["id"], "name": artifact["name"], "digest": artifact["digest"], "sizeInBytes": artifact["size_in_bytes"]}
+        for arch, artifact in sorted(producer_artifacts.items())
+    }
+    metadata["qualificationEvidence"] = qualification_evidence
+    metadata["qualificationRun"] = {
+        "id": consumer_run["id"],
+        "attempt": consumer_run["run_attempt"],
+        "workflowHostSha": consumer_run["head_sha"],
+    }
+    return files, metadata
 
 
 def validate_run(run: dict[str, Any], expected_run_id: int | None = None) -> int:
@@ -317,11 +1013,18 @@ def artifact_for_run(api: GitHubApi, run: dict[str, Any], target: str, prefix: s
     return record
 
 
-def safe_zip_extract(archive_path: Path, digest_expected: str, destination: Path) -> dict[str, Path]:
+def safe_zip_extract(
+    archive_path: Path,
+    digest_expected: str,
+    destination: Path,
+    *,
+    max_total_bytes: int | None = None,
+) -> dict[str, Path]:
     actual = sha256_file(archive_path)
     if actual != digest_expected:
         fail(f"Actions artifact SHA-256 mismatch: expected {digest_expected}, got {actual}")
     files: dict[str, Path] = {}
+    total_bytes = 0
     destination.mkdir(mode=0o700)
     try:
         with zipfile.ZipFile(archive_path) as archive:
@@ -341,9 +1044,23 @@ def safe_zip_extract(archive_path: Path, digest_expected: str, destination: Path
                     or member.name in files
                 ):
                     fail(f"refusing unsafe or duplicate Actions artifact member {name!r}")
+                if max_total_bytes is not None:
+                    total_bytes += info.file_size
+                    if info.file_size < 0 or total_bytes > max_total_bytes:
+                        fail("Actions artifact exceeds the bounded extraction size")
                 target_path = destination / member.name
                 with archive.open(info) as source, target_path.open("xb") as output:
-                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                    if max_total_bytes is None:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
+                    else:
+                        actual_size = 0
+                        while chunk := source.read(1024 * 1024):
+                            actual_size += len(chunk)
+                            if actual_size > info.file_size or actual_size + total_bytes - info.file_size > max_total_bytes:
+                                fail("Actions artifact expands beyond its bounded member size")
+                            output.write(chunk)
+                        if actual_size != info.file_size:
+                            fail("Actions artifact member size differs from its directory record")
                 files[member.name] = target_path
     except (zipfile.BadZipFile, OSError) as error:
         fail(f"invalid Actions artifact archive: {error.__class__.__name__}")
@@ -644,6 +1361,110 @@ def ensure_safe_directory(path: Path) -> None:
             fail(f"refusing unsafe installer directory: {current}")
 
 
+def _publish_directory_noreplace(source: Path, destination: Path) -> None:
+    if not sys.platform.startswith("linux"):
+        fail("atomic no-replace stage publication requires Linux renameat2 support")
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError:
+        fail("atomic no-replace stage publication is unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    at_fdcwd = -100
+    rename_noreplace = 1
+    result = renameat2(
+        at_fdcwd,
+        os.fsencode(source),
+        at_fdcwd,
+        os.fsencode(destination),
+        rename_noreplace,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            fail("qualified stage destination appeared before atomic publication")
+        fail(f"atomic no-replace stage publication failed ({errno.errorcode.get(error, 'UNKNOWN')})")
+
+
+def stage_qualified_package(
+    files: dict[str, Path],
+    manifest: dict[str, Any],
+    requested_path: str,
+    temporary_root: Path,
+) -> Path:
+    if not requested_path or "\\" in requested_path or any(part in (".", "..") for part in requested_path.split("/")):
+        fail("qualified stage directory must not contain path traversal")
+    destination = Path(requested_path)
+    if not destination.is_absolute() or destination == Path(destination.anchor) or not destination.name:
+        fail("qualified stage directory must be an absolute non-root path")
+    parent = destination.parent
+    ancestors: list[Path] = []
+    current = parent
+    while current != current.parent:
+        ancestors.append(current)
+        current = current.parent
+    for ancestor in reversed(ancestors):
+        try:
+            mode = os.lstat(ancestor).st_mode
+        except FileNotFoundError:
+            fail("qualified stage parent must already exist")
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            fail(f"refusing unsafe qualified stage parent: {ancestor}")
+    temporary_resolved = temporary_root.resolve(strict=True)
+    canonical_destination = parent.resolve(strict=True) / destination.name
+    if canonical_destination == temporary_resolved or temporary_resolved in canonical_destination.parents:
+        fail("qualified stage directory must persist outside the command temporary area")
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        fail("qualified stage destination already exists")
+
+    stage_target = manifest.get("target")
+    if stage_target not in TARGETS:
+        fail("qualified stage target is unsupported")
+    archive_name = f"codex-package-{stage_target}.tar.zst"
+    required = {
+        "codex-package.json",
+        "manifest.json",
+        archive_name,
+        "bin/codex",
+        "bin/codex-code-mode-host",
+        "codex-path/rg",
+        "codex-resources/bwrap",
+        "codex-responses-api-proxy",
+    }
+    if set(files) != required or set(manifest.get("binarySha256", {})) != required:
+        fail("qualified stage input is not the complete verified native package")
+    try:
+        private_stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=parent))
+    except OSError as error:
+        fail(f"could not create private qualified stage directory ({error.__class__.__name__})")
+    try:
+        for name in sorted(required):
+            relative = PurePosixPath(name)
+            if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+                fail("qualified package contains an unsafe staged path")
+            target = private_stage.joinpath(*relative.parts)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copyfile(files[name], target)
+            target.chmod(0o600 if name in ("codex-package.json", "manifest.json") else 0o700)
+            if sha256_file(target) != manifest["binarySha256"][name]:
+                fail(f"qualified stage copy digest mismatch for {name}")
+        provenance = private_stage / "qualified-complete-package.json"
+        with provenance.open("x", encoding="utf-8") as output:
+            json.dump(manifest, output, sort_keys=True, indent=2)
+            output.write("\n")
+        provenance.chmod(0o600)
+        _publish_directory_noreplace(private_stage, destination)
+    except BaseException:
+        shutil.rmtree(private_stage, ignore_errors=True)
+        raise
+    private_stage = None
+    return destination
+
+
 def atomic_symlink(target: str, link_path: Path, label: str) -> None:
     temporary = link_path.parent / f".{link_path.name}.tmp.{uuid.uuid4().hex}"
     try:
@@ -772,16 +1593,29 @@ def install_package(files: dict[str, Path], manifest: dict[str, Any], dry_run: b
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install exact same-source Sedna Linux branch-build artifacts; never install a core-only pair."
+        description="Install legacy branch-build pairs, or verify an explicitly accepted qualified complete package."
     )
     selector = parser.add_mutually_exclusive_group(required=True)
     selector.add_argument("--branch", help="resolve the latest successful retained build for this exact product ref")
     selector.add_argument("--run-id", type=int, help="exact successful core workflow run id")
+    selector.add_argument("--qualified-run-id", type=int, help="verify and stage the exact successful full qualification workflow run; does not install")
     parser.add_argument("--host-run-id", type=int, help="exact companion host-only run id; required with --run-id")
+    parser.add_argument("--record-id", help="exact accepted full-profile manifest record; required with --qualified-run-id")
+    parser.add_argument("--stage-dir", help="new absolute destination for the verified qualified native package and provenance")
     parser.add_argument("--dry-run", action="store_true", help="verify artifacts without inspecting or changing HOME install paths")
     args = parser.parse_args(argv)
     if args.run_id is not None and args.host_run_id is None:
         parser.error("--run-id requires --host-run-id because core and host-only runs reuse an Actions artifact name")
+    if args.qualified_run_id is not None and (args.qualified_run_id <= 0 or not args.record_id):
+        parser.error("--qualified-run-id requires a positive run ID and exact --record-id")
+    if args.qualified_run_id is not None and not args.stage_dir:
+        parser.error("--qualified-run-id requires an absent --stage-dir destination")
+    if args.record_id is not None and args.qualified_run_id is None:
+        parser.error("--record-id is valid only with --qualified-run-id")
+    if args.stage_dir is not None and args.qualified_run_id is None:
+        parser.error("--stage-dir is valid only with --qualified-run-id")
+    if args.qualified_run_id is not None and args.host_run_id is not None:
+        parser.error("--host-run-id is not valid with --qualified-run-id")
     if args.branch is None and args.host_run_id is not None and args.run_id is None:
         # With --branch, an explicit host run is allowed as the minimal exact
         # companion override for a branch whose two runs cannot be inferred.
@@ -802,6 +1636,15 @@ def main(argv: list[str] | None = None) -> int:
         api = GitHubApi(github_token())
         with tempfile.TemporaryDirectory(prefix="sedna-branch-install-") as raw_temp:
             temp = Path(raw_temp)
+            if args.qualified_run_id is not None:
+                files, manifest = resolve_qualified_package(api, args, target, temp)
+                stage_path = stage_qualified_package(files, manifest, args.stage_dir, temp)
+                print(
+                    f"qualified package verified and staged (not installed) at {stage_path}: "
+                    f"record {manifest['recordId']}, producer run {manifest['producerRun']}, "
+                    f"qualification run {manifest['qualificationRun']['id']} for {target}"
+                )
+                return 0
             core, host = resolve_artifacts(api, args, target, temp)
             verified_files, manifest = package_files(core, host, temp)
             install_package(verified_files, manifest, args.dry_run)

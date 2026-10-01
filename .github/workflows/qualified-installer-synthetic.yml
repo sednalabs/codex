@@ -1,0 +1,77 @@
+name: qualified-installer-synthetic
+
+on:
+  push:
+    branches:
+      - fix/qualified-complete-package-w15234-20261002
+    paths:
+      - .github/workflows/qualified-installer-synthetic.yml
+      - justfile
+      - scripts/install/test_branch_artifact_installer.py
+      - scripts/install_branch_artifact
+
+permissions:
+  contents: read
+
+jobs:
+  installer-synthetic:
+    name: installer-synthetic-${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-24.04
+            expected_machine: x86_64
+          - architecture: aarch64
+            runner: ubuntu-24.04-arm
+            expected_machine: aarch64
+    steps:
+      - name: Checkout exact validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Bind workflow and validation identities
+        shell: bash
+        env:
+          EXPECTED_MACHINE: ${{ matrix.expected_machine }}
+        run: |
+          set -euo pipefail
+          validation_sha="$(git rev-parse HEAD)"
+          machine="$(uname -m)"
+          [[ "$validation_sha" == "$GITHUB_SHA" ]]
+          [[ "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" ]]
+          [[ "$machine" == "$EXPECTED_MACHINE" ]]
+          {
+            echo "Workflow path: $GITHUB_WORKFLOW_REF"
+            echo "Workflow host SHA: $GITHUB_WORKFLOW_SHA"
+            echo "Validation source SHA: $validation_sha"
+            echo "Run ID / attempt: $GITHUB_RUN_ID / $GITHUB_RUN_ATTEMPT"
+            echo "Runner image: $RUNNER_OS $RUNNER_ARCH"
+            echo "Native machine: $machine"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run pinned undefined-name check
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff_venv="$RUNNER_TEMP/qualified-installer-ruff-venv"
+          python3 -m venv "$ruff_venv"
+          "$ruff_venv/bin/python" -m pip install --disable-pip-version-check --no-input ruff==0.16.5
+          "$ruff_venv/bin/ruff" check --select F821 scripts/install_branch_artifact
+
+      - name: Run synthetic installer suite and require nonzero exact count
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_log="$RUNNER_TEMP/qualified-installer-unittest.log"
+          python3 scripts/install/test_branch_artifact_installer.py 2>&1 | tee "$test_log"
+          test_count="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$test_log" | tail -n 1)"
+          [[ "$test_count" == "31" ]]
+          grep -qx 'OK' "$test_log"
+          ! grep -Eq 'skipped=|FAILED|ERROR' "$test_log"
+          echo "Synthetic unittest cases executed: $test_count (zero failures/errors/skips)" | tee -a "$GITHUB_STEP_SUMMARY"
