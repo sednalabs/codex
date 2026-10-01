@@ -281,15 +281,15 @@ class BranchArtifactInstallerTests(unittest.TestCase):
 
     def qualified_record(self, *, profile: str = "full", disposition: str = "accepted", eligible: bool = True):
         return {
-            "record_id": "synthetic-qualified-q3-s1",
+            "record_id": "synthetic-qualified-q4-s2",
             "disposition": disposition,
             "w14780_eligible": eligible,
             "identity": {
                 "product_sha": SOURCE_SHA,
                 "comparison_base_ref": "main",
                 "comparison_base_sha": WORKFLOW_SHA,
-                "fixture_sha": installer.Q3_SHA,
-                "sdk_sha": installer.S1_SHA,
+                "fixture_sha": installer.Q4_SHA,
+                "sdk_sha": installer.S2_SHA,
                 "profile": profile,
             },
             "producer": {
@@ -408,7 +408,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         manifest = {
             "binarySha256": {name: sha(path.read_bytes()) for name, path in files.items()},
             "mode": "qualified-complete-package",
-            "recordId": "synthetic-qualified-q3-s1",
+            "recordId": "synthetic-qualified-q4-s2",
             "producerRun": 4321,
             "qualificationRun": {"id": 8765},
             "target": TARGET,
@@ -426,7 +426,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
                 (selected["identity"]["fixture_sha"], selected["identity"]["sdk_sha"])
             ]["plain"],
             installer.QUALIFICATION_TESTS_BY_HOST[installer.QUALIFICATION_HOST_SHA][
-                (installer.Q3_SHA, installer.S1_SHA)
+                (installer.Q4_SHA, installer.S2_SHA)
             ]["plain"],
         )
 
@@ -450,9 +450,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             installer.parse_args(["--qualified-run-id", "4321"])
         with self.assertRaises(SystemExit):
-            installer.parse_args(["--record-id", "synthetic-qualified-q3-s1"])
+            installer.parse_args(["--record-id", "synthetic-qualified-q4-s2"])
         args = installer.parse_args([
-            "--qualified-run-id", "4321", "--record-id", "synthetic-qualified-q3-s1",
+            "--qualified-run-id", "4321", "--record-id", "synthetic-qualified-q4-s2",
             "--stage-dir", str(self.root / "qualified-stage"),
         ])
         self.assertEqual(args.qualified_run_id, 4321)
@@ -513,7 +513,7 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         ):
             result = installer.main([
                 "--qualified-run-id", "4321",
-                "--record-id", "synthetic-qualified-q3-s1",
+                "--record-id", "synthetic-qualified-q4-s2",
                 "--stage-dir", str(destination),
             ])
         self.assertEqual(result, 0)
@@ -620,10 +620,43 @@ class BranchArtifactInstallerTests(unittest.TestCase):
                     with self.assertRaises(installer.InstallError):
                         installer._safe_zstd_package(path, self.root / f"package-{label}-out", TARGET)
 
-    def test_hc_full_junit_accepts_q3_s1_inventory_and_rejects_missing_case(self) -> None:
+    def test_hc2_full_junit_accepts_q4_s2_inventory_and_rejects_missing_case(self) -> None:
         plan = installer.QUALIFICATION_TESTS_BY_HOST[installer.QUALIFICATION_HOST_SHA][
-            (installer.Q3_SHA, installer.S1_SHA)
+            (installer.Q4_SHA, installer.S2_SHA)
         ]
+        self.assertEqual(plan["plain"], frozenset({
+            "test_exact_single_artifact_and_native_layout",
+            "test_wrong_source_manifest_is_rejected_before_unpack",
+            "test_wrong_target_and_missing_helper_are_rejected",
+            "test_banner_native_client_and_same_source_proxy_execution",
+            "test_persistent_code_mode_and_reopen_from_real_package",
+            "test_missing_host_cannot_qualify_code_mode",
+            "test_model_receives_and_executes_root_only_agent_list",
+            "test_model_spawn_hidden_metadata_has_no_private_fields",
+            "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
+            "test_actual_tui_agents_entry_has_initial_empty_search",
+            "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+            "test_real_response_usage_joins_standard_rate_scenario_after_resume",
+            "test_packaged_model_wait_agent_times_out_without_activity",
+            "test_packaged_model_nested_spawn_recovery_and_list_after_resume",
+            "test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join",
+            "test_packaged_model_goal_continuation_and_terminal_transition",
+            "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
+        }))
+        self.assertEqual(plan["sdk"], {
+            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
+            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending": 45,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_response_selection_remains_the_default": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_request_routes_match_exact_requests_and_wait_outside_selector_lock": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_bad_request_route_sets_fail_and_are_reported_on_teardown": 2,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_unused_one_shot_routes_fail_at_teardown": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_used_route_does_not_make_one_new_matching_route_ambiguous": 1,
+        })
+        self.assertEqual(len(plan["plain"]) + len(installer.STATE_POSITIVE) + len(installer.STATE_NEGATIVE), 41)
+        self.assertEqual(sum(plan["sdk"].values()), 55)
         cases = [
             installer.ET.Element("testcase", name=f"test_packaged_historical_upgrade_and_reopen[{name}]")
             for name in sorted(installer.STATE_POSITIVE)
@@ -636,6 +669,20 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         installer._verify_full_junit(cases, plan["plain"])
         with self.assertRaisesRegex(installer.InstallError, "inventory"):
             installer._verify_full_junit(cases[:-1], plan["plain"])
+
+    def test_q4_s2_pin_matches_frozen_hc2_and_rejects_superseded_generation(self) -> None:
+        self.assertEqual(installer.QUALIFICATION_HOST_SHA, "51c3c7e51f8251738b8434f1f284460957e069fb")
+        self.assertEqual(installer.QUALIFICATION_MANIFEST_BLOB, "45ad9067b7e1680e53172aeb452c19771bc3f87b")
+        self.assertEqual(
+            installer.QUALIFICATION_MANIFEST_SHA256,
+            "4b1e40c979e3708d16ef44760ead9f89ebc0943834a91acbf8a1f9f9e7e10783",
+        )
+        row = self.qualified_record()
+        self.assertIs(installer._select_qualified_record({"records": [row]}, row["record_id"]), row)
+        row["identity"]["fixture_sha"] = installer.Q3_SHA
+        row["identity"]["sdk_sha"] = installer.S1_SHA
+        with self.assertRaisesRegex(installer.InstallError, "does not support"):
+            installer._select_qualified_record({"records": [row]}, row["record_id"])
 
     def resolve_exact(self, api: FakeApi | None = None):
         api = api or make_api((self.core_zip, self.host_zip))

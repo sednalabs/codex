@@ -3,7 +3,7 @@ name: qualified-installer-synthetic
 on:
   push:
     branches:
-      - fix/qualified-complete-package-20261002
+      - fix/qualified-complete-package-q4-s2-20261002
     paths:
       - .github/workflows/qualified-installer-synthetic.yml
       - justfile
@@ -89,7 +89,7 @@ jobs:
           test_log="$RUNNER_TEMP/qualified-installer-unittest.log"
           python3 scripts/install/test_branch_artifact_installer.py 2>&1 | tee "$test_log"
           test_count="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$test_log" | tail -n 1)"
-          [[ "$test_count" == "31" ]]
+          [[ "$test_count" == "32" ]]
           grep -qx 'OK' "$test_log"
           ! grep -Eq 'skipped=|FAILED|ERROR' "$test_log"
           echo "Synthetic unittest cases executed: $test_count (zero failures/errors/skips)" | tee -a "$GITHUB_STEP_SUMMARY"

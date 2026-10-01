@@ -45,9 +45,9 @@ TARGETS = {
     "x86_64-unknown-linux-gnu": 62,
     "aarch64-unknown-linux-gnu": 183,
 }
-QUALIFICATION_HOST_SHA = "05d4636595139c3b7ec891583d44f09522d89495"
-QUALIFICATION_MANIFEST_SHA256 = "5cfbaaceaf2ed89ec4da0ee199b2ad7d4125bc9b7ff9c225ab7822834a0d29a6"
-QUALIFICATION_MANIFEST_BLOB = "97b0e9afd4e46aa85db3647e2d6b3e633be50d52"
+QUALIFICATION_HOST_SHA = "51c3c7e51f8251738b8434f1f284460957e069fb"
+QUALIFICATION_MANIFEST_SHA256 = "4b1e40c979e3708d16ef44760ead9f89ebc0943834a91acbf8a1f9f9e7e10783"
+QUALIFICATION_MANIFEST_BLOB = "45ad9067b7e1680e53172aeb452c19771bc3f87b"
 QUALIFICATION_MANIFEST_PATH = ".github/first-binary-accepted-inputs.json"
 QUALIFICATION_BRANCH = "reconstruct/first-binary-package-workflow-20261001"
 QUALIFICATION_WORKFLOW_ID = 250252262
@@ -74,33 +74,13 @@ QUALIFICATION_CONSUMER_JOBS = {
     "Consume native Linux x86_64 package": "ubuntu-24.04",
     "Verify exact SDK runtime-version parser selectors": "ubuntu-24.04",
 }
-Q2_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
-S0_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
+Q4_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
 S1_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
+S2_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
 QUALIFICATION_TESTS_BY_HOST = {
     QUALIFICATION_HOST_SHA: {
-    (Q2_SHA, S0_SHA): {
-        "plain": frozenset({
-            "test_exact_single_artifact_and_native_layout",
-            "test_wrong_source_manifest_is_rejected_before_unpack",
-            "test_wrong_target_and_missing_helper_are_rejected",
-            "test_banner_native_client_and_same_source_proxy_execution",
-            "test_persistent_code_mode_and_reopen_from_real_package",
-            "test_missing_host_cannot_qualify_code_mode",
-            "test_model_receives_and_executes_root_only_agent_list",
-            "test_model_spawn_hidden_metadata_has_no_private_fields",
-            "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
-            "test_actual_tui_agents_entry_has_initial_empty_search",
-            "test_actual_tui_nested_filter_clear_live_rename_and_replay",
-            "test_real_response_usage_joins_standard_rate_scenario_after_resume",
-        }),
-        "sdk": {
-            "sdk/python/tests/test_client_rpc_methods.py::test_thread_fork_accepts_cargo_sedna_dev_runtime_version": 1,
-            "sdk/python/tests/test_client_rpc_methods.py::test_new_options_reject_unsupported_runtime_before_sending": 45,
-        },
-    },
-    (Q3_SHA, S1_SHA): {
+        (Q4_SHA, S2_SHA): {
         "plain": frozenset({
             "test_exact_single_artifact_and_native_layout",
             "test_wrong_source_manifest_is_rejected_before_unpack",
@@ -130,9 +110,9 @@ QUALIFICATION_TESTS_BY_HOST = {
             "sdk/python/tests/test_app_server_harness_request_routing.py::test_one_shot_route_cannot_be_reused": 1,
             "sdk/python/tests/test_app_server_harness_request_routing.py::test_fifo_and_request_matched_modes_cannot_be_mixed": 1,
             "sdk/python/tests/test_app_server_harness_request_routing.py::test_server_teardown_releases_a_gated_request": 1,
+            "sdk/python/tests/test_app_server_harness_request_routing.py::test_used_route_does_not_make_one_new_matching_route_ambiguous": 1,
         },
     },
-    }
 }
 STATE_POSITIVE = frozenset({"fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57", "f58", "f_full", "f_alias_pair", "shift24", "shift29", "shift38", "shift45", "shift50"})
 STATE_NEGATIVE = frozenset({"bad_checksum", "mixed_ids", "missing_middle", "failed_row", "incomplete_f58", "partial_alias", "partial_upstream_schema", "unknown_id"})
