@@ -72,7 +72,7 @@ def _rich_config(home: Path, server: MockResponsesServer) -> None:
     config_path.write_text('model_reasoning_effort = "medium"\n' + config, encoding="utf-8")
 
 
-def test_model_receives_and_executes_empty_agent_list(
+def test_model_receives_and_executes_root_only_agent_list(
     package: SmokePackage, responses_server: MockResponsesServer
 ) -> None:
     home = Path(package.environment["CODEX_HOME"])
@@ -84,14 +84,24 @@ def test_model_receives_and_executes_empty_agent_list(
     ]))
     responses_server.enqueue_assistant_message("list complete", response_id="agents-empty-2")
     with _client(package, home) as client:
-        turn = client.thread_start(
+        root_thread = client.thread_start(
             ephemeral=False, approval_mode=ApprovalMode.deny_all,
             sandbox=Sandbox.workspace_write,
-        ).run("List active agents without starting any child.")
+        )
+        turn = root_thread.run("List active agents without starting any child.")
         assert turn.final_response == "list complete"
+        root_id = root_thread.id
     output = _tool_output(responses_server, "agents-empty-list")
-    assert output.get("agents") == [], output
+    agents = output.get("agents")
+    assert isinstance(agents, list) and len(agents) == 1, output
+    root = agents[0]
+    assert isinstance(root, dict), root
+    assert root["agent_id"] == root_id
+    assert root["agent_name"] == "/root"
+    assert root["canonical_path"] == "/root"
+    assert root["configured_model"] == "package-smoke"
     assert not any(key in output for key in ("prompt", "instructions", "credentials"))
+    assert not any(key in root for key in ("prompt", "instructions", "credentials", "actual_model"))
     first = next(req for req in responses_server.requests() if req.path == "/v1/responses")
     tools = first.body_json().get("tools")
     assert isinstance(tools, list)
@@ -167,8 +177,8 @@ def test_visible_model_spawn_and_resumed_list_keep_stable_identity(
     assert spawned["configured_reasoning_effort"] == "medium"
     assert not any(key in spawned for key in ("prompt", "instructions", "credentials", "actual_model"))
 
-    # A second packaged process resumes the same child and asks the actual
-    # model-facing list handler to project its current, not cached, identity.
+    # A second packaged process resumes the owner before reloading the same
+    # child, then asks the model-facing list handler for its current identity.
     with MockResponsesServer() as listing_server:
         _rich_config(home, listing_server)
         listing_server.enqueue_sse(sse([
@@ -178,8 +188,8 @@ def test_visible_model_spawn_and_resumed_list_keep_stable_identity(
         ]))
         listing_server.enqueue_assistant_message("list complete", response_id="agents-visible-list-end")
         with _client(package, home) as client:
-            assert client.thread_resume(child_id).id == child_id
             root = client.thread_resume(root_id)
+            assert client.thread_resume(child_id).id == child_id
             assert root.run("List the exact resumed worker.").final_response == "list complete"
         listed = _tool_output(listing_server, "agents-list-after-resume")
     matches = [agent for agent in listed["agents"] if agent["agent_id"] == child_id]

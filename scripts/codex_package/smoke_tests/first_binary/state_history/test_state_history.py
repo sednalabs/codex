@@ -11,13 +11,14 @@ import hashlib
 import json
 import os
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import pytest
 from app_server_harness import MockResponsesServer
 from artifact import FirstBinaryEvidence
 from fixtures import SmokePackage
+from package_acceptance import ConsumerContext
 from package_acceptance import open_and_reopen
 from package_acceptance import start_once_expect_failure
 
@@ -33,10 +34,19 @@ pytestmark = pytest.mark.skipif(
 SOURCE_ROOT = Path(__file__).resolve().parents[5]
 
 
+@dataclass(frozen=True)
+class HistoryProvenance:
+    artifact: FirstBinaryEvidence
+    fixture_source_sha: str
+    consumer: ConsumerContext
+
+
 @pytest.fixture(scope="session")
 def state_history_provenance(
     artifact_evidence: FirstBinaryEvidence,
-) -> FirstBinaryEvidence:
+    fixture_source_sha: str,
+    consumer_context: ConsumerContext,
+) -> HistoryProvenance:
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=SOURCE_ROOT,
@@ -45,44 +55,54 @@ def state_history_provenance(
         check=True,
         timeout=10,
     ).stdout.strip()
-    assert head == artifact_evidence.target_sha, "fixture source is not the package target SHA"
-    return artifact_evidence
+    assert head == fixture_source_sha, "historical fixture checkout is not Q"
+    return HistoryProvenance(artifact_evidence, fixture_source_sha, consumer_context)
 
 
 def _write_witness(
     package: SmokePackage,
     case_name: str,
-    provenance: FirstBinaryEvidence,
+    provenance: HistoryProvenance,
     payload: dict[str, object],
 ) -> None:
-    destination = package.directory / "state-history-witnesses"
-    destination.mkdir(exist_ok=True)
+    runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    destination = runner_temp / "state-history-witnesses"
+    if destination.is_symlink():
+        raise AssertionError("witness directory must not be a symlink")
+    destination.mkdir(mode=0o700, exist_ok=True)
+    if destination.stat().st_mode & 0o077:
+        raise AssertionError("witness directory is not private")
+    artifact = provenance.artifact
+    consumer = provenance.consumer
     body = {
         "case": case_name,
-        "target_sha": provenance.target_sha,
-        "base_sha": provenance.base_sha,
+        "product_target_sha": artifact.target_sha,
+        "comparison_base_sha": artifact.base_sha,
+        "fixture_source_sha": provenance.fixture_source_sha,
         "upstream_sha": UPSTREAM_SHA,
         "upstream_tree": UPSTREAM_TREE,
-        "workflow_host_sha": provenance.workflow_host_sha,
-        "run_id": provenance.run_id,
-        "target": provenance.target,
-        "artifact_id": provenance.artifact_id,
-        "artifact_name": provenance.artifact_name,
-        "package_archive_sha256": provenance.digests[provenance.archive.name],
-        "package_version": provenance.version,
+        "producer_workflow_host_sha": artifact.workflow_host_sha,
+        "producer_run_id": artifact.run_id,
+        "consumer_workflow_host_sha": consumer.workflow_host_sha,
+        "consumer_run_id": consumer.run_id,
+        "consumer_run_attempt": consumer.run_attempt,
+        "target": artifact.target,
+        "artifact_id": artifact.artifact_id,
+        "artifact_name": artifact.artifact_name,
+        "package_archive_sha256": artifact.digests[artifact.archive.name],
+        "package_version": artifact.version,
         "historical_fork_sha": HISTORICAL_FORK_SHA,
         **payload,
     }
-    (destination / f"{case_name}.json").write_text(
-        json.dumps(body, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    with (destination / f"{case_name}.json").open("x", encoding="utf-8") as witness:
+        witness.write(json.dumps(body, sort_keys=True, indent=2) + "\n")
 
 
 @pytest.mark.parametrize("case_name", POSITIVE_CASES)
 def test_packaged_historical_upgrade_and_reopen(
     package: SmokePackage,
     responses_server: MockResponsesServer,
-    state_history_provenance: FirstBinaryEvidence,
+    state_history_provenance: HistoryProvenance,
     case_name: str,
 ) -> None:
     home = package.directory / f"state-history-{case_name}"
@@ -165,7 +185,7 @@ EXPECTED_MIGRATION_FAILURE = {
 def test_packaged_historical_rejection_preserves_preimage(
     package: SmokePackage,
     responses_server: MockResponsesServer,
-    state_history_provenance: FirstBinaryEvidence,
+    state_history_provenance: HistoryProvenance,
     case_name: str,
 ) -> None:
     home = package.directory / f"state-history-{case_name}"
