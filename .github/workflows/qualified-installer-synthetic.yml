@@ -55,6 +55,14 @@ jobs:
             echo "Native machine: $machine"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Install pinned just command for legacy recipe regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends just=1.21.0-1
+          just --version | grep -Fx 'just 1.21.0'
+
       - name: Run pinned undefined-name check
         shell: bash
         run: |

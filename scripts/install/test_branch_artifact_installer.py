@@ -408,6 +408,9 @@ class BranchArtifactInstallerTests(unittest.TestCase):
         manifest = {
             "binarySha256": {name: sha(path.read_bytes()) for name, path in files.items()},
             "mode": "qualified-complete-package",
+            "recordId": "synthetic-qualified-q3-s1",
+            "producerRun": 4321,
+            "qualificationRun": {"id": 8765},
             "target": TARGET,
         }
         temporary = self.root / "temporary"
