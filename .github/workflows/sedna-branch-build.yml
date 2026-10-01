@@ -8,12 +8,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Build packages or prepare exact Cargo/schema source diffs only.
+        description: Build packages, prepare exact source diffs, or consume an existing verified package pair.
         required: true
         type: choice
         options:
           - build
           - prepare-only
+          - consume-existing
         default: build
       target_sha:
         description: Exact 40-character product source commit SHA (T)
@@ -28,6 +29,34 @@ on:
         description: Exact 40-character comparison base commit SHA (B)
         required: true
         type: string
+      producer_run_id:
+        description: Exact existing producer run ID for consume-existing mode.
+        required: false
+        default: ""
+        type: string
+      producer_workflow_host_sha:
+        description: Exact existing producer workflow-host SHA for consume-existing mode.
+        required: false
+        default: ""
+        type: string
+      fixture_sha:
+        description: Exact consumer-fixture source SHA for consume-existing mode.
+        required: false
+        default: ""
+        type: string
+      sdk_sha:
+        description: Exact Python SDK source SHA for consume-existing mode.
+        required: false
+        default: ""
+        type: string
+      consumer_profile:
+        description: Closed consumer test profile for consume-existing mode.
+        required: false
+        type: choice
+        options:
+          - pair
+          - full
+        default: full
 
 concurrency:
   group: sedna-branch-build/${{ inputs.mode }}/${{ inputs.target_sha }}/${{ inputs.base_sha }}
@@ -58,10 +87,15 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           set -euo pipefail
           case "${MODE}" in
-            build|prepare-only) ;;
+            build|prepare-only|consume-existing) ;;
             *) echo "unsupported workflow mode" >&2; exit 1 ;;
           esac
           [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || {
@@ -80,6 +114,34 @@ jobs:
             echo "base_ref is not a safe Git ref" >&2
             exit 1
           }
+          case "${MODE}" in
+            consume-existing)
+              [[ "${TARGET_SHA}" == "d0ea2de6eae3ab59d3c76787cad4d79975b71bfe" ]] || {
+                echo "consume-existing requires the admitted product source" >&2; exit 1;
+              }
+              [[ "${BASE_REF}" == "main" && "${BASE_SHA}" == "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7" ]] || {
+                echo "consume-existing requires the admitted comparison base" >&2; exit 1;
+              }
+              [[ "${PRODUCER_RUN_ID}" == "36800811941" && "${PRODUCER_WORKFLOW_HOST_SHA}" == "954251aea3d0602c72679c81aac35d88f4b350fe" ]] || {
+                echo "consume-existing producer identity is outside the admitted run" >&2; exit 1;
+              }
+              [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${FIXTURE_SHA}" != "${TARGET_SHA}" ]] || {
+                echo "consume-existing requires a distinct full fixture source SHA" >&2; exit 1;
+              }
+              [[ "${SDK_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" != "${TARGET_SHA}" ]] || {
+                echo "consume-existing requires a distinct full SDK source SHA" >&2; exit 1;
+              }
+              case "${CONSUMER_PROFILE}" in pair|full) ;; *) echo "unsupported consumer profile" >&2; exit 1 ;; esac
+              ;;
+            build|prepare-only)
+              [[ -z "${PRODUCER_RUN_ID}${PRODUCER_WORKFLOW_HOST_SHA}${FIXTURE_SHA}${SDK_SHA}" ]] || {
+                echo "cross-run producer and source inputs are allowed only in consume-existing mode" >&2; exit 1;
+              }
+              [[ "${CONSUMER_PROFILE}" == "full" ]] || {
+                echo "the consumer profile is configurable only in consume-existing mode" >&2; exit 1;
+              }
+              ;;
+          esac
           actual_h="$(git rev-parse HEAD)"
           if [[ "${actual_h}" != "${EXPECTED_H}" ]]; then
             echo "workflow host checkout does not match H" >&2
@@ -89,6 +151,10 @@ jobs:
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_standard_runner_graph.py
+      - name: Test the exact package provenance verifier fixtures
+        working-directory: .workflow-src
+        shell: bash
+        run: python3 .github/scripts/test_verify_existing_first_binary_producer.py
       - name: Inspect every reachable workflow runner
         working-directory: .workflow-src
         shell: bash
@@ -689,7 +755,7 @@ jobs:
 
   consume-linux-x86_64:
     name: Consume native Linux x86_64 package
-    if: ${{ inputs.mode == 'build' }}
+    if: ${{ always() && needs.runner_policy.result == 'success' && (inputs.mode == 'consume-existing' || needs.build-linux-x86_64.result == 'success') }}
     needs:
       - runner_policy
       - build-linux-x86_64
@@ -705,12 +771,35 @@ jobs:
     steps:
       - name: Initialize runner-local consumer paths
         shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           printf 'ARTIFACT_DIR=%s/first-binary-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_JUNIT=%s/first-binary-consumer-results.xml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          printf 'CONSUMER_IDENTITY=%s/first-binary-consumer-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_CONTEXT=%s/first-binary-consumer-context.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_IDENTITY=%s/first-binary-build-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          if [[ "$MODE" == "consume-existing" ]]; then
+            printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            sdk_root="$GITHUB_WORKSPACE/sdk-source"
+          else
+            printf 'FIXTURE_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            sdk_root="$GITHUB_WORKSPACE/product"
+          fi
+          printf 'SDK_ROOT=%s\n' "$sdk_root" >> "$GITHUB_ENV"
+          printf 'PYTHONPATH=%s/sdk/python/src:%s/sdk/python/tests\n' \
+            "$sdk_root" "$sdk_root" >> "$GITHUB_ENV"
+      - name: Check out workflow host (Hc)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
       - name: Check out exact product source (T)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -718,13 +807,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: product
+      - name: Check out exact consumer fixture source (Q)
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.fixture_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: fixture-source
+      - name: Check out exact Python SDK source (S)
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sdk_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: sdk-source
       - name: Verify H, B, T, and native consumer architecture
         shell: bash
         env:
           EXPECTED_H: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
@@ -735,6 +843,11 @@ jobs:
           [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || exit 1
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          [[ "${actual_h}" == "${EXPECTED_H}" ]] || {
+            echo "workflow-host source Hc does not match the active dispatch" >&2
+            exit 1
+          }
           case "${GITHUB_REF}" in
             refs/heads/*) ;;
             *) echo "consumer qualification requires a branch dispatch" >&2; exit 1 ;;
@@ -751,7 +864,17 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+          if [[ "${MODE}" == "consume-existing" ]]; then
+            [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$(git -C fixture-source rev-parse HEAD)" == "${FIXTURE_SHA}" ]] || {
+              echo "fixture checkout Q does not match fixture_sha" >&2; exit 1;
+            }
+            [[ "$(git -C sdk-source rev-parse HEAD)" == "${SDK_SHA}" ]] || {
+              echo "SDK checkout S does not match sdk_sha" >&2; exit 1;
+            }
+          fi
       - name: Verify dispatch run and select exactly one uploaded artifact by API
+        if: ${{ inputs.mode == 'build' }}
         id: artifact_api
         shell: bash
         env:
@@ -893,12 +1016,28 @@ jobs:
               output.write(f"artifact_name={expected_name}\n")
               output.write(f"artifact_digest={artifact_digest}\n")
           PY
+      - name: Verify producer API evidence and write current consumer context
+        id: verified_artifact
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PRODUCT_ARCH: x86_64
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          CONSUMER_CONTEXT_OUT: ${{ runner.temp }}/first-binary-consumer-context.json
+          PRODUCER_EVIDENCE_OUT: ${{ runner.temp }}/first-binary-producer-evidence.json
+        run: python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py
       - name: Download the API-verified artifact outside the checkout
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ steps.artifact_api.outputs.artifact_id }}
+          artifact-ids: ${{ steps.verified_artifact.outputs.artifact_id }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
+          run-id: ${{ steps.verified_artifact.outputs.producer_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/first-binary-artifact
           digest-mismatch: error
@@ -938,44 +1077,77 @@ jobs:
             exit 1
           }
       - name: Run packaged first-binary consumers and preserve pytest status
+        if: ${{ inputs.mode == 'build' }}
         id: consumer_tests
         shell: bash
         env:
+          MODE: ${{ inputs.mode }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
-          WORKFLOW_HOST_SHA: ${{ github.sha }}
-          ARTIFACT_ID: ${{ steps.artifact_api.outputs.artifact_id }}
-          ARTIFACT_NAME: ${{ steps.artifact_api.outputs.artifact_name }}
-          PRODUCER_RUN_ID: ${{ github.run_id }}
-          PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
+          ARTIFACT_ID: ${{ steps.verified_artifact.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ steps.verified_artifact.outputs.artifact_name }}
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_MANAGED_PYTHON: "1"
           UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+          case "${MODE}:${CONSUMER_PROFILE}" in
+            build:*)
+              TEST_ARGS=("${TEST_ROOT}")
+              PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
+              FIXTURE_ARGS=()
+              ;;
+            consume-existing:pair)
+              TEST_ARGS=(
+                "${TEST_ROOT}/state_history/test_state_history.py::test_packaged_historical_upgrade_and_reopen[fresh]"
+                "${TEST_ROOT}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"
+              )
+              PRODUCER_ARGS=(
+                --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}"
+                --expected-producer-run-id "${PRODUCER_RUN_ID}"
+              )
+              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}")
+              ;;
+            consume-existing:full)
+              TEST_ARGS=("${TEST_ROOT}")
+              PRODUCER_ARGS=(
+                --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}"
+                --expected-producer-run-id "${PRODUCER_RUN_ID}"
+              )
+              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}")
+              ;;
+            *) echo "unsupported consumer mode/profile combination" >&2; exit 1 ;;
+          esac
           set +e
           "${UV_PATH}" run --locked \
-            --project "${PRODUCT_ROOT}/sdk/python" \
+            --project "${SDK_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
             pytest -q \
-              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
-              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              --confcutdir="${TEST_ROOT}" \
+              "${TEST_ARGS[@]}" \
               --artifact-dir "${ARTIFACT_DIR}" \
               --artifact-id "${ARTIFACT_ID}" \
               --artifact-name "${ARTIFACT_NAME}" \
               --target-sha "${TARGET_SHA}" \
               --base-ref "${BASE_REF}" \
               --base-sha "${BASE_SHA}" \
-              --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
-              --run-id "${PRODUCER_RUN_ID}" \
+              "${PRODUCER_ARGS[@]}" \
+              "${FIXTURE_ARGS[@]}" \
+              --consumer-context-file "${CONSUMER_CONTEXT}" \
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
-          PYTEST_EXIT_CODE="${pytest_status}" python3 - "${CONSUMER_JUNIT}" "${CONSUMER_IDENTITY}" "${RUNNER_TEMP}" <<'PY'
+          PYTEST_EXIT_CODE="${pytest_status}" python3 - <<'PY'
           import hashlib
           import json
           import os
@@ -984,10 +1156,13 @@ jobs:
           import sys
           import xml.etree.ElementTree as ET
 
-          junit_path = Path(sys.argv[1])
-          identity_path = Path(sys.argv[2])
-          basetemp = Path(sys.argv[3])
-          identity = json.loads(identity_path.read_text(encoding="utf-8"))
+          junit_path = Path(os.environ["CONSUMER_JUNIT"])
+          context_path = Path(os.environ["CONSUMER_CONTEXT"])
+          producer_path = Path(os.environ["PRODUCER_EVIDENCE"])
+          result_path = Path(os.environ["CONSUMER_RESULT"])
+          witness_dir = Path(os.environ["STATE_WITNESS_DIR"])
+          consumer = json.loads(context_path.read_text(encoding="utf-8"))
+          producer = json.loads(producer_path.read_text(encoding="utf-8"))
           pytest_exit = int(os.environ["PYTEST_EXIT_CODE"])
           issues: list[str] = []
           cases = []
@@ -1035,15 +1210,51 @@ jobs:
 
           positive = labels(positive_prefix)
           negative = labels(negative_prefix)
-          if len(positive) != 16 or set(positive) != expected_positive:
-              issues.append("JUnit does not contain the exact 16 positive state-history cases")
-          if len(negative) != 8 or set(negative) != expected_negative:
-              issues.append("JUnit does not contain the exact 8 negative state-history cases")
+          mode = os.environ["MODE"]
+          profile = os.environ["CONSUMER_PROFILE"]
+          pair_positive = {"fresh"}
+          pair_negative = {"bad_checksum"}
+          if mode == "build" or profile == "full":
+              if len(positive) != 16 or set(positive) != expected_positive:
+                  issues.append("JUnit does not contain the exact 16 positive state-history cases")
+              if len(negative) != 8 or set(negative) != expected_negative:
+                  issues.append("JUnit does not contain the exact 8 negative state-history cases")
+              expected_state = expected_positive | expected_negative
+              expected_plain = {
+                  "test_exact_single_artifact_and_native_layout",
+                  "test_wrong_source_manifest_is_rejected_before_unpack",
+                  "test_wrong_target_and_missing_helper_are_rejected",
+                  "test_banner_native_client_and_same_source_proxy_execution",
+                  "test_persistent_code_mode_and_reopen_from_real_package",
+                  "test_missing_host_cannot_qualify_code_mode",
+                  "test_model_receives_and_executes_root_only_agent_list",
+                  "test_model_spawn_hidden_metadata_has_no_private_fields",
+                  "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
+                  "test_actual_tui_agents_entry_has_initial_empty_search",
+                  "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+                  "test_real_response_usage_joins_standard_rate_scenario_after_resume",
+              }
+          else:
+              if positive != ["fresh"] or negative != ["bad_checksum"]:
+                  issues.append("pair profile did not execute exactly its two required state-history cases")
+              expected_state = pair_positive | pair_negative
+              expected_plain = set()
 
-          witness_paths = sorted(basetemp.glob("pytest-of-*/pytest-*/**/state-history-witnesses/*.json"))
+          plain_names = {
+              case.attrib.get("name", "") for case in cases
+              if not case.attrib.get("name", "").startswith((positive_prefix, negative_prefix))
+          }
+          if plain_names != expected_plain:
+              issues.append("JUnit plain-test inventory differs from the exact selected profile")
+          expected_case_count = len(expected_state) + len(expected_plain)
+          if len(cases) != expected_case_count:
+              issues.append("JUnit executed-case count differs from the exact selected profile")
+
+          witness_paths = sorted(witness_dir.glob("*.json")) if witness_dir.is_dir() else []
           witness_hashes: dict[str, str] = {}
           witness_cases: set[str] = set()
-          expected_cases = expected_positive | expected_negative
+          witness_versions: set[str] = set()
+          expected_cases = expected_state
           for path in witness_paths:
               try:
                   witness = json.loads(path.read_text(encoding="utf-8"))
@@ -1056,22 +1267,43 @@ jobs:
                   continue
               witness_cases.add(case_name)
               expected_fields = {
-                  "target_sha": identity["product_sha"],
-                  "base_sha": identity["comparison_base_sha"],
-                  "workflow_host_sha": identity["workflow_host_sha"],
-                  "run_id": identity["run_id"],
-                  "artifact_id": identity["artifact_id"],
-                  "artifact_name": identity["artifact_name"],
-                  "target": identity["target"],
+                  "product_target_sha": producer["product_sha"],
+                  "comparison_base_sha": producer["comparison_base_sha"],
+                  "fixture_source_sha": os.environ["FIXTURE_SHA"] or producer["product_sha"],
+                  "producer_workflow_host_sha": producer["workflow_host_sha"],
+                  "producer_run_id": producer["run_id"],
+                  "consumer_workflow_host_sha": consumer["workflow_host_sha"],
+                  "consumer_run_id": consumer["run_id"],
+                  "consumer_run_attempt": consumer["run_attempt"],
+                  "artifact_id": producer["artifact_id"],
+                  "artifact_name": producer["artifact_name"],
+                  "target": producer["target"],
               }
               if any(witness.get(key) != value for key, value in expected_fields.items()):
                   issues.append(f"state-history witness {case_name} identity mismatch")
+              if not isinstance(witness.get("package_archive_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", witness["package_archive_sha256"]):
+                  issues.append(f"state-history witness {case_name} package digest is malformed")
+              if not isinstance(witness.get("package_version"), str) or not witness["package_version"]:
+                  issues.append(f"state-history witness {case_name} package version is missing")
+              elif isinstance(witness.get("package_version"), str):
+                  witness_versions.add(witness["package_version"])
               witness_hashes[case_name] = hashlib.sha256(path.read_bytes()).hexdigest()
-          if len(witness_paths) != 24 or witness_cases != expected_cases:
-              issues.append("expected all 24 redacted state-history witness records")
+          if len(witness_paths) != len(expected_cases) or witness_cases != expected_cases:
+              issues.append("state-history witness inventory differs from the exact selected profile")
+          if len(witness_versions) > 1:
+              issues.append("state-history witnesses report inconsistent package versions")
 
           test_result = {
+              "schema_version": "sedna-first-binary-consumer-result-v1",
+              "mode": mode,
+              "profile": profile,
+              "fixture_source_sha": os.environ["FIXTURE_SHA"] or producer["product_sha"],
+              "sdk_source_sha": os.environ["SDK_SHA"] or producer["product_sha"],
+              "consumer": consumer,
+              "producer": producer,
               "pytest_exit_code": pytest_exit,
+              "consumer_context_sha256": hashlib.sha256(context_path.read_bytes()).hexdigest(),
+              "producer_evidence_sha256": hashlib.sha256(producer_path.read_bytes()).hexdigest(),
               "junit_sha256": hashlib.sha256(junit_path.read_bytes()).hexdigest()
               if junit_path.is_file() else None,
               "executed_cases": len(cases),
@@ -1084,10 +1316,7 @@ jobs:
               "state_history_witness_sha256": dict(sorted(witness_hashes.items())),
               "issues": issues,
           }
-          identity["consumer_test_result"] = test_result
-          identity_path.write_text(
-              json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-          )
+          result_path.write_text(json.dumps(test_result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           print(
               "consumer test gate: "
               f"exit={pytest_exit} cases={len(cases)} failures={failures} "
@@ -1100,21 +1329,94 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
+      - name: Run existing-package consumers with explicit producer provenance
+        if: ${{ inputs.mode == 'consume-existing' }}
+        id: existing_consumer_tests
+        shell: bash
+        env:
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          ARTIFACT_ID: ${{ steps.verified_artifact.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ steps.verified_artifact.outputs.artifact_name }}
+          UV_MANAGED_PYTHON: "1"
+          CODEX_STATE_HISTORY_ACCEPTANCE: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="${RUNNER_TEMP}"
+          test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+          case "${CONSUMER_PROFILE}" in
+            pair)
+              test_args=(
+                "${test_root}/state_history/test_state_history.py::test_packaged_historical_upgrade_and_reopen[fresh]"
+                "${test_root}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"
+              )
+              ;;
+            full) test_args=("${test_root}") ;;
+            *) echo "unsupported consumer profile" >&2; exit 1 ;;
+          esac
+          set +e
+          "${UV_PATH}" run --locked \
+            --project "${SDK_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            --with "zstandard==0.25.0" \
+            pytest -q \
+              --confcutdir="${test_root}" \
+              "${test_args[@]}" \
+              --artifact-dir "${ARTIFACT_DIR}" \
+              --artifact-id "${ARTIFACT_ID}" \
+              --artifact-name "${ARTIFACT_NAME}" \
+              --target-sha "${TARGET_SHA}" \
+              --base-ref "${BASE_REF}" \
+              --base-sha "${BASE_SHA}" \
+              --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}" \
+              --expected-producer-run-id "${PRODUCER_RUN_ID}" \
+              --consumer-context-file "${CONSUMER_CONTEXT}" \
+              --fixture-sha "${FIXTURE_SHA}" \
+              --junitxml "${CONSUMER_JUNIT}"
+          pytest_status=$?
+          set -e
+          PYTEST_EXIT_CODE="${pytest_status}" \
+            python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+              --verify-consumer-results
       - name: Upload consumer result and redacted state witnesses
-        if: ${{ always() }}
+        if: ${{ always() && inputs.mode == 'build' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: sedna-first-binary-consumer-${{ inputs.target_sha }}-x86_64-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/first-binary-consumer-identity.json
+            ${{ runner.temp }}/first-binary-consumer-context.json
+            ${{ runner.temp }}/first-binary-producer-evidence.json
+            ${{ runner.temp }}/first-binary-consumer-result.json
             ${{ runner.temp }}/first-binary-consumer-results.xml
-            ${{ runner.temp }}/pytest-of-*/pytest-*/**/state-history-witnesses/*.json
+            ${{ runner.temp }}/state-history-witnesses/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload existing-package consumer evidence
+        if: ${{ always() && inputs.mode == 'consume-existing' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-consumer-${{ inputs.target_sha }}-x86_64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/first-binary-consumer-context.json
+            ${{ runner.temp }}/first-binary-producer-evidence.json
+            ${{ runner.temp }}/first-binary-consumer-result.json
+            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
 
   consume-linux-aarch64:
     name: Consume native Linux ARM64 package
-    if: ${{ inputs.mode == 'build' }}
+    if: ${{ always() && needs.runner_policy.result == 'success' && (inputs.mode == 'consume-existing' || needs.build-linux-aarch64.result == 'success') }}
     needs:
       - runner_policy
       - build-linux-aarch64
@@ -1130,12 +1432,34 @@ jobs:
     steps:
       - name: Initialize runner-local consumer paths
         shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           printf 'ARTIFACT_DIR=%s/first-binary-artifact\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_JUNIT=%s/first-binary-consumer-results.xml\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          printf 'CONSUMER_IDENTITY=%s/first-binary-consumer-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_CONTEXT=%s/first-binary-consumer-context.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_IDENTITY=%s/first-binary-build-identity.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          if [[ "$MODE" == "consume-existing" ]]; then
+            printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            sdk_root="$GITHUB_WORKSPACE/sdk-source"
+          else
+            printf 'FIXTURE_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+            sdk_root="$GITHUB_WORKSPACE/product"
+          fi
+          printf 'SDK_ROOT=%s\n' "$sdk_root" >> "$GITHUB_ENV"
+          printf 'PYTHONPATH=%s/sdk/python/src:%s/sdk/python/tests\n' "$sdk_root" "$sdk_root" >> "$GITHUB_ENV"
+      - name: Check out workflow host (Hc)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .workflow-src
       - name: Check out exact product source (T)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1143,13 +1467,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           path: product
+      - name: Check out exact consumer fixture source (Q)
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.fixture_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: fixture-source
+      - name: Check out exact Python SDK source (S)
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sdk_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: sdk-source
       - name: Verify H, B, T, and native consumer architecture
         shell: bash
         env:
           EXPECTED_H: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "aarch64" ]] || {
@@ -1160,6 +1503,11 @@ jobs:
           [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || exit 1
+          actual_h="$(git -C .workflow-src rev-parse HEAD)"
+          [[ "${actual_h}" == "${EXPECTED_H}" ]] || {
+            echo "workflow-host source Hc does not match the active dispatch" >&2
+            exit 1
+          }
           case "${GITHUB_REF}" in
             refs/heads/*) ;;
             *) echo "consumer qualification requires a branch dispatch" >&2; exit 1 ;;
@@ -1176,7 +1524,17 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+          if [[ "${MODE}" == "consume-existing" ]]; then
+            [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$(git -C fixture-source rev-parse HEAD)" == "${FIXTURE_SHA}" ]] || {
+              echo "fixture checkout Q does not match fixture_sha" >&2; exit 1;
+            }
+            [[ "$(git -C sdk-source rev-parse HEAD)" == "${SDK_SHA}" ]] || {
+              echo "SDK checkout S does not match sdk_sha" >&2; exit 1;
+            }
+          fi
       - name: Verify dispatch run and select exactly one uploaded artifact by API
+        if: ${{ inputs.mode == 'build' }}
         id: artifact_api
         shell: bash
         env:
@@ -1318,12 +1676,28 @@ jobs:
               output.write(f"artifact_name={expected_name}\n")
               output.write(f"artifact_digest={artifact_digest}\n")
           PY
+      - name: Verify producer API evidence and write current consumer context
+        id: verified_artifact
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PRODUCT_ARCH: aarch64
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          API_URL: ${{ github.api_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          CONSUMER_CONTEXT_OUT: ${{ runner.temp }}/first-binary-consumer-context.json
+          PRODUCER_EVIDENCE_OUT: ${{ runner.temp }}/first-binary-producer-evidence.json
+        run: python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py
       - name: Download the API-verified artifact outside the checkout
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          artifact-ids: ${{ steps.artifact_api.outputs.artifact_id }}
+          artifact-ids: ${{ steps.verified_artifact.outputs.artifact_id }}
           repository: ${{ github.repository }}
-          run-id: ${{ github.run_id }}
+          run-id: ${{ steps.verified_artifact.outputs.producer_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/first-binary-artifact
           digest-mismatch: error
@@ -1363,9 +1737,14 @@ jobs:
             exit 1
           }
       - name: Run packaged first-binary consumers and preserve pytest status
+        if: ${{ inputs.mode == 'build' }}
         id: consumer_tests
         shell: bash
         env:
+          MODE: ${{ inputs.mode }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
@@ -1397,6 +1776,7 @@ jobs:
               --base-sha "${BASE_SHA}" \
               --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
               --run-id "${PRODUCER_RUN_ID}" \
+              --consumer-context-file "${CONSUMER_CONTEXT}" \
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
@@ -1464,7 +1844,7 @@ jobs:
           if len(negative) != 8 or set(negative) != expected_negative:
               issues.append("JUnit does not contain the exact 8 negative state-history cases")
 
-          witness_paths = sorted(basetemp.glob("pytest-of-*/pytest-*/**/state-history-witnesses/*.json"))
+          witness_paths = sorted((basetemp / "state-history-witnesses").glob("*.json"))
           witness_hashes: dict[str, str] = {}
           witness_cases: set[str] = set()
           expected_cases = expected_positive | expected_negative
@@ -1480,10 +1860,14 @@ jobs:
                   continue
               witness_cases.add(case_name)
               expected_fields = {
-                  "target_sha": identity["product_sha"],
-                  "base_sha": identity["comparison_base_sha"],
-                  "workflow_host_sha": identity["workflow_host_sha"],
-                  "run_id": identity["run_id"],
+                  "product_target_sha": identity["product_sha"],
+                  "comparison_base_sha": identity["comparison_base_sha"],
+                  "fixture_source_sha": identity["product_sha"],
+                  "producer_workflow_host_sha": identity["workflow_host_sha"],
+                  "producer_run_id": identity["run_id"],
+                  "consumer_workflow_host_sha": identity["workflow_host_sha"],
+                  "consumer_run_id": identity["run_id"],
+                  "consumer_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
                   "artifact_id": identity["artifact_id"],
                   "artifact_name": identity["artifact_name"],
                   "target": identity["target"],
@@ -1524,14 +1908,90 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
+          PYTEST_EXIT_CODE="${pytest_status}" \
+            python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+              --verify-consumer-results
       - name: Upload consumer result and redacted state witnesses
-        if: ${{ always() }}
+        if: ${{ always() && inputs.mode == 'build' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: sedna-first-binary-consumer-${{ inputs.target_sha }}-aarch64-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/first-binary-consumer-identity.json
+            ${{ runner.temp }}/first-binary-consumer-context.json
+            ${{ runner.temp }}/first-binary-producer-evidence.json
+            ${{ runner.temp }}/first-binary-consumer-result.json
             ${{ runner.temp }}/first-binary-consumer-results.xml
-            ${{ runner.temp }}/pytest-of-*/pytest-*/**/state-history-witnesses/*.json
+            ${{ runner.temp }}/state-history-witnesses/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Run existing-package consumers with explicit producer provenance
+        if: ${{ inputs.mode == 'consume-existing' }}
+        id: existing_consumer_tests
+        shell: bash
+        env:
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          ARTIFACT_ID: ${{ steps.verified_artifact.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ steps.verified_artifact.outputs.artifact_name }}
+          UV_MANAGED_PYTHON: "1"
+          CODEX_STATE_HISTORY_ACCEPTANCE: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          export TMPDIR="${RUNNER_TEMP}"
+          test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+          case "${CONSUMER_PROFILE}" in
+            pair)
+              test_args=(
+                "${test_root}/state_history/test_state_history.py::test_packaged_historical_upgrade_and_reopen[fresh]"
+                "${test_root}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"
+              )
+              ;;
+            full) test_args=("${test_root}") ;;
+            *) echo "unsupported consumer profile" >&2; exit 1 ;;
+          esac
+          set +e
+          "${UV_PATH}" run --locked \
+            --project "${SDK_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            --with "zstandard==0.25.0" \
+            pytest -q \
+              --confcutdir="${test_root}" \
+              "${test_args[@]}" \
+              --artifact-dir "${ARTIFACT_DIR}" \
+              --artifact-id "${ARTIFACT_ID}" \
+              --artifact-name "${ARTIFACT_NAME}" \
+              --target-sha "${TARGET_SHA}" \
+              --base-ref "${BASE_REF}" \
+              --base-sha "${BASE_SHA}" \
+              --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}" \
+              --expected-producer-run-id "${PRODUCER_RUN_ID}" \
+              --consumer-context-file "${CONSUMER_CONTEXT}" \
+              --fixture-sha "${FIXTURE_SHA}" \
+              --junitxml "${CONSUMER_JUNIT}"
+          pytest_status=$?
+          set -e
+          PYTEST_EXIT_CODE="${pytest_status}" \
+            python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+              --verify-consumer-results
+      - name: Upload existing-package consumer evidence
+        if: ${{ always() && inputs.mode == 'consume-existing' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-first-binary-consumer-${{ inputs.target_sha }}-aarch64-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/first-binary-consumer-context.json
+            ${{ runner.temp }}/first-binary-producer-evidence.json
+            ${{ runner.temp }}/first-binary-consumer-result.json
+            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
