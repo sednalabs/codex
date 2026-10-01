@@ -11,6 +11,14 @@ from package_acceptance import _mock_config
 from tui_pty import PackagedTui
 
 
+def _open_agents(tui: PackagedTui) -> None:
+    # Resume/startup is asynchronous; submit only after the real chat prompt is
+    # rendered and ready to receive slash-command input.
+    tui.until("Ask Codex to do anything")
+    tui.send("/agents")
+    tui.send("\r")
+
+
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
     home = package.directory / suffix
     home.mkdir()
@@ -30,8 +38,7 @@ def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage)
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
         with PackagedTui(isolated) as tui:
-            tui.send("/agents")
-            tui.send("\r")
+            _open_agents(tui)
             opened = tui.until("Agent command center")
             assert "Group:" in opened
             tui.send("f")
@@ -70,8 +77,7 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(root_id).id == root_id
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents")
-            tui.send("\r")
+            _open_agents(tui)
             tree = tui.until("nested-package-task")
             assert "Agent command center" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
@@ -102,8 +108,7 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents")
-            tui.send("\r")
+            _open_agents(tui)
             replay = tui.until("live-renamed-package-task")
             assert "Agent command center" in replay
             assert "root-package-task" in replay and "child-package-task" in replay

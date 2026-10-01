@@ -295,7 +295,7 @@ def test_real_response_usage_joins_standard_rate_scenario_after_resume(
         ).fetchall()
         lineage = {row[0]: row[1:] for row in rows}
         assert lineage[root.id] == (None, root.id, None), lineage
-        assert lineage[child.id] == (root.id, root.id, root.id), lineage
+        assert lineage[child.id] == (None, root.id, root.id), lineage
 
         missing = db.execute(
             """

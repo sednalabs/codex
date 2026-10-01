@@ -145,8 +145,8 @@ def _goal_config(home: Path, server: MockResponsesServer) -> None:
     config_path = home / "config.toml"
     config = config_path.read_text(encoding="utf-8")
     config = config.replace(
-        "[features.multi_agent_v2]",
-        "[features]\ngoals = true\n\n[features.multi_agent_v2]",
+        "[features]\n",
+        "[features]\ngoals = true\n",
     )
     config_path.write_text(config, encoding="utf-8")
 

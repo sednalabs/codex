@@ -22,6 +22,14 @@ from package_acceptance import _mock_config
 from tui_pty import PackagedTui
 
 
+def _open_agents(tui: PackagedTui) -> None:
+    # Resume/startup is asynchronous; submit only after the real chat prompt is
+    # rendered and ready to receive slash-command input.
+    tui.until("Ask Codex to do anything")
+    tui.send("/agents")
+    tui.send("\r")
+
+
 def _function_call(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "response.output_item.done",
@@ -104,8 +112,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             root_id = root.id
             with PackagedTui(isolated, "resume", root_id) as empty_tui:
-                empty_tui.send("/agents")
-                empty_tui.send("\r")
+                _open_agents(empty_tui)
                 empty_frame = empty_tui.until("Agent command center")
                 assert "All 0" in empty_frame, empty_frame
             server.enqueue_sse_for_request(
@@ -161,8 +168,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
     # Reopen the exact persisted tree in a second packaged process. The view is
     # driven by the binary's /agents implementation, not an in-process renderer.
     with PackagedTui(isolated, "resume", root.id) as tui:
-        tui.send("/agents")
-        tui.send("\r")
+        _open_agents(tui)
         tui.until("Agent command center")
         tui.send("f")
         tui.until("Search ›")
@@ -182,8 +188,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
     with PackagedTui(isolated, "resume", root.id) as tui:
-        tui.send("/agents")
-        tui.send("\r")
+        _open_agents(tui)
         replay = tui.until("worker")
         # Select the same task after replay so the second frame contains its
         # detail view and the same exact label/ID adjacency.

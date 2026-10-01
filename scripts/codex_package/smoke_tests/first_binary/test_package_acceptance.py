@@ -140,8 +140,11 @@ def test_missing_host_cannot_qualify_code_mode(
         directory=package.directory,
         environment={**package.environment, "CODEX_HOME": str(package.directory / "missing-host-home")},
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(json.JSONDecodeError) as error:
         open_and_reopen(broken, package.directory / "missing-host-home", responses_server)
+    assert "failed to spawn code-mode host" in error.value.doc
+    assert "missing-host-control/bin/codex-code-mode-host" in error.value.doc
+    assert "No such file or directory" in error.value.doc
     assert any(req.path == "/v1/responses" for req in responses_server.requests()), (
         "negative control never reached the local mock provider"
     )
