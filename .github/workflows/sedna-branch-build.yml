@@ -1329,6 +1329,37 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
+      - name: Temporarily enable Linux user namespaces for the existing-package pair
+        if: inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          for value in "$current_userns" "$current_apparmor"; do
+            case "$value" in
+              ""|0|1) ;;
+              *) echo "unexpected Linux user-namespace sysctl value" >&2; exit 1 ;;
+            esac
+          done
+          printf 'CODEX_USERNS_CLONE_ORIGINAL=%s\n' "$current_userns" >> "$GITHUB_ENV"
+          printf 'CODEX_APPARMOR_USERNS_ORIGINAL=%s\n' "$current_apparmor" >> "$GITHUB_ENV"
+          if [[ -n "$current_userns" && "$current_userns" != "1" ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [[ -n "$current_apparmor" && "$current_apparmor" != "0" ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          effective_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          effective_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [[ -n "$current_userns" && "$effective_userns" != "1" ]]; then
+            echo "could not enable Linux user namespaces for the consumer pair" >&2
+            exit 1
+          fi
+          if [[ -n "$current_apparmor" && "$effective_apparmor" != "0" ]]; then
+            echo "could not enable AppArmor-compatible user namespaces for the consumer pair" >&2
+            exit 1
+          fi
       - name: Run existing-package consumers with explicit producer provenance
         if: ${{ inputs.mode == 'consume-existing' }}
         id: existing_consumer_tests
@@ -1400,6 +1431,19 @@ jobs:
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Restore original Linux user-namespace settings
+        if: always() && inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          original_userns="$(printenv CODEX_USERNS_CLONE_ORIGINAL || true)"
+          original_apparmor="$(printenv CODEX_APPARMOR_USERNS_ORIGINAL || true)"
+          if [[ -n "$original_userns" ]]; then
+            sudo sysctl -w "kernel.unprivileged_userns_clone=$original_userns"
+          fi
+          if [[ -n "$original_apparmor" ]]; then
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_apparmor"
+          fi
       - name: Upload existing-package consumer evidence
         if: ${{ always() && inputs.mode == 'consume-existing' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -1924,6 +1968,37 @@ jobs:
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Temporarily enable Linux user namespaces for the existing-package pair
+        if: inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          for value in "$current_userns" "$current_apparmor"; do
+            case "$value" in
+              ""|0|1) ;;
+              *) echo "unexpected Linux user-namespace sysctl value" >&2; exit 1 ;;
+            esac
+          done
+          printf 'CODEX_USERNS_CLONE_ORIGINAL=%s\n' "$current_userns" >> "$GITHUB_ENV"
+          printf 'CODEX_APPARMOR_USERNS_ORIGINAL=%s\n' "$current_apparmor" >> "$GITHUB_ENV"
+          if [[ -n "$current_userns" && "$current_userns" != "1" ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if [[ -n "$current_apparmor" && "$current_apparmor" != "0" ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          effective_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          effective_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [[ -n "$current_userns" && "$effective_userns" != "1" ]]; then
+            echo "could not enable Linux user namespaces for the consumer pair" >&2
+            exit 1
+          fi
+          if [[ -n "$current_apparmor" && "$effective_apparmor" != "0" ]]; then
+            echo "could not enable AppArmor-compatible user namespaces for the consumer pair" >&2
+            exit 1
+          fi
       - name: Run existing-package consumers with explicit producer provenance
         if: ${{ inputs.mode == 'consume-existing' }}
         id: existing_consumer_tests
@@ -1982,6 +2057,19 @@ jobs:
           PYTEST_EXIT_CODE="${pytest_status}" \
             python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
               --verify-consumer-results
+      - name: Restore original Linux user-namespace settings
+        if: always() && inputs.mode == 'consume-existing' && inputs.consumer_profile == 'pair' && runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          original_userns="$(printenv CODEX_USERNS_CLONE_ORIGINAL || true)"
+          original_apparmor="$(printenv CODEX_APPARMOR_USERNS_ORIGINAL || true)"
+          if [[ -n "$original_userns" ]]; then
+            sudo sysctl -w "kernel.unprivileged_userns_clone=$original_userns"
+          fi
+          if [[ -n "$original_apparmor" ]]; then
+            sudo sysctl -w "kernel.apparmor_restrict_unprivileged_userns=$original_apparmor"
+          fi
       - name: Upload existing-package consumer evidence
         if: ${{ always() && inputs.mode == 'consume-existing' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
