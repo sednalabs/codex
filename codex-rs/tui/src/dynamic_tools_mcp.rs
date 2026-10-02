@@ -58,17 +58,24 @@ pub(crate) enum ThreadToolTransport {
 }
 
 impl ThreadToolTransport {
-    pub(crate) fn configure(&self, params: &mut ThreadStartParams) {
+    pub(crate) fn configure(
+        &self,
+        params: &mut ThreadStartParams,
+        codex_home: &std::path::Path,
+    ) -> Result<(), String> {
+        crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        let browser_specs = crate::browser_dynamic_tools::specs_for_codex_home(codex_home);
+        let mut specs = params.dynamic_tools.take().unwrap_or_default();
         match self {
-            Self::Disabled => params.dynamic_tools = None,
-            Self::Dynamic => {
-                params.dynamic_tools = Some(dynamic_tools::non_delegation_tool_specs());
-            }
+            Self::Disabled => {}
+            Self::Dynamic => specs.extend(dynamic_tools::non_delegation_tool_specs()),
             Self::Mcp(_) => {
-                params.dynamic_tools = None;
                 self.configure_mcp(&mut params.config);
             }
         }
+        specs.extend(browser_specs);
+        params.dynamic_tools = (!specs.is_empty()).then_some(specs);
+        Ok(())
     }
 
     pub(crate) fn configure_mcp(&self, config: &mut Option<HashMap<String, Value>>) {
@@ -176,6 +183,106 @@ impl DynamicToolMcpServer {
 impl Drop for DynamicToolMcpServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_app_server_protocol::DynamicToolNamespaceSpec;
+    use codex_app_server_protocol::DynamicToolNamespaceTool;
+
+    fn configured_browser_home() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("temporary browser home");
+        std::fs::write(
+            home.path().join("browser-computer-use.json"),
+            r#"{"provider":"playwright"}"#,
+        )
+        .expect("write browser config");
+        home
+    }
+
+    fn assert_browser_namespace(params: &ThreadStartParams) {
+        assert!(params.dynamic_tools.as_ref().is_some_and(|specs| specs.iter().any(
+            |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == "codex_browser")
+        )));
+    }
+
+    fn unrelated_browser_named_tool() -> DynamicToolSpec {
+        DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+            name: "unrelated".to_string(),
+            description: String::new(),
+            tools: vec![DynamicToolNamespaceTool::Function(
+                codex_app_server_protocol::DynamicToolFunctionSpec {
+                    name: "browser_step".to_string(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    defer_loading: false,
+                },
+            )],
+        })
+    }
+
+    #[test]
+    fn disabled_transport_preserves_unrelated_dynamic_tools() {
+        let home = configured_browser_home();
+        let mut params = ThreadStartParams::default();
+        params.dynamic_tools = Some(vec![unrelated_browser_named_tool()]);
+        ThreadToolTransport::Disabled
+            .configure(&mut params, home.path())
+            .expect("unrelated namespace must coexist with Browser");
+        assert!(params.dynamic_tools.as_ref().is_some_and(|specs| specs.iter().any(
+            |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == "unrelated")
+        )));
+        assert_browser_namespace(&params);
+    }
+
+    #[test]
+    fn dynamic_transport_preserves_unrelated_tools_and_registers_task_namespace() {
+        let home = configured_browser_home();
+        let mut params = ThreadStartParams::default();
+        params.dynamic_tools = Some(vec![unrelated_browser_named_tool()]);
+        ThreadToolTransport::Dynamic
+            .configure(&mut params, home.path())
+            .expect("unrelated namespace must coexist with Browser");
+        let specs = params.dynamic_tools.expect("configured dynamic tools");
+        assert!(specs.iter().any(|spec| matches!(
+            spec,
+            DynamicToolSpec::Namespace(namespace) if namespace.name == "unrelated"
+        )));
+        assert!(specs.iter().any(|spec| matches!(
+            spec,
+            DynamicToolSpec::Namespace(namespace) if namespace.name == dynamic_tools::NAMESPACE
+        )));
+        assert!(specs.iter().any(|spec| matches!(
+            spec,
+            DynamicToolSpec::Namespace(namespace) if namespace.name == "codex_browser"
+        )));
+    }
+
+    #[tokio::test]
+    async fn mcp_transport_keeps_browser_dynamic_specs_separate_from_task_mcp() {
+        let home = configured_browser_home();
+        let server = DynamicToolMcpServer {
+            connection: Arc::new(RwLock::new(None)),
+            config: serde_json::json!({"url":"http://127.0.0.1/mcp"}),
+            task: tokio::spawn(async {}),
+        };
+        let mut params = ThreadStartParams::default();
+        params.dynamic_tools = Some(vec![unrelated_browser_named_tool()]);
+        ThreadToolTransport::Mcp(Arc::new(server))
+            .configure(&mut params, home.path())
+            .expect("unrelated namespace must coexist with Browser");
+        assert!(params.dynamic_tools.as_ref().is_some_and(|specs| specs.iter().any(
+            |spec| matches!(spec, DynamicToolSpec::Namespace(namespace) if namespace.name == "unrelated")
+        )));
+        assert!(
+            params
+                .config
+                .as_ref()
+                .is_some_and(|config| config.contains_key("mcp_servers.codex_tui"))
+        );
+        assert_browser_namespace(&params);
     }
 }
 

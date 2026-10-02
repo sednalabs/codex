@@ -818,9 +818,16 @@ fn spawn_approved_task_tool_call(
         app_server.remote_cwd_override(),
         /*session_start_source*/ None,
     );
-    app_server
+    if let Err(error) = app_server
         .thread_tool_transport()
-        .configure(&mut thread_start_params);
+        .configure(&mut thread_start_params, app.config.codex_home.as_path())
+    {
+        app_event_tx.send(AppEvent::DynamicToolCallCompleted {
+            request_id,
+            response: crate::dynamic_tools::failure_response(error),
+        });
+        return;
+    }
     tokio::spawn(async move {
         let response = crate::dynamic_tools::execute(
             request_handle,
@@ -1958,6 +1965,70 @@ async fn dynamic_tool_requests_ignore_other_namespaces_and_dispatch_tui_namespac
     .await?;
     assert_eq!(cancelled["success"], false);
     assert!(app.dynamic_tool_tasks.is_empty());
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_dynamic_tool_requests_dispatch_provider_and_preserve_image() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let provider = codex_home.path().join("browser-provider.sh");
+    std::fs::write(
+        &provider,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"provider response\"},{\"type\":\"inputImage\",\"imageUrl\":\"data:image/png;base64,AAAA\",\"detail\":\"high\"}],\"success\":true}'\n",
+    )?;
+    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "command",
+            "command": ["sh", provider.to_string_lossy()]
+        }))?,
+    )?;
+    let (app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::Integer(701),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: "browser-fixture-thread".to_string(),
+                turn_id: "browser-fixture-turn".to_string(),
+                call_id: "browser-fixture-call".to_string(),
+                namespace: Some("codex_browser".to_string()),
+                tool: "browser_observe".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        })),
+    )
+    .await;
+
+    let AppEvent::DynamicToolCallCompleted {
+        request_id,
+        response,
+    } = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), events.recv())
+        .await?
+        .expect("Browser provider completion")
+    else {
+        panic!("expected Browser dynamic-tool completion")
+    };
+    assert_eq!(request_id, AppServerRequestId::Integer(701));
+    assert!(response.success, "{response:?}");
+    assert!(matches!(
+        response.content_items.as_slice(),
+        [
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text },
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage { image_url }
+        ] if text == "provider response" && image_url == "data:image/png;base64,AAAA"
+    ));
 
     app_server.shutdown().await?;
     proxy.await??;

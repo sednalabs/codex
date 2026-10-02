@@ -132,6 +132,59 @@ jobs:
         shell: bash
         run: echo "CODEX_JS_REPL_NODE_PATH=$(command -v node)" >> "${GITHUB_ENV}"
 
+      - name: Select isolated Browser Playwright setup
+        id: browser_setup
+        shell: bash
+        env:
+          REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+
+          try:
+              request = json.loads(os.environ["REQUEST_JSON"])
+          except (json.JSONDecodeError, TypeError):
+              request = None
+          tests = request.get("tests") if isinstance(request, dict) else None
+          tests = tests if isinstance(tests, list) else []
+          selected = False
+          if isinstance(request, dict):
+              selected = (
+                  request.get("package") == "codex-browser-computer-use"
+                  and "tests::hosted_native_browser_tool_flow" in tests
+              ) or (
+                  request.get("package") == "codex-tui"
+                  and "app::tests::session_lifecycle_requests::browser_dynamic_tool_requests_dispatch_provider_and_preserve_image"
+                  in tests
+              )
+          print(f"browser_package_selected={'true' if selected else 'false'}")
+          PY
+
+      - name: Install pinned Playwright Chromium for Browser crate requests
+        if: ${{ steps.browser_setup.outputs.browser_package_selected == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_node="${RUNNER_TEMP}/browser-node"
+          browser_bins="${RUNNER_TEMP}/ms-playwright"
+          browser_state="${RUNNER_TEMP}/browser-state"
+          mkdir -p "${browser_state}"
+          npm install --prefix "${browser_node}" --no-save --package-lock=false playwright@1.55.0
+          PLAYWRIGHT_BROWSERS_PATH="${browser_bins}" \
+            node "${browser_node}/node_modules/playwright/cli.js" install --with-deps chromium
+          executable="$(PLAYWRIGHT_BROWSERS_PATH="${browser_bins}" node -e \
+            'process.stdout.write(require(process.argv[1]).chromium.executablePath())' \
+            "${browser_node}/node_modules/playwright")"
+          test -x "${executable}"
+          {
+            echo "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH=${browser_node}/node_modules"
+            echo "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH=${executable}"
+            echo "CODEX_BROWSER_PLAYWRIGHT_HEADLESS=true"
+            echo "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR=${browser_state}"
+          } >> "${GITHUB_ENV}"
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: x86_64-unknown-linux-gnu

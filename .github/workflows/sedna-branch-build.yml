@@ -28,6 +28,13 @@ on:
         description: Exact 40-character comparison base commit SHA (B)
         required: true
         type: string
+      allow_browser_local_package_addition:
+        description: >-
+          Permit exactly codex-browser-computer-use as a new local lock package
+          in prepare-only mode.
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: sedna-branch-build/${{ inputs.mode }}/${{ inputs.target_sha }}/${{ inputs.base_sha }}
@@ -58,12 +65,21 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          ALLOW_BROWSER_LOCAL_ADDITION: ${{ inputs.allow_browser_local_package_addition }}
         run: |
           set -euo pipefail
           case "${MODE}" in
             build|prepare-only) ;;
             *) echo "unsupported workflow mode" >&2; exit 1 ;;
           esac
+          case "${ALLOW_BROWSER_LOCAL_ADDITION}" in
+            true|false) ;;
+            *) echo "allow_browser_local_package_addition must be true or false" >&2; exit 1 ;;
+          esac
+          if [[ "${ALLOW_BROWSER_LOCAL_ADDITION}" == true ]] && [[ "${MODE}" != prepare-only ]]; then
+            echo "Browser local-package addition is only valid in prepare-only mode" >&2
+            exit 1
+          fi
           [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || {
             echo "workflow host SHA must be a full lowercase commit SHA" >&2
             exit 1
@@ -135,6 +151,7 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          ALLOW_BROWSER_LOCAL_ADDITION: ${{ inputs.allow_browser_local_package_addition }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
@@ -188,6 +205,7 @@ jobs:
           WORKFLOW_HOST_SHA: ${{ github.sha }}
           PRODUCT_SHA: ${{ inputs.target_sha }}
           BASE_SHA: ${{ inputs.base_sha }}
+          ALLOW_BROWSER_LOCAL_ADDITION: ${{ inputs.allow_browser_local_package_addition }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -231,14 +249,123 @@ jobs:
                   if "source" not in package
               )
 
+          def validate_lock_records(before_lock, after_lock, allow_browser_addition):
+              if external_packages(before_lock) - external_packages(after_lock):
+                  raise ValueError(
+                      "Cargo.lock refresh removed or changed an already-locked external dependency"
+                  )
+              before_local = local_package_names(before_lock)
+              after_local = local_package_names(after_lock)
+              added_local = after_local - before_local
+              removed_local = before_local - after_local
+              if added_local or removed_local:
+                  browser_package_addition = collections.Counter(
+                      {"codex-browser-computer-use": 1}
+                  )
+                  if (
+                      not allow_browser_addition
+                      or added_local != browser_package_addition
+                      or removed_local
+                  ):
+                      raise ValueError(
+                          "Cargo.lock refresh changed the local workspace package set "
+                          "outside the opted-in exact codex-browser-computer-use addition"
+                      )
+
+          def require_rejected(label, before_lock, after_lock, allow_browser_addition):
+              try:
+                  validate_lock_records(before_lock, after_lock, allow_browser_addition)
+              except ValueError:
+                  return
+              raise SystemExit(f"Cargo.lock guard negative control failed: {label}")
+
+          control_external = {
+              "name": "serde",
+              "version": "1.0.0",
+              "source": "registry+https://github.com/rust-lang/crates.io-index",
+              "checksum": "0" * 64,
+          }
+          control_before = {"package": [{"name": "codex-core"}, control_external]}
+          control_browser_addition = {
+              "package": [
+                  {"name": "codex-core"},
+                  {"name": "codex-browser-computer-use"},
+                  control_external,
+              ]
+          }
+          validate_lock_records(control_before, control_before, False)
+          validate_lock_records(control_before, control_browser_addition, True)
+          require_rejected(
+              "Browser addition without opt-in",
+              control_before,
+              control_browser_addition,
+              False,
+          )
+          control_non_browser_addition = {
+              "package": [
+                  {"name": "codex-core"},
+                  {"name": "codex-unrelated-local"},
+                  control_external,
+              ]
+          }
+          require_rejected(
+              "non-Browser local addition with opt-in",
+              control_before,
+              control_non_browser_addition,
+              True,
+          )
+          control_extra_addition = {
+              "package": [
+                  *control_browser_addition["package"],
+                  {"name": "codex-extra-local"},
+              ]
+          }
+          require_rejected(
+              "Browser plus extra local addition",
+              control_before,
+              control_extra_addition,
+              True,
+          )
+          control_removed_local = {
+              "package": [
+                  {"name": "codex-browser-computer-use"},
+                  control_external,
+              ]
+          }
+          require_rejected(
+              "local package removal",
+              {
+                  "package": [
+                      {"name": "codex-core"},
+                      {"name": "codex-old-local"},
+                      control_external,
+                  ]
+              },
+              control_removed_local,
+              True,
+          )
+          control_external_mutation = {
+              "package": [
+                  {"name": "codex-core"},
+                  {**control_external, "version": "1.0.1"},
+              ]
+          }
+          require_rejected(
+              "external record mutation",
+              control_before,
+              control_external_mutation,
+              True,
+          )
+
+          allow_browser_addition = (
+              os.environ["ALLOW_BROWSER_LOCAL_ADDITION"] == "true"
+          )
           before_external = external_packages(before)
           after_external = external_packages(after)
-          if before_external - after_external:
-              raise SystemExit(
-                  "Cargo.lock refresh removed or changed an already-locked external dependency"
-              )
-          if local_package_names(before) != local_package_names(after):
-              raise SystemExit("Cargo.lock refresh changed the local workspace package set")
+          try:
+              validate_lock_records(before, after, allow_browser_addition)
+          except ValueError as exc:
+              raise SystemExit(str(exc)) from exc
 
           exact_files = {
               "codex-rs/Cargo.lock",
@@ -304,6 +431,7 @@ jobs:
               "comparison_base_sha": os.environ["BASE_SHA"],
               "runner_label": "ubuntu-24.04",
               "architecture": "x86_64",
+              "allow_browser_local_package_addition": allow_browser_addition,
               "package_version": package_version,
               "new_external_package_records": sum((after_external - before_external).values()),
               "cargo_lock_before_sha256": hashlib.sha256(before_lock.read_bytes()).hexdigest(),
