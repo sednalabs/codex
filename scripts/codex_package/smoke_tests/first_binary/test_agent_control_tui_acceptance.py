@@ -60,6 +60,13 @@ def _latest_user_marker(request: CapturedResponsesRequest, marker: str) -> bool:
     return any(marker in json.dumps(item) for item in recent_input)
 
 
+def _has_call_output(request: CapturedResponsesRequest, call_id: str) -> bool:
+    return any(
+        item.get("type") == "function_call_output" and item.get("call_id") == call_id
+        for item in request.input()
+    )
+
+
 def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
     outputs_by_request = [
         [
