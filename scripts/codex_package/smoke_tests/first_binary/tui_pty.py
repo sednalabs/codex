@@ -353,6 +353,44 @@ class PackagedTui:
         })
         deadline = time.monotonic() + timeout
         received = bytearray()
+
+        def matches(rendered: str) -> bool:
+            # The details pane is preceded by its visible `│` gutter. Treat
+            # that pane chrome as framing while still requiring the exact
+            # label and UUID on neighboring rendered rows.
+            lines = [line.strip().strip("│").strip() for line in rendered.splitlines()]
+            adjacent_value = value_label is None or any(
+                lines[index] == value_label and lines[index + 1] == marker
+                for index in range(len(lines) - 1)
+            )
+            return (
+                rendered != self.last_input_screen
+                and marker in rendered
+                and all(required in rendered for required in required_markers)
+                and adjacent_value
+            )
+
+        # PTYs need not redraw an unchanged screen after input. Evaluate the
+        # maintained frame first; raw-byte freshness is not screen-state
+        # freshness. `send()` snapshots the screen after draining pre-input
+        # bytes, so this still requires a post-input transition.
+        try:
+            rendered = self.screen.text()
+        except AssertionError as error:
+            raise self._closed_output(
+                marker, bytes(received), f"unsupported terminal output: {error}"
+            ) from error
+        if self.process.poll() is not None:
+            raise self._closed_output(marker, bytes(received), "exited before screen witness")
+        if matches(rendered):
+            self.last_frame = rendered
+            self.interactions.append({
+                "screen_witness": marker,
+                "source": "maintained-screen",
+                "exit_status": self.process.poll(),
+            })
+            return rendered
+
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise self._closed_output(marker, bytes(received), "exited before screen witness")
@@ -378,23 +416,11 @@ class PackagedTui:
                 raise self._closed_output(
                     marker, bytes(received), f"unsupported terminal output: {error}"
                 ) from error
-            # The details pane is preceded by its visible `│` gutter. Treat
-            # that pane chrome as framing while still requiring the exact
-            # label and UUID on neighboring rendered rows.
-            lines = [line.strip().strip("│").strip() for line in rendered.splitlines()]
-            adjacent_value = value_label is None or any(
-                lines[index] == value_label and lines[index + 1] == marker
-                for index in range(len(lines) - 1)
-            )
-            if (
-                rendered != self.last_input_screen
-                and marker in rendered
-                and all(required in rendered for required in required_markers)
-                and adjacent_value
-            ):
+            if matches(rendered):
                 self.last_frame = rendered
                 self.interactions.append({
                     "screen_witness": marker,
+                    "source": "pty-update",
                     "exit_status": self.process.poll(),
                 })
                 return rendered
