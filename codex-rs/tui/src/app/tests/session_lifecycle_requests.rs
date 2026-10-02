@@ -1974,38 +1974,113 @@ async fn dynamic_tool_requests_ignore_other_namespaces_and_dispatch_tui_namespac
 #[cfg(unix)]
 #[tokio::test]
 async fn browser_dynamic_tool_requests_dispatch_provider_and_preserve_image() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
+    use base64::Engine as _;
 
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
-    let provider = codex_home.path().join("browser-provider.sh");
-    std::fs::write(
-        &provider,
-        "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"provider response\"},{\"type\":\"inputImage\",\"imageUrl\":\"data:image/png;base64,AAAA\",\"detail\":\"high\"}],\"success\":true}'\n",
-    )?;
-    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700))?;
     std::fs::write(
         codex_home.path().join("browser-computer-use.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "provider": "command",
-            "command": ["sh", provider.to_string_lossy()]
-        }))?,
+        br#"{"provider":"playwright"}"#,
     )?;
-    let (app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+    for variable in [
+        "CODEX_BROWSER_PLAYWRIGHT_NODE_PATH",
+        "CODEX_BROWSER_PLAYWRIGHT_EXECUTABLE_PATH",
+        "CODEX_BROWSER_PLAYWRIGHT_STATE_DIR",
+        "CODEX_BROWSER_PLAYWRIGHT_HEADLESS",
+    ] {
+        assert!(
+            std::env::var_os(variable).is_some(),
+            "hosted Playwright setup must provide {variable}"
+        );
+    }
+
+    let state_root = std::path::PathBuf::from(
+        std::env::var_os("CODEX_BROWSER_PLAYWRIGHT_STATE_DIR")
+            .expect("hosted Playwright state root"),
+    );
+    let (mut app_server, requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+    let thread_id = app_server
+        .start_thread(&app.config)
+        .await?
+        .session
+        .thread_id
+        .to_string();
+
+    let start = recorded_params(&requests, "thread/start")
+        .pop()
+        .expect("recorded model-facing thread/start");
+    let browser_namespace = start["dynamicTools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "codex_browser"))
+        .expect("registered native Browser namespace");
+    assert_eq!(browser_namespace["type"], "namespace");
+    let browser_tools = browser_namespace["tools"]
+        .as_array()
+        .expect("registered Browser tools");
+    for tool_name in ["browser_observe", "browser_step"] {
+        let tool = browser_tools
+            .iter()
+            .find(|tool| tool["name"] == tool_name)
+            .unwrap_or_else(|| panic!("registered {tool_name}"));
+        assert!(
+            tool["description"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+        let properties = tool["inputSchema"]["properties"]
+            .as_object()
+            .expect("registered Browser input schema");
+        for property in ["scope", "interaction_map", "captures", "save_artifact"] {
+            let schema = properties
+                .get(property)
+                .unwrap_or_else(|| panic!("registered {tool_name}.{property}"));
+            assert!(
+                schema["description"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "{tool_name}.{property} has a model-facing description"
+            );
+        }
+        let capture = &properties["captures"]["items"]["properties"];
+        for property in ["label", "viewportWidth", "viewportHeight", "scroll"] {
+            assert!(
+                capture[property]["description"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "{tool_name}.captures.{property} has a model-facing description"
+            );
+        }
+    }
+
+    let html = "<html><head><title>visual fixture</title></head><body><button id='safe'>Safe button</button><input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'><div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div><div style='height:2400px'>Long static page</div></body></html>";
+    let encoded_html = html
+        .bytes()
+        .map(|byte| format!("%{byte:02X}"))
+        .collect::<String>();
+    let visual_url = format!("data:text/html,{encoded_html}");
 
     app.handle_app_server_event(
         &app_server,
         AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
             request_id: AppServerRequestId::Integer(701),
             params: codex_app_server_protocol::DynamicToolCallParams {
-                thread_id: "browser-fixture-thread".to_string(),
+                thread_id: thread_id.clone(),
                 turn_id: "browser-fixture-turn".to_string(),
-                call_id: "browser-fixture-call".to_string(),
+                call_id: "browser-fixture-visual-call".to_string(),
                 namespace: Some("codex_browser".to_string()),
                 tool: "browser_observe".to_string(),
-                arguments: serde_json::json!({}),
+                arguments: serde_json::json!({
+                    "url": visual_url,
+                    "scope": "viewport_and_page",
+                    "interaction_map": {"scope": "page", "offset": 0},
+                    "captures": [
+                        {"label": "top-wide", "viewportWidth": 960, "viewportHeight": 640, "scroll": "top"},
+                        {"label": "bottom-narrow", "viewportWidth": 640, "viewportHeight": 480, "scroll": "bottom"}
+                    ],
+                    "save_artifact": true
+                }),
             },
         })),
     )
@@ -2022,13 +2097,220 @@ async fn browser_dynamic_tool_requests_dispatch_provider_and_preserve_image() ->
     };
     assert_eq!(request_id, AppServerRequestId::Integer(701));
     assert!(response.success, "{response:?}");
-    assert!(matches!(
-        response.content_items.as_slice(),
-        [
-            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text },
-            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage { image_url }
-        ] if text == "provider response" && image_url == "data:image/png;base64,AAAA"
-    ));
+    let [
+        codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text },
+        codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage {
+            image_url: top_image,
+        },
+        codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage {
+            image_url: bottom_image,
+        },
+    ] = response.content_items.as_slice()
+    else {
+        panic!("expected visual metadata and two typed Browser images: {response:?}");
+    };
+    assert!(text.contains("top-wide") && text.contains("bottom-narrow"));
+    assert!(text.contains("page_hints:") && text.contains("restoration:"));
+    assert!(!text.contains("DO_NOT_EXPOSE_FIXTURE_SECRET"));
+    assert!(!text.contains("DO_NOT_EXPOSE_EDITABLE_SECRET"));
+
+    let top_png = base64::engine::general_purpose::STANDARD.decode(
+        top_image
+            .strip_prefix("data:image/png;base64,")
+            .expect("top PNG data URL"),
+    )?;
+    let bottom_png = base64::engine::general_purpose::STANDARD.decode(
+        bottom_image
+            .strip_prefix("data:image/png;base64,")
+            .expect("bottom PNG data URL"),
+    )?;
+    for png in [&top_png, &bottom_png] {
+        assert!(png.len() > 8, "captured PNG has nonzero image payload");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    let capture_metadata = |label: &str| -> Result<serde_json::Value> {
+        let line = text
+            .lines()
+            .find(|line| {
+                line.starts_with("capture[") && line.contains(&format!("label=\"{label}\""))
+            })
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing {label} capture metadata"))?;
+        let (_, metadata) = line
+            .split_once(": ")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing {label} metadata separator"))?;
+        let (metadata, _) = metadata
+            .split_once(" method=")
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing {label} capture method"))?;
+        Ok(serde_json::from_str(metadata)?)
+    };
+    let top_metadata = capture_metadata("top-wide")?;
+    let bottom_metadata = capture_metadata("bottom-narrow")?;
+    assert_eq!(top_metadata["effectiveViewport"]["width"], 960);
+    assert_eq!(top_metadata["effectiveViewport"]["height"], 640);
+    assert!(
+        top_metadata["document"]["height"]
+            .as_u64()
+            .unwrap_or_default()
+            > 640
+    );
+    assert_eq!(bottom_metadata["effectiveViewport"]["width"], 640);
+    assert_eq!(bottom_metadata["effectiveViewport"]["height"], 480);
+    assert!(
+        bottom_metadata["devicePixelRatio"]
+            .as_f64()
+            .unwrap_or_default()
+            > 0.0
+    );
+    assert!(bottom_metadata["scroll"]["y"].as_f64().unwrap_or_default() > 0.0);
+    let restoration_line = text
+        .lines()
+        .find(|line| line.starts_with("restoration: "))
+        .expect("restoration metadata");
+    let restoration: serde_json::Value =
+        serde_json::from_str(restoration_line.strip_prefix("restoration: ").unwrap())?;
+    assert_eq!(restoration["success"], true);
+    assert_eq!(restoration["actual"], restoration["expected"]);
+
+    let artifact_manifest = text
+        .lines()
+        .find_map(|line| line.strip_prefix("artifact_manifest: "))
+        .expect("paired artifact manifest path");
+    let profiles = std::fs::read_dir(state_root.join("profiles"))?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    assert_eq!(profiles.len(), 1, "one actual thread profile was created");
+    let profile = &profiles[0];
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(profile.join("state.json"))?)?["url"],
+        visual_url
+    );
+    let manifest_path = profile.join(artifact_manifest);
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    assert_eq!(manifest["threadId"], thread_id);
+    assert_eq!(manifest["captures"].as_array().map(Vec::len), Some(2));
+    for (index, (label, expected_metadata, expected_png)) in [
+        ("top-wide", &top_metadata, &top_png),
+        ("bottom-narrow", &bottom_metadata, &bottom_png),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let capture = &manifest["captures"][index];
+        assert_eq!(capture["order"], index + 1);
+        assert_eq!(capture["label"], label);
+        assert_eq!(capture["metadata"], *expected_metadata);
+        let artifact_path = manifest_path
+            .parent()
+            .expect("artifact run directory")
+            .join(capture["path"].as_str().expect("manifest PNG path"));
+        let artifact_png = std::fs::read(artifact_path)?;
+        assert_eq!(&artifact_png, expected_png, "saved PNG matches typed image");
+    }
+
+    // Return the real provider result through the TUI dispatcher to the recording
+    // app-server. This exercises the wire response, not an external model inference.
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::DynamicToolCallCompleted {
+            request_id: request_id.clone(),
+            response: response.clone(),
+        },
+    ))
+    .await?;
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if let Some(response) = recorded_params(&requests, "server/request/response").pop() {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(completed["success"], true);
+    let wire_items = completed["contentItems"]
+        .as_array()
+        .expect("typed wire items");
+    assert_eq!(wire_items.len(), 3);
+    assert_eq!(wire_items[0]["type"], "inputText");
+    assert_eq!(wire_items[1]["type"], "inputImage");
+    assert_eq!(wire_items[2]["type"], "inputImage");
+    assert_eq!(wire_items[1]["imageUrl"], top_image);
+    assert_eq!(wire_items[2]["imageUrl"], bottom_image);
+
+    // A malformed visual request must be a truthful failure and must not create
+    // an additional thread profile or artifact run.
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::Integer(702),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: thread_id.clone(),
+                turn_id: "browser-fixture-turn".to_string(),
+                call_id: "browser-fixture-invalid-call".to_string(),
+                namespace: Some("codex_browser".to_string()),
+                tool: "browser_observe".to_string(),
+                arguments: serde_json::json!({
+                    "url": visual_url,
+                    "captures": [{"label": "duplicate"}, {"label": "duplicate"}],
+                    "save_artifact": true
+                }),
+            },
+        })),
+    )
+    .await;
+    let AppEvent::DynamicToolCallCompleted {
+        request_id: invalid_request_id,
+        response: invalid_response,
+    } = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), events.recv())
+        .await?
+        .expect("invalid Browser request completion")
+    else {
+        panic!("expected invalid Browser dynamic-tool completion");
+    };
+    assert_eq!(invalid_request_id, AppServerRequestId::Integer(702));
+    assert!(
+        !invalid_response.success,
+        "invalid visual request fails visibly"
+    );
+    let invalid_text = invalid_response
+        .content_items
+        .iter()
+        .find_map(|item| match item {
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text } => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .expect("truthful invalid-request explanation");
+    assert!(invalid_text.contains("unique non-empty label"));
+    Box::pin(app.handle_event(
+        &mut tui,
+        &mut app_server,
+        AppEvent::DynamicToolCallCompleted {
+            request_id: invalid_request_id,
+            response: invalid_response,
+        },
+    ))
+    .await?;
+    let invalid_wire = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), async {
+        loop {
+            if let Some(response) = recorded_params(&requests, "server/request/response")
+                .into_iter()
+                .find(|response| response["success"] == false)
+            {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(invalid_wire["success"], false);
+    assert_eq!(std::fs::read_dir(state_root.join("profiles"))?.count(), 1);
+    assert_eq!(std::fs::read_dir(profile.join("artifacts"))?.count(), 1);
 
     app_server.shutdown().await?;
     proxy.await??;
