@@ -142,8 +142,15 @@ class MockResponsesServer:
         self._thread.start()
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
-        self.close()
+    def __exit__(self, _exc_type: object, exc: BaseException | None, _tb: object) -> None:
+        if exc is None:
+            self.close()
+            return
+        try:
+            self.close()
+        except AssertionError as routing_error:
+            note = f"Secondary mock Responses routing teardown failure: {routing_error}"
+            exc.args = (f"{exc}\n{note}",)
 
     @property
     def url(self) -> str:

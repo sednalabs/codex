@@ -122,6 +122,15 @@ def test_unused_one_shot_routes_fail_at_teardown() -> None:
                 "event: response.completed\ndata: {}\n\n",
             )
 
+    with pytest.raises(AssertionError, match="primary fixture failure") as primary:
+        with MockResponsesServer() as server:
+            server.enqueue_sse_for_request(
+                lambda _request: True,
+                "event: response.completed\ndata: {}\n\n",
+            )
+            raise AssertionError("primary fixture failure")
+    assert "unused_routes=1" in str(primary.value), primary.value
+
 
 def test_one_shot_route_cannot_be_reused() -> None:
     with pytest.raises(AssertionError, match="one-shot Responses route was matched more than once"):
