@@ -346,7 +346,9 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 ]),
             )
             server.enqueue_sse_for_request(
-                lambda request: _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER"),
+                lambda request: _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER")
+                and request.header("x-codex-parent-thread-id") is not None
+                and request.header("x-codex-parent-thread-id") != root_id,
                 _function_response(
                     "grandchild-invalid-model", "invalid-model-spawn", "spawn_agent", {
                         "task_name": "invalid-model-child",
@@ -673,7 +675,8 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: request.header("x-codex-parent-thread-id") == root_id
-                and _has_call_output(request, "worker-create-goal-call"),
+                and _has_call_output(request, "worker-create-goal-call")
+                and not _is_goal_turn(request),
                 sse([
                     ev_response_created("worker-goal-established"),
                     ev_assistant_message("worker-goal-created", "goal established"),
@@ -682,6 +685,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: _is_goal_turn(request)
+                and request.header("x-codex-parent-thread-id") == root_id
                 and not _contains_input_text(request, "GOAL_PROGRESS_ONE")
                 and not _contains_input_text(request, "goal-queue-only-call"),
                 sse([
@@ -692,6 +696,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: _is_goal_turn(request)
+                and request.header("x-codex-parent-thread-id") == root_id
                 and _contains_input_text(request, "GOAL_PROGRESS_ONE")
                 and not _contains_input_text(request, "goal-queue-only-call"),
                 _function_response(
@@ -702,6 +707,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: _is_goal_turn(request)
+                and request.header("x-codex-parent-thread-id") == root_id
                 and _has_call_output(request, "goal-queue-only-call")
                 and not _contains_input_text(request, "GOAL_PROGRESS_TWO"),
                 sse([
@@ -712,6 +718,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: _is_goal_turn(request)
+                and request.header("x-codex-parent-thread-id") == root_id
                 and _contains_input_text(request, "GOAL_PROGRESS_TWO")
                 and not _has_call_output(request, "goal-update-complete-call"),
                 _function_response(
@@ -722,11 +729,21 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
             )
             server.enqueue_sse_for_request(
                 lambda request: _is_goal_turn(request)
+                and request.header("x-codex-parent-thread-id") == root_id
                 and _has_call_output(request, "goal-update-complete-call"),
                 sse([
                     ev_response_created("goal-terminal-response"),
                     ev_assistant_message("goal-terminal-message", "goal complete"),
                     ev_completed("goal-terminal-response"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and _has_call_output(request, "root-goal-wait-call"),
+                sse([
+                    ev_response_created("root-goal-complete"),
+                    ev_assistant_message("root-goal-complete-message", "goal complete"),
+                    ev_completed("root-goal-complete"),
                 ]),
             )
             turn = root.run("GOAL_ROOT_MARKER: start the worker and wait for its goal.")

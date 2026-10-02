@@ -118,10 +118,18 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 root.run("Persist the root before TUI resume.").final_response
                 == "persisted root turn"
             )
-            with PackagedTui(isolated, "resume", root_id) as empty_tui:
-                _open_agents(empty_tui)
-                empty_frame = empty_tui.until("Agent command center")
-                assert "All 0" in empty_frame, empty_frame
+
+        # The process that owns the session must release it before a second
+        # packaged process can resume and render its persisted tree.
+        with PackagedTui(isolated, "resume", root_id) as empty_tui:
+            _open_agents(empty_tui)
+            empty_frame = empty_tui.until("Agent command center")
+            assert "All 0" in empty_frame, empty_frame
+
+        with Codex(config=CodexConfig(
+            codex_bin=str(package.cli), cwd=str(package.directory), env=isolated.environment,
+        )) as client:
+            root = client.thread_resume(root_id)
             server.enqueue_sse_for_request(
                 lambda request: _thread_id(request) == root_id
                 and _latest_user_marker(request, "TUI_RICH_ROOT_MARKER"),
@@ -174,7 +182,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
 
     # Reopen the exact persisted tree in a second packaged process. The view is
     # driven by the binary's /agents implementation, not an in-process renderer.
-    with PackagedTui(isolated, "resume", root.id) as tui:
+    with PackagedTui(isolated, "resume", root_id) as tui:
         _open_agents(tui)
         tui.until("Agent command center")
         tui.send("f")
@@ -187,7 +195,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 "Configured/resolved model: gpt-5.6-terra",
                 "Configured/resolved effort: medium",
                 "Provider-effective identity: Unknown",
-                root.id,
+                root_id,
                 "Thread path:",
                 "/root/worker",
             ),
@@ -197,7 +205,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "Configured/resolved effort: medium" in details, details
         assert "Provider-effective identity: Unknown" in details, details
         parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
-        assert next(line.strip() for line in parent_id_lines if line.strip()) == root.id, details
+        assert next(line.strip() for line in parent_id_lines if line.strip()) == root_id, details
         assert "Thread path:" in details and "/root/worker" in details, details
         assert any(
             state in details for state in ("Working", "Needs input", "Ready", "Inactive")
@@ -205,7 +213,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "PRIVATE_PROMPT_SENTINEL" not in details, details
         assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
-    with PackagedTui(isolated, "resume", root.id) as tui:
+    with PackagedTui(isolated, "resume", root_id) as tui:
         _open_agents(tui)
         replay = tui.until("worker")
         # Select the same task after replay so the second frame contains its

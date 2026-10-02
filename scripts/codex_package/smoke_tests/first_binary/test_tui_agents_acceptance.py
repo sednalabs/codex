@@ -9,7 +9,7 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
 from package_acceptance import _mock_config
-from tui_pty import PackagedTui
+from tui_pty import PackagedTui, TerminalScreen
 
 
 def _field_value_is_rendered(frame: str, label: str, value: str) -> bool:
@@ -58,7 +58,51 @@ def _sdk(package: SmokePackage) -> Codex:
     ))
 
 
+def _assert_screen_identity_oracle() -> None:
+    correct_id = "11111111-1111-4111-8111-111111111111"
+    stale_id = "22222222-2222-4222-8222-222222222222"
+    wrong_id = "33333333-3333-4333-8333-333333333333"
+    screen = TerminalScreen(rows=34, columns=110)
+
+    # Treat the initial chunks as output drained before the input under test.
+    for chunk in (
+        b"\x1b[1;",
+        b"21r\x1b[1;1HThread ID:",
+        b"\x1b[2;1H" + stale_id.encode() + b" ",
+        b"\x1b[3;1H",
+        b"\xe2",
+        b"\x80\xba",
+        b"\x1b[1;",
+        b"0r\x1b[r",
+    ):
+        screen.feed(chunk)
+    before_input = screen.text()
+    assert _thread_identity_is_rendered(before_input, stale_id)
+
+    # A fragmented cursor/erase repaint replaces the stale UUID rather than
+    # accepting an old label/value or a substring from the raw byte stream.
+    for chunk in (
+        b"\x1b[2;",
+        b"1H\x1b[2",
+        b"K" + correct_id.encode()[:9],
+        correct_id.encode()[9:],
+    ):
+        screen.feed(chunk)
+    after_input = screen.text()
+    assert after_input != before_input
+    assert _thread_identity_is_rendered(after_input, correct_id)
+    assert not _thread_identity_is_rendered(after_input, wrong_id)
+    assert not _thread_identity_is_rendered(after_input, stale_id)
+
+    # T1's emitted reverse-index scrolls only within the configured region.
+    region = TerminalScreen(rows=4, columns=20)
+    region.feed(b"\x1b[2;3r\x1b[2;1Htop\x1bM")
+    assert region.text().splitlines()[1] == ""
+    assert region.text().splitlines()[2] == "top"
+
+
 def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage) -> None:
+    _assert_screen_identity_oracle()
     isolated, home = _isolated(package, "tui-empty-search")
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)

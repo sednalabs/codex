@@ -33,6 +33,8 @@ class TerminalScreen:
         self.columns = columns
         self.cells = [[" "] * columns for _ in range(rows)]
         self.row = self.column = 0
+        self.top_margin = 0
+        self.bottom_margin = rows - 1
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._state = "text"
         self._csi = ""
@@ -62,6 +64,12 @@ class TerminalScreen:
                     self._state = "csi"
                 elif char == "]":
                     self._state = "osc"
+                elif char == "M":
+                    if self.row == self.top_margin:
+                        self._scroll_down()
+                    else:
+                        self.row = max(0, self.row - 1)
+                    self._state = "text"
                 else:
                     self.unsupported.append(f"ESC {char!r}")
                     self._state = "text"
@@ -92,11 +100,21 @@ class TerminalScreen:
         return "\n".join("".join(line).rstrip() for line in self.cells)
 
     def _line_feed(self) -> None:
-        if self.row == self.rows - 1:
-            self.cells.pop(0)
-            self.cells.append([" "] * self.columns)
+        if self.top_margin <= self.row <= self.bottom_margin:
+            if self.row == self.bottom_margin:
+                self._scroll_up()
+            else:
+                self.row += 1
         else:
             self.row = min(self.rows - 1, self.row + 1)
+
+    def _scroll_up(self) -> None:
+        self.cells.pop(self.top_margin)
+        self.cells.insert(self.bottom_margin, [" "] * self.columns)
+
+    def _scroll_down(self) -> None:
+        self.cells.pop(self.bottom_margin)
+        self.cells.insert(self.top_margin, [" "] * self.columns)
 
     def _put(self, char: str) -> None:
         if self.column >= self.columns:
@@ -118,6 +136,21 @@ class TerminalScreen:
         if command in {"H", "f"}:
             self.row = min(self.rows - 1, value(0) - 1)
             self.column = min(self.columns - 1, value(1) - 1)
+        elif command == "r":
+            parts = raw_parameters.split(";") if raw_parameters else []
+            if len(parts) > 2 or any(part and not part.isdigit() for part in parts):
+                self.unsupported.append(f"CSI {raw_parameters!r}{command}")
+                return
+            top = int(parts[0]) if parts and parts[0] else 1
+            bottom = int(parts[1]) if len(parts) > 1 and parts[1] else self.rows
+            top = top or 1
+            bottom = bottom or self.rows
+            if not 1 <= top < bottom <= self.rows:
+                self.unsupported.append(f"CSI {raw_parameters!r}{command}")
+                return
+            self.top_margin = top - 1
+            self.bottom_margin = bottom - 1
+            self.row = self.column = 0
         elif command == "J":
             self._erase_display(values[0] if values else 0)
         elif command == "K":
