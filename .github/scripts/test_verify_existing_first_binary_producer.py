@@ -747,7 +747,7 @@ class AcceptedInputManifestTests(unittest.TestCase):
         }
         self.assertEqual(record["record_id"], select_accepted_record(manifest, inputs)["record_id"])
         for field, value in (
-            ("fixture_sha", Q13_FIXTURE_SHA),
+            ("fixture_sha", Q11_FIXTURE_SHA),
             ("sdk_sha", S3_SDK_SHA),
             ("profile", "pair"),
             ("profile", "full"),
