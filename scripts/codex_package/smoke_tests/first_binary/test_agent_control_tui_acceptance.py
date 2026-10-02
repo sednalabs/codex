@@ -22,7 +22,7 @@ from package_acceptance import _mock_config
 from tui_pty import PackagedTui
 
 
-def _open_agents(tui: PackagedTui) -> None:
+def _open_agents(tui: PackagedTui) -> str:
     # Establish readiness, then wait for the actual `/agents` popup entry
     # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
@@ -30,6 +30,7 @@ def _open_agents(tui: PackagedTui) -> None:
     popup = tui.until("open the agent command center")
     assert "/agents" in popup, popup
     tui.send("\r")
+    return tui.until_screen("Agent command center", required_markers=("Group:",))
 
 
 def _function_call(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -113,12 +114,20 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
-            root.set_name("tui-root-task")
-            server.enqueue_assistant_message("persisted root turn", response_id="tui-rich-seed")
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and _latest_user_marker(request, "TUI_RICH_SEED_MARKER"),
+                sse([
+                    ev_response_created("tui-rich-seed"),
+                    ev_assistant_message("tui-rich-seed-message", "persisted root turn"),
+                    ev_completed("tui-rich-seed"),
+                ]),
+            )
             assert (
-                root.run("Persist the root before TUI resume.").final_response
+                root.run("TUI_RICH_SEED_MARKER: persist the root before TUI resume.").final_response
                 == "persisted root turn"
             )
+            root.set_name("tui-root-task")
 
         with Codex(config=CodexConfig(
             codex_bin=str(package.cli), cwd=str(package.directory), env=isolated.environment,
@@ -178,8 +187,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
     # writes are complete. Terminating an earlier TUI that resumed this same
     # root can leave its writer active in the shared app-server state.
     with PackagedTui(isolated, "resume", root_id) as tui:
-        _open_agents(tui)
-        overview = tui.until("Agent command center")
+        overview = _open_agents(tui)
         assert "All 2" in overview, overview
         assert "tui-root-task" in overview and "worker" in overview, overview
         tui.send("f")
@@ -214,8 +222,8 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
     with PackagedTui(isolated, "resume", root_id) as tui:
-        _open_agents(tui)
-        replay = tui.until("worker")
+        replay = _open_agents(tui)
+        assert "worker" in replay, replay
         # Select the same task after replay so the second frame contains its
         # detail view and the same exact label/ID adjacency.
         tui.send("f")

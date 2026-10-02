@@ -34,7 +34,7 @@ def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
     assert _thread_identity_is_rendered(frame, thread_id), lines
 
 
-def _open_agents(tui: PackagedTui) -> None:
+def _open_agents(tui: PackagedTui) -> str:
     # Establish readiness, then wait for the actual `/agents` popup entry
     # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
@@ -42,6 +42,7 @@ def _open_agents(tui: PackagedTui) -> None:
     popup = tui.until("open the agent command center")
     assert "/agents" in popup, popup
     tui.send("\r")
+    return tui.until_screen("Agent command center", required_markers=("Group:",))
 
 
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
@@ -117,8 +118,7 @@ def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage)
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
         with PackagedTui(isolated) as tui:
-            _open_agents(tui)
-            opened = tui.until("Agent command center")
+            opened = _open_agents(tui)
             assert "Group:" in opened
             tui.send("f")
             search = tui.until_screen(
@@ -140,16 +140,16 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 ephemeral=False, approval_mode=ApprovalMode.deny_all,
                 sandbox=Sandbox.workspace_write,
             )
-            root.set_name("root-package-task")
             assert root.run("Complete root seed.").final_response == "root done"
+            root.set_name("root-package-task")
             child = client.thread_fork(
                 root.id, ephemeral=False, include_turns=False,
             )
-            child.set_name("child-package-task")
             assert child.run("Complete child seed.").final_response == "child done"
+            child.set_name("child-package-task")
             nested = client.thread_fork(child.id, ephemeral=False)
-            nested.set_name("nested-package-task")
             assert nested.run("Complete nested seed.").final_response == "nested done"
+            nested.set_name("nested-package-task")
             root_id, child_id, nested_id = root.id, child.id, nested.id
 
         # A second packaged process must reopen the exact child identity.
@@ -158,9 +158,8 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(root_id).id == root_id
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            _open_agents(tui)
-            tree = tui.until("nested-package-task")
-            assert "Agent command center" in tree
+            tree = _open_agents(tui)
+            assert "nested-package-task" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
             tui.send("f")
             assert "Search ›" in tui.until_screen(
@@ -214,7 +213,6 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            _open_agents(tui)
-            replay = tui.until("live-renamed-package-task")
-            assert "Agent command center" in replay
+            replay = _open_agents(tui)
+            assert "live-renamed-package-task" in replay
             assert "root-package-task" in replay and "child-package-task" in replay

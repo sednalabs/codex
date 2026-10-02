@@ -655,6 +655,7 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 _function_response(
                     "root-spawn-goal-worker", "goal-worker-spawn", "spawn_agent", {
                         "task_name": "worker", "message": "GOAL_WORKER_INITIAL_MARKER",
+                        "model": "gpt-5.6-terra", "reasoning_effort": "medium",
                     },
                 ),
             )
