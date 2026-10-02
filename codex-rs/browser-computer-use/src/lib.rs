@@ -1360,7 +1360,20 @@ global.document = { documentElement: {
   get clientHeight() { return browserState.height; },
   scrollWidth: 1280,
   scrollHeight: 1800,
-} };
+}, querySelectorAll: () => [
+  {
+    tagName: "DIV", isContentEditable: false, hidden: false, disabled: false,
+    innerText: "DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET", textContent: "DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET",
+    getAttribute: (name) => name === "role" ? "textbox" : null,
+    getBoundingClientRect: () => ({ x: 10, y: 20, width: 180, height: 30 }),
+  },
+  {
+    tagName: "DIV", isContentEditable: false, hidden: false, disabled: false,
+    innerText: "DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET", textContent: "DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET",
+    getAttribute: (name) => name === "role" ? "combobox" : null,
+    getBoundingClientRect: () => ({ x: 10, y: 60, width: 180, height: 30 }),
+  },
+] };
 const page = {
   isClosed: () => false,
   url: () => currentUrl,
@@ -1736,6 +1749,93 @@ exports.chromium = {
         );
         assert!(artifact_parent.is_file());
 
+        let partial_artifact_root = temp.path().join("partial-artifact-state");
+        let partial_artifact_thread = "partial-artifact-thread";
+        let initialized = run_visual(
+            partial_artifact_root.clone(),
+            partial_artifact_thread,
+            json!({}),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("initialize partial-artifact profile");
+        assert!(initialized.success);
+        let partial_artifact_profile = std::fs::read_dir(partial_artifact_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let mut write_failure_preload = tempfile::Builder::new()
+            .suffix(".cjs")
+            .tempfile()
+            .expect("second PNG failure preload");
+        write_failure_preload
+            .write_all(
+                br#"
+const fs = require("node:fs/promises");
+const writeFile = fs.writeFile.bind(fs);
+fs.writeFile = async (file, ...args) => {
+  if (String(file).endsWith("capture-02.png")) throw new Error("fixture second artifact PNG failure");
+  return writeFile(file, ...args);
+};
+"#,
+            )
+            .expect("write second-PNG failure preload");
+        let write_failure_preload_path = write_failure_preload.path().to_string_lossy().to_string();
+        let node_options = format!("--require={write_failure_preload_path}");
+        let (_partial_artifact_wrapper, partial_artifact_node) =
+            make_node_wrapper(false, &[("NODE_OPTIONS", node_options.as_str())]);
+        let partial_artifact_failure = run_visual(
+            partial_artifact_root.clone(),
+            partial_artifact_thread,
+            json!({
+                "captures": [{"label": "first"}, {"label": "second"}],
+                "save_artifact": true
+            }),
+            partial_artifact_node,
+        )
+        .await
+        .expect("partial artifact-write failure response");
+        assert!(!partial_artifact_failure.success);
+        assert_eq!(
+            partial_artifact_failure
+                .content_items
+                .iter()
+                .filter(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
+                .count(),
+            2,
+            "both completed captures remain available despite artifact write failure"
+        );
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &partial_artifact_failure.content_items[0]
+        else {
+            panic!("partial artifact failure includes stage text");
+        };
+        assert!(text.contains("artifact_save: fixture second artifact PNG failure"));
+        let partial: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("artifact_partial: "))
+                .expect("partial artifact inventory is reported"),
+        )
+        .expect("valid partial artifact inventory");
+        assert_eq!(partial["complete_manifest"], false);
+        assert_eq!(partial["files"], json!(["capture-01.png"]));
+        let partial_directory = partial["directory"]
+            .as_str()
+            .expect("private run directory");
+        assert!(
+            Path::new(partial_directory)
+                .components()
+                .all(|component| { matches!(component, std::path::Component::Normal(_)) })
+        );
+        let partial_run_dir = partial_artifact_profile.join(partial_directory);
+        let retained_png = std::fs::read(partial_run_dir.join("capture-01.png"))
+            .expect("first successfully written artifact remains available");
+        assert!(!retained_png.is_empty());
+        assert!(!partial_run_dir.join("capture-02.png").exists());
+        assert!(!partial_run_dir.join("manifest.json").exists());
+
         let unsafe_artifact_root = temp.path().join("unsafe-artifact-state");
         let unsafe_thread = "unsafe-artifact-thread";
         let initialized = run_visual(
@@ -1775,6 +1875,26 @@ exports.chromium = {
         assert!(text.contains("artifact_save:"));
         assert!(text.contains("must not be a symlink"));
         assert_eq!(std::fs::read_dir(outside_target).unwrap().count(), 0);
+
+        let aria_value_root = temp.path().join("aria-value-state");
+        let aria_value_response = run_visual(
+            aria_value_root,
+            "aria-value-thread",
+            json!({"scope": "viewport_and_page"}),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("custom ARIA value-redaction response");
+        assert!(aria_value_response.success);
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &aria_value_response.content_items[0]
+        else {
+            panic!("page-control hints are text metadata");
+        };
+        assert!(text.contains("\"role\":\"textbox\""));
+        assert!(text.contains("\"role\":\"combobox\""));
+        assert!(!text.contains("DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET"));
+        assert!(!text.contains("DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET"));
 
         let invalid_root = temp.path().join("invalid-visual-state");
         let invalid_inputs = [
@@ -1922,7 +2042,7 @@ exports.chromium = {
             )));
         }
 
-        let html = "<html><head><title>visual fixture</title></head><body><button id='safe'>Safe button</button><input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'><div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div><div style='height:2400px'>Long static page</div></body></html>";
+        let html = "<html><head><title>visual fixture</title></head><body><button id='safe'>Safe button</button><input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'><div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div><div role='textbox' tabindex='0'>DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET</div><div role='combobox' tabindex='0'>DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET</div><div style='height:2400px'>Long static page</div></body></html>";
         let encoded_html = html
             .bytes()
             .map(|byte| format!("%{byte:02X}"))
@@ -1997,6 +2117,8 @@ exports.chromium = {
         assert!(visual_text.contains("\"width\":640"));
         assert!(!visual_text.contains("DO_NOT_EXPOSE_FIXTURE_SECRET"));
         assert!(!visual_text.contains("DO_NOT_EXPOSE_EDITABLE_SECRET"));
+        assert!(!visual_text.contains("DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET"));
+        assert!(!visual_text.contains("DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET"));
         assert!(!visual_text.contains("data:image/png;base64,"));
 
         let visual_profile = std::fs::read_dir(state_root.join("profiles"))

@@ -68,6 +68,9 @@ async function main() {
       if (request.arguments?.save_artifact === true) {
         try {
           artifactResult = await saveCaptureArtifacts(stateDir, captureBundle, request);
+          if (!artifactResult.success) {
+            artifactError = `artifact_save: ${artifactResult.error}`;
+          }
         } catch (error) {
           artifactError = `artifact_save: ${errorMessage(error)}`;
         }
@@ -878,7 +881,9 @@ async function pageHints(page, offset = 0) {
       if (rect.width <= 0 || rect.height <= 0 || element.hidden) return [];
       const tag = element.tagName.toLowerCase();
       const role = element.getAttribute("role") || ({ button: "button", a: "link", input: "textbox", textarea: "textbox", select: "combobox" }[tag] || "element");
-      const name = element.getAttribute("aria-label") || element.getAttribute("title") || (tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80));
+      const valueBearingRole = ["textbox", "searchbox", "combobox", "spinbutton", "slider"].includes(role.toLowerCase());
+      const valueBearingElement = tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable || valueBearingRole;
+      const name = element.getAttribute("aria-label") || element.getAttribute("title") || (valueBearingElement ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80));
       const hints = [];
       if (element.id) hints.push(`#${CSS.escape(element.id)}`);
       const testId = element.getAttribute("data-testid");
@@ -894,26 +899,56 @@ async function pageHints(page, offset = 0) {
 
 async function saveCaptureArtifacts(stateDir, bundle, request) {
   if (bundle.error || !bundle.restoration.success) {
-    throw new Error("cannot publish a complete manifest when capture or restoration failed");
+    return {
+      success: false,
+      directory: null,
+      manifest: null,
+      files: [],
+      error: "capture or restoration failed; no artifact files were written",
+    };
   }
-  const artifactsDir = path.join(stateDir, "artifacts");
-  await ensurePrivateStateDirectory(artifactsDir);
-  const runDir = await fs.mkdtemp(path.join(artifactsDir, "capture-"));
-  await fs.chmod(runDir, 0o700);
   const screenshots = [];
-  for (let index = 0; index < bundle.captures.length; index += 1) {
-    const capture = bundle.captures[index];
-    const fileName = `capture-${String(index + 1).padStart(2, "0")}.png`;
-    const filePath = path.join(runDir, fileName);
-    await fs.writeFile(filePath, capture.screenshot.buffer, { flag: "wx", mode: 0o600 });
-    await fs.chmod(filePath, 0o600);
-    screenshots.push({ order: index + 1, label: capture.label, path: fileName, method: capture.screenshot.method, metadata: capture.metadata });
+  let runDir = null;
+  try {
+    const artifactsDir = path.join(stateDir, "artifacts");
+    await ensurePrivateStateDirectory(artifactsDir);
+    runDir = await fs.mkdtemp(path.join(artifactsDir, "capture-"));
+    await fs.chmod(runDir, 0o700);
+    for (let index = 0; index < bundle.captures.length; index += 1) {
+      const capture = bundle.captures[index];
+      const fileName = `capture-${String(index + 1).padStart(2, "0")}.png`;
+      const filePath = path.join(runDir, fileName);
+      await fs.writeFile(filePath, capture.screenshot.buffer, { flag: "wx", mode: 0o600 });
+      await fs.chmod(filePath, 0o600);
+      screenshots.push({ order: index + 1, label: capture.label, path: fileName, method: capture.screenshot.method, metadata: capture.metadata });
+    }
+    const manifestPath = path.join(runDir, "manifest.json");
+    const manifest = { tool: request.tool, threadId: request.threadId, restoration: bundle.restoration, captures: screenshots };
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx", mode: 0o600 });
+    await fs.chmod(manifestPath, 0o600);
+    return {
+      success: true,
+      directory: path.relative(stateDir, runDir),
+      manifest: path.relative(stateDir, manifestPath),
+      files: [...screenshots.map((capture) => capture.path), "manifest.json"],
+      captures: screenshots,
+    };
+  } catch (error) {
+    const files = [];
+    if (runDir) {
+      for (const name of await fs.readdir(runDir).catch(() => [])) {
+        const stat = await fs.lstat(path.join(runDir, name)).catch(() => null);
+        if (stat?.isFile()) files.push(name);
+      }
+    }
+    return {
+      success: false,
+      directory: runDir ? path.relative(stateDir, runDir) : null,
+      manifest: null,
+      files,
+      error: errorMessage(error),
+    };
   }
-  const manifestPath = path.join(runDir, "manifest.json");
-  const manifest = { tool: request.tool, threadId: request.threadId, restoration: bundle.restoration, captures: screenshots };
-  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx", mode: 0o600 });
-  await fs.chmod(manifestPath, 0o600);
-  return { directory: path.relative(stateDir, runDir), manifest: path.relative(stateDir, manifestPath), captures: screenshots };
 }
 
 async function responseForPage(page, bundle, summaries, { artifactResult, error, pageHints: includePageHints, pageHintOffset }) {
@@ -942,7 +977,15 @@ async function responseForPage(page, bundle, summaries, { artifactResult, error,
     if (capture.screenshot.warning) lines.push(`capture_fallback[${index + 1}]: ${capture.screenshot.warning}`);
   }
   lines.push(`restoration: ${JSON.stringify(bundle.restoration)}`);
-  if (artifactResult) lines.push(`artifact_manifest: ${artifactResult.manifest}`);
+  if (artifactResult?.success) {
+    lines.push(`artifact_manifest: ${artifactResult.manifest}`);
+  } else if (artifactResult) {
+    lines.push(`artifact_partial: ${JSON.stringify({
+      directory: artifactResult.directory,
+      files: artifactResult.files,
+      complete_manifest: false,
+    })}`);
+  }
   if (error) lines.push(`visual_error: ${error}`);
   return {
     contentItems: [
