@@ -228,10 +228,11 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert metadata["configured_reasoning_effort"] == "medium", metadata
         assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
 
-    # Reopen the exact persisted tree in one packaged process after all fixture
-    # writes are complete. Terminating an earlier TUI that resumed this same
-    # root can leave its writer active in the shared app-server state.
-    with PackagedTui(isolated, "resume", root_id) as tui:
+    # Load the completed child in the TUI process. The overview discovers roots
+    # from persisted history, but only includes descendants present in the
+    # process's loaded-thread list; resuming only the root does not load its
+    # completed child into that list.
+    with PackagedTui(isolated, "resume", child_id) as tui:
         overview = _open_agents(
             tui, required_markers=("All 2", "tui-root-task", "worker")
         )
@@ -268,7 +269,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "PRIVATE_PROMPT_SENTINEL" not in details, details
         assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
-    with PackagedTui(isolated, "resume", root_id) as tui:
+    with PackagedTui(isolated, "resume", child_id) as tui:
         replay = _open_agents(tui, required_markers=("worker",))
         assert "worker" in replay, replay
         # Select the same task after replay so the second frame contains its
