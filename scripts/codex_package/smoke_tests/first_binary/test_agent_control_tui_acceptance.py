@@ -60,17 +60,29 @@ def _latest_user_marker(request: CapturedResponsesRequest, marker: str) -> bool:
 
 
 def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
-    outputs = [
-        item.get("output")
+    outputs_by_request = [
+        [
+            item.get("output")
+            for item in request.input()
+            if item.get("type") == "function_call_output" and item.get("call_id") == call_id
+        ]
         for request in server.requests() if request.path == "/v1/responses"
-        for item in request.input()
-        if item.get("type") == "function_call_output" and item.get("call_id") == call_id
     ]
+    duplicate_requests = [
+        (request_index, len(outputs))
+        for request_index, outputs in enumerate(outputs_by_request)
+        if len(outputs) > 1
+    ]
+    assert not duplicate_requests, (
+        f"expected at most one output for {call_id} within each request; "
+        f"duplicate request occurrences: {duplicate_requests!r}"
+    )
+    outputs = [outputs[0] for outputs in outputs_by_request if outputs]
     unique_outputs = {json.dumps(output, sort_keys=True): output for output in outputs}
     assert len(unique_outputs) == 1, (
         f"expected one distinct executed output for {call_id}; "
-        f"captured {len(outputs)} history occurrences and {len(unique_outputs)} distinct "
-        f"payloads: {outputs!r}"
+        f"captured {len(outputs)} request-history occurrences and "
+        f"{len(unique_outputs)} distinct payloads"
     )
     payload = next(iter(unique_outputs.values()))
     if isinstance(payload, list):
