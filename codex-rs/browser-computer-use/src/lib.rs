@@ -1309,6 +1309,8 @@ exports.chromium = {
             .expect("write Node wrapper");
         std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o700))
             .expect("make Node wrapper executable");
+        // Close the writable handle before a child executes this file; Linux otherwise returns ETXTBSY.
+        let node = node.into_temp_path();
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
