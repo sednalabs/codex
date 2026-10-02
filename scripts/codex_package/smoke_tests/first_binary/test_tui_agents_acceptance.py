@@ -34,7 +34,9 @@ def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
     assert _thread_identity_is_rendered(frame, thread_id), lines
 
 
-def _open_agents(tui: PackagedTui) -> str:
+def _open_agents(
+    tui: PackagedTui, *, required_markers: tuple[str, ...] = ()
+) -> str:
     # Establish readiness, then wait for the actual `/agents` popup entry
     # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
@@ -42,7 +44,10 @@ def _open_agents(tui: PackagedTui) -> str:
     popup = tui.until("open the agent command center")
     assert "/agents" in popup, popup
     tui.send("\r")
-    return tui.until_screen("Agent command center", required_markers=("Group:",))
+    return tui.until_screen(
+        "Agent command center",
+        required_markers=("Group:", *required_markers),
+    )
 
 
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
@@ -118,7 +123,7 @@ def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage)
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
         with PackagedTui(isolated) as tui:
-            opened = _open_agents(tui)
+            opened = _open_agents(tui, required_markers=("All 1",))
             assert "Group:" in opened
             tui.send("f")
             search = tui.until_screen(
@@ -158,7 +163,12 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(root_id).id == root_id
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tree = _open_agents(tui)
+            tree = _open_agents(
+                tui,
+                required_markers=(
+                    "root-package-task", "child-package-task", "nested-package-task"
+                ),
+            )
             assert "nested-package-task" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
             tui.send("f")
@@ -213,6 +223,11 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            replay = _open_agents(tui)
+            replay = _open_agents(
+                tui,
+                required_markers=(
+                    "live-renamed-package-task", "root-package-task", "child-package-task"
+                ),
+            )
             assert "live-renamed-package-task" in replay
             assert "root-package-task" in replay and "child-package-task" in replay

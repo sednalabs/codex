@@ -22,7 +22,9 @@ from package_acceptance import _mock_config
 from tui_pty import PackagedTui
 
 
-def _open_agents(tui: PackagedTui) -> str:
+def _open_agents(
+    tui: PackagedTui, *, required_markers: tuple[str, ...] = ()
+) -> str:
     # Establish readiness, then wait for the actual `/agents` popup entry
     # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
@@ -30,7 +32,10 @@ def _open_agents(tui: PackagedTui) -> str:
     popup = tui.until("open the agent command center")
     assert "/agents" in popup, popup
     tui.send("\r")
-    return tui.until_screen("Agent command center", required_markers=("Group:",))
+    return tui.until_screen(
+        "Agent command center",
+        required_markers=("Group:", *required_markers),
+    )
 
 
 def _function_call(call_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -187,7 +192,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
     # writes are complete. Terminating an earlier TUI that resumed this same
     # root can leave its writer active in the shared app-server state.
     with PackagedTui(isolated, "resume", root_id) as tui:
-        overview = _open_agents(tui)
+        overview = _open_agents(
+            tui, required_markers=("All 2", "tui-root-task", "worker")
+        )
         assert "All 2" in overview, overview
         assert "tui-root-task" in overview and "worker" in overview, overview
         tui.send("f")
@@ -222,7 +229,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
     with PackagedTui(isolated, "resume", root_id) as tui:
-        replay = _open_agents(tui)
+        replay = _open_agents(tui, required_markers=("worker",))
         assert "worker" in replay, replay
         # Select the same task after replay so the second frame contains its
         # detail view and the same exact label/ID adjacency.
