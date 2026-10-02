@@ -180,11 +180,28 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 ev_completed("tui-rich-root-final"),
             ]),
         )
-        child_gate = Event()
-        child_route = server.enqueue_sse_for_request(
+        server.enqueue_sse_for_request(
             lambda request: _thread_id(request) != root_id
             and request.header("x-codex-parent-thread-id") == root_id
             and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL"),
+            sse([
+                ev_response_created("tui-rich-child-started"),
+                _function_call(
+                    "tui-rich-child-root-wait", "wait_agent",
+                    {
+                        "targets": ["/root"],
+                        "return_when": "all",
+                        "timeout_ms": 25000,
+                    },
+                ),
+                ev_completed("tui-rich-child-started"),
+            ]),
+        )
+        child_gate = Event()
+        active_child_route = server.enqueue_sse_for_request(
+            lambda request: _thread_id(request) != root_id
+            and request.header("x-codex-parent-thread-id") == root_id
+            and _has_call_output(request, "tui-rich-child-root-wait"),
             sse([
                 ev_response_created("tui-rich-child-final"),
                 ev_assistant_message("tui-rich-child-message", "TUI_RICH_CHILD_TERMINAL"),
@@ -194,15 +211,20 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         )
 
         # Exercise spawn inside the same packaged process that renders /agents.
-        # The child route is event-gated so its loaded status can be inspected
-        # before terminal completion removes it from the live thread manager.
+        # Advance the child beyond pending_init with its real wait tool, then
+        # gate its next model request so the live overview must render it before
+        # terminal completion removes it from the thread manager.
         with PackagedTui(isolated, "resume", root_id) as tui:
             tui.until("Ask Codex to do anything")
             tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
             tui.until("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
             tui.send("\r")
             tui.until("TUI_RICH_ROOT_TERMINAL")
-            child_route.wait_until_selected(timeout_s=30)
+            active_child_route.wait_until_selected(timeout_s=30)
+            child_root_wait = _tool_output(server, "tui-rich-child-root-wait")
+            assert child_root_wait["reason"] == "target_terminal", child_root_wait
+            assert child_root_wait["wake_cause"] == "target_status", child_root_wait
+            assert set(child_root_wait["status"]) == {"/root"}, child_root_wait
 
             metadata = _tool_output(server, "tui-rich-worker")
             child_id = metadata["agent_id"]
@@ -212,7 +234,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
 
             overview = _open_agents(
-                tui, required_markers=("All 2", "tui-root-task", "worker")
+                tui, required_markers=("All 2", "tui-root-task", "worker", "Working")
             )
             assert "All 2" in overview, overview
             assert "tui-root-task" in overview and "worker" in overview, overview

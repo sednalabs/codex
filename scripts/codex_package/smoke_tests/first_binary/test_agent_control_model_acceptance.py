@@ -123,6 +123,28 @@ def _has_call_output(request: CapturedResponsesRequest, call_id: str) -> bool:
     return bool(outputs) and outputs[-1] == call_id
 
 
+def _latest_user_message_has_marker(
+    request: CapturedResponsesRequest,
+    marker: str,
+) -> bool:
+    for item in reversed(request.input()):
+        if item.get("type") == "message" and item.get("role") == "user":
+            return marker in json.dumps(item)
+    return False
+
+
+def _has_any_call_output(
+    request: CapturedResponsesRequest,
+    call_ids: set[str],
+) -> bool:
+    outputs = {
+        item.get("call_id")
+        for item in request.input()
+        if item.get("type") == "function_call_output"
+    }
+    return bool(call_ids & outputs)
+
+
 def _has_all_call_outputs(request: CapturedResponsesRequest, call_ids: set[str]) -> bool:
     outputs = {
         item.get("call_id")
@@ -401,7 +423,13 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             resumed_root = resumed_client.thread_resume(root_id)
             server.enqueue_sse_for_request(
                 lambda request: _thread_id(request) == root_id
-                and _has_user_marker(request, "ROOT_RECOVERY_LIST_MARKER"),
+                and _latest_user_message_has_marker(
+                    request, "ROOT_RECOVERY_LIST_MARKER"
+                )
+                and not _has_any_call_output(request, {
+                    "followup-worker-after-reload",
+                    "followup-grandchild-after-reload",
+                }),
                 sse([
                     ev_response_created("root-recovery-actions"),
                     _function_call(
@@ -420,8 +448,11 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             server.enqueue_sse_for_request(
                 lambda request: _thread_id(request) == root_id
-                and _has_call_output(request, "followup-worker-after-reload")
-                and _has_call_output(request, "followup-grandchild-after-reload"),
+                and _has_all_call_outputs(request, {
+                    "followup-worker-after-reload",
+                    "followup-grandchild-after-reload",
+                })
+                and not _has_any_call_output(request, {"wait-recovery-descendants"}),
                 sse([
                     ev_response_created("root-recovery-join"),
                     _function_call(
