@@ -61,6 +61,7 @@ PRODUCER_JOB_NAMES = {
 Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
 Q4_FIXTURE_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
+Q5_FIXTURE_SHA = "2c0304235001132f2d06ea42129719c2a9e98bb7"
 S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
 S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
 S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
@@ -102,6 +103,16 @@ Q3_ADDITIONAL_PLAIN_TESTS = frozenset(
         "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
     }
 )
+FOCUSED_REPAIR_PLAIN_TESTS = frozenset(
+    {
+        "test_packaged_model_nested_spawn_recovery_and_list_after_resume",
+        "test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join",
+        "test_packaged_model_goal_continuation_and_terminal_transition",
+        "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity",
+        "test_actual_tui_agents_entry_has_initial_empty_search",
+        "test_actual_tui_nested_filter_clear_live_rename_and_replay",
+    }
+)
 CONSUME_EXISTING_TEST_PLANS = {
     (Q2_FIXTURE_SHA, S0_SDK_SHA): {
         "profiles": frozenset({"pair", "full"}),
@@ -113,6 +124,11 @@ CONSUME_EXISTING_TEST_PLANS = {
     },
     (Q4_FIXTURE_SHA, S2_SDK_SHA): {
         "profiles": frozenset({"pair", "full"}),
+        "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
+    },
+    (Q5_FIXTURE_SHA, S2_SDK_SHA): {
+        "profiles": frozenset({"focused", "full"}),
+        "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
 }
@@ -185,10 +201,20 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
     _require(plan is not None, "fixture/SDK source pair has no exact consume-existing test inventory")
     _require(profile in plan["profiles"], "fixture/SDK source pair does not admit this consumer profile")
     return {
-        "state": frozenset({"fresh", "bad_checksum"}) if profile == "pair" else frozenset(
-            EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE
+        "state": (
+            frozenset({"fresh", "bad_checksum"})
+            if profile == "pair"
+            else frozenset(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE)
+            if profile == "full"
+            else frozenset()
         ),
-        "plain": frozenset() if profile == "pair" else plan["full_plain"],
+        "plain": (
+            frozenset()
+            if profile == "pair"
+            else plan["focused_plain"]
+            if profile == "focused"
+            else plan["full_plain"]
+        ),
     }
 
 
@@ -260,7 +286,11 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
     for field in ("product_sha", "comparison_base_sha", "fixture_sha", "sdk_sha"):
         _require(isinstance(identity.get(field), str) and SHA.fullmatch(identity[field]) is not None, f"accepted-input {field} is invalid")
     _require(identity.get("comparison_base_ref") == "main", "accepted-input comparison base ref is unsupported")
-    _require(isinstance(identity.get("profile"), str) and identity["profile"] in {"pair", "full"}, "accepted-input consumer profile is unsupported")
+    _require(
+        isinstance(identity.get("profile"), str)
+        and identity["profile"] in {"pair", "focused", "full"},
+        "accepted-input consumer profile is unsupported",
+    )
 
     producer = _object(record.get("producer"), "accepted-input producer is malformed")
     producer_fields = {
@@ -800,11 +830,14 @@ def reconcile_consumer_results(
         issues.append("consumer result has an unsupported mode/profile")
         expected_state = frozenset()
         expected_plain = frozenset()
-    if profile not in {"pair", "full"}:
+    if profile not in {"pair", "focused", "full"}:
         issues.append("consumer result has an unsupported mode/profile")
     if mode == "consume-existing" and profile == "pair":
         if positive != ["fresh"] or negative != ["bad_checksum"]:
             issues.append("pair profile did not execute its exact positive and negative state cases")
+    elif mode == "consume-existing" and profile == "focused":
+        if positive or negative:
+            issues.append("focused profile unexpectedly executed state-history cases")
     elif mode in {"build", "consume-existing"} and profile == "full":
         if len(positive) != 16 or set(positive) != expected_positive:
             issues.append("JUnit does not contain the exact 16 positive state-history cases")

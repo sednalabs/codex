@@ -55,6 +55,7 @@ on:
         type: choice
         options:
           - pair
+          - focused
           - full
         default: full
 
@@ -125,7 +126,7 @@ jobs:
               [[ "${SDK_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" != "${TARGET_SHA}" ]] || {
                 echo "consume-existing requires a distinct full SDK source SHA" >&2; exit 1;
               }
-              case "${CONSUMER_PROFILE}" in pair|full) ;; *) echo "unsupported consumer profile" >&2; exit 1 ;; esac
+              case "${CONSUMER_PROFILE}" in pair|focused|full) ;; *) echo "unsupported consumer profile" >&2; exit 1 ;; esac
               trusted_ref="refs/heads/reconstruct/first-binary-package-workflow-20261001"
               trusted_workflow_ref="sednalabs/codex/.github/workflows/sedna-branch-build.yml@${trusted_ref}"
               [[ "${GITHUB_REF}" == "${trusted_ref}" && "${GITHUB_REF_NAME}" == "reconstruct/first-binary-package-workflow-20261001" ]] || {
@@ -1338,7 +1339,7 @@ jobs:
               raise SystemExit(1)
           PY
       - name: Temporarily enable Linux user namespaces for existing-package consumers
-        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1398,6 +1399,16 @@ jobs:
                 "${test_root}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"
               )
               ;;
+            focused)
+              test_args=(
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_nested_spawn_recovery_and_list_after_resume"
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join"
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_goal_continuation_and_terminal_transition"
+                "${test_root}/test_agent_control_tui_acceptance.py::test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
+                "${test_root}/test_tui_agents_acceptance.py::test_actual_tui_agents_entry_has_initial_empty_search"
+                "${test_root}/test_tui_agents_acceptance.py::test_actual_tui_nested_filter_clear_live_rename_and_replay"
+              )
+              ;;
             full) test_args=("${test_root}") ;;
             *) echo "unsupported consumer profile" >&2; exit 1 ;;
           esac
@@ -1441,7 +1452,7 @@ jobs:
           retention-days: 7
 
       - name: Restore original Linux user-namespace settings
-        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2221,7 +2232,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - name: Temporarily enable Linux user namespaces for existing-package consumers
-        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2281,6 +2292,16 @@ jobs:
                 "${test_root}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"
               )
               ;;
+            focused)
+              test_args=(
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_nested_spawn_recovery_and_list_after_resume"
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exact_join"
+                "${test_root}/test_agent_control_model_acceptance.py::test_packaged_model_goal_continuation_and_terminal_transition"
+                "${test_root}/test_agent_control_tui_acceptance.py::test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
+                "${test_root}/test_tui_agents_acceptance.py::test_actual_tui_agents_entry_has_initial_empty_search"
+                "${test_root}/test_tui_agents_acceptance.py::test_actual_tui_nested_filter_clear_live_rename_and_replay"
+              )
+              ;;
             full) test_args=("${test_root}") ;;
             *) echo "unsupported consumer profile" >&2; exit 1 ;;
           esac
@@ -2310,7 +2331,7 @@ jobs:
             python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
               --verify-consumer-results
       - name: Restore original Linux user-namespace settings
-        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
         run: |
           set -euo pipefail
