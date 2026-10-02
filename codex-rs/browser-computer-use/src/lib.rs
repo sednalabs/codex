@@ -1300,24 +1300,38 @@ exports.chromium = {
         )
         .expect("fake Playwright module source");
 
-        let mut node = tempfile::NamedTempFile::new().expect("Node wrapper");
-        let script = format!(
-            "#!/bin/sh\nunset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR CODEX_BROWSER_PLAYWRIGHT_ISOLATION\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
-            codex_home.display(),
-        );
-        node.write_all(script.as_bytes())
-            .expect("write Node wrapper");
-        std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("make Node wrapper executable");
-        // Closing the writable handle is required before Linux can execute the wrapper.
-        let node = node.into_temp_path();
-        let node_wrapper_path: std::path::PathBuf =
-            <tempfile::TempPath as std::convert::AsRef<std::path::Path>>::as_ref(&node)
-                .to_path_buf();
+        let make_node_wrapper = |unset_state_dir: bool| {
+            let mut node = tempfile::NamedTempFile::new().expect("Node wrapper");
+            let unset_state_dir = if unset_state_dir {
+                "unset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR\n"
+            } else {
+                ""
+            };
+            let script = format!(
+                "#!/bin/sh\n{unset_state_dir}unset CODEX_BROWSER_PLAYWRIGHT_ISOLATION\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
+                codex_home.display(),
+            );
+            node.write_all(script.as_bytes())
+                .expect("write Node wrapper");
+            std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("make Node wrapper executable");
+            // Closing the writable handle is required before Linux can execute the wrapper.
+            let node = node.into_temp_path();
+            let node_path: std::path::PathBuf =
+                <tempfile::TempPath as std::convert::AsRef<std::path::Path>>::as_ref(&node)
+                    .to_path_buf();
+            (node, node_path)
+        };
+        let (_configured_node, configured_node_path) = make_node_wrapper(false);
+        let (_default_node, default_node_path) = make_node_wrapper(true);
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
-            let node = node_wrapper_path.to_string_lossy().to_string();
+            let node = if state_dir.is_some() {
+                configured_node_path.to_string_lossy().to_string()
+            } else {
+                default_node_path.to_string_lossy().to_string()
+            };
             let thread_id = thread_id.to_string();
             async move {
                 let config = PlaywrightProviderConfig {
