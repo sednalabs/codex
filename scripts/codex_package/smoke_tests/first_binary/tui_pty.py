@@ -128,6 +128,9 @@ class TerminalScreen:
         elif command == "u" and raw_parameters in {"?", "<", ">5", ">7"}:
             # Query, restore, and enable terminal keyboard-reporting modes only.
             return
+        elif command == "c" and raw_parameters in {"", "0"}:
+            # T1's DA1 startup probe has no effect on the cell screen.
+            return
         elif command in {"h", "l"} and raw_parameters.startswith("?") and set(values) <= {
             25, 1000, 1002, 1004, 1006, 1007, 2004, 2026,
         }:
@@ -273,6 +276,12 @@ class PackagedTui:
             received.extend(chunk)
             self.last_received = bytes(received)
             self.screen.feed(chunk)
+            try:
+                self.screen.text()
+            except AssertionError as error:
+                raise self._closed_output(
+                    marker, bytes(received), f"unsupported terminal output: {error}"
+                ) from error
             rendered = plain(received)
             if self.interactions:
                 self.interactions[-1]["last_rendered_bytes"] = len(received)
