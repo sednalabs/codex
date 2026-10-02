@@ -13,7 +13,7 @@ from tui_pty import PackagedTui, TerminalScreen
 
 
 def _field_value_is_rendered(frame: str, label: str, value: str) -> bool:
-    lines = [line.strip() for line in frame.replace("\r", "").splitlines()]
+    lines = [line.strip().strip("│").strip() for line in frame.replace("\r", "").splitlines()]
     try:
         label_index = lines.index(label)
     except ValueError:
@@ -105,6 +105,10 @@ def _assert_screen_identity_oracle() -> None:
     region.feed(b"\x1b[2;3r\x1b[2;1Htop\x1bM")
     assert region.text().splitlines()[1] == ""
     assert region.text().splitlines()[2] == "top"
+
+    pane = TerminalScreen(rows=4, columns=80)
+    pane.feed(("│ Thread ID:\r\n│ " + correct_id).encode())
+    assert _thread_identity_is_rendered(pane.text(), correct_id)
 
 
 def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage) -> None:

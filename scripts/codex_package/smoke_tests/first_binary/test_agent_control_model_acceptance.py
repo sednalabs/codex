@@ -765,6 +765,8 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
         assert result["reason"] == "target_terminal", result
         assert result["wake_cause"] == "target_status", result
         assert set(result["status"]) == {"/root/worker"}, result
+        goal_queue_output = _tool_output_text(server, "goal-queue-only-call")
+        assert goal_queue_output == "", goal_queue_output
         assert result["queued_update_count"] >= 1, result
         assert _call_output_count(server, "worker-create-goal-call") == 1
         assert _call_output_count(server, "goal-update-complete-call") == 1

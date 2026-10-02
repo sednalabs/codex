@@ -378,7 +378,10 @@ class PackagedTui:
                 raise self._closed_output(
                     marker, bytes(received), f"unsupported terminal output: {error}"
                 ) from error
-            lines = [line.strip() for line in rendered.splitlines()]
+            # The details pane is preceded by its visible `│` gutter. Treat
+            # that pane chrome as framing while still requiring the exact
+            # label and UUID on neighboring rendered rows.
+            lines = [line.strip().strip("│").strip() for line in rendered.splitlines()]
             adjacent_value = value_label is None or any(
                 lines[index] == value_label and lines[index + 1] == marker
                 for index in range(len(lines) - 1)
