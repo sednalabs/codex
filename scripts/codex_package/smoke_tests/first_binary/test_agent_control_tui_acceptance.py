@@ -113,6 +113,11 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+            server.enqueue_assistant_message("persisted root turn", response_id="tui-rich-seed")
+            assert (
+                root.run("Persist the root before TUI resume.").final_response
+                == "persisted root turn"
+            )
             with PackagedTui(isolated, "resume", root_id) as empty_tui:
                 _open_agents(empty_tui)
                 empty_frame = empty_tui.until("Agent command center")

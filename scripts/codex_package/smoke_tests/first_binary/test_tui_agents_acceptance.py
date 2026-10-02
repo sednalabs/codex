@@ -1,5 +1,6 @@
 """Exercise the actual packaged TUI /agents view through a real Linux PTY."""
 
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,6 +10,13 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from fixtures import SmokePackage
 from package_acceptance import _mock_config
 from tui_pty import PackagedTui
+
+
+def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
+    label_index = lines.index("Thread ID:")
+    assert lines[label_index + 1] == thread_id, lines
+    assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
 
 
 def _open_agents(tui: PackagedTui) -> None:
@@ -86,14 +94,20 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             tui.send("f")
             assert "Search ›" in tui.until("Search ›")
             tui.send("child-package-task")
-            child_detail = tui.until(f"Thread ID: {child_id}")
+            tui.until("Thread ID:")
+            tui.refresh()
+            child_detail = tui.until(child_id)
+            _assert_thread_identity_rendered(child_detail, child_id)
             assert f"Parent thread ID: {root_id}" in child_detail
             tui.send("\x03")
             assert "nested-package-task" in tui.until("nested-package-task")
             tui.send("f")
             assert "Search ›" in tui.until("Search ›")
             tui.send("nested-package-task")
-            nested_detail = tui.until(f"Thread ID: {nested_id}")
+            tui.until("Thread ID:")
+            tui.refresh()
+            nested_detail = tui.until(nested_id)
+            _assert_thread_identity_rendered(nested_detail, nested_id)
             assert f"Parent thread ID: {child_id}" in nested_detail
             tui.send("\x03")
             assert "root-package-task" in tui.until("root-package-task")

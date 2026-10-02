@@ -247,8 +247,23 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 and _has_call_output(request, "spawn-worker"),
                 sse([
                     ev_response_created("root-after-spawn"),
-                    ev_assistant_message("root-first-message", "root first turn complete"),
+                    _function_call(
+                        "wait-worker-call", "wait_agent", {
+                            "targets": ["/root/worker"],
+                            "return_when": "all",
+                            "timeout_ms": 25000,
+                        },
+                    ),
                     ev_completed("root-after-spawn"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and _has_call_output(request, "wait-worker-call"),
+                sse([
+                    ev_response_created("root-worker-terminal"),
+                    ev_assistant_message("root-first-message", "root first turn complete"),
+                    ev_completed("root-worker-terminal"),
                 ]),
             )
             server.enqueue_sse_for_request(
@@ -264,7 +279,24 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                 ),
             )
             server.enqueue_sse_for_request(
-                lambda request: _has_call_output(request, "spawn-grandchild"),
+                lambda request: _thread_id(request) != root_id
+                and request.header("x-codex-parent-thread-id") == root_id
+                and _has_call_output(request, "spawn-grandchild"),
+                sse([
+                    ev_response_created("worker-waits-for-grandchild"),
+                    _function_call(
+                        "worker-wait-grandchild-call", "wait_agent", {
+                            "targets": ["/root/worker/grandchild"],
+                            "return_when": "all",
+                            "timeout_ms": 25000,
+                        },
+                    ),
+                    ev_completed("worker-waits-for-grandchild"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) != root_id
+                and _has_call_output(request, "worker-wait-grandchild-call"),
                 sse([
                     ev_response_created("worker-after-grandchild"),
                     ev_assistant_message("worker-first-message", "worker first turn complete"),
@@ -508,7 +540,12 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     _thread_id(request) == waiter_id
                     and _has_call_output(request, "waiter-mailbox-wait-call")
                     for request in server.requests()
-                ), "queue-only message woke the waiter before actionable followup"
+                ), (
+                    "queue-only message woke the waiter before actionable followup; "
+                    "trace distinguishes a separate actionable request/turn from an "
+                    "early waiter wake: "
+                    f"{json.dumps(server.routing_trace(), sort_keys=True)}"
+                )
             finally:
                 followup_gate.set()
             run_thread.join(timeout=30)
