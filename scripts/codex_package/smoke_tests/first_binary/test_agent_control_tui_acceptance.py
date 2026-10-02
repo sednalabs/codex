@@ -66,8 +66,13 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
         for item in request.input()
         if item.get("type") == "function_call_output" and item.get("call_id") == call_id
     ]
-    assert len(outputs) == 1, f"missing executed output for {call_id}: {outputs!r}"
-    payload = outputs[0]
+    unique_outputs = {json.dumps(output, sort_keys=True): output for output in outputs}
+    assert len(unique_outputs) == 1, (
+        f"expected one distinct executed output for {call_id}; "
+        f"captured {len(outputs)} history occurrences and {len(unique_outputs)} distinct "
+        f"payloads: {outputs!r}"
+    )
+    payload = next(iter(unique_outputs.values()))
     if isinstance(payload, list):
         payload = next(part["text"] for part in payload if part.get("type") == "output_text")
     assert isinstance(payload, str)
