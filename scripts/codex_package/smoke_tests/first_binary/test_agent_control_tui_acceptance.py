@@ -151,137 +151,137 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             root.set_name("tui-root-task")
 
-        with Codex(config=CodexConfig(
-            codex_bin=str(package.cli), cwd=str(package.directory), env=isolated.environment,
-        )) as client:
-            root = client.thread_resume(root_id)
-            server.enqueue_sse_for_request(
-                lambda request: _thread_id(request) == root_id
-                and _latest_user_marker(request, "TUI_RICH_ROOT_MARKER"),
-                sse([
-                    ev_response_created("tui-rich-spawn"),
-                    _function_call(
-                        "tui-rich-worker", "spawn_agent",
-                        {
-                            "task_name": "worker", "message": "PRIVATE_PROMPT_SENTINEL",
-                            "model": "gpt-5.6-terra", "reasoning_effort": "medium",
-                        },
-                    ),
-                    ev_completed("tui-rich-spawn"),
-                ]),
-            )
-            server.enqueue_sse_for_request(
-                lambda request: _thread_id(request) == root_id
-                and any(
-                    item.get("type") == "function_call_output"
-                    and item.get("call_id") == "tui-rich-worker"
-                    for item in request.input()
+        server.enqueue_sse_for_request(
+            lambda request: _thread_id(request) == root_id
+            and _latest_user_marker(request, "TUI_RICH_ROOT_MARKER"),
+            sse([
+                ev_response_created("tui-rich-spawn"),
+                _function_call(
+                    "tui-rich-worker", "spawn_agent",
+                    {
+                        "task_name": "worker", "message": "PRIVATE_PROMPT_SENTINEL",
+                        "model": "gpt-5.6-terra", "reasoning_effort": "medium",
+                    },
                 ),
-                sse([
-                    ev_response_created("tui-rich-worker-wait"),
-                    _function_call(
-                        "tui-rich-worker-wait-call", "wait_agent",
-                        {
-                            "targets": ["/root/worker"],
-                            "return_when": "all",
-                            "timeout_ms": 25000,
-                        },
-                    ),
-                    ev_completed("tui-rich-worker-wait"),
-                ]),
-            )
-            server.enqueue_sse_for_request(
-                lambda request: _thread_id(request) == root_id
-                and any(
-                    item.get("type") == "function_call_output"
-                    and item.get("call_id") == "tui-rich-worker-wait-call"
-                    for item in request.input()
-                ),
-                sse([
-                    ev_response_created("tui-rich-root-final"),
-                    ev_assistant_message("tui-rich-root-message", "synthetic completion"),
-                    ev_completed("tui-rich-root-final"),
-                ]),
-            )
-            server.enqueue_sse_for_request(
-                lambda request: _thread_id(request) != root_id
-                and request.header("x-codex-parent-thread-id") == root_id
-                and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL"),
-                sse([
-                    ev_response_created("tui-rich-child-final"),
-                    ev_assistant_message("tui-rich-child-message", "synthetic completion"),
-                    ev_completed("tui-rich-child-final"),
-                ]),
-            )
-            assert (
-                root.run("TUI_RICH_ROOT_MARKER: start one synthetic worker.").final_response
-                == "synthetic completion"
-            )
-        metadata = _tool_output(server, "tui-rich-worker")
-        worker_wait = _tool_output(server, "tui-rich-worker-wait-call")
-        assert worker_wait["reason"] == "target_terminal", worker_wait
-        assert worker_wait["wake_cause"] == "target_status", worker_wait
-
-        child_id = metadata["agent_id"]
-        uuid.UUID(child_id)
-        assert metadata["configured_model"] == "gpt-5.6-terra", metadata
-        assert metadata["configured_reasoning_effort"] == "medium", metadata
-        assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
-
-    # Load the completed child in the TUI process. The overview discovers roots
-    # from persisted history, but only includes descendants present in the
-    # process's loaded-thread list; resuming only the root does not load its
-    # completed child into that list.
-    with PackagedTui(isolated, "resume", child_id) as tui:
-        overview = _open_agents(
-            tui, required_markers=("All 2", "tui-root-task", "worker")
+                ev_completed("tui-rich-spawn"),
+            ]),
         )
-        assert "All 2" in overview, overview
-        assert "tui-root-task" in overview and "worker" in overview, overview
-        tui.send("f")
-        tui.until_screen("Search ›", required_markers=("Agent command center",))
-        tui.send("worker")
-        details = tui.until_screen(
-            child_id,
-            value_label="Thread ID:",
-            required_markers=(
-                "Configured/resolved model: gpt-5.6-terra",
-                "Configured/resolved effort: medium",
-                "Provider-effective identity: Unknown",
-                root_id,
-                "Thread path:",
-                "/root/worker",
+        server.enqueue_sse_for_request(
+            lambda request: _thread_id(request) == root_id
+            and any(
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == "tui-rich-worker"
+                for item in request.input()
             ),
+            sse([
+                ev_response_created("tui-rich-worker-wait"),
+                _function_call(
+                    "tui-rich-worker-wait-call", "wait_agent",
+                    {
+                        "targets": ["/root/worker"],
+                        "return_when": "all",
+                        "timeout_ms": 25000,
+                    },
+                ),
+                ev_completed("tui-rich-worker-wait"),
+            ]),
         )
-        _assert_thread_identity_rendered(details, child_id)
-        assert "Configured/resolved model: gpt-5.6-terra" in details, details
-        assert "Configured/resolved effort: medium" in details, details
-        assert "Provider-effective identity: Unknown" in details, details
-        parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
-        assert next(
-            line.strip().strip("│").strip()
-            for line in parent_id_lines if line.strip()
-        ) == root_id, details
-        assert "Thread path:" in details and "/root/worker" in details, details
-        assert any(
-            state in details for state in ("Working", "Needs input", "Ready", "Inactive")
-        ), details
-        assert "PRIVATE_PROMPT_SENTINEL" not in details, details
-        assert "instructions" not in details.lower() and "credentials" not in details.lower()
+        server.enqueue_sse_for_request(
+            lambda request: _thread_id(request) == root_id
+            and any(
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == "tui-rich-worker-wait-call"
+                for item in request.input()
+            ),
+            sse([
+                ev_response_created("tui-rich-root-final"),
+                ev_assistant_message("tui-rich-root-message", "TUI_RICH_ROOT_TERMINAL"),
+                ev_completed("tui-rich-root-final"),
+            ]),
+        )
+        server.enqueue_sse_for_request(
+            lambda request: _thread_id(request) != root_id
+            and request.header("x-codex-parent-thread-id") == root_id
+            and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL"),
+            sse([
+                ev_response_created("tui-rich-child-final"),
+                ev_assistant_message("tui-rich-child-message", "synthetic completion"),
+                ev_completed("tui-rich-child-final"),
+            ]),
+        )
 
-    with PackagedTui(isolated, "resume", child_id) as tui:
-        replay = _open_agents(tui, required_markers=("worker",))
-        assert "worker" in replay, replay
-        # Select the same task after replay so the second frame contains its
-        # detail view and the same exact label/ID adjacency.
-        tui.send("f")
-        tui.until_screen("Search ›", required_markers=("Agent command center",))
-        tui.send("worker")
-        replay_details = tui.until_screen(
-            child_id,
-            value_label="Thread ID:",
-            required_markers=("Provider-effective identity: Unknown",),
-        )
-        _assert_thread_identity_rendered(replay_details, child_id)
-        assert "Provider-effective identity: Unknown" in replay_details
-        assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
+        # Exercise spawn and terminal wait inside the same packaged process that
+        # renders /agents. The overview discovers root history plus descendants
+        # loaded by this live app-server; a fresh process resuming only root
+        # would not have the completed child in its loaded-thread set.
+        with PackagedTui(isolated, "resume", root_id) as tui:
+            tui.until("Ask Codex to do anything")
+            tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
+            tui.until("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
+            tui.send("\r")
+            tui.until("TUI_RICH_ROOT_TERMINAL")
+
+            metadata = _tool_output(server, "tui-rich-worker")
+            worker_wait = _tool_output(server, "tui-rich-worker-wait-call")
+            assert worker_wait["reason"] == "target_terminal", worker_wait
+            assert worker_wait["wake_cause"] == "target_status", worker_wait
+
+            child_id = metadata["agent_id"]
+            uuid.UUID(child_id)
+            assert metadata["configured_model"] == "gpt-5.6-terra", metadata
+            assert metadata["configured_reasoning_effort"] == "medium", metadata
+            assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
+
+            overview = _open_agents(
+                tui, required_markers=("All 2", "tui-root-task", "worker")
+            )
+            assert "All 2" in overview, overview
+            assert "tui-root-task" in overview and "worker" in overview, overview
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("worker")
+            details = tui.until_screen(
+                child_id,
+                value_label="Thread ID:",
+                required_markers=(
+                    "Configured/resolved model: gpt-5.6-terra",
+                    "Configured/resolved effort: medium",
+                    "Provider-effective identity: Unknown",
+                    root_id,
+                    "Thread path:",
+                    "/root/worker",
+                ),
+            )
+            _assert_thread_identity_rendered(details, child_id)
+            assert "Configured/resolved model: gpt-5.6-terra" in details, details
+            assert "Configured/resolved effort: medium" in details, details
+            assert "Provider-effective identity: Unknown" in details, details
+            parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
+            assert next(
+                line.strip().strip("│").strip()
+                for line in parent_id_lines if line.strip()
+            ) == root_id, details
+            assert "Thread path:" in details and "/root/worker" in details, details
+            assert any(
+                state in details for state in ("Working", "Needs input", "Ready", "Inactive")
+            ), details
+            assert "PRIVATE_PROMPT_SENTINEL" not in details, details
+            assert "instructions" not in details.lower() and "credentials" not in details.lower()
+
+            tui.send("\x1b")
+            tui.until("Ask Codex to do anything")
+            replay = _open_agents(tui, required_markers=("worker",))
+            assert "worker" in replay, replay
+            # Reopen the same live overview after closing the detail pane and
+            # require the identity/private-data contract again.
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("worker")
+            replay_details = tui.until_screen(
+                child_id,
+                value_label="Thread ID:",
+                required_markers=("Provider-effective identity: Unknown",),
+            )
+            _assert_thread_identity_rendered(replay_details, child_id)
+            assert "Provider-effective identity: Unknown" in replay_details
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
