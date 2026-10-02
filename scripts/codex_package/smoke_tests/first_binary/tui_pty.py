@@ -1,15 +1,16 @@
 """Small real-PTY driver for the downloaded Codex TUI on hosted Linux."""
 
+import codecs
 import fcntl
 import os
 import pty
 import re
 import select
-import signal
 import struct
 import subprocess
 import termios
 import time
+import unicodedata
 
 from fixtures import SmokePackage
 
@@ -19,6 +20,141 @@ ANSI = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|.)")
 
 def plain(raw: bytes) -> str:
     return ANSI.sub(b"", raw).decode("utf-8", errors="replace")
+
+
+class TerminalScreen:
+    """Fixed-size emitted TUI subset: cursor positions, erase, style/modes, and OSC.
+
+    Any other escape/control sequence is a diagnostic failure, not ignored screen state.
+    """
+
+    def __init__(self, rows: int, columns: int) -> None:
+        self.rows = rows
+        self.columns = columns
+        self.cells = [[" "] * columns for _ in range(rows)]
+        self.row = self.column = 0
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._state = "text"
+        self._csi = ""
+        self.unsupported: list[str] = []
+
+    def feed(self, data: bytes) -> None:
+        for char in self._decoder.decode(data):
+            if self._state == "osc":
+                if char == "\x07":
+                    self._state = "text"
+                elif char == "\x1b":
+                    self._state = "osc-escape"
+                continue
+            if self._state == "osc-escape":
+                self._state = "text" if char == "\\" else "osc"
+                continue
+            if self._state == "csi":
+                if "@" <= char <= "~":
+                    self._apply_csi(char, self._csi)
+                    self._csi = ""
+                    self._state = "text"
+                else:
+                    self._csi += char
+                continue
+            if self._state == "escape":
+                if char == "[":
+                    self._state = "csi"
+                elif char == "]":
+                    self._state = "osc"
+                else:
+                    self.unsupported.append(f"ESC {char!r}")
+                    self._state = "text"
+                continue
+            if char == "\x1b":
+                self._state = "escape"
+            elif char == "\r":
+                self.column = 0
+            elif char == "\n":
+                self._line_feed()
+            elif char == "\b":
+                self.column = max(0, self.column - 1)
+            elif char == "\t":
+                self.column = min(self.columns - 1, (self.column // 8 + 1) * 8)
+            elif char == "\x07":
+                continue
+            elif ord(char) < 32:
+                self.unsupported.append(f"control {ord(char):#04x}")
+            elif char >= " ":
+                self._put(char)
+
+    def text(self) -> str:
+        if self.unsupported:
+            raise AssertionError(
+                "terminal screen observer encountered unsupported controls: "
+                f"{self.unsupported[-20:]!r}"
+            )
+        return "\n".join("".join(line).rstrip() for line in self.cells)
+
+    def _line_feed(self) -> None:
+        if self.row == self.rows - 1:
+            self.cells.pop(0)
+            self.cells.append([" "] * self.columns)
+        else:
+            self.row = min(self.rows - 1, self.row + 1)
+
+    def _put(self, char: str) -> None:
+        if self.column >= self.columns:
+            self.column = 0
+            self._line_feed()
+        width = 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        self.cells[self.row][self.column] = char
+        if width == 2 and self.column + 1 < self.columns:
+            self.cells[self.row][self.column + 1] = " "
+        self.column += width
+
+    def _apply_csi(self, command: str, raw_parameters: str) -> None:
+        parameters = raw_parameters.lstrip("?=>!")
+        values = [int(part) if part.isdigit() else 0 for part in parameters.split(";")]
+
+        def value(index: int, default: int = 1) -> int:
+            return values[index] if index < len(values) and values[index] else default
+
+        if command in {"H", "f"}:
+            self.row = min(self.rows - 1, value(0) - 1)
+            self.column = min(self.columns - 1, value(1) - 1)
+        elif command == "J":
+            self._erase_display(values[0] if values else 0)
+        elif command == "K":
+            self._erase_line(values[0] if values else 0)
+        elif command in {"m", "n", "q"}:
+            # Ratatui styling, cursor shape, and status queries do not change cells.
+            return
+        elif command == "u" and raw_parameters in {"?", "<", ">5", ">7"}:
+            # Query, restore, and enable terminal keyboard-reporting modes only.
+            return
+        elif command in {"h", "l"} and raw_parameters.startswith("?") and set(values) <= {
+            25, 1000, 1002, 1004, 1006, 1007, 2004, 2026,
+        }:
+            # Cursor visibility, mouse/focus, alternate-scroll, paste, sync modes only.
+            return
+        else:
+            self.unsupported.append(f"CSI {raw_parameters!r}{command}")
+
+    def _erase_display(self, mode: int) -> None:
+        if mode in {2, 3}:
+            self.cells = [[" "] * self.columns for _ in range(self.rows)]
+        elif mode == 0:
+            self.cells[self.row][self.column:] = [" "] * (self.columns - self.column)
+            for row in range(self.row + 1, self.rows):
+                self.cells[row] = [" "] * self.columns
+        elif mode == 1:
+            for row in range(self.row):
+                self.cells[row] = [" "] * self.columns
+            self.cells[self.row][: self.column + 1] = [" "] * (self.column + 1)
+
+    def _erase_line(self, mode: int) -> None:
+        if mode == 2:
+            self.cells[self.row] = [" "] * self.columns
+        elif mode == 0:
+            self.cells[self.row][self.column:] = [" "] * (self.columns - self.column)
+        elif mode == 1:
+            self.cells[self.row][: self.column + 1] = [" "] * (self.column + 1)
 
 
 class PackagedTui:
@@ -31,6 +167,8 @@ class PackagedTui:
         self.last_received = b""
         self.last_frame = ""
         self.interactions: list[dict[str, object]] = []
+        self.screen = TerminalScreen(rows=34, columns=110)
+        self.last_input_screen = self.screen.text()
 
     def __enter__(self) -> "PackagedTui":
         master, slave = pty.openpty()
@@ -75,11 +213,18 @@ class PackagedTui:
                 if not chunk:
                     break
                 drained.extend(chunk)
+                self.screen.feed(chunk)
             except OSError as error:
                 raise self._closed_output(
                     f"input {value!r}", bytes(drained), f"PTY {error} while preparing input"
                 ) from error
         self.last_received = b""
+        try:
+            self.last_input_screen = self.screen.text()
+        except AssertionError as error:
+            raise self._closed_output(
+                f"input {value!r}", bytes(drained), f"unsupported terminal output: {error}"
+            ) from error
         try:
             os.write(self.master, value.encode("utf-8"))
         except OSError as error:
@@ -94,18 +239,14 @@ class PackagedTui:
             f"packaged TUI {reason} before {marker!r}; "
             f"exit_status={self.process.poll()!r}; last_input={self.last_input!r}; "
             f"buffered_output={plain(received)!r}; previous_frame={self.last_frame!r}; "
-            f"interactions={self.interactions[-20:]!r}"
+            f"screen={self._screen_snapshot()!r}; interactions={self.interactions[-20:]!r}"
         )
 
-    def refresh(self) -> None:
-        """Request a full terminal repaint so incremental PTY bytes form a full view."""
-        assert self.process is not None
-        self.interactions.append({
-            "action": "SIGWINCH full repaint",
-            "exit_status": self.process.poll(),
-        })
-        if self.process.poll() is None:
-            os.kill(self.process.pid, signal.SIGWINCH)
+    def _screen_snapshot(self) -> str:
+        try:
+            return self.screen.text()
+        except AssertionError as error:
+            return f"<unavailable: {error}>"
 
     def until(self, marker: str, *, timeout: float = 30) -> str:
         """Require a fresh rendered witness after the preceding input."""
@@ -131,6 +272,7 @@ class PackagedTui:
                 raise self._closed_output(marker, bytes(received), "PTY reached EOF")
             received.extend(chunk)
             self.last_received = bytes(received)
+            self.screen.feed(chunk)
             rendered = plain(received)
             if self.interactions:
                 self.interactions[-1]["last_rendered_bytes"] = len(received)
@@ -145,4 +287,78 @@ class PackagedTui:
             f"packaged TUI did not render {marker!r}; exit_status={self.process.poll()!r}; "
             f"last_input={self.last_input!r}; buffered_output={plain(received)!r}; "
             f"previous_frame={self.last_frame!r}; interactions={self.interactions[-20:]!r}"
+        )
+
+    def until_screen(
+        self,
+        marker: str,
+        *,
+        value_label: str | None = None,
+        required_markers: tuple[str, ...] = (),
+        timeout: float = 30,
+    ) -> str:
+        """Require a changed current screen containing marker, not historical bytes."""
+        assert self.master is not None and self.process is not None
+        self.interactions.append({
+            "await_screen_marker": marker,
+            "after_input": self.last_input,
+            "before_exit_status": self.process.poll(),
+        })
+        deadline = time.monotonic() + timeout
+        received = bytearray()
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise self._closed_output(marker, bytes(received), "exited before screen witness")
+            ready, _, _ = select.select([self.master], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError as error:
+                raise self._closed_output(
+                    marker, bytes(received), f"PTY {error} before screen witness"
+                ) from error
+            if not chunk:
+                raise self._closed_output(
+                    marker, bytes(received), "PTY reached EOF before screen witness"
+                )
+            received.extend(chunk)
+            self.last_received = bytes(received)
+            self.screen.feed(chunk)
+            try:
+                rendered = self.screen.text()
+            except AssertionError as error:
+                raise self._closed_output(
+                    marker, bytes(received), f"unsupported terminal output: {error}"
+                ) from error
+            lines = [line.strip() for line in rendered.splitlines() if line.strip()]
+            adjacent_value = value_label is None or any(
+                lines[index] == value_label and lines[index + 1] == marker
+                for index in range(len(lines) - 1)
+            )
+            if (
+                rendered != self.last_input_screen
+                and marker in rendered
+                and all(required in rendered for required in required_markers)
+                and adjacent_value
+            ):
+                self.last_frame = rendered
+                self.interactions.append({
+                    "screen_witness": marker,
+                    "exit_status": self.process.poll(),
+                })
+                return rendered
+        self.last_received = bytes(received)
+        rendered = self._screen_snapshot()
+        self.interactions[-1]["timeout_exit_status"] = self.process.poll()
+        self.interactions[-1]["buffered_output"] = plain(received)
+        self.interactions[-1]["screen"] = rendered
+        self.interactions[-1]["changed_since_input"] = rendered != self.last_input_screen
+        self.interactions[-1]["required_markers"] = required_markers
+        self.interactions[-1]["value_label"] = value_label
+        raise AssertionError(
+            f"packaged TUI screen did not change to contain {marker!r}; "
+            f"exit_status={self.process.poll()!r}; last_input={self.last_input!r}; "
+            f"buffered_output={plain(received)!r}; screen={rendered!r}; "
+            f"interactions={self.interactions[-20:]!r}"
         )

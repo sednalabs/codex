@@ -12,11 +12,26 @@ from package_acceptance import _mock_config
 from tui_pty import PackagedTui
 
 
+def _field_value_is_rendered(frame: str, label: str, value: str) -> bool:
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
+    try:
+        label_index = lines.index(label)
+    except ValueError:
+        return False
+    return (
+        label_index + 1 < len(lines)
+        and lines[label_index + 1] == value
+        and re.fullmatch(r"[0-9a-f-]{36}", value) is not None
+    )
+
+
+def _thread_identity_is_rendered(frame: str, thread_id: str) -> bool:
+    return _field_value_is_rendered(frame, "Thread ID:", thread_id)
+
+
 def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
     lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
-    label_index = lines.index("Thread ID:")
-    assert lines[label_index + 1] == thread_id, lines
-    assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
+    assert _thread_identity_is_rendered(frame, thread_id), lines
 
 
 def _open_agents(tui: PackagedTui) -> None:
@@ -94,21 +109,34 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             tui.send("f")
             assert "Search ›" in tui.until("Search ›")
             tui.send("child-package-task")
-            tui.until("Thread ID:")
-            tui.refresh()
-            child_detail = tui.until(child_id)
+            # The helper applies actual incremental TUI cell updates, so the
+            # label row must remain adjacent to this exact child ID.
+            child_detail = tui.until_screen(
+                child_id,
+                value_label="Thread ID:",
+                required_markers=("Parent thread ID:", root_id),
+            )
             _assert_thread_identity_rendered(child_detail, child_id)
-            assert f"Parent thread ID: {root_id}" in child_detail
+            assert not _thread_identity_is_rendered(
+                child_detail, "00000000-0000-0000-0000-000000000000"
+            ), child_detail
+            assert _field_value_is_rendered(child_detail, "Parent thread ID:", root_id)
             tui.send("\x03")
             assert "nested-package-task" in tui.until("nested-package-task")
             tui.send("f")
             assert "Search ›" in tui.until("Search ›")
             tui.send("nested-package-task")
-            tui.until("Thread ID:")
-            tui.refresh()
-            nested_detail = tui.until(nested_id)
+            nested_detail = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("Parent thread ID:", child_id),
+            )
             _assert_thread_identity_rendered(nested_detail, nested_id)
-            assert f"Parent thread ID: {child_id}" in nested_detail
+            assert not _thread_identity_is_rendered(nested_detail, child_id), nested_detail
+            assert not _thread_identity_is_rendered(
+                nested_detail, "00000000-0000-0000-0000-000000000000"
+            ), nested_detail
+            assert _field_value_is_rendered(nested_detail, "Parent thread ID:", child_id)
             tui.send("\x03")
             assert "root-package-task" in tui.until("root-package-task")
             tui.send("f")

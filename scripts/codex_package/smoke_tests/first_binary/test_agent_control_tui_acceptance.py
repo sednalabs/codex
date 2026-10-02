@@ -180,7 +180,18 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         tui.send("f")
         tui.until("Search ›")
         tui.send("worker")
-        details = tui.until(child_id)
+        details = tui.until_screen(
+            child_id,
+            value_label="Thread ID:",
+            required_markers=(
+                "Configured/resolved model: gpt-5.6-terra",
+                "Configured/resolved effort: medium",
+                "Provider-effective identity: Unknown",
+                root.id,
+                "Thread path:",
+                "/root/worker",
+            ),
+        )
         _assert_thread_identity_rendered(details, child_id)
         assert "Configured/resolved model: gpt-5.6-terra" in details, details
         assert "Configured/resolved effort: medium" in details, details
@@ -202,7 +213,11 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         tui.send("f")
         tui.until("Search ›")
         tui.send("worker")
-        replay_details = tui.until(child_id)
+        replay_details = tui.until_screen(
+            child_id,
+            value_label="Thread ID:",
+            required_markers=("Provider-effective identity: Unknown",),
+        )
         _assert_thread_identity_rendered(replay_details, child_id)
         assert "Provider-effective identity: Unknown" in replay_details
         assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
