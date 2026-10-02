@@ -12,10 +12,12 @@ from tui_pty import PackagedTui
 
 
 def _open_agents(tui: PackagedTui) -> None:
-    # Resume/startup is asynchronous; submit only after the real chat prompt is
-    # rendered and ready to receive slash-command input.
+    # Establish readiness, then wait for the actual `/agents` popup entry
+    # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
     tui.send("/agents")
+    popup = tui.until("open the agent command center")
+    assert "/agents" in popup, popup
     tui.send("\r")
 
 

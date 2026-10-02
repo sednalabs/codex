@@ -23,10 +23,12 @@ from tui_pty import PackagedTui
 
 
 def _open_agents(tui: PackagedTui) -> None:
-    # Resume/startup is asynchronous; submit only after the real chat prompt is
-    # rendered and ready to receive slash-command input.
+    # Establish readiness, then wait for the actual `/agents` popup entry
+    # before Enter so paste-burst handling cannot turn the command into text.
     tui.until("Ask Codex to do anything")
     tui.send("/agents")
+    popup = tui.until("open the agent command center")
+    assert "/agents" in popup, popup
     tui.send("\r")
 
 
@@ -124,7 +126,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                         "tui-rich-worker", "spawn_agent",
                         {
                             "task_name": "worker", "message": "PRIVATE_PROMPT_SENTINEL",
-                            "model": "package-smoke", "reasoning_effort": "medium",
+                            "model": "gpt-5.6-terra", "reasoning_effort": "medium",
                         },
                     ),
                     ev_completed("tui-rich-spawn"),
@@ -161,7 +163,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
 
         child_id = metadata["agent_id"]
         uuid.UUID(child_id)
-        assert metadata["configured_model"] == "package-smoke", metadata
+        assert metadata["configured_model"] == "gpt-5.6-terra", metadata
         assert metadata["configured_reasoning_effort"] == "medium", metadata
         assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
 
@@ -175,7 +177,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         tui.send("worker")
         details = tui.until(child_id)
         _assert_thread_identity_rendered(details, child_id)
-        assert "Configured/resolved model: package-smoke" in details, details
+        assert "Configured/resolved model: gpt-5.6-terra" in details, details
         assert "Configured/resolved effort: medium" in details, details
         assert "Provider-effective identity: Unknown" in details, details
         parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()

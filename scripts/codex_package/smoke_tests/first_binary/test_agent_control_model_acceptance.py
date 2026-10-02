@@ -5,6 +5,7 @@ the provider-effective model: the local server is a synthetic transport.
 """
 
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,21 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
     result = json.loads(payload)
     assert isinstance(result, dict), result
     return result
+
+
+def _tool_output_text(server: MockResponsesServer, call_id: str) -> str:
+    outputs = [
+        item.get("output")
+        for request in server.requests() if request.path == "/v1/responses"
+        for item in request.input()
+        if item.get("type") == "function_call_output" and item.get("call_id") == call_id
+    ]
+    assert len(outputs) == 1, f"missing executed output for {call_id}: {outputs!r}"
+    payload = outputs[0]
+    if isinstance(payload, list):
+        payload = next(part["text"] for part in payload if part.get("type") == "output_text")
+    assert isinstance(payload, str), payload
+    return payload
 
 
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
@@ -118,10 +134,17 @@ def _call_output_count(server: MockResponsesServer, call_id: str) -> int:
     )
 
 
-def _function_response(response_id: str, call_id: str, name: str, args: dict[str, Any]) -> str:
+def _function_response(
+    response_id: str,
+    call_id: str,
+    name: str,
+    args: dict[str, Any],
+    *,
+    namespace: str | None = "collaboration",
+) -> str:
     return sse([
         ev_response_created(response_id),
-        _function_call(call_id, name, args),
+        _function_call(call_id, name, args, namespace=namespace),
         ev_completed(response_id),
     ])
 
@@ -214,7 +237,7 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     {
                         "task_name": "worker",
                         "message": "WORKER_INITIAL_MARKER",
-                        "model": "package-smoke",
+                        "model": "gpt-5.6-terra",
                         "reasoning_effort": "medium",
                     },
                 ),
@@ -237,8 +260,6 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                     {
                         "task_name": "grandchild",
                         "message": "GRANDCHILD_INITIAL_MARKER",
-                        "model": "package-smoke",
-                        "reasoning_effort": "medium",
                     },
                 ),
             )
@@ -252,12 +273,22 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             )
             server.enqueue_sse_for_request(
                 lambda request: _has_user_marker(request, "GRANDCHILD_INITIAL_MARKER"),
+                _function_response(
+                    "grandchild-invalid-model", "invalid-model-spawn", "spawn_agent", {
+                        "task_name": "invalid-model-child",
+                        "message": "This child must not be created.",
+                        "model": "package-smoke",
+                    },
+                ),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _has_call_output(request, "invalid-model-spawn"),
                 sse([
-                    ev_response_created("grandchild-initial"),
+                    ev_response_created("grandchild-after-invalid-model"),
                     ev_assistant_message(
                         "grandchild-first-message", "grandchild first turn complete"
                     ),
-                    ev_completed("grandchild-initial"),
+                    ev_completed("grandchild-after-invalid-model"),
                 ]),
             )
 
@@ -270,10 +301,13 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
         grandchild_id = grandchild["agent_id"]
         uuid.UUID(worker_id)
         uuid.UUID(grandchild_id)
-        assert worker["configured_model"] == "package-smoke", worker
+        assert worker["configured_model"] == "gpt-5.6-terra", worker
         assert worker["configured_reasoning_effort"] == "medium", worker
-        assert grandchild["configured_model"] == "package-smoke", grandchild
+        assert grandchild["configured_model"] == "gpt-5.6-terra", grandchild
         assert grandchild["configured_reasoning_effort"] == "medium", grandchild
+        invalid_model_output = _tool_output_text(server, "invalid-model-spawn")
+        assert "Unknown model" in invalid_model_output, invalid_model_output
+        assert "package-smoke" in invalid_model_output, invalid_model_output
 
         # A second packaged client reloads the root; follow-ups lazily reload
         # the nested V2 records, and list_agents returns the actual persisted tree.
@@ -372,13 +406,11 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     _function_call(
                         "spawn-waiter", "spawn_agent", {
                             "task_name": "waiter", "message": "WAITER_INITIAL_MARKER",
-                            "model": "package-smoke", "reasoning_effort": "medium",
                         },
                     ),
                     _function_call(
                         "spawn-sender", "spawn_agent", {
                             "task_name": "sender", "message": "SENDER_INITIAL_MARKER",
-                            "model": "package-smoke", "reasoning_effort": "medium",
                         },
                     ),
                     ev_completed("queue-root-spawns"),
@@ -419,7 +451,8 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     },
                 ),
             )
-            server.enqueue_sse_for_request(
+            followup_gate = threading.Event()
+            followup_route = server.enqueue_sse_for_request(
                 lambda request: request.header("x-codex-parent-thread-id") == root_id
                 and _has_call_output(request, "queue-only-call"),
                 _function_response(
@@ -427,6 +460,7 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                         "target": "/root/waiter", "message": "FOLLOWUP_TURN_SENTINEL",
                     },
                 ),
+                gate=followup_gate,
             )
             server.enqueue_sse_for_request(
                 lambda request: request.header("x-codex-parent-thread-id") == root_id
@@ -455,7 +489,33 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     ev_completed("root-join-finished"),
                 ]),
             )
-            turn = root.run("QUEUE_WAKE_ROOT_MARKER: spawn, wait only for waiter, then finish.")
+            run_outcome: dict[str, object] = {}
+
+            def run_root_turn() -> None:
+                try:
+                    run_outcome["turn"] = root.run(
+                        "QUEUE_WAKE_ROOT_MARKER: spawn, wait only for waiter, then finish."
+                    )
+                except BaseException as error:
+                    run_outcome["error"] = error
+
+            run_thread = threading.Thread(target=run_root_turn, daemon=True)
+            run_thread.start()
+            try:
+                followup_route.wait_until_selected(timeout_s=30)
+                waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
+                assert not any(
+                    _thread_id(request) == waiter_id
+                    and _has_call_output(request, "waiter-mailbox-wait-call")
+                    for request in server.requests()
+                ), "queue-only message woke the waiter before actionable followup"
+            finally:
+                followup_gate.set()
+            run_thread.join(timeout=30)
+            assert not run_thread.is_alive(), "root turn did not finish after followup gate release"
+            if "error" in run_outcome:
+                raise run_outcome["error"]  # type: ignore[misc]
+            turn = run_outcome["turn"]
             assert turn.final_response == "selected target finished"
 
         waiter_result = _tool_output(server, "waiter-mailbox-wait-call")
@@ -499,7 +559,6 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                 _function_response(
                     "root-spawn-goal-worker", "goal-worker-spawn", "spawn_agent", {
                         "task_name": "worker", "message": "GOAL_WORKER_INITIAL_MARKER",
-                        "model": "package-smoke", "reasoning_effort": "medium",
                     },
                 ),
             )
@@ -517,14 +576,16 @@ def test_packaged_model_goal_continuation_and_terminal_transition(
                     ev_completed("root-goal-wait"),
                 ]),
             )
+            goal_create_response = _function_response(
+                "worker-create-goal", "worker-create-goal-call", "create_goal", {
+                    "objective": "Complete the synthetic goal lifecycle",
+                }, namespace=None,
+            )
+            assert '"namespace"' not in goal_create_response
             server.enqueue_sse_for_request(
                 lambda request: request.header("x-codex-parent-thread-id") == root_id
                 and _has_user_marker(request, "GOAL_WORKER_INITIAL_MARKER"),
-                _function_response(
-                    "worker-create-goal", "worker-create-goal-call", "create_goal", {
-                        "objective": "Complete the synthetic goal lifecycle",
-                    }, namespace=None,
-                ),
+                goal_create_response,
             )
             server.enqueue_sse_for_request(
                 lambda request: request.header("x-codex-parent-thread-id") == root_id
