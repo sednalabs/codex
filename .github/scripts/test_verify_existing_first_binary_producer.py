@@ -1454,8 +1454,33 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 lint_step = job[lint_start:] if lint_end < 0 else job[lint_start:lint_end]
                 userns_start = job.index("      - name: Temporarily enable Linux user namespaces for existing-package consumers")
                 consumer_start = job.index("      - name: Run existing-package consumers with explicit producer provenance")
+                restore_start = job.index("      - name: Restore original Linux user-namespace settings")
                 self.assertLess(lint_start, userns_start)
                 self.assertLess(lint_start, consumer_start)
+                self.assertLess(userns_start, consumer_start)
+                self.assertLess(consumer_start, restore_start)
+                enable_step = job[userns_start:job.index("\n      - name:", userns_start + 1)]
+                restore_end = job.find("\n      - name:", restore_start + 1)
+                restore_step = job[restore_start:] if restore_end < 0 else job[restore_start:restore_end]
+                # Ruff has its own focused guard; verify the named userns steps instead.
+                self.assertEqual(
+                    [line.strip() for line in enable_step.splitlines() if line.lstrip().startswith("if: ")],
+                    [
+                        "if: ${{ inputs.mode == 'consume-existing' && "
+                        "(inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || "
+                        "inputs.consumer_profile == 'focused') && runner.os == 'Linux' && "
+                        "runner.environment == 'github-hosted' }}"
+                    ],
+                )
+                self.assertEqual(
+                    [line.strip() for line in restore_step.splitlines() if line.lstrip().startswith("if: ")],
+                    [
+                        "if: ${{ always() && inputs.mode == 'consume-existing' && "
+                        "(inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || "
+                        "inputs.consumer_profile == 'focused') && runner.os == 'Linux' && "
+                        "runner.environment == 'github-hosted' }}"
+                    ],
+                )
                 self.assertIn(
                     "if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'focused' || inputs.consumer_profile == 'full') }}",
                     lint_step,
@@ -1511,7 +1536,6 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertIn("- focused", workflow)
         self.assertIn("case \"${CONSUMER_PROFILE}\" in pair|focused|full)", workflow)
         self.assertEqual(2, workflow.count("focused)"))
-        self.assertEqual(4, workflow.count("inputs.consumer_profile == 'focused'"))
         for selector in focused_selectors:
             for job_name, _expected_runner, job in consumer_jobs:
                 with self.subTest(job=job_name, selector=selector):
