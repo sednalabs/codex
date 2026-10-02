@@ -2,6 +2,7 @@
 
 import json
 import re
+from threading import Event
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -27,7 +28,7 @@ def _open_agents(
 ) -> str:
     # Establish readiness, then wait for the actual `/agents` popup entry
     # before Enter so paste-burst handling cannot turn the command into text.
-    tui.until("Ask Codex to do anything")
+    tui.until_screen("Ask Codex to do anything")
     tui.send("/agents")
     popup = tui.until("open the agent command center")
     assert "/agents" in popup, popup
@@ -174,58 +175,36 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 for item in request.input()
             ),
             sse([
-                ev_response_created("tui-rich-worker-wait"),
-                _function_call(
-                    "tui-rich-worker-wait-call", "wait_agent",
-                    {
-                        "targets": ["/root/worker"],
-                        "return_when": "all",
-                        "timeout_ms": 25000,
-                    },
-                ),
-                ev_completed("tui-rich-worker-wait"),
-            ]),
-        )
-        server.enqueue_sse_for_request(
-            lambda request: _thread_id(request) == root_id
-            and any(
-                item.get("type") == "function_call_output"
-                and item.get("call_id") == "tui-rich-worker-wait-call"
-                for item in request.input()
-            ),
-            sse([
                 ev_response_created("tui-rich-root-final"),
                 ev_assistant_message("tui-rich-root-message", "TUI_RICH_ROOT_TERMINAL"),
                 ev_completed("tui-rich-root-final"),
             ]),
         )
-        server.enqueue_sse_for_request(
+        child_gate = Event()
+        child_route = server.enqueue_sse_for_request(
             lambda request: _thread_id(request) != root_id
             and request.header("x-codex-parent-thread-id") == root_id
             and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL"),
             sse([
                 ev_response_created("tui-rich-child-final"),
-                ev_assistant_message("tui-rich-child-message", "synthetic completion"),
+                ev_assistant_message("tui-rich-child-message", "TUI_RICH_CHILD_TERMINAL"),
                 ev_completed("tui-rich-child-final"),
             ]),
+            gate=child_gate,
         )
 
-        # Exercise spawn and terminal wait inside the same packaged process that
-        # renders /agents. The overview discovers root history plus descendants
-        # loaded by this live app-server; a fresh process resuming only root
-        # would not have the completed child in its loaded-thread set.
+        # Exercise spawn inside the same packaged process that renders /agents.
+        # The child route is event-gated so its loaded status can be inspected
+        # before terminal completion removes it from the live thread manager.
         with PackagedTui(isolated, "resume", root_id) as tui:
             tui.until("Ask Codex to do anything")
             tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
             tui.until("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
             tui.send("\r")
             tui.until("TUI_RICH_ROOT_TERMINAL")
+            child_route.wait_until_selected(timeout_s=30)
 
             metadata = _tool_output(server, "tui-rich-worker")
-            worker_wait = _tool_output(server, "tui-rich-worker-wait-call")
-            assert worker_wait["reason"] == "target_terminal", worker_wait
-            assert worker_wait["wake_cause"] == "target_status", worker_wait
-
             child_id = metadata["agent_id"]
             uuid.UUID(child_id)
             assert metadata["configured_model"] == "gpt-5.6-terra", metadata
@@ -285,3 +264,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             _assert_thread_identity_rendered(replay_details, child_id)
             assert "Provider-effective identity: Unknown" in replay_details
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
+            child_gate.set()
+            child_final = tui.until_screen(
+                "TUI_RICH_CHILD_TERMINAL",
+                required_markers=("Provider-effective identity: Unknown",),
+            )
+            assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final

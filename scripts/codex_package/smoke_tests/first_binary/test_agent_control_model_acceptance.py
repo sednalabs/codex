@@ -415,8 +415,33 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
                             "message": "GRANDCHILD_AFTER_RELOAD_MARKER",
                         },
                     ),
-                    _function_call("list-after-reload", "list_agents", {}),
                     ev_completed("root-recovery-actions"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and _has_call_output(request, "followup-worker-after-reload")
+                and _has_call_output(request, "followup-grandchild-after-reload"),
+                sse([
+                    ev_response_created("root-recovery-join"),
+                    _function_call(
+                        "wait-recovery-descendants", "wait_agent",
+                        {
+                            "targets": ["/root/worker", "/root/worker/grandchild"],
+                            "return_when": "all",
+                            "timeout_ms": 25000,
+                        },
+                    ),
+                    ev_completed("root-recovery-join"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and _has_call_output(request, "wait-recovery-descendants"),
+                sse([
+                    ev_response_created("root-recovery-list"),
+                    _function_call("list-after-reload", "list_agents", {}),
+                    ev_completed("root-recovery-list"),
                 ]),
             )
             server.enqueue_sse_for_request(
@@ -449,6 +474,12 @@ def test_packaged_model_nested_spawn_recovery_and_list_after_resume(
             resumed = resumed_root.run("ROOT_RECOVERY_LIST_MARKER: wake descendants and list them.")
             assert resumed.final_response == "recovery listing complete"
 
+        recovery_wait = _tool_output(server, "wait-recovery-descendants")
+        assert recovery_wait["reason"] == "target_terminal", recovery_wait
+        assert recovery_wait["wake_cause"] == "target_status", recovery_wait
+        assert set(recovery_wait["status"]) == {
+            "/root/worker", "/root/worker/grandchild",
+        }, recovery_wait
         agents = _tool_output(server, "list-after-reload")["agents"]
         by_id = {agent["agent_id"]: agent for agent in agents}
         assert worker_id in by_id and grandchild_id in by_id, agents
