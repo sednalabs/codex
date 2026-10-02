@@ -779,6 +779,7 @@ jobs:
         shell: bash
         env:
           MODE: ${{ inputs.mode }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           set -euo pipefail
           printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
@@ -789,6 +790,9 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          if [[ "$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused" ]]; then
+            mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
+          fi
           if [[ "$MODE" == "consume-existing" ]]; then
             printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
             sdk_root="$GITHUB_WORKSPACE/sdk-source"
@@ -1738,6 +1742,7 @@ jobs:
         shell: bash
         env:
           MODE: ${{ inputs.mode }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           set -euo pipefail
           printf 'PRODUCT_ROOT=%s/product\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
@@ -1748,6 +1753,9 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          if [[ "$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused" ]]; then
+            mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
+          fi
           if [[ "$MODE" == "consume-existing" ]]; then
             printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
             sdk_root="$GITHUB_WORKSPACE/sdk-source"
