@@ -649,7 +649,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
         q13_rows = [
             row for row in rows
             if row["identity"]["fixture_sha"] == Q13_FIXTURE_SHA
-            or row["identity"]["sdk_sha"] == S4_SDK_SHA
+            and row["identity"]["sdk_sha"] == S4_SDK_SHA
+            and row["identity"]["profile"] == "focused"
         ]
         self.assertEqual(1, len(q13_rows))
         record = q13_rows[0]
