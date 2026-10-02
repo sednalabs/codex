@@ -134,6 +134,43 @@ def _call_output_count(server: MockResponsesServer, call_id: str) -> int:
     )
 
 
+def _call_output_observations(
+    server: MockResponsesServer, call_id: str, *, thread_id: str
+) -> list[dict[str, Any]]:
+    """Return the exact synthetic result and request/turn identity for one tool output."""
+    observations: list[dict[str, Any]] = []
+    for request in server.requests():
+        metadata = request.body_json().get("client_metadata")
+        if not isinstance(metadata, dict) or metadata.get("thread_id") != thread_id:
+            continue
+        turn_metadata = metadata.get("x-codex-turn-metadata")
+        for item in request.input():
+            if item.get("type") != "function_call_output" or item.get("call_id") != call_id:
+                continue
+            output = item.get("output")
+            if isinstance(output, list):
+                output = next(
+                    (part.get("text") for part in output
+                     if isinstance(part, dict) and part.get("type") == "output_text"),
+                    output,
+                )
+            if isinstance(output, str):
+                try:
+                    output = json.loads(output)
+                except json.JSONDecodeError:
+                    pass
+            observations.append({
+                "thread_id": thread_id,
+                "turn_id": turn_metadata.get("turn_id")
+                if isinstance(turn_metadata, dict) else None,
+                "turn_trigger": turn_metadata.get("turn_trigger")
+                if isinstance(turn_metadata, dict) else None,
+                "call_id": call_id,
+                "output": output,
+            })
+    return observations
+
+
 def _function_response(
     response_id: str,
     call_id: str,
@@ -536,15 +573,22 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
             try:
                 followup_route.wait_until_selected(timeout_s=30)
                 waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
+                early_wake_evidence = {
+                    "routing": server.routing_trace(),
+                    "waiter_outputs": _call_output_observations(
+                        server, "waiter-mailbox-wait-call", thread_id=waiter_id
+                    ),
+                }
                 assert not any(
                     _thread_id(request) == waiter_id
                     and _has_call_output(request, "waiter-mailbox-wait-call")
                     for request in server.requests()
                 ), (
                     "queue-only message woke the waiter before actionable followup; "
-                    "trace distinguishes a separate actionable request/turn from an "
-                    "early waiter wake: "
-                    f"{json.dumps(server.routing_trace(), sort_keys=True)}"
+                    "the trace distinguishes queue-only wake from another actionable "
+                    "request/turn; exact waiter output and wake reason are included "
+                    "when the waiter emitted one: "
+                    f"{json.dumps(early_wake_evidence, sort_keys=True)}"
                 )
             finally:
                 followup_gate.set()

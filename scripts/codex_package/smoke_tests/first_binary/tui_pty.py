@@ -292,9 +292,14 @@ class PackagedTui:
         self.last_received = bytes(received)
         self.interactions[-1]["timeout_exit_status"] = self.process.poll()
         self.interactions[-1]["buffered_output"] = plain(received)
+        current_screen = self._screen_snapshot()
+        screen_changed = current_screen != self.last_input_screen
+        self.interactions[-1]["timeout_screen"] = current_screen
+        self.interactions[-1]["screen_changed_since_input"] = screen_changed
         raise AssertionError(
             f"packaged TUI did not render {marker!r}; exit_status={self.process.poll()!r}; "
             f"last_input={self.last_input!r}; buffered_output={plain(received)!r}; "
+            f"screen_changed_since_input={screen_changed!r}; current_screen={current_screen!r}; "
             f"previous_frame={self.last_frame!r}; interactions={self.interactions[-20:]!r}"
         )
 
