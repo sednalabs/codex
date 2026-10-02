@@ -1309,12 +1309,13 @@ exports.chromium = {
             .expect("write Node wrapper");
         std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o700))
             .expect("make Node wrapper executable");
-        // Close the writable handle before a child executes this file; Linux otherwise returns ETXTBSY.
+        // Closing the writable handle is required before Linux can execute the wrapper.
         let node = node.into_temp_path();
+        let node_wrapper_path = node.as_ref().to_path_buf();
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
-            let node = node.path().to_string_lossy().to_string();
+            let node = node_wrapper_path.to_string_lossy().to_string();
             let thread_id = thread_id.to_string();
             async move {
                 let config = PlaywrightProviderConfig {
