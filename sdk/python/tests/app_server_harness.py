@@ -20,6 +20,7 @@ Json = dict[str, Any]
 class CapturedResponsesRequest:
     """Recorded request sent by app-server to the mock Responses API."""
 
+    request_id: int
     method: str
     path: str
     headers: dict[str, str]
@@ -104,6 +105,7 @@ class MockSseResponse:
 class MockRequestRoute:
     """One-shot request-matched SSE response, optionally held behind a gate."""
 
+    route_id: str
     predicate: Callable[[CapturedResponsesRequest], bool]
     response: MockSseResponse
     gate: threading.Event | None = None
@@ -128,6 +130,7 @@ class MockResponsesServer:
         self._response_mode: str | None = None
         self._request_routes: list[MockRequestRoute] = []
         self._routing_errors: list[str] = []
+        self._route_events: list[dict[str, Any]] = []
         self._server = _ResponsesHttpServer(("127.0.0.1", 0), _ResponsesHandler, self)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -168,7 +171,9 @@ class MockResponsesServer:
                 failures = []
         if failures or unused:
             raise AssertionError(
-                f"request routing did not reconcile: errors={failures!r}, unused_routes={unused}"
+                "request routing did not reconcile: "
+                f"errors={failures!r}, unused_routes={unused}; "
+                f"trace={json.dumps(self.routing_trace(), sort_keys=True)}"
             )
 
     def enqueue_sse(
@@ -199,15 +204,16 @@ class MockResponsesServer:
         depending on registration order. Event gates are waited outside the
         selector lock so concurrent requests can select their own responses.
         """
-        route = MockRequestRoute(
-            predicate=predicate,
-            response=MockSseResponse(body, delay_between_events_s),
-            gate=gate,
-        )
         with self._routing_lock:
             if self._response_mode == "fifo":
                 raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
             self._response_mode = "request-matched"
+            route = MockRequestRoute(
+                route_id=f"route-{len(self._request_routes) + 1}",
+                predicate=predicate,
+                response=MockSseResponse(body, delay_between_events_s),
+                gate=gate,
+            )
             self._request_routes.append(route)
         return route
 
@@ -248,6 +254,62 @@ class MockResponsesServer:
         with self._routing_lock:
             return list(self._routing_errors)
 
+    def routing_trace(self) -> dict[str, Any]:
+        """Return allowlisted request and one-shot-route evidence for fixture failures."""
+        with self._requests_lock:
+            requests = list(self._requests)
+        with self._routing_lock:
+            route_events = list(self._route_events)
+        return {
+            "requests": [self._request_trace(request) for request in requests],
+            "routes": route_events,
+        }
+
+    @staticmethod
+    def _request_trace(request: CapturedResponsesRequest) -> dict[str, Any]:
+        body = request.body_json()
+        metadata = body.get("client_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        turn = metadata.get("x-codex-turn-metadata")
+        turn = turn if isinstance(turn, dict) else {}
+        inputs = body.get("input")
+        inputs = inputs if isinstance(inputs, list) else []
+        calls = [
+            {
+                "kind": item.get("type"),
+                "call_id": item.get("call_id"),
+                "name": item.get("name"),
+            }
+            for item in inputs
+            if isinstance(item, dict)
+            and item.get("type") in {"function_call", "function_call_output"}
+        ]
+        markers: list[str] = []
+        for item in inputs:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            texts = [content] if isinstance(content, str) else [
+                span.get("text")
+                for span in content
+                if isinstance(span, dict) and span.get("type") == "input_text"
+            ] if isinstance(content, list) else []
+            for text in texts:
+                if isinstance(text, str):
+                    markers.extend(
+                        token for token in text.split()
+                        if token.isupper() and ("MARKER" in token or "SENTINEL" in token)
+                    )
+        return {
+            "request_id": request.request_id,
+            "thread_id": metadata.get("thread_id"),
+            "parent_thread_id": request.header("x-codex-parent-thread-id"),
+            "turn_trigger": turn.get("turn_trigger"),
+            "previous_response_id": body.get("previous_response_id"),
+            "calls": calls,
+            "markers": sorted(set(markers)),
+        }
+
     def single_request(self) -> CapturedResponsesRequest:
         """Return the only recorded request, failing if the count differs."""
         requests = self.requests()
@@ -275,13 +337,15 @@ class MockResponsesServer:
     ) -> CapturedResponsesRequest:
         """Record one inbound HTTP request from app-server."""
         headers = {key.lower(): value for key, value in handler.headers.items()}
-        request = CapturedResponsesRequest(
-            method=handler.command,
-            path=handler.path,
-            headers=headers,
-            body=body,
-        )
         with self._requests_changed:
+            request_id = len(self._requests) + 1
+            request = CapturedResponsesRequest(
+                request_id=request_id,
+                method=handler.command,
+                path=handler.path,
+                headers=headers,
+                body=body,
+            )
             self._requests.append(request)
             self._requests_changed.notify_all()
         return request
@@ -298,15 +362,39 @@ class MockResponsesServer:
             elif unused_matches:
                 message = f"ambiguous Responses request matched {len(unused_matches)} routes"
                 self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [route.route_id for route in unused_matches],
+                    "selected_route_id": None,
+                    "error": message,
+                })
                 raise AssertionError(message)
             elif matches:
                 message = "one-shot Responses route was matched more than once"
                 self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [route.route_id for route in matches],
+                    "selected_route_id": None,
+                    "error": message,
+                })
                 raise AssertionError(message)
             else:
                 message = "unmatched Responses request"
                 self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [],
+                    "selected_route_id": None,
+                    "error": message,
+                })
                 raise AssertionError(message)
+            self._route_events.append({
+                "request_id": request.request_id,
+                "matched_route_ids": [candidate.route_id for candidate in matches],
+                "selected_route_id": route.route_id,
+                "error": None,
+            })
             route.used = True
 
         route.selected.set()

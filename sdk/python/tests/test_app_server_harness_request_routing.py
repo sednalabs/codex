@@ -144,6 +144,22 @@ def test_used_route_does_not_make_one_new_matching_route_ambiguous() -> None:
         assert _post(server, "first") == first
         assert _post(server, "second") == second
         assert server.routing_errors() == []
+        trace = server.routing_trace()
+        assert [request["request_id"] for request in trace["requests"]] == [1, 2]
+        assert trace["routes"] == [
+            {
+                "request_id": 1,
+                "matched_route_ids": ["route-1"],
+                "selected_route_id": "route-1",
+                "error": None,
+            },
+            {
+                "request_id": 2,
+                "matched_route_ids": ["route-1", "route-2"],
+                "selected_route_id": "route-2",
+                "error": None,
+            },
+        ]
 
 
 def test_fifo_and_request_matched_modes_cannot_be_mixed() -> None:
