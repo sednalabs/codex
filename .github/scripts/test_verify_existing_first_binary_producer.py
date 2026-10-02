@@ -28,10 +28,12 @@ from verify_existing_first_binary_producer import (
     Q4_FIXTURE_SHA,
     Q5_FIXTURE_SHA,
     Q11_FIXTURE_SHA,
+    Q13_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
     S3_SDK_SHA,
+    S4_SDK_SHA,
     SDK_TEST_PLAN_BY_SHA,
     PRODUCER_JOB_CONTRACT,
     REPOSITORY,
@@ -640,6 +642,66 @@ class AcceptedInputManifestTests(unittest.TestCase):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 select_accepted_record(manifest, changed)
 
+    def test_q13_s4_manifest_adds_only_focused_row_with_exact_producer(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = manifest["records"]
+        q13_rows = [
+            row for row in rows
+            if row["identity"]["fixture_sha"] == Q13_FIXTURE_SHA
+            or row["identity"]["sdk_sha"] == S4_SDK_SHA
+        ]
+        self.assertEqual(1, len(q13_rows))
+        record = q13_rows[0]
+        self.assertEqual("accepted-producer-36851180755-focused-q13-s4", record["record_id"])
+        self.assertEqual("accepted", record["disposition"])
+        self.assertTrue(record["w14780_eligible"])
+        self.assertEqual(
+            {
+                "product_sha": "c3a5d1135480efc61b6c24b275ea3322e0cfa14d",
+                "comparison_base_ref": "main",
+                "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
+                "fixture_sha": Q13_FIXTURE_SHA,
+                "sdk_sha": S4_SDK_SHA,
+                "profile": "focused",
+            },
+            record["identity"],
+        )
+        prior_q11 = next(
+            row for row in rows
+            if row["identity"]["fixture_sha"] == Q11_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S3_SDK_SHA
+            and row["identity"]["profile"] == "focused"
+        )
+        self.assertEqual(prior_q11["producer"], record["producer"])
+        self.assertEqual(prior_q11["jobs"], record["jobs"])
+        self.assertEqual(prior_q11["artifacts"], record["artifacts"])
+        inputs = {
+            "product_sha": record["identity"]["product_sha"],
+            "comparison_base_ref": record["identity"]["comparison_base_ref"],
+            "comparison_base_sha": record["identity"]["comparison_base_sha"],
+            "fixture_sha": Q13_FIXTURE_SHA,
+            "sdk_sha": S4_SDK_SHA,
+            "profile": "focused",
+            "producer_run_id": record["producer"]["run_id"],
+            "producer_workflow_host_sha": record["producer"]["workflow_host_sha"],
+        }
+        self.assertEqual(record["record_id"], select_accepted_record(manifest, inputs)["record_id"])
+        mismatches = (
+            ("product_sha", "9" * 40),
+            ("comparison_base_sha", "8" * 40),
+            ("fixture_sha", Q11_FIXTURE_SHA),
+            ("sdk_sha", S3_SDK_SHA),
+            ("profile", "pair"),
+            ("profile", "full"),
+            ("producer_run_id", 36800811941),
+            ("producer_workflow_host_sha", "7" * 40),
+        )
+        for field, value in mismatches:
+            changed = dict(inputs)
+            changed[field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                select_accepted_record(manifest, changed)
+
     def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
         q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
         self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
@@ -672,6 +734,10 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(frozenset(), q11_focused["state"])
         self.assertEqual(FOCUSED_REPAIR_PLAIN_TESTS, q11_focused["plain"])
         self.assertEqual(6, len(q11_focused["plain"]))
+        q13_focused = consume_existing_test_plan(Q13_FIXTURE_SHA, S4_SDK_SHA, "focused")
+        self.assertEqual(frozenset(), q13_focused["state"])
+        self.assertEqual(FOCUSED_REPAIR_PLAIN_TESTS, q13_focused["plain"])
+        self.assertEqual(6, len(q13_focused["plain"]))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
@@ -686,6 +752,10 @@ class AcceptedInputManifestTests(unittest.TestCase):
             (Q11_FIXTURE_SHA, S3_SDK_SHA, "full"),
             (Q11_FIXTURE_SHA, S2_SDK_SHA, "focused"),
             (Q5_FIXTURE_SHA, S3_SDK_SHA, "focused"),
+            (Q13_FIXTURE_SHA, S3_SDK_SHA, "focused"),
+            (Q11_FIXTURE_SHA, S4_SDK_SHA, "focused"),
+            (Q13_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q13_FIXTURE_SHA, S4_SDK_SHA, "full"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
@@ -706,6 +776,10 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(s2, s3)
         self.assertEqual(10, len(s3["selectors"]))
         self.assertEqual(55, sum(s3["expected_test_cases"].values()))
+        s4 = sdk_test_plan(S4_SDK_SHA)
+        self.assertEqual(s3, s4)
+        self.assertEqual(10, len(s4["selectors"]))
+        self.assertEqual(55, sum(s4["expected_test_cases"].values()))
         self.assertEqual(
             "sdk/python/tests/test_app_server_harness_request_routing.py::test_used_route_does_not_make_one_new_matching_route_ambiguous",
             s2["selectors"][-1],
@@ -1461,6 +1535,73 @@ class ConsumerResultTests(unittest.TestCase):
                     mode="consume-existing",
                     profile="focused",
                     fixture_sha=Q11_FIXTURE_SHA,
+                    sdk_sha=selected_sdk_sha,
+                    runner_temp=witnesses.parent,
+                )
+                if mutation == "skipped":
+                    self.assertTrue(any("skipped" in issue for issue in result["issues"]))
+                elif mutation == "pytest_failure":
+                    self.assertIn("pytest exited with status 1", result["issues"])
+                elif mutation == "wrong_generation":
+                    self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                else:
+                    self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
+
+    def test_q13_s4_focused_result_accepts_exact_six_cases_without_witnesses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="focused", fixture_sha=Q13_FIXTURE_SHA, sdk_sha=S4_SDK_SHA
+            )
+            focused = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="focused",
+                fixture_sha=Q13_FIXTURE_SHA,
+                sdk_sha=S4_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], focused["issues"])
+            self.assertEqual(6, focused["executed_cases"])
+            self.assertEqual(0, focused["state_history_witnesses"])
+
+    def test_q13_s4_focused_result_rejects_missing_extra_skipped_and_wrong_generation(self) -> None:
+        for mutation in ("missing", "extra", "skipped", "wrong_generation", "pytest_failure"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                    root, profile="focused", fixture_sha=Q13_FIXTURE_SHA, sdk_sha=S4_SDK_SHA
+                )
+                if mutation == "missing":
+                    test_name = sorted(FOCUSED_REPAIR_PLAIN_TESTS)[0]
+                    xml = junit.read_text(encoding="utf-8")
+                    junit.write_text(xml.replace(f'<testcase name="{test_name}"/>', "", 1), encoding="utf-8")
+                elif mutation == "extra":
+                    xml = junit.read_text(encoding="utf-8").replace(
+                        "</testsuite>", '<testcase name="test_unadmitted_focused_case"/></testsuite>'
+                    )
+                    junit.write_text(xml, encoding="utf-8")
+                elif mutation == "skipped":
+                    xml = junit.read_text(encoding="utf-8").replace(
+                        "/>", "><skipped/></testcase>", 1
+                    )
+                    junit.write_text(xml, encoding="utf-8")
+                selected_sdk_sha = S3_SDK_SHA if mutation == "wrong_generation" else S4_SDK_SHA
+                result = reconcile_consumer_results(
+                    junit_path=junit,
+                    consumer_context_path=consumer,
+                    producer_evidence_path=producer,
+                    witness_dir=witnesses,
+                    result_path=result_path,
+                    pytest_exit=1 if mutation == "pytest_failure" else 0,
+                    mode="consume-existing",
+                    profile="focused",
+                    fixture_sha=Q13_FIXTURE_SHA,
                     sdk_sha=selected_sdk_sha,
                     runner_temp=witnesses.parent,
                 )
