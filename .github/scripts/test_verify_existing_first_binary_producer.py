@@ -711,8 +711,9 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(2, workflow.count("focused)"))
         self.assertEqual(4, workflow.count("inputs.consumer_profile == 'focused'"))
         for selector in focused_selectors:
-            with self.subTest(selector=selector):
-                self.assertEqual(2, workflow.count(selector))
+            for job_name, _expected_runner, job in consumer_jobs:
+                with self.subTest(job=job_name, selector=selector):
+                    self.assertEqual(1, job.count(f"::{selector}\""))
 
     def test_existing_consumer_verifier_env_binds_every_required_input(self) -> None:
         workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
