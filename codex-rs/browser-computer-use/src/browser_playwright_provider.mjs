@@ -31,6 +31,7 @@ async function main() {
     throw new Error("Native Browser profile state is unsupported on Windows; no state was changed.");
   }
   const request = JSON.parse(await readStdin());
+  validateVisualArguments(request.arguments || {});
   const { chromium } = loadPlaywright();
   const { stateDir } = await browserProfile(request);
   await withProfileLock(stateDir, async () => {
@@ -60,9 +61,23 @@ async function main() {
       }
 
       await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
-      const screenshot = await captureScreenshot(page);
+      const captureBundle = await captureScreenshots(page, request.arguments || {});
       await saveState(stateDir, page);
-      writeResponse(await responseForPage(page, screenshot, summaries));
+      let artifactResult = null;
+      let artifactError = null;
+      if (request.arguments?.save_artifact === true) {
+        try {
+          artifactResult = await saveCaptureArtifacts(stateDir, captureBundle, request);
+        } catch (error) {
+          artifactError = `artifact_save: ${errorMessage(error)}`;
+        }
+      }
+      writeResponse(await responseForPage(page, captureBundle, summaries, {
+        artifactResult,
+        error: captureBundle.error || artifactError,
+        pageHints: request.arguments?.scope === "viewport_and_page" || request.arguments?.interaction_map?.scope === "page",
+        pageHintOffset: request.arguments?.interaction_map?.offset || 0,
+      }));
     } finally {
       await context.close().catch(() => {});
     }
@@ -306,6 +321,51 @@ function viewportFromRequest(request) {
       envNumber("CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT", 720),
     ),
   };
+}
+
+function validateVisualArguments(args) {
+  if (args.scope !== undefined && !["viewport", "viewport_and_page"].includes(args.scope)) {
+    throw new Error("unsupported visual scope; expected viewport or viewport_and_page");
+  }
+  if (args.interaction_map !== undefined && (!args.interaction_map || typeof args.interaction_map !== "object" || Array.isArray(args.interaction_map) || (args.interaction_map.scope !== undefined && args.interaction_map.scope !== "page") || (args.interaction_map.offset !== undefined && (!Number.isInteger(args.interaction_map.offset) || args.interaction_map.offset < 0)) || Object.keys(args.interaction_map).some((key) => !["scope", "offset"].includes(key)))) {
+    throw new Error("interaction_map supports only scope=page and a non-negative integer offset");
+  }
+  if (args.captures !== undefined) {
+    if (!Array.isArray(args.captures) || args.captures.length === 0 || args.captures.length > 4) {
+      throw new Error("captures must contain between one and four labeled captures");
+    }
+    const labels = new Set();
+    for (const capture of args.captures) {
+      if (!capture || typeof capture !== "object" || Array.isArray(capture) || typeof capture.label !== "string" || !capture.label.trim() || capture.label.length > 80 || labels.has(capture.label)) {
+        throw new Error("each capture requires a unique non-empty label of at most 80 characters");
+      }
+      labels.add(capture.label);
+      for (const key of ["viewportWidth", "viewportHeight"]) {
+        if (capture[key] !== undefined && (!Number.isInteger(capture[key]) || capture[key] < 1 || capture[key] > 4096)) {
+          throw new Error(`${key} must be an integer from 1 through 4096`);
+        }
+      }
+      if (capture.scroll !== undefined && !["current", "top", "bottom"].includes(capture.scroll)) {
+        throw new Error("capture scroll must be current, top, or bottom");
+      }
+      if (capture.scrollY !== undefined && (!Number.isFinite(capture.scrollY) || capture.scrollY < 0)) {
+        throw new Error("capture scrollY must be a non-negative finite number");
+      }
+      if (capture.scroll !== undefined && capture.scrollY !== undefined) {
+        throw new Error("capture may set scroll or scrollY, not both");
+      }
+      if (capture.settle_ms !== undefined && (!Number.isInteger(capture.settle_ms) || capture.settle_ms < 0 || capture.settle_ms > 2000)) {
+        throw new Error("capture settle_ms must be an integer from 0 through 2000");
+      }
+      const allowed = new Set(["label", "viewportWidth", "viewportHeight", "scroll", "scrollY", "settle_ms"]);
+      if (Object.keys(capture).some((key) => !allowed.has(key))) {
+        throw new Error("capture contains an unsupported visual option");
+      }
+    }
+  }
+  if (args.save_artifact !== undefined && typeof args.save_artifact !== "boolean") {
+    throw new Error("save_artifact must be a boolean");
+  }
 }
 
 function captureMode() {
@@ -730,7 +790,133 @@ async function captureScreenshot(page) {
   throw new Error(`Unable to capture browser screenshot. ${compactCaptureErrors(errors)}`);
 }
 
-async function responseForPage(page, screenshot, summaries) {
+async function captureScreenshots(page, args) {
+  const requested = args.captures;
+  if (!requested) {
+    const requestedViewport = page.viewportSize?.() || null;
+    return {
+      captures: [{
+        label: null,
+        requestedViewport,
+        metadata: typeof page.evaluate === "function"
+          ? await viewportMetadata(page, requestedViewport)
+          : { requestedViewport, effectiveViewport: requestedViewport },
+        screenshot: await captureScreenshot(page),
+      }],
+      restoration: { requested: false, success: true },
+      error: null,
+    };
+  }
+
+  const originalViewport = page.viewportSize?.() || null;
+  const original = await viewportMetadata(page, originalViewport);
+  const result = { captures: [], restoration: { requested: true, success: false }, error: null };
+  try {
+    for (const capture of requested) {
+      const current = page.viewportSize?.() || original.effectiveViewport;
+      const viewport = {
+        width: capture.viewportWidth ?? current.width,
+        height: capture.viewportHeight ?? current.height,
+      };
+      await page.setViewportSize(viewport);
+      await applyCaptureScroll(page, capture);
+      if ((capture.settle_ms ?? 150) > 0) await page.waitForTimeout(capture.settle_ms ?? 150);
+      const metadata = await viewportMetadata(page, viewport);
+      const screenshot = await captureScreenshot(page);
+      result.captures.push({ label: capture.label, requestedViewport: viewport, metadata, screenshot });
+    }
+  } catch (error) {
+    result.error = `capture: ${errorMessage(error)}`;
+  } finally {
+    try {
+      const restoreViewport = originalViewport || original.effectiveViewport;
+      await page.setViewportSize(restoreViewport);
+      await page.evaluate((scroll) => window.scrollTo(scroll.x, scroll.y), original.scroll);
+      const restored = await viewportMetadata(page, originalViewport);
+      const viewportMatches = restored.effectiveViewport.width === original.effectiveViewport.width && restored.effectiveViewport.height === original.effectiveViewport.height;
+      const scrollMatches = restored.scroll.x === original.scroll.x && restored.scroll.y === original.scroll.y;
+      result.restoration = { requested: true, success: viewportMatches && scrollMatches, actual: restored, expected: original };
+      if (!result.restoration.success) result.error ||= "restoration: viewport or scroll position did not return to its initial value";
+    } catch (error) {
+      result.restoration = { requested: true, success: false, error: errorMessage(error) };
+      result.error ||= `restoration: ${errorMessage(error)}`;
+    }
+  }
+  return result;
+}
+
+async function viewportMetadata(page, requestedViewport) {
+  return page.evaluate((requested) => {
+    const root = document.documentElement;
+    return {
+      requestedViewport: requested,
+      effectiveViewport: { width: window.innerWidth, height: window.innerHeight },
+      clientViewport: { width: root.clientWidth, height: root.clientHeight },
+      document: { width: root.scrollWidth, height: root.scrollHeight },
+      devicePixelRatio: window.devicePixelRatio,
+      scroll: { x: window.scrollX, y: window.scrollY },
+    };
+  }, requestedViewport);
+}
+
+async function applyCaptureScroll(page, capture) {
+  if (capture.scrollY !== undefined) {
+    await page.evaluate((scrollY) => window.scrollTo(window.scrollX, scrollY), capture.scrollY);
+  } else if (capture.scroll === "top") {
+    await page.evaluate(() => window.scrollTo(window.scrollX, 0));
+  } else if (capture.scroll === "bottom") {
+    await page.evaluate(() => window.scrollTo(window.scrollX, document.documentElement.scrollHeight));
+  }
+}
+
+async function pageHints(page, offset = 0) {
+  return page.evaluate((boundedOffset) => {
+    const selectors = "button,a[href],input,textarea,select,[role],[tabindex],[contenteditable='true'],[data-testid]";
+    const all = Array.from(document.querySelectorAll(selectors));
+    const controls = all.slice(boundedOffset, boundedOffset + 24).flatMap((element) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || element.hidden) return [];
+      const tag = element.tagName.toLowerCase();
+      const role = element.getAttribute("role") || ({ button: "button", a: "link", input: "textbox", textarea: "textbox", select: "combobox" }[tag] || "element");
+      const name = element.getAttribute("aria-label") || element.getAttribute("title") || (tag === "input" || tag === "textarea" || tag === "select" || element.isContentEditable ? "" : (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80));
+      const hints = [];
+      if (element.id) hints.push(`#${CSS.escape(element.id)}`);
+      const testId = element.getAttribute("data-testid");
+      if (testId) hints.push(`[data-testid="${CSS.escape(testId)}"]`);
+      const label = element.getAttribute("aria-label");
+      if (label) hints.push(`${role}[aria-label="${label.slice(0, 80)}"]`);
+      if (!hints.length) hints.push(tag);
+      return [{ role, name, disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, selectors: hints.slice(0, 3) }];
+    });
+    return { offset: boundedOffset, total: all.length, omitted: Math.max(0, all.length - boundedOffset - controls.length), controls };
+  }, offset);
+}
+
+async function saveCaptureArtifacts(stateDir, bundle, request) {
+  if (bundle.error || !bundle.restoration.success) {
+    throw new Error("cannot publish a complete manifest when capture or restoration failed");
+  }
+  const artifactsDir = path.join(stateDir, "artifacts");
+  await ensurePrivateStateDirectory(artifactsDir);
+  const runDir = await fs.mkdtemp(path.join(artifactsDir, "capture-"));
+  await fs.chmod(runDir, 0o700);
+  const screenshots = [];
+  for (let index = 0; index < bundle.captures.length; index += 1) {
+    const capture = bundle.captures[index];
+    const fileName = `capture-${String(index + 1).padStart(2, "0")}.png`;
+    const filePath = path.join(runDir, fileName);
+    await fs.writeFile(filePath, capture.screenshot.buffer, { flag: "wx", mode: 0o600 });
+    await fs.chmod(filePath, 0o600);
+    screenshots.push({ order: index + 1, label: capture.label, path: fileName, method: capture.screenshot.method, metadata: capture.metadata });
+  }
+  const manifestPath = path.join(runDir, "manifest.json");
+  const manifest = { tool: request.tool, threadId: request.threadId, restoration: bundle.restoration, captures: screenshots };
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx", mode: 0o600 });
+  await fs.chmod(manifestPath, 0o600);
+  return { directory: path.relative(stateDir, runDir), manifest: path.relative(stateDir, manifestPath), captures: screenshots };
+}
+
+async function responseForPage(page, bundle, summaries, { artifactResult, error, pageHints: includePageHints, pageHintOffset }) {
   const lines = ["Browser observation", `url: ${page.url()}`];
   const title = await pageTitle(page);
   if (title) {
@@ -746,20 +932,28 @@ async function responseForPage(page, screenshot, summaries) {
       lines.push(`- ${summary}`);
     }
   }
-  lines.push(`capture: ${screenshot.method}`);
-  if (screenshot.warning) {
-    lines.push(`capture_fallback: ${screenshot.warning}`);
+  if (includePageHints) {
+    const hints = await pageHints(page, pageHintOffset);
+    lines.push(`page_hints: ${JSON.stringify(hints)}`);
   }
+  for (const [index, capture] of bundle.captures.entries()) {
+    const label = capture.label ? ` label=${JSON.stringify(capture.label)}` : "";
+    lines.push(`capture[${index + 1}]${label}: ${JSON.stringify(capture.metadata)} method=${capture.screenshot.method}`);
+    if (capture.screenshot.warning) lines.push(`capture_fallback[${index + 1}]: ${capture.screenshot.warning}`);
+  }
+  lines.push(`restoration: ${JSON.stringify(bundle.restoration)}`);
+  if (artifactResult) lines.push(`artifact_manifest: ${artifactResult.manifest}`);
+  if (error) lines.push(`visual_error: ${error}`);
   return {
     contentItems: [
       { type: "inputText", text: lines.join("\n") },
-      {
+      ...bundle.captures.map((capture) => ({
         type: "inputImage",
-        imageUrl: `data:image/png;base64,${screenshot.buffer.toString("base64")}`,
+        imageUrl: `data:image/png;base64,${capture.screenshot.buffer.toString("base64")}`,
         detail: "high",
-      },
+      })),
     ],
-    success: true,
+    success: !error && bundle.restoration.success && (!bundle.captures.length || Boolean(bundle.captures[0].screenshot)),
   };
 }
 

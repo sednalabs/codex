@@ -89,7 +89,44 @@ fn browser_dynamic_tool(name: &str, description: &str) -> DynamicToolNamespaceTo
         description: description.to_string(),
         input_schema: json!({
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["viewport", "viewport_and_page"],
+                    "description": "Optionally include a bounded page and control summary with actionable selector hints; form and editable values are never included."
+                },
+                "interaction_map": {
+                    "type": "object",
+                    "description": "Request a bounded, redacted page-control map with actionable selector hints.",
+                    "properties": {
+                        "scope": {"type": "string", "enum": ["page"], "description": "Include visible page controls only."},
+                        "offset": {"type": "integer", "minimum": 0, "description": "Start position in the bounded control list."}
+                    }
+                },
+                "captures": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "description": "Optionally request up to four labeled viewport captures. Each produces matching metadata and one inline PNG image; the original viewport and scroll are restored afterward.",
+                    "items": {
+                        "type": "object",
+                        "required": ["label"],
+                        "properties": {
+                            "label": {"type": "string", "minLength": 1, "description": "Unique label paired with this capture's metadata and image."},
+                            "viewportWidth": {"type": "integer", "minimum": 1, "description": "Requested capture viewport width in CSS pixels."},
+                            "viewportHeight": {"type": "integer", "minimum": 1, "description": "Requested capture viewport height in CSS pixels."},
+                            "scroll": {"type": "string", "enum": ["current", "top", "bottom"], "description": "Capture at the current scroll position, page top, or page bottom."},
+                            "scrollY": {"type": "number", "minimum": 0, "description": "Capture at this vertical scroll position in CSS pixels."},
+                            "settle_ms": {"type": "integer", "minimum": 0, "maximum": 2000, "description": "Bounded delay after applying capture viewport and scroll."}
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "save_artifact": {
+                    "type": "boolean",
+                    "description": "When true, save capture PNGs and a paired manifest in a new private directory inside this thread's validated Browser profile. No caller-selected output path is accepted."
+                }
+            }
         }),
         defer_loading: false,
     })
@@ -1098,6 +1135,37 @@ mod tests {
             &tools[1],
             DynamicToolNamespaceTool::Function(spec) if spec.name == TOOL_BROWSER_STEP && !spec.defer_loading
         ));
+        let DynamicToolNamespaceTool::Function(spec) = &tools[0];
+        let properties = spec.input_schema["properties"]
+            .as_object()
+            .expect("Browser visual request properties");
+        for property in ["scope", "interaction_map", "captures", "save_artifact"] {
+            assert!(
+                properties.contains_key(property),
+                "missing schema property {property}"
+            );
+            assert!(
+                properties[property]["description"]
+                    .as_str()
+                    .is_some_and(|description| !description.trim().is_empty()),
+                "schema property {property} needs a useful description"
+            );
+        }
+        assert_eq!(properties["captures"]["maxItems"], 4);
+        for property in [
+            "label",
+            "viewportWidth",
+            "viewportHeight",
+            "scroll",
+            "scrollY",
+            "settle_ms",
+        ] {
+            assert!(
+                properties["captures"]["items"]["properties"]
+                    .get(property)
+                    .is_some()
+            );
+        }
     }
 
     #[test]
@@ -1563,12 +1631,134 @@ exports.chromium = {
             )));
         }
 
+        let html = "<html><head><title>visual fixture</title></head><body><button id='safe'>Safe button</button><input aria-label='Secret field' value='DO_NOT_EXPOSE_FIXTURE_SECRET'><div contenteditable='true'>DO_NOT_EXPOSE_EDITABLE_SECRET</div><div style='height:2400px'>Long static page</div></body></html>";
+        let encoded_html = html
+            .bytes()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect::<String>();
+        let visual_url = format!("data:text/html,{encoded_html}");
+        let visual = invoke(
+            codex_home.path(),
+            "hosted-browser-visual-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({
+                "url": visual_url.clone(),
+                "scope": "viewport_and_page",
+                "interaction_map": {"scope": "page", "offset": 0},
+                "captures": [
+                    {"label": "top-wide", "viewportWidth": 960, "viewportHeight": 640, "scroll": "top"},
+                    {"label": "bottom-narrow", "viewportWidth": 640, "viewportHeight": 480, "scroll": "bottom"}
+                ],
+                "save_artifact": true
+            }),
+        )
+        .await;
+        assert!(visual.success, "{visual:?}");
+        assert_eq!(
+            visual
+                .content_items
+                .iter()
+                .filter(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
+                .count(),
+            2,
+            "every labeled capture has one typed inline image"
+        );
+        let visual_text = visual
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("visual metadata text");
+        assert!(visual_text.contains("top-wide"));
+        assert!(visual_text.contains("bottom-narrow"));
+        assert!(visual_text.contains("page_hints:"));
+        assert!(visual_text.contains("restoration:"));
+        assert!(visual_text.contains("\"success\":true"));
+        assert!(visual_text.contains("\"width\":960"));
+        assert!(visual_text.contains("\"width\":640"));
+        assert!(!visual_text.contains("DO_NOT_EXPOSE_FIXTURE_SECRET"));
+        assert!(!visual_text.contains("DO_NOT_EXPOSE_EDITABLE_SECRET"));
+
+        let visual_profile = std::fs::read_dir(state_root.join("profiles"))
+            .expect("provider profile directories")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|profile| profile.join("artifacts").is_dir())
+            .expect("visual profile artifacts");
+        let artifact_run = std::fs::read_dir(visual_profile.join("artifacts"))
+            .expect("artifact runs")
+            .next()
+            .expect("one artifact run")
+            .expect("artifact run entry")
+            .path();
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(artifact_run.join("manifest.json")).expect("paired manifest"),
+        )
+        .expect("valid artifact manifest");
+        assert_eq!(manifest["captures"].as_array().unwrap().len(), 2);
+        assert_eq!(manifest["captures"][0]["label"], "top-wide");
+        assert_eq!(manifest["captures"][1]["label"], "bottom-narrow");
+        assert_eq!(
+            manifest["captures"][0]["metadata"]["effectiveViewport"]["width"],
+            960
+        );
+        assert_eq!(
+            manifest["captures"][1]["metadata"]["effectiveViewport"]["width"],
+            640
+        );
+        assert!(artifact_run.join("capture-01.png").is_file());
+        assert!(artifact_run.join("capture-02.png").is_file());
+        assert_eq!(
+            std::fs::read_dir(state_root.join("profiles"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().join("artifacts").is_dir())
+                .count(),
+            1,
+            "ordinary observes without save_artifact create no artifact directories"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&artifact_run)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(artifact_run.join("manifest.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let invalid = invoke(
+            codex_home.path(),
+            "hosted-browser-invalid-visual-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({"url": visual_url, "captures": [{"label": "same"}, {"label": "same"}]}),
+        )
+        .await;
+        assert!(!invalid.success);
+        assert!(matches!(
+            invalid.content_items.first(),
+            Some(DynamicToolCallOutputContentItem::InputText { text }) if text.contains("unique non-empty label")
+        ));
+
         let profiles = std::fs::read_dir(state_root.join("profiles"))
             .expect("provider-created thread profiles")
             .count();
         assert_eq!(
-            profiles, 2,
-            "each thread must receive its own browser profile"
+            profiles, 3,
+            "each thread, including the visual capture thread, receives its own profile"
         );
     }
 
