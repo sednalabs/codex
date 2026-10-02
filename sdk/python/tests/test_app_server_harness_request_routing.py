@@ -12,10 +12,21 @@ import pytest
 from app_server_harness import MockResponsesServer
 
 
-def _post(server: MockResponsesServer, marker: str) -> bytes:
+def _post(
+    server: MockResponsesServer,
+    marker: str,
+    *,
+    client_metadata: dict[str, object] | None = None,
+    previous_response_id: str | None = None,
+) -> bytes:
+    body: dict[str, object] = {"marker": marker}
+    if client_metadata is not None:
+        body["client_metadata"] = client_metadata
+    if previous_response_id is not None:
+        body["previous_response_id"] = previous_response_id
     request = urllib.request.Request(
         f"{server.url}/v1/responses",
-        data=json.dumps({"marker": marker}).encode("utf-8"),
+        data=json.dumps(body).encode("utf-8"),
         headers={"content-type": "application/json"},
         method="POST",
     )
@@ -141,11 +152,40 @@ def test_used_route_does_not_make_one_new_matching_route_ambiguous() -> None:
             second.decode(),
         )
 
-        assert _post(server, "first") == first
-        assert _post(server, "second") == second
+        assert _post(
+            server,
+            "first",
+            client_metadata={
+                "thread_id": "thread-one",
+                "x-codex-turn-metadata": json.dumps({
+                    "turn_id": "turn-one", "turn_trigger": "user",
+                }),
+            },
+        ) == first
+        assert _post(
+            server,
+            "second",
+            client_metadata={
+                "thread_id": "thread-one",
+                "x-codex-turn-metadata": json.dumps({
+                    "turn_id": "turn-two", "turn_trigger": "goal",
+                }),
+            },
+            previous_response_id="response-one",
+        ) == second
         assert server.routing_errors() == []
         trace = server.routing_trace()
         assert [request["request_id"] for request in trace["requests"]] == [1, 2]
+        assert [
+            (
+                request["thread_id"], request["turn_id"], request["turn_trigger"],
+                request["previous_response_id"],
+            )
+            for request in trace["requests"]
+        ] == [
+            ("thread-one", "turn-one", "user", None),
+            ("thread-one", "turn-two", "goal", "response-one"),
+        ]
         assert trace["routes"] == [
             {
                 "request_id": 1,

@@ -271,6 +271,11 @@ class MockResponsesServer:
         metadata = body.get("client_metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         turn = metadata.get("x-codex-turn-metadata")
+        if isinstance(turn, str):
+            try:
+                turn = json.loads(turn)
+            except json.JSONDecodeError:
+                turn = {}
         turn = turn if isinstance(turn, dict) else {}
         inputs = body.get("input")
         inputs = inputs if isinstance(inputs, list) else []
@@ -304,6 +309,7 @@ class MockResponsesServer:
             "request_id": request.request_id,
             "thread_id": metadata.get("thread_id"),
             "parent_thread_id": request.header("x-codex-parent-thread-id"),
+            "turn_id": turn.get("turn_id"),
             "turn_trigger": turn.get("turn_trigger"),
             "previous_response_id": body.get("previous_response_id"),
             "calls": calls,
