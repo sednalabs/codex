@@ -135,11 +135,11 @@ def _call_output_count(server: MockResponsesServer, call_id: str) -> int:
 
 
 def _call_output_observations(
-    server: MockResponsesServer, call_id: str, *, thread_id: str
+    requests: list[CapturedResponsesRequest], call_id: str, *, thread_id: str
 ) -> list[dict[str, Any]]:
     """Return the exact synthetic result and request/turn identity for one tool output."""
     observations: list[dict[str, Any]] = []
-    for request in server.requests():
+    for request in requests:
         metadata = request.body_json().get("client_metadata")
         if not isinstance(metadata, dict) or metadata.get("thread_id") != thread_id:
             continue
@@ -578,13 +578,14 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
             try:
                 followup_route.wait_until_selected(timeout_s=30)
                 waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
+                captured_requests = server.requests()
                 early_wake_evidence = _call_output_observations(
-                    server, "waiter-mailbox-wait-call", thread_id=waiter_id
+                    captured_requests, "waiter-mailbox-wait-call", thread_id=waiter_id
                 )
                 assert not any(
                     _thread_id(request) == waiter_id
                     and _has_call_output(request, "waiter-mailbox-wait-call")
-                    for request in server.requests()
+                    for request in captured_requests
                 ), (
                     "queue-only message woke the waiter before actionable followup; "
                     "the followup route is selected but remains gated; exact waiter "
