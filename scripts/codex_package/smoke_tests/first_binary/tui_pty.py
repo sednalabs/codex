@@ -60,22 +60,25 @@ class PackagedTui:
     def send(self, value: str) -> None:
         assert self.master is not None
         self.last_input = value
+        drained = bytearray()
         # Drop unread bytes from the previous frame so each assertion is
         # caused by this input rather than by an old redraw in the PTY queue.
         while select.select([self.master], [], [], 0)[0]:
             try:
-                if not os.read(self.master, 65536):
+                chunk = os.read(self.master, 65536)
+                if not chunk:
                     break
+                drained.extend(chunk)
             except OSError as error:
                 raise self._closed_output(
-                    f"input {value!r}", self.last_received, f"PTY {error} while preparing input"
+                    f"input {value!r}", bytes(drained), f"PTY {error} while preparing input"
                 ) from error
         self.last_received = b""
         try:
             os.write(self.master, value.encode("utf-8"))
         except OSError as error:
             raise self._closed_output(
-                f"input {value!r}", self.last_received, f"PTY {error} while writing input"
+                f"input {value!r}", bytes(drained), f"PTY {error} while writing input"
             ) from error
 
     def _closed_output(self, marker: str, received: bytes, reason: str) -> AssertionError:
