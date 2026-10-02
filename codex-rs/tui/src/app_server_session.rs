@@ -784,7 +784,7 @@ impl AppServerSession {
         }
         self.thread_tool_transport()
             .configure(&mut params, config.codex_home.as_path())
-            .map_err(anyhow::Error::msg)?;
+            .map_err(color_eyre::eyre::Report::msg)?;
         let request_handle = self.request_handle();
         let (response, history_support, task_tools_available) =
             request_thread_start_with_history_fallback(&request_handle, request_id, params)
@@ -1700,7 +1700,7 @@ pub(crate) async fn start_thread_with_request_handle(
     params.model_provider = model_provider_override.or(params.model_provider);
     thread_tool_transport
         .configure(&mut params, config.codex_home.as_path())
-        .map_err(anyhow::Error::msg)?;
+        .map_err(color_eyre::eyre::Report::msg)?;
     let (response, _history_support, task_tools_available) =
         request_thread_start_with_history_fallback(&request_handle, request_id, params)
             .await
