@@ -1018,7 +1018,7 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 {
                     "product_sha": "c3a5d1135480efc61b6c24b275ea3322e0cfa14d",
                     "comparison_base_ref": "main",
-                    "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb8c6735da18ee7",
+                    "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
                     "fixture_sha": Q22_FIXTURE_SHA,
                     "sdk_sha": S4_SDK_SHA,
                     "profile": profile,
