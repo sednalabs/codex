@@ -1345,14 +1345,41 @@ JSON
             node_path.join("playwright/index.js"),
             r#"
 let currentUrl = "about:blank";
+let screenshotCount = 0;
+const browserState = { width: 1280, height: 720, scrollX: 0, scrollY: 0 };
+global.window = {};
+Object.defineProperties(global.window, {
+  innerWidth: { get: () => browserState.width },
+  innerHeight: { get: () => browserState.height },
+  scrollX: { get: () => browserState.scrollX },
+  scrollY: { get: () => browserState.scrollY },
+});
+global.window.scrollTo = (x, y) => { browserState.scrollX = x; browserState.scrollY = Math.max(0, Math.min(y, 1080)); };
+global.document = { documentElement: {
+  get clientWidth() { return browserState.width; },
+  get clientHeight() { return browserState.height; },
+  scrollWidth: 1280,
+  scrollHeight: 1800,
+} };
 const page = {
   isClosed: () => false,
   url: () => currentUrl,
   goto: async (url) => { currentUrl = url; },
   waitForLoadState: async () => {},
-  screenshot: async () => Buffer.from("fixture-image"),
+  screenshot: async () => {
+    screenshotCount += 1;
+    if (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT === "1" || (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT_AFTER_FIRST === "1" && screenshotCount === 2)) throw new Error("fixture screenshot failure");
+    return Buffer.from("fixture-image");
+  },
+  setViewportSize: async ({ width, height }) => { browserState.width = width; browserState.height = height; },
+  evaluate: async (fn, arg) => {
+    if (process.env.CODEX_BROWSER_FIXTURE_FAIL_RESTORE === "1" && fn.toString().includes("scroll.x")) {
+      throw new Error("fixture restoration failure");
+    }
+    return fn(arg);
+  },
   title: async () => "fixture page",
-  viewportSize: () => ({ width: 1280, height: 720 }),
+  viewportSize: () => ({ width: browserState.width, height: browserState.height }),
 };
 exports.chromium = {
   launchPersistentContext: async (stateDir) => {
@@ -1368,15 +1395,19 @@ exports.chromium = {
         )
         .expect("fake Playwright module source");
 
-        let make_node_wrapper = |unset_state_dir: bool| {
+        let make_node_wrapper = |unset_state_dir: bool, fixture_env: &[(&str, &str)]| {
             let mut node = tempfile::NamedTempFile::new().expect("Node wrapper");
             let unset_state_dir = if unset_state_dir {
                 "unset CODEX_BROWSER_PLAYWRIGHT_STATE_DIR\n"
             } else {
                 ""
             };
+            let fixture_env = fixture_env
+                .iter()
+                .map(|(name, value)| format!("export {name}='{value}'\n"))
+                .collect::<String>();
             let script = format!(
-                "#!/bin/sh\n{unset_state_dir}unset CODEX_BROWSER_PLAYWRIGHT_ISOLATION\nexport CODEX_HOME='{}'\nexec node \"$@\"\n",
+                "#!/bin/sh\n{unset_state_dir}unset CODEX_BROWSER_PLAYWRIGHT_ISOLATION\nexport CODEX_HOME='{}'\n{fixture_env}exec node \"$@\"\n",
                 codex_home.display(),
             );
             node.write_all(script.as_bytes())
@@ -1390,8 +1421,8 @@ exports.chromium = {
                     .to_path_buf();
             (node, node_path)
         };
-        let (_configured_node, configured_node_path) = make_node_wrapper(false);
-        let (_default_node, default_node_path) = make_node_wrapper(true);
+        let (_configured_node, configured_node_path) = make_node_wrapper(false, &[]);
+        let (_default_node, default_node_path) = make_node_wrapper(true, &[]);
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
@@ -1421,6 +1452,35 @@ exports.chromium = {
                     namespace: Some("codex_browser".to_string()),
                     tool: TOOL_BROWSER_OBSERVE.to_string(),
                     arguments: json!({}),
+                };
+                run_playwright_provider(&params, &config).await
+            }
+        };
+        let run_visual = |state_dir: PathBuf, thread_id: &str, arguments: Value, node: PathBuf| {
+            let node_path = node_path.to_string_lossy().to_string();
+            let node = node.to_string_lossy().to_string();
+            let state_dir = state_dir.to_string_lossy().to_string();
+            let thread_id = thread_id.to_string();
+            async move {
+                let config = PlaywrightProviderConfig {
+                    node,
+                    node_path: Some(node_path),
+                    state_dir: Some(state_dir),
+                    headless: Some(true),
+                    executable_path: None,
+                    channel: None,
+                    display: None,
+                    capture_mode: None,
+                    viewport_width: None,
+                    viewport_height: None,
+                };
+                let params = DynamicToolCallParams {
+                    thread_id,
+                    turn_id: "visual-fixture-turn".to_string(),
+                    call_id: "visual-fixture-call".to_string(),
+                    namespace: Some("codex_browser".to_string()),
+                    tool: TOOL_BROWSER_OBSERVE.to_string(),
+                    arguments,
                 };
                 run_playwright_provider(&params, &config).await
             }
@@ -1551,6 +1611,216 @@ exports.chromium = {
             panic!("expected actionable thread-isolation error");
         };
         assert!(text.contains("requires a non-empty threadId"));
+
+        let (_capture_failure_wrapper, capture_failure_node) = make_node_wrapper(
+            false,
+            &[("CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT_AFTER_FIRST", "1")],
+        );
+        let capture_failure_root = temp.path().join("capture-failure-state");
+        let capture_failure = run_visual(
+            capture_failure_root.clone(),
+            "capture-failure-thread",
+            json!({
+                "captures": [
+                    {"label": "captured-partial", "scroll": "top"},
+                    {"label": "will-fail", "scroll": "bottom"}
+                ],
+                "save_artifact": true
+            }),
+            capture_failure_node,
+        )
+        .await
+        .expect("capture failure response");
+        assert!(!capture_failure.success);
+        assert!(response_includes_native_image(&capture_failure));
+        assert_eq!(
+            capture_failure
+                .content_items
+                .iter()
+                .filter(|item| matches!(item, DynamicToolCallOutputContentItem::InputImage { .. }))
+                .count(),
+            1,
+            "successful first capture survives the second capture failure"
+        );
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &capture_failure.content_items[0]
+        else {
+            panic!("capture failure includes stage text");
+        };
+        assert!(text.contains("capture: fixture screenshot failure"));
+        assert!(
+            text.contains("\"success\":true"),
+            "capture failure still restores state"
+        );
+        let capture_failure_profile = std::fs::read_dir(capture_failure_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(!capture_failure_profile.join("artifacts").exists());
+
+        let (_restore_failure_wrapper, restore_failure_node) =
+            make_node_wrapper(false, &[("CODEX_BROWSER_FIXTURE_FAIL_RESTORE", "1")]);
+        let restore_failure_root = temp.path().join("restore-failure-state");
+        let restore_failure = run_visual(
+            restore_failure_root.clone(),
+            "restore-failure-thread",
+            json!({
+                "captures": [{"label": "partial", "scroll": "bottom"}],
+                "save_artifact": true
+            }),
+            restore_failure_node,
+        )
+        .await
+        .expect("restoration failure response");
+        assert!(!restore_failure.success);
+        assert!(response_includes_native_image(&restore_failure));
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &restore_failure.content_items[0]
+        else {
+            panic!("restoration failure includes stage text");
+        };
+        assert!(text.contains("restoration: fixture restoration failure"));
+        assert!(text.contains("\"success\":false"));
+        let restore_failure_profile = std::fs::read_dir(restore_failure_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(!restore_failure_profile.join("artifacts").exists());
+
+        let artifact_failure_root = temp.path().join("artifact-failure-state");
+        let artifact_thread = "artifact-failure-thread";
+        let initialized = run_visual(
+            artifact_failure_root.clone(),
+            artifact_thread,
+            json!({}),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("initialize disposable artifact profile");
+        assert!(initialized.success);
+        let artifact_profile = std::fs::read_dir(artifact_failure_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let artifact_parent = artifact_profile.join("artifacts");
+        std::fs::write(&artifact_parent, "not a directory")
+            .expect("install deterministic artifact failure");
+        let artifact_failure = run_visual(
+            artifact_failure_root.clone(),
+            artifact_thread,
+            json!({
+                "captures": [{"label": "captured-before-save-failure"}],
+                "save_artifact": true
+            }),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("artifact failure response");
+        assert!(!artifact_failure.success);
+        assert!(response_includes_native_image(&artifact_failure));
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &artifact_failure.content_items[0]
+        else {
+            panic!("artifact failure includes stage text");
+        };
+        assert!(text.contains("artifact_save:"));
+        assert!(
+            text.contains("\"success\":true"),
+            "artifact failure keeps verified restoration status"
+        );
+        assert!(artifact_parent.is_file());
+
+        let unsafe_artifact_root = temp.path().join("unsafe-artifact-state");
+        let unsafe_thread = "unsafe-artifact-thread";
+        let initialized = run_visual(
+            unsafe_artifact_root.clone(),
+            unsafe_thread,
+            json!({}),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("initialize unsafe-artifact profile");
+        assert!(initialized.success);
+        let unsafe_profile = std::fs::read_dir(unsafe_artifact_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let outside_target = temp.path().join("artifact-symlink-target");
+        std::fs::create_dir(&outside_target).expect("outside artifact symlink target");
+        std::os::unix::fs::symlink(&outside_target, unsafe_profile.join("artifacts"))
+            .expect("install unsafe artifact symlink");
+        let unsafe_artifact = run_visual(
+            unsafe_artifact_root.clone(),
+            unsafe_thread,
+            json!({"captures": [{"label": "unsafe-path"}], "save_artifact": true}),
+            configured_node_path,
+        )
+        .await
+        .expect("unsafe artifact path response");
+        assert!(!unsafe_artifact.success);
+        assert!(response_includes_native_image(&unsafe_artifact));
+        let DynamicToolCallOutputContentItem::InputText { text } =
+            &unsafe_artifact.content_items[0]
+        else {
+            panic!("unsafe artifact path includes stage text");
+        };
+        assert!(text.contains("artifact_save:"));
+        assert!(text.contains("must not be a symlink"));
+        assert_eq!(std::fs::read_dir(outside_target).unwrap().count(), 0);
+
+        let invalid_root = temp.path().join("invalid-visual-state");
+        let invalid_inputs = [
+            (
+                "bad-scope",
+                json!({"scope": "whole_universe"}),
+                "unsupported visual scope",
+            ),
+            (
+                "bad-count",
+                json!({"captures": [
+                    {"label": "one"}, {"label": "two"}, {"label": "three"},
+                    {"label": "four"}, {"label": "five"}
+                ]}),
+                "between one and four",
+            ),
+            (
+                "bad-viewport",
+                json!({"captures": [{"label": "bad", "viewportWidth": 0}]}),
+                "viewportWidth must be an integer",
+            ),
+            (
+                "bad-scroll-mode",
+                json!({"captures": [{"label": "bad", "scroll": "middle"}]}),
+                "capture scroll must be current, top, or bottom",
+            ),
+        ];
+        for (thread, arguments, diagnostic) in invalid_inputs {
+            let invalid = run_visual(
+                invalid_root.clone(),
+                thread,
+                arguments,
+                configured_node_path.clone(),
+            )
+            .await
+            .expect("invalid visual argument response");
+            assert!(!invalid.success);
+            assert!(matches!(
+                invalid.content_items.first(),
+                Some(DynamicToolCallOutputContentItem::InputText { text }) if text.contains(diagnostic)
+            ));
+        }
+        assert!(
+            !invalid_root.exists(),
+            "invalid visual arguments fail before profile side effects"
+        );
     }
 
     #[tokio::test]
@@ -1586,6 +1856,27 @@ exports.chromium = {
                     panic!("configured Playwright provider must handle {tool}")
                 }
             }
+        }
+
+        fn decode_base64(encoded: &str) -> Vec<u8> {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut decoded = Vec::new();
+            let mut accumulator = 0u32;
+            let mut bits = 0u8;
+            for byte in encoded.bytes().take_while(|byte| *byte != b'=') {
+                let value = ALPHABET
+                    .iter()
+                    .position(|candidate| *candidate == byte)
+                    .expect("valid base64 image data") as u32;
+                accumulator = (accumulator << 6) | value;
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    decoded.push((accumulator >> bits) as u8);
+                }
+            }
+            decoded
         }
 
         let codex_home = tempfile::tempdir().expect("disposable Codex home");
@@ -1663,6 +1954,28 @@ exports.chromium = {
             2,
             "every labeled capture has one typed inline image"
         );
+        let image_bytes = visual
+            .content_items
+            .iter()
+            .filter_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputImage { image_url } => Some(decode_base64(
+                    image_url
+                        .strip_prefix("data:image/png;base64,")
+                        .expect("typed PNG data URL"),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+        assert_eq!(image_bytes.len(), 2);
+        for bytes in &image_bytes {
+            assert!(bytes.len() > PNG_SIGNATURE.len());
+            assert!(bytes.starts_with(PNG_SIGNATURE));
+        }
+        assert_ne!(
+            image_bytes[0], image_bytes[1],
+            "captures at different visual states must remain distinct"
+        );
         let visual_text = visual
             .content_items
             .iter()
@@ -1674,12 +1987,17 @@ exports.chromium = {
         assert!(visual_text.contains("top-wide"));
         assert!(visual_text.contains("bottom-narrow"));
         assert!(visual_text.contains("page_hints:"));
+        assert!(
+            visual_text.contains("#safe"),
+            "control hint includes an actionable selector"
+        );
         assert!(visual_text.contains("restoration:"));
         assert!(visual_text.contains("\"success\":true"));
         assert!(visual_text.contains("\"width\":960"));
         assert!(visual_text.contains("\"width\":640"));
         assert!(!visual_text.contains("DO_NOT_EXPOSE_FIXTURE_SECRET"));
         assert!(!visual_text.contains("DO_NOT_EXPOSE_EDITABLE_SECRET"));
+        assert!(!visual_text.contains("data:image/png;base64,"));
 
         let visual_profile = std::fs::read_dir(state_root.join("profiles"))
             .expect("provider profile directories")
@@ -1687,16 +2005,51 @@ exports.chromium = {
             .map(|entry| entry.path())
             .find(|profile| profile.join("artifacts").is_dir())
             .expect("visual profile artifacts");
-        let artifact_run = std::fs::read_dir(visual_profile.join("artifacts"))
-            .expect("artifact runs")
-            .next()
-            .expect("one artifact run")
-            .expect("artifact run entry")
-            .path();
-        let manifest: Value = serde_json::from_slice(
-            &std::fs::read(artifact_run.join("manifest.json")).expect("paired manifest"),
+        let artifact_relative_path = visual_text
+            .lines()
+            .find_map(|line| line.strip_prefix("artifact_manifest: "))
+            .expect("response includes the saved manifest path");
+        let repeated_visual = invoke(
+            codex_home.path(),
+            "hosted-browser-visual-thread",
+            TOOL_BROWSER_OBSERVE,
+            json!({
+                "url": visual_url.clone(),
+                "captures": [
+                    {"label": "top-wide", "viewportWidth": 960, "viewportHeight": 640, "scroll": "top"},
+                    {"label": "bottom-narrow", "viewportWidth": 640, "viewportHeight": 480, "scroll": "bottom"}
+                ],
+                "save_artifact": true
+            }),
         )
-        .expect("valid artifact manifest");
+        .await;
+        assert!(repeated_visual.success, "{repeated_visual:?}");
+        let repeated_manifest_path = repeated_visual
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => text
+                    .lines()
+                    .find_map(|line| line.strip_prefix("artifact_manifest: ")),
+                _ => None,
+            })
+            .expect("second exclusive manifest path");
+        assert_ne!(artifact_relative_path, repeated_manifest_path);
+        assert_eq!(
+            std::fs::read_dir(visual_profile.join("artifacts"))
+                .unwrap()
+                .count(),
+            2,
+            "repeated saves create distinct exclusive run directories"
+        );
+        let manifest_path = visual_profile.join(artifact_relative_path);
+        let artifact_run = manifest_path
+            .parent()
+            .expect("manifest parent")
+            .to_path_buf();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).expect("paired manifest"))
+                .expect("valid artifact manifest");
         assert_eq!(manifest["captures"].as_array().unwrap().len(), 2);
         assert_eq!(manifest["captures"][0]["label"], "top-wide");
         assert_eq!(manifest["captures"][1]["label"], "bottom-narrow");
@@ -1708,8 +2061,48 @@ exports.chromium = {
             manifest["captures"][1]["metadata"]["effectiveViewport"]["width"],
             640
         );
-        assert!(artifact_run.join("capture-01.png").is_file());
-        assert!(artifact_run.join("capture-02.png").is_file());
+        for (index, expected_label) in ["top-wide", "bottom-narrow"].iter().enumerate() {
+            let capture = &manifest["captures"][index];
+            assert_eq!(capture["order"], index + 1);
+            assert_eq!(capture["label"], *expected_label);
+            for axis in ["width", "height"] {
+                assert!(
+                    capture["metadata"]["effectiveViewport"][axis]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+                assert!(
+                    capture["metadata"]["clientViewport"][axis]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                );
+                assert!(capture["metadata"]["document"][axis].as_u64().unwrap() > 0);
+            }
+            assert!(capture["metadata"]["devicePixelRatio"].as_f64().unwrap() > 0.0);
+            if index == 1 {
+                assert!(capture["metadata"]["scroll"]["y"].as_f64().unwrap() > 0.0);
+            }
+            let saved = std::fs::read(artifact_run.join(capture["path"].as_str().unwrap()))
+                .expect("listed PNG exists");
+            assert!(saved.len() > PNG_SIGNATURE.len());
+            assert!(saved.starts_with(PNG_SIGNATURE));
+            assert_eq!(
+                saved, image_bytes[index],
+                "manifest path pairs with the same typed image"
+            );
+        }
+        let restoration = &manifest["restoration"];
+        assert_eq!(restoration["success"], true);
+        assert_eq!(
+            restoration["actual"]["effectiveViewport"],
+            restoration["expected"]["effectiveViewport"]
+        );
+        assert_eq!(
+            restoration["actual"]["scroll"],
+            restoration["expected"]["scroll"]
+        );
         assert_eq!(
             std::fs::read_dir(state_root.join("profiles"))
                 .unwrap()
@@ -1722,6 +2115,14 @@ exports.chromium = {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(visual_profile.join("artifacts"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
             assert_eq!(
                 std::fs::metadata(&artifact_run)
                     .unwrap()
@@ -1738,13 +2139,24 @@ exports.chromium = {
                     & 0o777,
                 0o600
             );
+            for capture in manifest["captures"].as_array().unwrap() {
+                assert_eq!(
+                    std::fs::metadata(artifact_run.join(capture["path"].as_str().unwrap()))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
         }
+        assert_eq!(std::fs::read_dir(&artifact_run).unwrap().count(), 3);
 
         let invalid = invoke(
             codex_home.path(),
             "hosted-browser-invalid-visual-thread",
             TOOL_BROWSER_OBSERVE,
-            json!({"url": visual_url, "captures": [{"label": "same"}, {"label": "same"}]}),
+            json!({"url": visual_url.clone(), "captures": [{"label": "same"}, {"label": "same"}]}),
         )
         .await;
         assert!(!invalid.success);
