@@ -43,15 +43,24 @@ def _function_call(
     return item
 
 
-def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
+def _tool_output_payload(server: MockResponsesServer, call_id: str) -> Any:
     outputs = [
         item.get("output")
         for request in server.requests() if request.path == "/v1/responses"
         for item in request.input()
         if item.get("type") == "function_call_output" and item.get("call_id") == call_id
     ]
-    assert len(outputs) == 1, f"missing executed output for {call_id}: {outputs!r}"
-    payload = outputs[0]
+    unique = {json.dumps(output, sort_keys=True): output for output in outputs}
+    assert len(unique) == 1, (
+        f"expected one distinct executed output for {call_id}; "
+        f"captured {len(outputs)} history occurrences and {len(unique)} distinct payloads: "
+        f"{outputs!r}"
+    )
+    return next(iter(unique.values()))
+
+
+def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
+    payload = _tool_output_payload(server, call_id)
     if isinstance(payload, list):
         payload = next(part["text"] for part in payload if part.get("type") == "output_text")
     assert isinstance(payload, str)
@@ -61,14 +70,7 @@ def _tool_output(server: MockResponsesServer, call_id: str) -> dict[str, Any]:
 
 
 def _tool_output_text(server: MockResponsesServer, call_id: str) -> str:
-    outputs = [
-        item.get("output")
-        for request in server.requests() if request.path == "/v1/responses"
-        for item in request.input()
-        if item.get("type") == "function_call_output" and item.get("call_id") == call_id
-    ]
-    assert len(outputs) == 1, f"missing executed output for {call_id}: {outputs!r}"
-    payload = outputs[0]
+    payload = _tool_output_payload(server, call_id)
     if isinstance(payload, list):
         payload = next(part["text"] for part in payload if part.get("type") == "output_text")
     assert isinstance(payload, str), payload
@@ -95,6 +97,11 @@ def _thread_id(request: CapturedResponsesRequest) -> str | None:
 def _is_goal_turn(request: CapturedResponsesRequest) -> bool:
     metadata = request.body_json().get("client_metadata")
     turn_metadata = metadata.get("x-codex-turn-metadata") if isinstance(metadata, dict) else None
+    if isinstance(turn_metadata, str):
+        try:
+            turn_metadata = json.loads(turn_metadata)
+        except json.JSONDecodeError:
+            turn_metadata = None
     return isinstance(turn_metadata, dict) and turn_metadata.get("turn_trigger") == "goal"
 
 
@@ -126,12 +133,13 @@ def _has_all_call_outputs(request: CapturedResponsesRequest, call_ids: set[str])
 
 
 def _call_output_count(server: MockResponsesServer, call_id: str) -> int:
-    return sum(
-        1
+    outputs = {
+        json.dumps(item.get("output"), sort_keys=True)
         for request in server.requests() if request.path == "/v1/responses"
         for item in request.input()
         if item.get("type") == "function_call_output" and item.get("call_id") == call_id
-    )
+    }
+    return len(outputs)
 
 
 def _call_output_observations(
@@ -482,11 +490,13 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
                     _function_call(
                         "spawn-waiter", "spawn_agent", {
                             "task_name": "waiter", "message": "WAITER_INITIAL_MARKER",
+                            "model": "gpt-5.6-terra", "reasoning_effort": "medium",
                         },
                     ),
                     _function_call(
                         "spawn-sender", "spawn_agent", {
                             "task_name": "sender", "message": "SENDER_INITIAL_MARKER",
+                            "model": "gpt-5.6-terra", "reasoning_effort": "medium",
                         },
                     ),
                     ev_completed("queue-root-spawns"),

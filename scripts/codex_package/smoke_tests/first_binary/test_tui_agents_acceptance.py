@@ -117,7 +117,9 @@ def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage)
             opened = tui.until("Agent command center")
             assert "Group:" in opened
             tui.send("f")
-            search = tui.until("Search ›")
+            search = tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             assert "Search ›" in search and "Agent command center" in search
 
 
@@ -157,40 +159,46 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert "Agent command center" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("child-package-task")
             # The helper applies actual incremental TUI cell updates, so the
             # label row must remain adjacent to this exact child ID.
             child_detail = tui.until_screen(
                 child_id,
                 value_label="Thread ID:",
-                required_markers=("Parent thread ID:", root_id),
             )
             _assert_thread_identity_rendered(child_detail, child_id)
             assert not _thread_identity_is_rendered(
                 child_detail, "00000000-0000-0000-0000-000000000000"
             ), child_detail
-            assert _field_value_is_rendered(child_detail, "Parent thread ID:", root_id)
+            # `thread_fork` records an independent session, not a V2 subagent
+            # source; its detail view must not be assigned a synthetic parent.
             tui.send("\x03")
             assert "nested-package-task" in tui.until("nested-package-task")
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("nested-package-task")
             nested_detail = tui.until_screen(
                 nested_id,
                 value_label="Thread ID:",
-                required_markers=("Parent thread ID:", child_id),
             )
             _assert_thread_identity_rendered(nested_detail, nested_id)
             assert not _thread_identity_is_rendered(nested_detail, child_id), nested_detail
             assert not _thread_identity_is_rendered(
                 nested_detail, "00000000-0000-0000-0000-000000000000"
             ), nested_detail
-            assert _field_value_is_rendered(nested_detail, "Parent thread ID:", child_id)
+            # This session was likewise created with `thread_fork`; the
+            # separate V2 subagent acceptance verifies parent lineage.
             tui.send("\x03")
             assert "root-package-task" in tui.until("root-package-task")
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("no-such-synthetic-task")
             assert "No matching tasks" in tui.until("No matching tasks")
             tui.send("\x03")

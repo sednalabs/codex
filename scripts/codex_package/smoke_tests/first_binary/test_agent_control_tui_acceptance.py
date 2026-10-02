@@ -113,6 +113,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 sandbox=Sandbox.workspace_write,
             )
             root_id = root.id
+            root.set_name("tui-root-task")
             server.enqueue_assistant_message("persisted root turn", response_id="tui-rich-seed")
             assert (
                 root.run("Persist the root before TUI resume.").final_response
@@ -124,7 +125,8 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         with PackagedTui(isolated, "resume", root_id) as empty_tui:
             _open_agents(empty_tui)
             empty_frame = empty_tui.until("Agent command center")
-            assert "All 0" in empty_frame, empty_frame
+            assert "All 1" in empty_frame, empty_frame
+            assert "tui-root-task" in empty_frame, empty_frame
 
         with Codex(config=CodexConfig(
             codex_bin=str(package.cli), cwd=str(package.directory), env=isolated.environment,
@@ -186,7 +188,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         _open_agents(tui)
         tui.until("Agent command center")
         tui.send("f")
-        tui.until("Search ›")
+        tui.until_screen("Search ›", required_markers=("Agent command center",))
         tui.send("worker")
         details = tui.until_screen(
             child_id,
@@ -219,7 +221,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         # Select the same task after replay so the second frame contains its
         # detail view and the same exact label/ID adjacency.
         tui.send("f")
-        tui.until("Search ›")
+        tui.until_screen("Search ›", required_markers=("Agent command center",))
         tui.send("worker")
         replay_details = tui.until_screen(
             child_id,
