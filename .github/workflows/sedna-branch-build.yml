@@ -1342,6 +1342,24 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
+      - name: Check accepted package fixture modules for undefined names
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'focused' || inputs.consumer_profile == 'full') }}
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          "${UV_PATH}" run --locked \
+            --project "${SDK_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            ruff check \
+              --select F821,F822,F823 \
+              --output-format=github \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py" \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py" \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
       - name: Temporarily enable Linux user namespaces for existing-package consumers
         if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
@@ -2239,6 +2257,24 @@ jobs:
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
+      - name: Check accepted package fixture modules for undefined names
+        if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'focused' || inputs.consumer_profile == 'full') }}
+        shell: bash
+        env:
+          UV_MANAGED_PYTHON: "1"
+          UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
+        run: |
+          set -euo pipefail
+          "${UV_PATH}" run --locked \
+            --project "${SDK_ROOT}/sdk/python" \
+            --group test \
+            --python 3.12.14 \
+            ruff check \
+              --select F821,F822,F823 \
+              --output-format=github \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/test_agent_control_model_acceptance.py" \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/test_agent_control_tui_acceptance.py" \
+              "${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary/tui_pty.py"
       - name: Temporarily enable Linux user namespaces for existing-package consumers
         if: ${{ inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
