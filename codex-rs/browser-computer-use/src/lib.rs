@@ -1311,7 +1311,9 @@ exports.chromium = {
             .expect("make Node wrapper executable");
         // Closing the writable handle is required before Linux can execute the wrapper.
         let node = node.into_temp_path();
-        let node_wrapper_path = node.as_ref().to_path_buf();
+        let node_wrapper_path: std::path::PathBuf =
+            <tempfile::TempPath as std::convert::AsRef<std::path::Path>>::as_ref(&node)
+                .to_path_buf();
 
         let run = |state_dir: Option<String>, thread_id: &str| {
             let node_path = node_path.to_string_lossy().to_string();
