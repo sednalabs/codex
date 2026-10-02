@@ -378,7 +378,7 @@ class PackagedTui:
                 raise self._closed_output(
                     marker, bytes(received), f"unsupported terminal output: {error}"
                 ) from error
-            lines = [line.strip() for line in rendered.splitlines() if line.strip()]
+            lines = [line.strip() for line in rendered.splitlines()]
             adjacent_value = value_label is None or any(
                 lines[index] == value_label and lines[index + 1] == marker
                 for index in range(len(lines) - 1)

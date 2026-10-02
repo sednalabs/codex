@@ -13,7 +13,7 @@ from tui_pty import PackagedTui, TerminalScreen
 
 
 def _field_value_is_rendered(frame: str, label: str, value: str) -> bool:
-    lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines()]
     try:
         label_index = lines.index(label)
     except ValueError:
@@ -30,7 +30,7 @@ def _thread_identity_is_rendered(frame: str, thread_id: str) -> bool:
 
 
 def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
-    lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines()]
     assert _thread_identity_is_rendered(frame, thread_id), lines
 
 
@@ -93,6 +93,12 @@ def _assert_screen_identity_oracle() -> None:
     assert _thread_identity_is_rendered(after_input, correct_id)
     assert not _thread_identity_is_rendered(after_input, wrong_id)
     assert not _thread_identity_is_rendered(after_input, stale_id)
+
+    separated = TerminalScreen(rows=34, columns=110)
+    separated.feed(
+        b"\x1b[1;1HThread ID:\x1b[3;1H" + stale_id.encode() + b" "
+    )
+    assert not _thread_identity_is_rendered(separated.text(), stale_id)
 
     # T1's emitted reverse-index scrolls only within the configured region.
     region = TerminalScreen(rows=4, columns=20)

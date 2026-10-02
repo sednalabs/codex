@@ -92,7 +92,7 @@ def _rich_config(home: Path, server: MockResponsesServer) -> None:
 
 def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
     """The packaged renderer presents the label and immutable ID on adjacent lines."""
-    lines = [line.strip() for line in frame.replace("\r", "").splitlines() if line.strip()]
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines()]
     label_index = lines.index("Thread ID:")
     assert lines[label_index + 1] == thread_id, lines
     assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
