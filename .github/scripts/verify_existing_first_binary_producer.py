@@ -62,9 +62,11 @@ Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
 Q4_FIXTURE_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
 Q5_FIXTURE_SHA = "2c0304235001132f2d06ea42129719c2a9e98bb7"
+Q11_FIXTURE_SHA = "05ac52f72f5fa259673fe8cc9a8e61daa52f1714"
 S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
 S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
 S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
+S3_SDK_SHA = "b0b13d9d4b02500f27e31e60eab06b2de36bb0d6"
 EXPECTED_STATE_POSITIVE = frozenset(
     {
         "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
@@ -131,6 +133,10 @@ CONSUME_EXISTING_TEST_PLANS = {
         "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
+    (Q11_FIXTURE_SHA, S3_SDK_SHA): {
+        "profiles": frozenset({"focused"}),
+        "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
+    },
 }
 SDK_TEST_PLAN_BY_SHA = {
     S0_SDK_SHA: {
@@ -194,6 +200,7 @@ SDK_TEST_PLAN_BY_SHA = {
         },
     },
 }
+SDK_TEST_PLAN_BY_SHA[S3_SDK_SHA] = SDK_TEST_PLAN_BY_SHA[S2_SDK_SHA]
 
 
 def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> dict[str, Any]:
