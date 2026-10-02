@@ -144,6 +144,11 @@ def _call_output_observations(
         if not isinstance(metadata, dict) or metadata.get("thread_id") != thread_id:
             continue
         turn_metadata = metadata.get("x-codex-turn-metadata")
+        if isinstance(turn_metadata, str):
+            try:
+                turn_metadata = json.loads(turn_metadata)
+            except json.JSONDecodeError:
+                turn_metadata = None
         for item in request.input():
             if item.get("type") != "function_call_output" or item.get("call_id") != call_id:
                 continue
@@ -573,21 +578,18 @@ def test_packaged_model_queue_only_message_does_not_wake_until_followup_and_exac
             try:
                 followup_route.wait_until_selected(timeout_s=30)
                 waiter_id = _tool_output(server, "spawn-waiter")["agent_id"]
-                early_wake_evidence = {
-                    "routing": server.routing_trace(),
-                    "waiter_outputs": _call_output_observations(
-                        server, "waiter-mailbox-wait-call", thread_id=waiter_id
-                    ),
-                }
+                early_wake_evidence = _call_output_observations(
+                    server, "waiter-mailbox-wait-call", thread_id=waiter_id
+                )
                 assert not any(
                     _thread_id(request) == waiter_id
                     and _has_call_output(request, "waiter-mailbox-wait-call")
                     for request in server.requests()
                 ), (
                     "queue-only message woke the waiter before actionable followup; "
-                    "the trace distinguishes queue-only wake from another actionable "
-                    "request/turn; exact waiter output and wake reason are included "
-                    "when the waiter emitted one: "
+                    "the followup route is selected but remains gated; exact waiter "
+                    "output and wake reason, with its request turn identity, are included "
+                    "if the waiter emitted one: "
                     f"{json.dumps(early_wake_evidence, sort_keys=True)}"
                 )
             finally:
