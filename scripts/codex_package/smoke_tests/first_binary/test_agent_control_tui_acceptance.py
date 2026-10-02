@@ -161,6 +161,26 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                     for item in request.input()
                 ),
                 sse([
+                    ev_response_created("tui-rich-worker-wait"),
+                    _function_call(
+                        "tui-rich-worker-wait-call", "wait_agent",
+                        {
+                            "targets": ["/root/worker"],
+                            "return_when": "all",
+                            "timeout_ms": 25000,
+                        },
+                    ),
+                    ev_completed("tui-rich-worker-wait"),
+                ]),
+            )
+            server.enqueue_sse_for_request(
+                lambda request: _thread_id(request) == root_id
+                and any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "tui-rich-worker-wait-call"
+                    for item in request.input()
+                ),
+                sse([
                     ev_response_created("tui-rich-root-final"),
                     ev_assistant_message("tui-rich-root-message", "synthetic completion"),
                     ev_completed("tui-rich-root-final"),
@@ -181,6 +201,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 == "synthetic completion"
             )
         metadata = _tool_output(server, "tui-rich-worker")
+        worker_wait = _tool_output(server, "tui-rich-worker-wait-call")
+        assert worker_wait["reason"] == "target_terminal", worker_wait
+        assert worker_wait["wake_cause"] == "target_status", worker_wait
 
         child_id = metadata["agent_id"]
         uuid.UUID(child_id)

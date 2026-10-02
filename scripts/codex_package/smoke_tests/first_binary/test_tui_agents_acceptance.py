@@ -215,12 +215,37 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             tui.send("no-such-synthetic-task")
             assert "No matching tasks" in tui.until("No matching tasks")
             tui.send("\x03")
-            assert "nested-package-task" in tui.until("nested-package-task")
+            overview = tui.until_screen(
+                "Agent command center", required_markers=("nested-package-task",)
+            )
+            assert "nested-package-task" in overview
+            # The no-match search clears selection back to the overview default.
+            # Re-select the intended row and prove its exact ID before the rename
+            # key can act on it.
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("nested-package-task")
+            selected_nested = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("nested-package-task",),
+            )
+            _assert_thread_identity_rendered(selected_nested, nested_id)
+            tui.send("\x03")
+            overview_selection = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("Agent command center", "nested-package-task"),
+            )
+            _assert_thread_identity_rendered(overview_selection, nested_id)
             tui.send("r")
             assert "Rename ›" in tui.until("Rename ›")
             tui.send("\x7f" * 80 + "live-renamed-package-task")
             tui.send("\r")
-            assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
+            renamed_screen = tui.until_screen(
+                "live-renamed-package-task", required_markers=("Agent command center",)
+            )
+            assert nested_id in renamed_screen, renamed_screen
 
         with PackagedTui(isolated, "resume", root_id) as tui:
             replay = _open_agents(
@@ -231,3 +256,12 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             )
             assert "live-renamed-package-task" in replay
             assert "root-package-task" in replay and "child-package-task" in replay
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("live-renamed-package-task")
+            renamed_detail = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("live-renamed-package-task",),
+            )
+            _assert_thread_identity_rendered(renamed_detail, nested_id)
