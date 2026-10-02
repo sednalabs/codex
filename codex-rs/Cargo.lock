@@ -2451,6 +2451,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-browser-computer-use"
+version = "0.160.0-dev.sedna.1"
+dependencies = [
+ "codex-app-server-protocol",
+ "codex-protocol",
+ "codex-utils-home-dir",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-build-info"
 version = "0.160.0-dev.sedna.1"
 dependencies = [
@@ -4772,6 +4787,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",
+ "codex-browser-computer-use",
  "codex-build-info",
  "codex-cloud-config",
  "codex-config",
