@@ -444,7 +444,7 @@ impl SubAgentActivityItem {
             agent_path: self.agent_path.clone(),
             kind: self.kind,
             configured_model: self.configured_model.clone(),
-            configured_reasoning_effort: self.configured_reasoning_effort,
+            configured_reasoning_effort: self.configured_reasoning_effort.clone(),
         })
     }
 }
