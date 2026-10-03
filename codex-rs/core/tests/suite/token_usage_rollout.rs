@@ -189,7 +189,7 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     );
     let spawn_arguments = json!({
         "message": CHILD_TASK,
-        "task_name": "usage-proof-child",
+        "task_name": "usage_proof_child",
         "fork_turns": "none",
     })
     .to_string();
