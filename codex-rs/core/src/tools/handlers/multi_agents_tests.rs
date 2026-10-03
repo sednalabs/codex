@@ -1727,7 +1727,14 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
         root.thread.multi_agent_version(),
         Some(codex_protocol::protocol::MultiAgentVersion::V2)
     );
-    set_agent_control(&mut session, manager.agent_control());
+    set_agent_control(
+        &mut session,
+        root.thread
+            .session
+            .services
+            .local_agent_runtime
+            .control(root.thread.session.session_id()),
+    );
     session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
 
