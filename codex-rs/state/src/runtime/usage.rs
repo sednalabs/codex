@@ -1295,7 +1295,7 @@ mod tests {
         .fetch_one(reopened.usage_pool().as_ref())
         .await
         .expect("read reopened thread credit summary");
-        assert_eq!(summary, (12, 9, 3, 1));
+        assert_eq!(summary, (15, 12, 3, 1));
 
         reopened.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;

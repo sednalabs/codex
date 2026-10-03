@@ -1575,13 +1575,23 @@ mod tests {
                 response_id,
                 response_model: Some(model),
                 token_usage: Some(token_usage),
-                usage_metadata: None,
+                usage_metadata: Some(usage_metadata),
                 end_turn: None,
             } if response_id == "resp-1"
                 && model == "gpt-6.1-sol"
                 && token_usage.input_tokens == 12
                 && token_usage.cached_input_tokens == 3
                 && token_usage.output_tokens == 4
+                && usage_metadata == &(ResponseUsageMetadata {
+                    amount: None,
+                    metadata: Some(json!({
+                        "input_tokens": 12,
+                        "input_tokens_details": { "cached_tokens": 3 },
+                        "output_tokens": 4,
+                        "output_tokens_details": { "reasoning_tokens": 1 },
+                        "total_tokens": 16
+                    }))
+                })
         );
     }
 
