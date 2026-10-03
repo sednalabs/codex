@@ -311,7 +311,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                     f"Parent: {root_id}",
                     "Configured model: gpt-5.6-terra",
                     "Configured reasoning effort: medium",
-                    "Status: Working",
+                    "Status: Active",
                 ),
             )
             child_details_text = _normalized_screen(child_details)
@@ -322,7 +322,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert (
                 "Configured reasoning effort: medium" in child_details_text
             ), child_details
-            assert "Status: Working" in child_details_text, child_details
+            assert "Status: Active" in child_details_text, child_details
             assert "Provider-effective identity:" not in child_details_text, child_details
             assert "PRIVATE_PROMPT_SENTINEL" not in child_details, child_details
             assert "instructions" not in child_details.lower()
@@ -340,7 +340,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                     f"Parent: {root_id}",
                     "Configured model: gpt-5.6-terra",
                     "Configured reasoning effort: medium",
-                    "Status: Working",
+                    "Status: Active",
                 ),
             )
             replay_details_text = _normalized_screen(replay_details)
@@ -348,7 +348,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert f"Parent: {root_id}" in replay_details_text, replay_details
             assert "Configured model: gpt-5.6-terra" in replay_details_text
             assert "Configured reasoning effort: medium" in replay_details_text
-            assert "Status: Working" in replay_details_text, replay_details
+            assert "Status: Active" in replay_details_text, replay_details
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_details, replay_details
             child_gate.set()
             tui.send("\x1b")
