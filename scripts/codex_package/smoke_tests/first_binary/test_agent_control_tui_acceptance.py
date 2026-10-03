@@ -38,13 +38,13 @@ def _open_agents(
     )
 
 
-def _open_subagents(tui: PackagedTui) -> None:
+def _open_subagents(tui: PackagedTui) -> str:
     tui.until_screen("Ask Codex to do anything")
     tui.send("/subagents")
     popup = tui.until("switch between this session's subagents")
     assert "/subagents" in popup, popup
     tui.send("\r")
-    tui.until_screen(
+    return tui.until_screen(
         "Subagents",
         required_markers=("Select an agent to watch.",),
     )
@@ -270,6 +270,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "All 1" in overview, overview
             assert "tui-root-task" in overview, overview
             assert child_id not in overview and "/root/worker" not in overview, overview
+            assert "PRIVATE_PROMPT_SENTINEL" not in overview, overview
             tui.send("f")
             tui.until_screen("Search ›", required_markers=("Agent command center",))
             tui.send("tui-root-task")
@@ -284,7 +285,8 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
             _open_subagents(tui)
-            tui.until_screen(child_id)
+            picker = tui.until_screen(child_id)
+            assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
             tui.send("\x1b[B")
             child_details = tui.until_screen(child_id)
             child_details_text = _normalized_screen(child_details)
@@ -304,7 +306,8 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
             _open_subagents(tui)
-            tui.until_screen(child_id)
+            replay_picker = tui.until_screen(child_id)
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker, replay_picker
             tui.send("\x1b[B")
             replay_details = tui.until_screen(child_id)
             replay_details_text = _normalized_screen(replay_details)
