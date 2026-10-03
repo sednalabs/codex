@@ -1,4 +1,4 @@
-"""Actual packaged /agents rendering and replay for rich agent metadata."""
+"""Actual packaged root overview, subagent details, and replay for rich metadata."""
 
 import json
 import re
@@ -36,6 +36,18 @@ def _open_agents(
     return tui.until_screen(
         "Agent command center",
         required_markers=("Group:", *required_markers),
+    )
+
+
+def _open_subagents(tui: PackagedTui) -> None:
+    tui.until_screen("Ask Codex to do anything")
+    tui.send("/subagents")
+    popup = tui.until("switch between this session's subagents")
+    assert "/subagents" in popup, popup
+    tui.send("\r")
+    tui.until_screen(
+        "Subagents",
+        required_markers=("Select an agent to watch.",),
     )
 
 
@@ -115,7 +127,7 @@ def _rich_config(home: Path, server: MockResponsesServer) -> None:
     config = config.replace(
         "[model_providers.package_smoke]",
         "[features.multi_agent_v2]\nenabled = true\n"
-        "hide_spawn_agent_metadata = false\nnon_code_mode_only = true\n\n"
+        "non_code_mode_only = true\n\n"
         "[model_providers.package_smoke]",
     )
     config_path.write_text('model_reasoning_effort = "medium"\n' + config, encoding="utf-8")
@@ -127,6 +139,10 @@ def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
     label_index = lines.index("Thread ID:")
     assert lines[label_index + 1] == thread_id, lines
     assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
+
+
+def _normalized_screen(frame: str) -> str:
+    return " ".join(line.strip().strip("│").strip() for line in frame.splitlines())
 
 
 def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity(
@@ -233,69 +249,121 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert child_root_wait["wake_cause"] == "target_status", child_root_wait
             assert set(child_root_wait["status"]) == {"/root"}, child_root_wait
 
-            metadata = _tool_output(server, "tui-rich-worker")
-            child_id = metadata["agent_id"]
-            uuid.UUID(child_id)
-            assert metadata["configured_model"] == "gpt-5.6-terra", metadata
-            assert metadata["configured_reasoning_effort"] == "medium", metadata
-            assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(metadata)
-
-            overview = _open_agents(
-                tui, required_markers=("All 2", "tui-root-task", "worker", "Working")
+            spawn_output = _tool_output(server, "tui-rich-worker")
+            assert "PRIVATE_PROMPT_SENTINEL" not in json.dumps(spawn_output)
+            child_requests = [
+                request for request in server.requests()
+                if request.path == "/v1/responses"
+                and request.header("x-codex-parent-thread-id") == root_id
+                and _latest_user_marker(request, "PRIVATE_PROMPT_SENTINEL")
+            ]
+            child_ids = {_thread_id(request) for request in child_requests}
+            assert len(child_ids) == 1 and None not in child_ids, (
+                f"expected one exact child request under root {root_id}; "
+                f"observed child IDs {child_ids}"
             )
-            assert "All 2" in overview, overview
-            assert "tui-root-task" in overview and "worker" in overview, overview
-            tui.send("f")
-            tui.until_screen("Search ›", required_markers=("Agent command center",))
-            tui.send("worker")
-            details = tui.until_screen(
-                child_id,
-                value_label="Thread ID:",
+            child_id = next(iter(child_ids))
+            uuid.UUID(child_id)
+            started = tui.until_screen(
+                "Started `/root/worker`",
                 required_markers=(
-                    "Configured/resolved model: gpt-5.6-terra",
-                    "Configured/resolved effort: medium",
-                    "Provider-effective identity: Unknown",
-                    root_id,
-                    "Thread path:",
-                    "/root/worker",
+                    "Configured model: gpt-5.6-terra",
+                    "Configured reasoning effort: medium",
                 ),
             )
-            _assert_thread_identity_rendered(details, child_id)
-            assert "Configured/resolved model: gpt-5.6-terra" in details, details
+            assert "PRIVATE_PROMPT_SENTINEL" not in started, started
+
+            overview = _open_agents(
+                tui, required_markers=("All 1", "tui-root-task")
+            )
+            assert "All 1" in overview, overview
+            assert "tui-root-task" in overview, overview
+            assert child_id not in overview and "/root/worker" not in overview, overview
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("tui-root-task")
+            details = tui.until_screen(
+                root_id,
+                value_label="Thread ID:",
+                required_markers=(
+                    "Configured/resolved model: package-smoke",
+                    "Configured/resolved effort: medium",
+                    "Provider-effective identity: Unknown",
+                    "tui-root-task",
+                ),
+            )
+            _assert_thread_identity_rendered(details, root_id)
+            assert "Configured/resolved model: package-smoke" in details, details
             assert "Configured/resolved effort: medium" in details, details
             assert "Provider-effective identity: Unknown" in details, details
-            parent_id_lines = details.split("Parent thread ID:", maxsplit=1)[1].splitlines()
-            assert next(
-                line.strip().strip("│").strip()
-                for line in parent_id_lines if line.strip()
-            ) == root_id, details
-            assert "Thread path:" in details and "/root/worker" in details, details
-            assert any(
-                state in details for state in ("Working", "Needs input", "Ready", "Inactive")
-            ), details
             assert "PRIVATE_PROMPT_SENTINEL" not in details, details
-            assert "instructions" not in details.lower() and "credentials" not in details.lower()
 
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
-            replay = _open_agents(tui, required_markers=("worker",))
-            assert "worker" in replay, replay
-            # Reopen the same live overview after closing the detail pane and
-            # require the identity/private-data contract again.
-            tui.send("f")
-            tui.until_screen("Search ›", required_markers=("Agent command center",))
-            tui.send("worker")
+            _open_subagents(tui)
+            tui.until_screen(child_id)
+            tui.send("\x1b[B")
+            child_details = tui.until_screen(
+                child_id,
+                value_label="Thread ID:",
+                required_markers=(
+                    "Path: /root/worker",
+                    f"Parent: {root_id}",
+                    "Configured model: gpt-5.6-terra",
+                    "Configured reasoning effort: medium",
+                    "Status: Working",
+                ),
+            )
+            child_details_text = _normalized_screen(child_details)
+            assert f"Thread ID: {child_id}" in child_details_text, child_details
+            assert "Path: /root/worker" in child_details_text, child_details
+            assert f"Parent: {root_id}" in child_details_text, child_details
+            assert "Configured model: gpt-5.6-terra" in child_details_text, child_details
+            assert (
+                "Configured reasoning effort: medium" in child_details_text
+            ), child_details
+            assert "Status: Working" in child_details_text, child_details
+            assert "Provider-effective identity:" not in child_details_text, child_details
+            assert "PRIVATE_PROMPT_SENTINEL" not in child_details, child_details
+            assert "instructions" not in child_details.lower()
+            assert "credentials" not in child_details.lower()
+
+            tui.send("\x1b")
+            tui.until("Ask Codex to do anything")
+            _open_subagents(tui)
+            tui.until_screen(child_id)
+            tui.send("\x1b[B")
             replay_details = tui.until_screen(
                 child_id,
                 value_label="Thread ID:",
-                required_markers=("Provider-effective identity: Unknown",),
+                required_markers=(
+                    f"Parent: {root_id}",
+                    "Configured model: gpt-5.6-terra",
+                    "Configured reasoning effort: medium",
+                    "Status: Working",
+                ),
             )
-            _assert_thread_identity_rendered(replay_details, child_id)
-            assert "Provider-effective identity: Unknown" in replay_details
-            assert "PRIVATE_PROMPT_SENTINEL" not in replay_details
+            replay_details_text = _normalized_screen(replay_details)
+            assert f"Thread ID: {child_id}" in replay_details_text, replay_details
+            assert f"Parent: {root_id}" in replay_details_text, replay_details
+            assert "Configured model: gpt-5.6-terra" in replay_details_text
+            assert "Configured reasoning effort: medium" in replay_details_text
+            assert "Status: Working" in replay_details_text, replay_details
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_details, replay_details
             child_gate.set()
+            tui.send("\x1b")
+            tui.until("Ask Codex to do anything")
             child_final = tui.until_screen(
                 "TUI_RICH_CHILD_TERMINAL",
-                required_markers=("Provider-effective identity: Unknown",),
             )
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
+
+        with PackagedTui(isolated, "resume", root_id) as replay_tui:
+            replay_started = replay_tui.until_screen(
+                "Started `/root/worker`",
+                required_markers=(
+                    "Configured model: gpt-5.6-terra",
+                    "Configured reasoning effort: medium",
+                ),
+            )
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_started, replay_started
