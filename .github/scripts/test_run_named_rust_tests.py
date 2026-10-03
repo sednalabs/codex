@@ -321,6 +321,64 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["tests"], [])
         self.assertEqual(run.call_count, 2)
 
+    def test_stdio_server_build_rejects_a_different_cargo_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "test_stdio_server"
+            executable.write_text("hosted test fixture", encoding="utf-8")
+            executable.chmod(0o755)
+            wrong_target = {
+                "reason": "compiler-artifact",
+                "target": {"name": "different_server", "kind": ["bin"]},
+                "executable": str(executable),
+            }
+            inventory = self.completed(stdout=f"{MODULE.STDIO_SERVER_TEST}: test\n")
+            build = self.completed(stdout=json.dumps(wrong_target) + "\n")
+            with (
+                mock.patch.object(
+                    MODULE.subprocess, "run", side_effect=[inventory, build]
+                ) as run,
+                mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+                mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+            ):
+                result = MODULE.run_request(
+                    STDIO_SERVER_REQUEST, Path("/validation-target")
+                )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "prerequisite_build_failed")
+        self.assertFalse(result["prerequisite_build"]["executable_ready"])
+        self.assertEqual(result["tests"], [])
+        self.assertEqual(run.call_count, 2)
+
+    def test_stdio_server_build_rejects_a_non_executable_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "test_stdio_server"
+            executable.write_text("hosted test fixture", encoding="utf-8")
+            executable.chmod(0o644)
+            artifact = {
+                "reason": "compiler-artifact",
+                "target": {"name": "test_stdio_server", "kind": ["bin"]},
+                "executable": str(executable),
+            }
+            inventory = self.completed(stdout=f"{MODULE.STDIO_SERVER_TEST}: test\n")
+            build = self.completed(stdout=json.dumps(artifact) + "\n")
+            with (
+                mock.patch.object(
+                    MODULE.subprocess, "run", side_effect=[inventory, build]
+                ) as run,
+                mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+                mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+            ):
+                result = MODULE.run_request(
+                    STDIO_SERVER_REQUEST, Path("/validation-target")
+                )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "prerequisite_build_failed")
+        self.assertFalse(result["prerequisite_build"]["executable_ready"])
+        self.assertEqual(result["tests"], [])
+        self.assertEqual(run.call_count, 2)
+
     def test_hosted_workflow_runs_runner_controls_before_cargo(self) -> None:
         workflow = (
             Path(__file__).resolve().parents[1]
