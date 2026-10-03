@@ -2238,8 +2238,11 @@ async fn browser_dynamic_tool_requests_dispatch_provider_and_preserve_image() ->
     assert_eq!(wire_items[0]["type"], "inputText");
     assert_eq!(wire_items[1]["type"], "inputImage");
     assert_eq!(wire_items[2]["type"], "inputImage");
-    assert_eq!(wire_items[1]["imageUrl"], top_image);
-    assert_eq!(wire_items[2]["imageUrl"], bottom_image);
+    assert_eq!(wire_items[1]["imageUrl"].as_str(), Some(top_image.as_str()));
+    assert_eq!(
+        wire_items[2]["imageUrl"].as_str(),
+        Some(bottom_image.as_str())
+    );
 
     // A malformed visual request must be a truthful failure and must not create
     // an additional thread profile or artifact run.
