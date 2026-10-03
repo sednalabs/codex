@@ -864,6 +864,7 @@ mod tests;
 #[cfg(test)]
 mod completion_usage_tests {
     use super::*;
+    use codex_protocol::protocol::TokenUsage;
     use codex_utils_absolute_path::test_support::PathExt;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
