@@ -1379,6 +1379,7 @@ const page = {
   url: () => currentUrl,
   goto: async (url) => { currentUrl = url; },
   waitForLoadState: async () => {},
+  waitForTimeout: async () => {},
   screenshot: async () => {
     screenshotCount += 1;
     if (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT === "1" || (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT_AFTER_FIRST === "1" && screenshotCount === 2)) throw new Error("fixture screenshot failure");
