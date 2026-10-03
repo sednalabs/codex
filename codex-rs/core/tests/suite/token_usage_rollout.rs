@@ -339,6 +339,24 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
             .iter()
             .all(|record| record.turn_id == repeated_response_records[0].turn_id)
     );
+    assert_eq!(
+        repeated_response_records
+            .iter()
+            .map(|record| (
+                record.usage.input_tokens,
+                record.usage.cached_input_tokens,
+                record.usage.cache_write_input_tokens,
+                record.usage.output_tokens,
+                record.usage.total_tokens,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (100_000, 10_000, 0, 1_000, 101_000),
+            (100_000, 10_000, 0, 1_000, 101_000),
+            (999, 0, 0, 1, 1_000),
+        ],
+        "rollout must retain the exact replay and conflicting response-local payloads"
+    );
     assert!(records.iter().any(|record| {
         record.response_id == "response-unknown-model"
             && record.turn_id != repeated_response_records[0].turn_id
@@ -484,11 +502,27 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     codex_state.close().await;
     drop(home);
     logs_assert(|lines: &[&str]| {
-        assert!(lines.iter().any(|line| {
+        let expected_warning = lines.iter().any(|line| {
             line.contains("failed to record per-response provider usage for response-root-replay")
                 && line.contains("conflicting payload for an existing provider response identity")
-        }));
-        Ok(())
+        });
+        if expected_warning {
+            return Ok(());
+        }
+        let related_lines = lines
+            .iter()
+            .filter(|line| {
+                line.contains("provider usage")
+                    || line.contains("response-root-replay")
+                    || line.contains("conflicting payload")
+            })
+            .take(12)
+            .map(|line| line.chars().take(512).collect::<String>())
+            .collect::<Vec<_>>();
+        Err(format!(
+            "expected conflict warning was not captured; observed {} log lines and related logs (up to 12 x 512 chars): {related_lines:?}",
+            lines.len()
+        ))
     });
     Ok(())
 }
