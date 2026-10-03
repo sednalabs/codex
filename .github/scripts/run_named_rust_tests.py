@@ -40,6 +40,22 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+STDIO_SERVER_TEST = (
+    "suite::rmcp_client::mcp_pagination_preserves_valid_tools_and_rejects_"
+    "oversized_cursors::legacy"
+)
+STDIO_SERVER_BUILD_COMMAND = [
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "test",
+    "-p",
+    "codex-rmcp-client",
+    "--bin",
+    "test_stdio_server",
+    "--message-format=json-render-diagnostics",
+]
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -57,6 +73,100 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str
         "stdout_tail": bounded_diagnostic(completed.stdout),
         "stderr_tail": bounded_diagnostic(completed.stderr),
     }
+
+
+def requires_stdio_server_build(request: dict[str, Any]) -> bool:
+    """Select the one admitted request whose fixture consumes this helper."""
+
+    return (
+        request.get("profile") == "rust_integration"
+        and request.get("package") == "codex-core"
+        and request.get("target_kind") == "integration"
+        and request.get("target") == "all"
+        and STDIO_SERVER_TEST in request.get("tests", [])
+    )
+
+
+def cargo_binary_executable(output: str, name: str) -> Path | None:
+    """Resolve one Cargo-reported executable artifact without guessing a path."""
+
+    executables: set[Path] = set()
+    for line in output.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(message, dict)
+            or message.get("reason") != "compiler-artifact"
+        ):
+            continue
+        target = message.get("target")
+        if (
+            not isinstance(target, dict)
+            or target.get("name") != name
+            or not isinstance(target.get("kind"), list)
+            or "bin" not in target["kind"]
+        ):
+            continue
+        executable = message.get("executable")
+        if isinstance(executable, str) and executable:
+            executables.add(Path(executable))
+
+    if len(executables) != 1:
+        return None
+    executable = next(iter(executables))
+    try:
+        executable_ready = (
+            executable.is_absolute()
+            and executable.name == name
+            and executable.is_file()
+            and os.access(executable, os.X_OK)
+        )
+    except (OSError, ValueError):
+        return None
+    if not executable_ready:
+        return None
+    return executable
+
+
+def build_stdio_server(repo_root: Path, env: dict[str, str]) -> dict[str, Any]:
+    """Build the fixed test helper using the named test's Cargo context."""
+
+    try:
+        completed = subprocess.run(
+            STDIO_SERVER_BUILD_COMMAND,
+            cwd=repo_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+    except OSError as exc:
+        return {
+            "status": "failure",
+            "command": STDIO_SERVER_BUILD_COMMAND,
+            "exit_code": None,
+            "executable_ready": False,
+            "diagnostic": bounded_diagnostic(str(exc)),
+        }
+
+    executable = (
+        cargo_binary_executable(completed.stdout, "test_stdio_server")
+        if completed.returncode == 0
+        else None
+    )
+    executable_ready = executable is not None
+    result: dict[str, Any] = {
+        "status": "success" if executable_ready else "failure",
+        "command": STDIO_SERVER_BUILD_COMMAND,
+        "exit_code": completed.returncode,
+        "executable_ready": executable_ready,
+    }
+    if not executable_ready:
+        result["diagnostics"] = command_diagnostics(completed)
+    return result
 
 
 def test_result_counts(output: str) -> dict[str, int] | None:
@@ -366,6 +476,21 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
+    if requires_stdio_server_build(request):
+        prerequisite = build_stdio_server(manifest_root, env)
+        result["prerequisite_build"] = prerequisite
+        if prerequisite["status"] != "success":
+            result.update(
+                {
+                    "status": "failure",
+                    "failure_code": "prerequisite_build_failed",
+                    "message": (
+                        "required test_stdio_server prerequisite was not built "
+                        "as an executable artifact; exact tests were not run"
+                    ),
+                }
+            )
+            return result
     for name in request["tests"]:
         test_command = cargo_args(
             request,

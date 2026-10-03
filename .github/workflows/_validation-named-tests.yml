@@ -127,6 +127,11 @@ jobs:
             echo "VALIDATION_HARNESS_SHA=${harness_sha}"
           } >> "${GITHUB_ENV}"
 
+      - name: Test named Rust runner controls
+        working-directory: .workflow-src
+        shell: bash
+        run: python3 .github/scripts/test_run_named_rust_tests.py
+
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
