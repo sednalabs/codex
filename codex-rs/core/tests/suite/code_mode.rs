@@ -674,7 +674,7 @@ async fn run_code_mode_turn_with_rmcp_model(
 ) -> Result<(TestCodex, ResponseMock)> {
     run_code_mode_turn_with_rmcp_config(
         server, prompt, code, model, /*code_mode_only*/ false,
-        /*non_prefixed_mcp_tool_names*/ false,
+        /*non_prefixed_mcp_tool_names*/ false, /*tool_pagination*/ None,
     )
     .await
 }
@@ -692,6 +692,7 @@ async fn run_code_mode_turn_with_rmcp_mode(
         "test-gpt-5.1-codex",
         code_mode_only,
         /*non_prefixed_mcp_tool_names*/ false,
+        /*tool_pagination*/ None,
     )
     .await
 }
@@ -703,6 +704,7 @@ async fn run_code_mode_turn_with_rmcp_config(
     model: &'static str,
     code_mode_only: bool,
     non_prefixed_mcp_tool_names: bool,
+    tool_pagination: Option<&'static str>,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
     let mut builder = test_codex().with_model(model).with_config(move |config| {
@@ -723,10 +725,19 @@ async fn run_code_mode_turn_with_rmcp_config(
                 transport: McpServerTransportConfig::Stdio {
                     command: rmcp_test_server_bin,
                     args: Vec::new(),
-                    env: Some(HashMap::from([(
-                        "MCP_TEST_VALUE".to_string(),
-                        "propagated-env".to_string(),
-                    )])),
+                    env: Some({
+                        let mut env = HashMap::from([(
+                            "MCP_TEST_VALUE".to_string(),
+                            "propagated-env".to_string(),
+                        )]);
+                        if let Some(pagination) = tool_pagination {
+                            env.insert(
+                                "MCP_TEST_TOOL_PAGINATION".to_string(),
+                                pagination.to_string(),
+                            );
+                        }
+                        env
+                    }),
                     env_vars: Vec::new(),
                     cwd: None,
                 },
@@ -7468,6 +7479,7 @@ text(JSON.stringify({
         "test-gpt-5.1-codex",
         /*code_mode_only*/ false,
         /*non_prefixed_mcp_tool_names*/ true,
+        /*tool_pagination*/ None,
     )
     .await?;
 
@@ -7919,6 +7931,45 @@ text(JSON.stringify(tool));
                 "```",
             ),
         })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exports_and_calls_second_page_mcp_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+const tool = ALL_TOOLS.find(({ name }) => name === "mcp__rmcp__sync");
+if (!tool) throw new Error("second-page MCP tool is missing from ALL_TOOLS");
+const result = await tools.mcp__rmcp__sync({});
+text(JSON.stringify({ name: tool.name, result: result.structuredContent?.result }));
+"#;
+
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp_config(
+        &server,
+        "call the second-page MCP tool from Code Mode",
+        code,
+        "test-gpt-5.1-codex",
+        /*code_mode_only*/ false,
+        /*non_prefixed_mcp_tool_names*/ false,
+        /*tool_pagination*/ Some("two-pages"),
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "second-page Code Mode MCP call failed unexpectedly: {output}"
+    );
+    let parsed: Value = serde_json::from_str(&output)?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({ "name": "mcp__rmcp__sync", "result": "ok" })
     );
 
     Ok(())
