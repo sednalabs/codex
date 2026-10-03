@@ -1042,7 +1042,7 @@ impl ThreadHistoryBuilder {
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
             configured_model: payload.configured_model.clone(),
-            configured_reasoning_effort: payload.configured_reasoning_effort,
+            configured_reasoning_effort: payload.configured_reasoning_effort.clone(),
         });
     }
 
