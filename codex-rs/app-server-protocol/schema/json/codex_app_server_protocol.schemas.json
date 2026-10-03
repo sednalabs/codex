@@ -22415,6 +22415,22 @@
               "agentThreadId": {
                 "type": "string"
               },
+              "configuredModel": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "configuredReasoningEffort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "id": {
                 "type": "string"
               },
