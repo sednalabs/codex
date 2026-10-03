@@ -501,12 +501,27 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
 
     codex_state.close().await;
     drop(home);
+    // Session loops are spawned with their own span, so the warning can be in
+    // tracing-test's global buffer without inheriting this test's scope.
+    let global_logs = tracing_test::internal::global_buf()
+        .lock()
+        .expect("tracing-test global log buffer")
+        .clone();
+    let global_logs = String::from_utf8(global_logs).expect("tracing-test logs are UTF-8");
     logs_assert(|lines: &[&str]| {
-        let expected_warning = lines.iter().any(|line| {
+        let has_expected_warning = |line: &&str| {
             line.contains("failed to record per-response provider usage for response-root-replay")
                 && line.contains("conflicting payload for an existing provider response identity")
-        });
-        if expected_warning {
+        };
+        let expected_warning = lines.iter().any(has_expected_warning);
+        let global_response_logs = global_logs
+            .lines()
+            .filter(|line| line.contains("response-root-replay"))
+            .collect::<Vec<_>>();
+        let global_expected_warning = global_response_logs
+            .iter()
+            .any(|line| has_expected_warning(line));
+        if expected_warning || global_expected_warning {
             return Ok(());
         }
         let related_lines = lines
@@ -520,8 +535,9 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
             .map(|line| line.chars().take(512).collect::<String>())
             .collect::<Vec<_>>();
         Err(format!(
-            "expected conflict warning was not captured; observed {} log lines and related logs (up to 12 x 512 chars): {related_lines:?}",
-            lines.len()
+            "expected conflict warning was not captured in test scope or global buffer; observed {} scoped lines and {} global lines for the unique response ID; scoped related logs (up to 12 x 512 chars): {related_lines:?}",
+            lines.len(),
+            global_response_logs.len()
         ))
     });
     Ok(())
