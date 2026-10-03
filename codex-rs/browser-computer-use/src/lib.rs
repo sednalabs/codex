@@ -1661,7 +1661,8 @@ exports.chromium = {
         else {
             panic!("capture failure includes stage text");
         };
-        assert!(text.contains("capture: fixture screenshot failure"));
+        assert!(text.contains("visual_error: capture: Unable to capture browser screenshot."));
+        assert!(text.contains("page.screenshot: fixture screenshot failure"));
         assert!(
             text.contains("\"success\":true"),
             "capture failure still restores state"
