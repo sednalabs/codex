@@ -467,7 +467,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn wait_agent_tool_v2_supports_targets_return_when_and_summary_output() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
@@ -489,7 +489,39 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .properties
         .as_ref()
         .expect("wait_agent should use object params");
-    assert!(!properties.contains_key("targets"));
+    assert_eq!(properties.len(), 3);
+    assert_eq!(
+        properties
+            .get("targets")
+            .and_then(|schema| schema.to_value().get("type").cloned()),
+        Some(json!("array"))
+    );
+    assert_eq!(
+        properties
+            .get("targets")
+            .and_then(|schema| schema.to_value().get("items").cloned()),
+        Some(json!({"type": "string"}))
+    );
+    assert_eq!(
+        properties
+            .get("targets")
+            .and_then(|schema| schema.description.as_deref()),
+        Some("Exact agent ids or paths to wait on; omit for mailbox or operator input.")
+    );
+    assert_eq!(
+        properties
+            .get("return_when")
+            .and_then(|schema| schema.to_value().get("type").cloned()),
+        Some(json!("string"))
+    );
+    assert_eq!(
+        properties
+            .get("return_when")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "With targets, return on any logical terminal/actionable target (default) or all targets; values: any, all."
+        )
+    );
     assert!(properties.contains_key("timeout_ms"));
     assert!(description.contains(
         "Does not return the content; returns either a summary of which agents have updates (if any)"
