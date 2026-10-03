@@ -10,6 +10,7 @@ use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
+use crate::migrations::repair_legacy_recency_migration_version;
 use crate::runtime::migration_repair::run_state_migrations;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
