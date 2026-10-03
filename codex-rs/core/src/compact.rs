@@ -830,10 +830,12 @@ async fn collect_local_compaction_output(
             }
             Ok(ResponseEvent::Completed {
                 response_id,
+                response_model,
                 token_usage,
                 usage_metadata,
                 ..
             }) => {
+                usage_context.reconcile_completed_model(response_model);
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
@@ -880,8 +882,26 @@ mod completion_usage_tests {
     }
 
     #[tokio::test]
-    async fn local_compaction_completion_preserves_observed_or_absent_server_model() {
-        for observed_model in [Some("actual-compact-model"), None] {
+    async fn local_compaction_completion_reconciles_header_and_body_model_evidence() {
+        for (header_model, response_model, expected_model) in [
+            (
+                Some("header-compact-model"),
+                None,
+                Some("header-compact-model"),
+            ),
+            (None, Some("body-compact-model"), Some("body-compact-model")),
+            (
+                Some("same-compact-model"),
+                Some("SAME-COMPACT-MODEL"),
+                Some("SAME-COMPACT-MODEL"),
+            ),
+            (
+                Some("header-compact-model"),
+                Some("body-compact-model"),
+                None,
+            ),
+            (None, None, None),
+        ] {
             let sqlite_home = tempfile::tempdir().expect("isolated usage database home");
             let state_db = codex_state::StateRuntime::init(
                 codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs()),
@@ -896,12 +916,21 @@ mod completion_usage_tests {
                 .services
                 .state_db = Some(Arc::clone(&state_db));
             let mut events = Vec::new();
-            if let Some(model) = observed_model {
+            if let Some(model) = header_model {
                 events.push(Ok(ResponseEvent::ServerModel(model.to_string())));
             }
             events.push(Ok(ResponseEvent::Completed {
                 response_id: "resp-local-compact".to_string(),
-                token_usage: None,
+                response_model: response_model.map(str::to_string),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 12,
+                    cached_input_tokens: 3,
+                    cache_write_input_tokens: 0,
+                    output_tokens: 4,
+                    reasoning_output_tokens: 1,
+                    total_tokens: 16,
+                    codex_rollout_budget_units: None,
+                }),
                 usage_metadata: None,
                 end_turn: Some(true),
             }));
@@ -928,8 +957,8 @@ mod completion_usage_tests {
                 panic!("expected raw response completion, got {:?}", event.msg);
             };
             assert_eq!(completed.response_id, "resp-local-compact");
-            let rows = sqlx::query_as::<_, (String, Option<String>)>(
-                "SELECT requested_model, actual_model_used FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+            let rows = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<i64>, Option<i64>)>(
+                "SELECT requested_model, actual_model_used, input_tokens_uncached, output_tokens, total_tokens FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
             )
             .bind(sess.thread_id.to_string())
             .bind("resp-local-compact")
@@ -940,7 +969,10 @@ mod completion_usage_tests {
                 rows,
                 vec![(
                     "requested-compact-model".to_string(),
-                    observed_model.map(str::to_string),
+                    expected_model.map(str::to_string),
+                    Some(9),
+                    Some(4),
+                    Some(16),
                 )]
             );
         }

@@ -494,10 +494,13 @@ async fn collect_compaction_output(
             }
             ResponseEvent::Completed {
                 response_id,
+                response_model,
                 token_usage,
                 usage_metadata,
                 ..
             } => {
+                let mut usage_context = usage_context;
+                usage_context.reconcile_completed_model(response_model);
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
@@ -1279,6 +1282,7 @@ mod tests {
             Ok(ResponseEvent::OutputItemDone(compaction.clone())),
             Ok(ResponseEvent::Completed {
                 response_id: "resp-compact".to_string(),
+                response_model: Some("actual-compact-model".to_string()),
                 token_usage: Some(TokenUsage {
                     input_tokens: 123_456,
                     cached_input_tokens: 7_890,
@@ -1362,6 +1366,7 @@ mod tests {
             events.push(Ok(ResponseEvent::OutputItemDone(compaction)));
             events.push(Ok(ResponseEvent::Completed {
                 response_id: "resp-remote-compact".to_string(),
+                response_model: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: Some(true),

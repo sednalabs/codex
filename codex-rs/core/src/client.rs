@@ -2436,6 +2436,7 @@ where
                 }
                 Ok(ResponseEvent::Completed {
                     response_id,
+                    response_model,
                     token_usage,
                     usage_metadata,
                     end_turn,
@@ -2459,6 +2460,7 @@ where
                     if tx_event
                         .send(Ok(ResponseEvent::Completed {
                             response_id,
+                            response_model,
                             token_usage,
                             usage_metadata,
                             end_turn,

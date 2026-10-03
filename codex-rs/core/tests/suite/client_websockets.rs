@@ -169,6 +169,7 @@ async fn responses_websocket_preserves_credit_usage_metadata() {
     skip_if_no_network!();
 
     let mut completed = ev_completed("resp-1");
+    completed["response"]["model"] = json!("gpt-6-luna");
     completed["response"]["usage_metadata"] = json!({ "amount": "0.12345678901234567890" });
     let expected_metadata = completed["response"]["usage"].clone();
     let server =
@@ -192,13 +193,16 @@ async fn responses_websocket_preserves_credit_usage_metadata() {
         .expect("websocket stream failed");
 
     let mut usage_metadata = None;
+    let mut response_model = None;
     while let Some(event) = stream.next().await {
         if let ResponseEvent::Completed {
             usage_metadata: metadata,
+            response_model: model,
             ..
         } = event.expect("websocket stream failed")
         {
             usage_metadata = metadata;
+            response_model = model;
             break;
         }
     }
@@ -209,6 +213,7 @@ async fn responses_websocket_preserves_credit_usage_metadata() {
             metadata: Some(expected_metadata),
         }),
     );
+    assert_eq!(response_model.as_deref(), Some("gpt-6-luna"));
     assert_eq!(server.single_connection().len(), 1);
     server.shutdown().await;
 }

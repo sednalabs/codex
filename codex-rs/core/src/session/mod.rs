@@ -428,6 +428,18 @@ pub(crate) struct ProviderResponseUsageContext {
     pub(crate) requested_service_tier: Option<String>,
 }
 
+impl ProviderResponseUsageContext {
+    pub(crate) fn reconcile_completed_model(&mut self, response_model: Option<String>) {
+        self.actual_model_used = match (self.actual_model_used.take(), response_model) {
+            (Some(header), Some(response)) if header.eq_ignore_ascii_case(&response) => {
+                Some(response)
+            }
+            (Some(_), Some(_)) => None,
+            (header, response) => response.or(header),
+        };
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GitEnrichmentPolicy {
     Fresh,

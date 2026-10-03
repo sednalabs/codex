@@ -98,6 +98,7 @@ use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
@@ -108,6 +109,30 @@ use codex_tools::ToolSpec;
 use codex_utils_path_uri::PathUri;
 use std::collections::BTreeMap;
 use tracing::Span;
+
+#[test]
+fn completed_response_model_reconciliation_preserves_only_consistent_evidence() {
+    let mut usage = ProviderResponseUsageContext {
+        started_at: String::new(),
+        requested_model: String::new(),
+        actual_model_used: Some("gpt-6-luna".to_string()),
+        requested_service_tier: None,
+    };
+    usage.reconcile_completed_model(Some("GPT-6-LUNA".to_string()));
+    assert_eq!(usage.actual_model_used.as_deref(), Some("GPT-6-LUNA"));
+
+    usage.actual_model_used = Some("gpt-6-luna".to_string());
+    usage.reconcile_completed_model(Some("gpt-6.1-sol".to_string()));
+    assert_eq!(usage.actual_model_used, None);
+
+    usage.actual_model_used = Some("gpt-6-luna".to_string());
+    usage.reconcile_completed_model(None);
+    assert_eq!(usage.actual_model_used.as_deref(), Some("gpt-6-luna"));
+
+    usage.actual_model_used = None;
+    usage.reconcile_completed_model(Some("gpt-6.1-sol".to_string()));
+    assert_eq!(usage.actual_model_used.as_deref(), Some("gpt-6.1-sol"));
+}
 
 use crate::connectors::AppInfo;
 use crate::responses_metadata::CodexResponsesRequestKind;
