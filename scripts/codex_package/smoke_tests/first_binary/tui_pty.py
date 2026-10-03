@@ -194,22 +194,38 @@ class TerminalScreen:
 
 
 class PackagedTui:
-    def __init__(self, package: SmokePackage, *arguments: str) -> None:
+    def __init__(
+        self,
+        package: SmokePackage,
+        *arguments: str,
+        columns: int = 110,
+    ) -> None:
         self.package = package
         self.arguments = arguments
+        self.rows = 34
+        self.columns = columns
         self.master: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.last_input: str | None = None
         self.last_received = b""
         self.last_frame = ""
         self.interactions: list[dict[str, object]] = []
-        self.screen = TerminalScreen(rows=34, columns=110)
+        self.screen = TerminalScreen(rows=self.rows, columns=self.columns)
         self.last_input_screen = self.screen.text()
 
     def __enter__(self) -> "PackagedTui":
         master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 34, 110, 0, 0))
-        env = {**self.package.environment, "TERM": "xterm-256color", "COLUMNS": "110", "LINES": "34"}
+        fcntl.ioctl(
+            slave,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", self.rows, self.columns, 0, 0),
+        )
+        env = {
+            **self.package.environment,
+            "TERM": "xterm-256color",
+            "COLUMNS": str(self.columns),
+            "LINES": str(self.rows),
+        }
         try:
             self.process = subprocess.Popen(
                 [str(self.package.cli), "--no-alt-screen", *self.arguments],

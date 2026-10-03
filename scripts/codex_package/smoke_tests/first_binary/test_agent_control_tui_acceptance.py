@@ -1,7 +1,6 @@
 """Actual packaged root overview, subagent details, and replay for rich metadata."""
 
 import json
-import re
 from threading import Event
 import uuid
 from dataclasses import replace
@@ -133,14 +132,6 @@ def _rich_config(home: Path, server: MockResponsesServer) -> None:
     config_path.write_text('model_reasoning_effort = "medium"\n' + config, encoding="utf-8")
 
 
-def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
-    """The packaged renderer presents the label and immutable ID on adjacent lines."""
-    lines = [line.strip().strip("│").strip() for line in frame.replace("\r", "").splitlines()]
-    label_index = lines.index("Thread ID:")
-    assert lines[label_index + 1] == thread_id, lines
-    assert re.fullmatch(r"[0-9a-f-]{36}", lines[label_index + 1])
-
-
 def _normalized_screen(frame: str) -> str:
     return " ".join(line.strip().strip("│").strip() for line in frame.splitlines())
 
@@ -148,7 +139,7 @@ def _normalized_screen(frame: str) -> str:
 def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity(
     package: SmokePackage,
 ) -> None:
-    """Render model/effort truthfully and keep private tool payloads out of /agents."""
+    """Render model/effort truthfully and keep private prompt data out of agent views."""
     isolated, home = _isolated(package, "tui-rich-agent-metadata")
     with MockResponsesServer() as server:
         _rich_config(home, server)
@@ -235,9 +226,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
 
         # Exercise spawn inside the same packaged process that renders /agents.
         # Advance the child beyond pending_init with its real wait tool, then
-        # gate its next model request so the live overview must render it before
+        # gate its next model request so the live picker can inspect it before
         # terminal completion removes it from the thread manager.
-        with PackagedTui(isolated, "resume", root_id) as tui:
+        with PackagedTui(isolated, "resume", root_id, columns=40) as tui:
             tui.until("Ask Codex to do anything")
             tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
             tui.until("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
@@ -282,20 +273,12 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             tui.send("f")
             tui.until_screen("Search ›", required_markers=("Agent command center",))
             tui.send("tui-root-task")
-            details = tui.until_screen(
-                root_id,
-                value_label="Thread ID:",
-                required_markers=(
-                    "Configured/resolved model: package-smoke",
-                    "Configured/resolved effort: medium",
-                    "Provider-effective identity: Unknown",
-                    "tui-root-task",
-                ),
-            )
-            _assert_thread_identity_rendered(details, root_id)
-            assert "Configured/resolved model: package-smoke" in details, details
-            assert "Configured/resolved effort: medium" in details, details
-            assert "Provider-effective identity: Unknown" in details, details
+            details = tui.until_screen(root_id)
+            details_text = _normalized_screen(details)
+            assert f"Thread ID: {root_id}" in details_text, details
+            assert "Configured/resolved model: package-smoke" in details_text, details
+            assert "Configured/resolved effort: medium" in details_text, details
+            assert "Provider-effective identity: Unknown" in details_text, details
             assert "PRIVATE_PROMPT_SENTINEL" not in details, details
 
             tui.send("\x1b")
@@ -303,17 +286,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             _open_subagents(tui)
             tui.until_screen(child_id)
             tui.send("\x1b[B")
-            child_details = tui.until_screen(
-                child_id,
-                value_label="Thread ID:",
-                required_markers=(
-                    "Path: /root/worker",
-                    f"Parent: {root_id}",
-                    "Configured model: gpt-5.6-terra",
-                    "Configured reasoning effort: medium",
-                    "Status: Active",
-                ),
-            )
+            child_details = tui.until_screen(child_id)
             child_details_text = _normalized_screen(child_details)
             assert f"Thread ID: {child_id}" in child_details_text, child_details
             assert "Path: /root/worker" in child_details_text, child_details
@@ -333,16 +306,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             _open_subagents(tui)
             tui.until_screen(child_id)
             tui.send("\x1b[B")
-            replay_details = tui.until_screen(
-                child_id,
-                value_label="Thread ID:",
-                required_markers=(
-                    f"Parent: {root_id}",
-                    "Configured model: gpt-5.6-terra",
-                    "Configured reasoning effort: medium",
-                    "Status: Active",
-                ),
-            )
+            replay_details = tui.until_screen(child_id)
             replay_details_text = _normalized_screen(replay_details)
             assert f"Thread ID: {child_id}" in replay_details_text, replay_details
             assert f"Parent: {root_id}" in replay_details_text, replay_details
@@ -358,7 +322,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
 
-        with PackagedTui(isolated, "resume", root_id) as replay_tui:
+        with PackagedTui(isolated, "resume", root_id, columns=40) as replay_tui:
             replay_started = replay_tui.until_screen(
                 "Started `/root/worker`",
                 required_markers=(
