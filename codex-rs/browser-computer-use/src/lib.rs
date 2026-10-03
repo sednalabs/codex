@@ -1861,7 +1861,7 @@ fs.writeFile = async (file, ...args) => {
             unsafe_artifact_root.clone(),
             unsafe_thread,
             json!({"captures": [{"label": "unsafe-path"}], "save_artifact": true}),
-            configured_node_path,
+            configured_node_path.clone(),
         )
         .await
         .expect("unsafe artifact path response");
