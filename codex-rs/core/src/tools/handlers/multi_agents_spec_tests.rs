@@ -493,13 +493,13 @@ fn wait_agent_tool_v2_supports_targets_return_when_and_summary_output() {
     assert_eq!(
         properties
             .get("targets")
-            .and_then(|schema| schema.to_value().get("type").cloned()),
+            .and_then(|schema| serde_json::to_value(schema).ok()?.get("type").cloned()),
         Some(json!("array"))
     );
     assert_eq!(
         properties
             .get("targets")
-            .and_then(|schema| schema.to_value().get("items").cloned()),
+            .and_then(|schema| serde_json::to_value(schema).ok()?.get("items").cloned()),
         Some(json!({"type": "string"}))
     );
     assert_eq!(
@@ -511,7 +511,7 @@ fn wait_agent_tool_v2_supports_targets_return_when_and_summary_output() {
     assert_eq!(
         properties
             .get("return_when")
-            .and_then(|schema| schema.to_value().get("type").cloned()),
+            .and_then(|schema| serde_json::to_value(schema).ok()?.get("type").cloned()),
         Some(json!("string"))
     );
     assert_eq!(
