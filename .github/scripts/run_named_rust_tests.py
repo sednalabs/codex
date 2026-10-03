@@ -44,6 +44,9 @@ STDIO_SERVER_TEST = (
     "suite::rmcp_client::mcp_pagination_preserves_valid_tools_and_rejects_"
     "oversized_cursors::legacy"
 )
+CODE_MODE_HOST_TEST = (
+    "suite::code_mode::code_mode_exports_and_calls_second_page_mcp_tools"
+)
 STDIO_SERVER_BUILD_COMMAND = [
     "cargo",
     "build",
@@ -54,6 +57,18 @@ STDIO_SERVER_BUILD_COMMAND = [
     "codex-rmcp-client",
     "--bin",
     "test_stdio_server",
+    "--message-format=json-render-diagnostics",
+]
+CODE_MODE_HOST_BUILD_COMMAND = [
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "test",
+    "-p",
+    "codex-code-mode-host",
+    "--bin",
+    "codex-code-mode-host",
     "--message-format=json-render-diagnostics",
 ]
 
@@ -85,6 +100,33 @@ def requires_stdio_server_build(request: dict[str, Any]) -> bool:
         and request.get("target") == "all"
         and STDIO_SERVER_TEST in request.get("tests", [])
     )
+
+
+def requires_code_mode_host_build(request: dict[str, Any]) -> bool:
+    """Select the exact Code Mode fixture request and no other target."""
+
+    return (
+        request.get("profile") == "rust_integration"
+        and request.get("package") == "codex-core"
+        and request.get("target_kind") == "integration"
+        and request.get("target") == "all"
+        and CODE_MODE_HOST_TEST in request.get("tests", [])
+    )
+
+
+def required_test_binaries(
+    request: dict[str, Any],
+) -> tuple[tuple[str, list[str]], ...]:
+    """Return fixed helper builds required by the admitted exact selectors."""
+
+    if requires_code_mode_host_build(request):
+        return (
+            ("test_stdio_server", STDIO_SERVER_BUILD_COMMAND),
+            ("codex-code-mode-host", CODE_MODE_HOST_BUILD_COMMAND),
+        )
+    if requires_stdio_server_build(request):
+        return (("test_stdio_server", STDIO_SERVER_BUILD_COMMAND),)
+    return ()
 
 
 def cargo_binary_executable(output: str, name: str) -> Path | None:
@@ -130,12 +172,17 @@ def cargo_binary_executable(output: str, name: str) -> Path | None:
     return executable
 
 
-def build_stdio_server(repo_root: Path, env: dict[str, str]) -> dict[str, Any]:
-    """Build the fixed test helper using the named test's Cargo context."""
+def build_test_binary(
+    repo_root: Path,
+    env: dict[str, str],
+    name: str,
+    command: list[str],
+) -> dict[str, Any]:
+    """Build one fixed test helper using the named test's Cargo context."""
 
     try:
         completed = subprocess.run(
-            STDIO_SERVER_BUILD_COMMAND,
+            command,
             cwd=repo_root,
             env=env,
             text=True,
@@ -146,27 +193,37 @@ def build_stdio_server(repo_root: Path, env: dict[str, str]) -> dict[str, Any]:
     except OSError as exc:
         return {
             "status": "failure",
-            "command": STDIO_SERVER_BUILD_COMMAND,
+            "binary_name": name,
+            "command": command,
             "exit_code": None,
             "executable_ready": False,
             "diagnostic": bounded_diagnostic(str(exc)),
         }
 
     executable = (
-        cargo_binary_executable(completed.stdout, "test_stdio_server")
+        cargo_binary_executable(completed.stdout, name)
         if completed.returncode == 0
         else None
     )
     executable_ready = executable is not None
     result: dict[str, Any] = {
         "status": "success" if executable_ready else "failure",
-        "command": STDIO_SERVER_BUILD_COMMAND,
+        "binary_name": name,
+        "command": command,
         "exit_code": completed.returncode,
         "executable_ready": executable_ready,
     }
     if not executable_ready:
         result["diagnostics"] = command_diagnostics(completed)
     return result
+
+
+def build_stdio_server(repo_root: Path, env: dict[str, str]) -> dict[str, Any]:
+    """Build the fixed pagination helper using the named test Cargo context."""
+
+    return build_test_binary(
+        repo_root, env, "test_stdio_server", STDIO_SERVER_BUILD_COMMAND
+    )
 
 
 def test_result_counts(output: str) -> dict[str, int] | None:
@@ -476,16 +533,31 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    if requires_stdio_server_build(request):
-        prerequisite = build_stdio_server(manifest_root, env)
-        result["prerequisite_build"] = prerequisite
-        if prerequisite["status"] != "success":
+    prerequisite_plan = required_test_binaries(request)
+    if prerequisite_plan:
+        prerequisite_results: list[dict[str, Any]] = []
+        for binary_name, command in prerequisite_plan:
+            if binary_name == "test_stdio_server" and len(prerequisite_plan) == 1:
+                prerequisite = build_stdio_server(manifest_root, env)
+            else:
+                prerequisite = build_test_binary(
+                    manifest_root, env, binary_name, command
+                )
+            prerequisite_results.append(prerequisite)
+            if prerequisite["status"] != "success":
+                break
+        if len(prerequisite_plan) == 1:
+            result["prerequisite_build"] = prerequisite_results[0]
+        else:
+            result["prerequisite_builds"] = prerequisite_results
+        if prerequisite_results[-1]["status"] != "success":
+            failed_binary = prerequisite_results[-1]["binary_name"]
             result.update(
                 {
                     "status": "failure",
                     "failure_code": "prerequisite_build_failed",
                     "message": (
-                        "required test_stdio_server prerequisite was not built "
+                        f"required {failed_binary} prerequisite was not built "
                         "as an executable artifact; exact tests were not run"
                     ),
                 }

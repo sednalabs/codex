@@ -34,6 +34,14 @@ STDIO_SERVER_REQUEST = {
     "target": "all",
     "tests": [MODULE.STDIO_SERVER_TEST],
 }
+CODE_MODE_REQUEST = {
+    "schema_version": "rust-tests-v1",
+    "profile": "rust_integration",
+    "package": "codex-core",
+    "target_kind": "integration",
+    "target": "all",
+    "tests": [MODULE.CODE_MODE_HOST_TEST],
+}
 MANIFEST = MODULE.load_manifest(Path(__file__).resolve().parents[2])
 
 
@@ -206,6 +214,223 @@ class NamedRustTests(TestCase):
                         {**STDIO_SERVER_REQUEST, **mutation}
                     )
                 )
+
+    def test_code_mode_host_build_is_gated_by_the_exact_request(self) -> None:
+        self.assertTrue(MODULE.requires_code_mode_host_build(CODE_MODE_REQUEST))
+        self.assertFalse(MODULE.requires_stdio_server_build(CODE_MODE_REQUEST))
+        self.assertEqual(
+            MODULE.required_test_binaries(CODE_MODE_REQUEST),
+            (
+                ("test_stdio_server", MODULE.STDIO_SERVER_BUILD_COMMAND),
+                ("codex-code-mode-host", MODULE.CODE_MODE_HOST_BUILD_COMMAND),
+            ),
+        )
+
+        mutations = (
+            {"profile": "rust_minimal"},
+            {"package": "codex-code-mode-host"},
+            {"target_kind": "lib"},
+            {"target": "other"},
+            {"tests": [MODULE.STDIO_SERVER_TEST]},
+            {"tests": ["suite::code_mode::another_test"]},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                request = {**CODE_MODE_REQUEST, **mutation}
+                self.assertFalse(MODULE.requires_code_mode_host_build(request))
+                if mutation == {"tests": [MODULE.STDIO_SERVER_TEST]}:
+                    self.assertEqual(
+                        MODULE.required_test_binaries(request),
+                        (("test_stdio_server", MODULE.STDIO_SERVER_BUILD_COMMAND),),
+                    )
+                else:
+                    self.assertEqual(MODULE.required_test_binaries(request), ())
+
+        legacy_only_request = {
+            **CODE_MODE_REQUEST,
+            "tests": [MODULE.STDIO_SERVER_TEST],
+        }
+        self.assertEqual(
+            MODULE.required_test_binaries(legacy_only_request),
+            (("test_stdio_server", MODULE.STDIO_SERVER_BUILD_COMMAND),),
+        )
+        both_selectors_request = {
+            **CODE_MODE_REQUEST,
+            "tests": [MODULE.STDIO_SERVER_TEST, MODULE.CODE_MODE_HOST_TEST],
+        }
+        self.assertEqual(
+            MODULE.required_test_binaries(both_selectors_request),
+            (
+                ("test_stdio_server", MODULE.STDIO_SERVER_BUILD_COMMAND),
+                ("codex-code-mode-host", MODULE.CODE_MODE_HOST_BUILD_COMMAND),
+            ),
+        )
+
+    def test_code_mode_builds_both_helpers_before_its_one_exact_test(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target_dir = root / "cargo-target"
+            artifacts: dict[str, subprocess.CompletedProcess[str]] = {}
+            for name in ("test_stdio_server", "codex-code-mode-host"):
+                executable = target_dir / "debug" / name
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text("hosted test fixture", encoding="utf-8")
+                executable.chmod(0o755)
+                artifact = {
+                    "reason": "compiler-artifact",
+                    "target": {"name": name, "kind": ["bin"]},
+                    "executable": str(executable),
+                }
+                artifacts[name] = self.completed(stdout=json.dumps(artifact) + "\n")
+            inventory = self.completed(stdout=f"{MODULE.CODE_MODE_HOST_TEST}: test\n")
+            execution = self.completed(
+                stdout=(
+                    f"test {MODULE.CODE_MODE_HOST_TEST} ... ok\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                    "0 measured; 0 filtered out\n"
+                )
+            )
+            with (
+                mock.patch.dict(
+                    MODULE.os.environ,
+                    {
+                        "CARGO_INCREMENTAL": "0",
+                        "CARGO_TARGET_DIR": str(target_dir),
+                        "RUST_MIN_STACK": "8388608",
+                    },
+                    clear=False,
+                ),
+                mock.patch.object(
+                    MODULE.subprocess,
+                    "run",
+                    side_effect=[
+                        inventory,
+                        artifacts["test_stdio_server"],
+                        artifacts["codex-code-mode-host"],
+                        execution,
+                    ],
+                ) as run,
+                mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+                mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+            ):
+                result = MODULE.run_request(CODE_MODE_REQUEST, root)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["request"]["tests"], [MODULE.CODE_MODE_HOST_TEST])
+        self.assertEqual(
+            [item["binary_name"] for item in result["prerequisite_builds"]],
+            ["test_stdio_server", "codex-code-mode-host"],
+        )
+        self.assertTrue(
+            all(item["status"] == "success" for item in result["prerequisite_builds"])
+        )
+        self.assertEqual(run.call_count, 4)
+        inventory_call, stdio_call, code_mode_call, execution_call = run.call_args_list
+        self.assertEqual(stdio_call.args[0], MODULE.STDIO_SERVER_BUILD_COMMAND)
+        self.assertEqual(code_mode_call.args[0], MODULE.CODE_MODE_HOST_BUILD_COMMAND)
+        for build_call in (stdio_call, code_mode_call):
+            self.assertEqual(build_call.kwargs["cwd"], root / "codex-rs")
+            self.assertEqual(build_call.kwargs["cwd"], inventory_call.kwargs["cwd"])
+            self.assertEqual(build_call.kwargs["cwd"], execution_call.kwargs["cwd"])
+            self.assertEqual(build_call.kwargs["env"], inventory_call.kwargs["env"])
+            self.assertEqual(build_call.kwargs["env"], execution_call.kwargs["env"])
+            self.assertEqual(
+                build_call.kwargs["env"]["CARGO_TARGET_DIR"], str(target_dir)
+            )
+            self.assertIs(build_call.kwargs["shell"], False)
+        self.assertEqual(
+            execution_call.args[0][-4:],
+            ["--", MODULE.CODE_MODE_HOST_TEST, "--exact", "--test-threads=1"],
+        )
+
+    def test_code_mode_helper_failures_block_the_exact_test(self) -> None:
+        helper_names = ("test_stdio_server", "codex-code-mode-host")
+        failure_kinds = ("build_error", "missing", "wrong_target", "non_executable")
+        for failed_name in helper_names:
+            for failure_kind in failure_kinds:
+                with self.subTest(helper=failed_name, failure=failure_kind):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        inventory = self.completed(
+                            stdout=f"{MODULE.CODE_MODE_HOST_TEST}: test\n"
+                        )
+                        responses = [inventory]
+                        attempts = 0
+                        for name, _command in MODULE.required_test_binaries(
+                            CODE_MODE_REQUEST
+                        ):
+                            attempts += 1
+                            executable = root / "target" / "debug" / name
+                            executable.parent.mkdir(parents=True, exist_ok=True)
+                            if name == failed_name and failure_kind == "build_error":
+                                responses.append(
+                                    self.completed(
+                                        stderr="fixed helper build failed", code=101
+                                    )
+                                )
+                                break
+                            if name == failed_name and failure_kind == "missing":
+                                artifact_path = executable
+                            else:
+                                executable.write_text(
+                                    "hosted test fixture", encoding="utf-8"
+                                )
+                                executable.chmod(
+                                    0o644
+                                    if name == failed_name
+                                    and failure_kind == "non_executable"
+                                    else 0o755
+                                )
+                                artifact_path = executable
+                            target_name = (
+                                "different_target"
+                                if name == failed_name
+                                and failure_kind == "wrong_target"
+                                else name
+                            )
+                            artifact = {
+                                "reason": "compiler-artifact",
+                                "target": {
+                                    "name": target_name,
+                                    "kind": ["bin"],
+                                },
+                                "executable": str(artifact_path),
+                            }
+                            responses.append(
+                                self.completed(stdout=json.dumps(artifact) + "\n")
+                            )
+                            if name == failed_name:
+                                break
+
+                        with (
+                            mock.patch.object(
+                                MODULE.subprocess, "run", side_effect=responses
+                            ) as run,
+                            mock.patch.object(
+                                MODULE, "git_sha", return_value="target-sha"
+                            ),
+                            mock.patch.object(
+                                MODULE, "load_manifest", return_value=MANIFEST
+                            ),
+                        ):
+                            result = MODULE.run_request(
+                                CODE_MODE_REQUEST, root
+                            )
+
+                    self.assertEqual(result["status"], "failure")
+                    self.assertEqual(
+                        result["failure_code"], "prerequisite_build_failed"
+                    )
+                    self.assertEqual(result["tests"], [])
+                    self.assertIn(failed_name, result["message"])
+                    self.assertEqual(run.call_count, attempts + 1)
+                    self.assertEqual(
+                        result["prerequisite_builds"][-1]["binary_name"],
+                        failed_name,
+                    )
+                    self.assertEqual(
+                        result["prerequisite_builds"][-1]["status"], "failure"
+                    )
 
     def test_stdio_server_build_uses_same_cargo_context_before_exact_test(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
