@@ -39,11 +39,14 @@ from verify_existing_first_binary_producer import (
     Q24_FIXTURE_SHA,
     Q25_FIXTURE_SHA,
     Q26_FIXTURE_SHA,
+    Q57_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
     S3_SDK_SHA,
     S4_SDK_SHA,
+    H2_PRODUCER_JOB_NAMES,
+    H2_PRODUCER_WORKFLOW_HOST_SHA,
     SDK_TEST_PLAN_BY_SHA,
     PRODUCER_JOB_CONTRACT,
     REPOSITORY,
@@ -60,6 +63,7 @@ from verify_existing_first_binary_producer import (
     consume_existing_test_plan,
     sdk_test_plan,
     select_accepted_record,
+    _validate_manifest_record,
     _json_object_without_duplicate_keys,
     _verify_trusted_consumer_ref,
     validate_runner_policy_inputs,
@@ -132,8 +136,10 @@ def accepted_producer_args() -> dict[str, object]:
     }
 
 
-def producer_fixtures() -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
-    record = accepted_fixture_record()
+def producer_fixtures(
+    accepted_record: dict[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    record = copy.deepcopy(accepted_record) if accepted_record is not None else accepted_fixture_record()
     producer = record["producer"]
     run = {
         "id": producer["run_id"],
@@ -185,8 +191,10 @@ def verify_fixture(
     workflow: dict[str, object],
     jobs: dict[str, object],
     artifacts: dict[str, object],
+    *,
+    accepted_record: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    record = accepted_fixture_record()
+    record = accepted_record if accepted_record is not None else accepted_fixture_record()
     identity = record["identity"]
     producer = record["producer"]
     return verify_existing_producer(
@@ -1244,6 +1252,204 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 with self.subTest(profile=profile, field=field), self.assertRaises(ValueError):
                     select_accepted_record(manifest, changed)
 
+    def test_q57_s4_rows_bind_exact_h2_seven_job_producer_contract(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = manifest["records"]
+        q57_rows = [
+            row for row in rows
+            if row["identity"]["fixture_sha"] == Q57_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S4_SDK_SHA
+        ]
+        self.assertEqual(2, len(q57_rows))
+        by_profile = {row["identity"]["profile"]: row for row in q57_rows}
+        self.assertEqual({"focused", "full"}, set(by_profile))
+
+        expected_jobs = {
+            "Verify standard runner graph and exact identities": (
+                "completed", "success", "ubuntu-24.04", True,
+            ),
+            "Package native Linux x86_64": (
+                "completed", "success", "ubuntu-24.04", True,
+            ),
+            "Package native Linux ARM64": (
+                "completed", "success", "ubuntu-24.04-arm", True,
+            ),
+            "Prepare exact Cargo lock and app-server schema diff": (
+                "completed", "skipped", "ubuntu-24.04", False,
+            ),
+            "Consume native Linux ARM64 package": (
+                "completed", "failure", "ubuntu-24.04-arm", True,
+            ),
+            "Consume native Linux x86_64 package": (
+                "completed", "failure", "ubuntu-24.04", True,
+            ),
+            "Verify exact SDK runtime-version parser selectors": (
+                "completed", "skipped", "ubuntu-24.04", False,
+            ),
+        }
+        self.assertEqual(set(expected_jobs), H2_PRODUCER_JOB_NAMES)
+        self.assertEqual(7, len(H2_PRODUCER_JOB_NAMES))
+
+        reference_jobs = None
+        for profile, record_id in (
+            ("focused", "accepted-producer-37126137319-focused-q57-s4"),
+            ("full", "accepted-producer-37126137319-full-q57-s4"),
+        ):
+            record = by_profile[profile]
+            self.assertEqual(record_id, record["record_id"])
+            self.assertEqual("accepted", record["disposition"])
+            self.assertTrue(record["w14780_eligible"])
+            self.assertEqual(
+                {
+                    "product_sha": "2391be99dae78eab289324a2ba35660cbdcd328f",
+                    "comparison_base_ref": "main",
+                    "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb8c6735da18ee7",
+                    "fixture_sha": Q57_FIXTURE_SHA,
+                    "sdk_sha": S4_SDK_SHA,
+                    "profile": profile,
+                },
+                record["identity"],
+            )
+            self.assertEqual(
+                {
+                    "repository": REPOSITORY,
+                    "repository_id": REPOSITORY_ID,
+                    "workflow_id": WORKFLOW_ID,
+                    "workflow_path": WORKFLOW_PATH,
+                    "run_id": 37126137319,
+                    "run_attempt": 1,
+                    "event": "workflow_dispatch",
+                    "workflow_host_sha": H2_PRODUCER_WORKFLOW_HOST_SHA,
+                    "branch": "reconstruct/first-binary-package-workflow-20261001",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+                record["producer"],
+            )
+            actual_jobs = {
+                job["name"]: (
+                    job["status"], job["conclusion"], job["runner"], job["ran"],
+                )
+                for job in record["jobs"]
+            }
+            self.assertEqual(expected_jobs, actual_jobs)
+            self.assertEqual(
+                {
+                    "id": 11276316777,
+                    "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-x86_64-37126137319",
+                    "digest": "sha256:f53dff7fd55b9917655b9a22dbfa9673ff4fb023ee8ed0c06dc99160f2142b04",
+                    "size_in_bytes": 279940829,
+                },
+                record["artifacts"]["x86_64"],
+            )
+            self.assertEqual(
+                {
+                    "id": 11274859241,
+                    "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-aarch64-37126137319",
+                    "digest": "sha256:d3899e48dc2b014cf522c6021d45c3aa369d4a378e4525a9d05589ee9bbae91a",
+                    "size_in_bytes": 276358701,
+                },
+                record["artifacts"]["aarch64"],
+            )
+            _validate_manifest_record(record)
+            inputs = {
+                **record["identity"],
+                "producer_run_id": record["producer"]["run_id"],
+                "producer_workflow_host_sha": record["producer"]["workflow_host_sha"],
+            }
+            self.assertEqual(record_id, select_accepted_record(manifest, inputs)["record_id"])
+            if reference_jobs is None:
+                reference_jobs = record["jobs"]
+            else:
+                self.assertEqual(reference_jobs, record["jobs"])
+
+        record = by_profile["focused"]
+        run, workflow, jobs, artifacts = producer_fixtures(record)
+        verified_artifacts = verify_fixture(run, workflow, jobs, artifacts, accepted_record=record)
+        self.assertEqual(
+            record["artifacts"]["x86_64"]["name"],
+            verified_artifacts["x86_64"]["name"],
+        )
+
+        missing_sdk_job = copy.deepcopy(jobs)
+        missing_sdk_job["jobs"] = [
+            job for job in missing_sdk_job["jobs"]
+            if job["name"] != "Verify exact SDK runtime-version parser selectors"
+        ]
+        missing_sdk_job["total_count"] -= 1
+        with self.assertRaises(ValueError):
+            verify_fixture(run, workflow, missing_sdk_job, artifacts, accepted_record=record)
+
+        extra_live_job = copy.deepcopy(jobs)
+        extra_live_job["jobs"].append(
+            hosted_job("Unexpected producer job", "success", "ubuntu-24.04")
+        )
+        extra_live_job["total_count"] += 1
+        with self.assertRaises(ValueError):
+            verify_fixture(run, workflow, extra_live_job, artifacts, accepted_record=record)
+
+        active_sdk_job = copy.deepcopy(jobs)
+        sdk_job = next(
+            job for job in active_sdk_job["jobs"]
+            if job["name"] == "Verify exact SDK runtime-version parser selectors"
+        )
+        sdk_job["status"] = "in_progress"
+        sdk_job["conclusion"] = None
+        with self.assertRaises(ValueError):
+            verify_fixture(run, workflow, active_sdk_job, artifacts, accepted_record=record)
+
+        failed_sdk_contract = copy.deepcopy(record)
+        failed_sdk_manifest_job = next(
+            job for job in failed_sdk_contract["jobs"]
+            if job["name"] == "Verify exact SDK runtime-version parser selectors"
+        )
+        failed_sdk_manifest_job["conclusion"] = "failure"
+        failed_sdk_manifest_job["ran"] = True
+        with self.assertRaises(ValueError):
+            _validate_manifest_record(failed_sdk_contract)
+
+        wrong_live_runner = copy.deepcopy(jobs)
+        live_sdk_job = next(
+            job for job in wrong_live_runner["jobs"]
+            if job["name"] == "Verify exact SDK runtime-version parser selectors"
+        )
+        live_sdk_job["labels"] = ["ubuntu-24.04-arm"]
+        with self.assertRaises(ValueError):
+            verify_fixture(run, workflow, wrong_live_runner, artifacts, accepted_record=record)
+
+        wrong_runner = copy.deepcopy(record)
+        wrong_runner_sdk_job = next(
+            job for job in wrong_runner["jobs"]
+            if job["name"] == "Verify exact SDK runtime-version parser selectors"
+        )
+        wrong_runner_sdk_job["runner"] = "ubuntu-24.04-arm"
+        with self.assertRaises(ValueError):
+            _validate_manifest_record(wrong_runner)
+
+        extra_manifest_job = copy.deepcopy(record)
+        extra_manifest_job["jobs"].append(
+            {
+                "name": "Unexpected producer job",
+                "status": "completed",
+                "conclusion": "success",
+                "runner": "ubuntu-24.04",
+                "ran": True,
+            }
+        )
+        with self.assertRaises(ValueError):
+            _validate_manifest_record(extra_manifest_job)
+
+        wrong_host_for_seven_jobs = copy.deepcopy(record)
+        wrong_host_for_seven_jobs["producer"]["workflow_host_sha"] = "5" * 40
+        with self.assertRaises(ValueError):
+            _validate_manifest_record(wrong_host_for_seven_jobs)
+
+        historical = next(
+            row for row in rows if row["identity"]["fixture_sha"] == Q26_FIXTURE_SHA
+        )
+        self.assertEqual(6, len(historical["jobs"]))
+        _validate_manifest_record(historical)
+
     def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
         q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
         self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
@@ -1332,6 +1538,14 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q26_full["state"])
         self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q26_full["plain"])
         self.assertEqual(17, len(q26_full["plain"]))
+        q57_focused = consume_existing_test_plan(Q57_FIXTURE_SHA, S4_SDK_SHA, "focused")
+        self.assertEqual(frozenset(), q57_focused["state"])
+        self.assertEqual(FOCUSED_REPAIR_PLAIN_TESTS, q57_focused["plain"])
+        self.assertEqual(6, len(q57_focused["plain"]))
+        q57_full = consume_existing_test_plan(Q57_FIXTURE_SHA, S4_SDK_SHA, "full")
+        self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q57_full["state"])
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q57_full["plain"])
+        self.assertEqual(17, len(q57_full["plain"]))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
@@ -1376,6 +1590,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
             (Q25_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             (Q26_FIXTURE_SHA, S3_SDK_SHA, "focused"),
             (Q26_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q57_FIXTURE_SHA, S3_SDK_SHA, "focused"),
+            (Q57_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
