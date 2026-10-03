@@ -707,64 +707,68 @@ async fn run_code_mode_turn_with_rmcp_config(
     tool_pagination: Option<&'static str>,
 ) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
-    let mut builder = test_codex().with_model(model).with_config(move |config| {
-        let _ = if code_mode_only {
-            config.features.enable(Feature::CodeModeOnly)
-        } else {
-            config.features.enable(Feature::CodeMode)
-        };
-        if non_prefixed_mcp_tool_names {
-            let _ = config.features.enable(Feature::NonPrefixedMcpToolNames);
-        }
+    let mut builder = test_codex()
+        .with_model(model)
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeModeHost);
+            let _ = if code_mode_only {
+                config.features.enable(Feature::CodeModeOnly)
+            } else {
+                config.features.enable(Feature::CodeMode)
+            };
+            if non_prefixed_mcp_tool_names {
+                let _ = config.features.enable(Feature::NonPrefixedMcpToolNames);
+            }
 
-        let mut servers = config.mcp_servers.get().clone();
-        servers.insert(
-            "rmcp".to_string(),
-            McpServerConfig {
-                auth: Default::default(),
-                transport: McpServerTransportConfig::Stdio {
-                    command: rmcp_test_server_bin,
-                    args: Vec::new(),
-                    env: Some({
-                        let mut env = HashMap::from([(
-                            "MCP_TEST_VALUE".to_string(),
-                            "propagated-env".to_string(),
-                        )]);
-                        if let Some(pagination) = tool_pagination {
-                            env.insert(
-                                "MCP_TEST_TOOL_PAGINATION".to_string(),
-                                pagination.to_string(),
-                            );
-                        }
-                        env
-                    }),
-                    env_vars: Vec::new(),
-                    cwd: None,
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                "rmcp".to_string(),
+                McpServerConfig {
+                    auth: Default::default(),
+                    transport: McpServerTransportConfig::Stdio {
+                        command: rmcp_test_server_bin,
+                        args: Vec::new(),
+                        env: Some({
+                            let mut env = HashMap::from([(
+                                "MCP_TEST_VALUE".to_string(),
+                                "propagated-env".to_string(),
+                            )]);
+                            if let Some(pagination) = tool_pagination {
+                                env.insert(
+                                    "MCP_TEST_TOOL_PAGINATION".to_string(),
+                                    pagination.to_string(),
+                                );
+                            }
+                            env
+                        }),
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    environment_id: "local".to_string(),
+                    enabled: true,
+                    required: false,
+                    startup_readiness: Default::default(),
+                    supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
+                    omit_tools_from: None,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    default_tools_approval_mode: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                    oauth: None,
+                    oauth_resource: None,
+                    tools: HashMap::new(),
                 },
-                environment_id: "local".to_string(),
-                enabled: true,
-                required: false,
-                startup_readiness: Default::default(),
-                supports_parallel_tool_calls: false,
-                tool_input_schema_max_bytes: None,
-                omit_tools_from: None,
-                disabled_reason: None,
-                startup_timeout_sec: Some(Duration::from_secs(10)),
-                tool_timeout_sec: None,
-                default_tools_approval_mode: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                oauth: None,
-                oauth_resource: None,
-                tools: HashMap::new(),
-            },
-        );
-        config
-            .mcp_servers
-            .set(servers)
-            .expect("test mcp servers should accept any configuration");
-    });
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test mcp servers should accept any configuration");
+        });
     let test = builder.build(server).await?;
     wait_for_mcp_server(&test.codex, "rmcp").await?;
 
