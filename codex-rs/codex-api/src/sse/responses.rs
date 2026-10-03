@@ -438,6 +438,11 @@ pub fn process_responses_event(
                     .get("usage")
                     .filter(|usage| !usage.is_null())
                     .cloned();
+                let response_model = resp_val
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|model| !model.trim().is_empty())
+                    .map(str::to_owned);
                 match serde_json::from_value::<ResponseCompleted>(resp_val) {
                     Ok(mut resp) => {
                         if let Some(metadata) = metadata {
@@ -445,6 +450,7 @@ pub fn process_responses_event(
                         }
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,
+                            response_model,
                             token_usage: resp.usage.map(Into::into),
                             usage_metadata: resp.usage_metadata,
                             end_turn: if interrupted {
@@ -785,6 +791,7 @@ mod tests {
         match &events[2] {
             Ok(ResponseEvent::Completed {
                 response_id,
+                response_model: None,
                 token_usage,
                 usage_metadata,
                 end_turn,
@@ -983,6 +990,7 @@ mod tests {
         match &events[0] {
             Ok(ResponseEvent::Completed {
                 response_id,
+                response_model: None,
                 token_usage,
                 usage_metadata,
                 end_turn,
@@ -1534,20 +1542,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_sse_ignores_response_model_field_in_payload() {
+    async fn process_sse_preserves_response_model_and_usage_from_completed_payload() {
         let events = run_sse(vec![
             json!({
                 "type": "response.created",
                 "response": {
-                    "id": "resp-1",
-                    "model": CYBER_RESTRICTED_MODEL_FOR_TESTS
+                    "id": "resp-1"
                 }
             }),
             json!({
                 "type": "response.completed",
                 "response": {
                     "id": "resp-1",
-                    "model": CYBER_RESTRICTED_MODEL_FOR_TESTS
+                    "model": "gpt-6.1-sol",
+                    "usage": {
+                        "input_tokens": 12,
+                        "input_tokens_details": { "cached_tokens": 3 },
+                        "output_tokens": 4,
+                        "output_tokens_details": { "reasoning_tokens": 1 },
+                        "total_tokens": 16
+                    }
                 }
             }),
         ])
@@ -1559,11 +1573,83 @@ mod tests {
             &events[1],
             ResponseEvent::Completed {
                 response_id,
-                token_usage: None,
+                response_model: Some(model),
+                token_usage: Some(token_usage),
                 usage_metadata: None,
                 end_turn: None,
             } if response_id == "resp-1"
+                && model == "gpt-6.1-sol"
+                && token_usage.input_tokens == 12
+                && token_usage.cached_input_tokens == 3
+                && token_usage.output_tokens == 4
         );
+    }
+
+    #[tokio::test]
+    async fn process_sse_keeps_missing_or_invalid_completed_model_unobserved() {
+        for model in [Value::Null, json!(42), json!("   ")] {
+            let events = run_sse(vec![
+                json!({
+                    "type": "response.created",
+                    "response": {
+                        "id": "resp-unknown-model",
+                        "model": "created-only-model"
+                    }
+                }),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-unknown-model",
+                        "model": model,
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 1,
+                            "total_tokens": 2
+                        }
+                    }
+                }),
+            ])
+            .await;
+
+            assert_matches!(
+                &events[1],
+                ResponseEvent::Completed {
+                    response_model: None,
+                    token_usage: Some(usage),
+                    ..
+                } if usage.total_tokens == 2
+            );
+        }
+    }
+
+    #[test]
+    fn completed_models_remain_associated_with_their_response_ids() {
+        for (response_id, model) in [("resp-first", "gpt-6-luna"), ("resp-second", "gpt-6.1-sol")] {
+            let event = serde_json::from_value(json!({
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "model": model,
+                    "usage": {
+                        "input_tokens": 2,
+                        "output_tokens": 1,
+                        "total_tokens": 3
+                    }
+                }
+            }))
+            .expect("completed response event should parse");
+            assert_matches!(
+                process_responses_event(event).expect("completed response should be valid"),
+                Some(ResponseEvent::Completed {
+                    response_id: actual_id,
+                    response_model: Some(actual_model),
+                    token_usage: Some(usage),
+                    ..
+                }) if actual_id == response_id
+                    && actual_model == model
+                    && usage.total_tokens == 3
+            );
+        }
     }
 
     #[tokio::test]
@@ -1600,6 +1686,7 @@ mod tests {
             &events[2],
             ResponseEvent::Completed {
                 response_id,
+                response_model: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
@@ -1636,6 +1723,7 @@ mod tests {
             &events[1],
             ResponseEvent::Completed {
                 response_id,
+                response_model: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
@@ -1672,6 +1760,7 @@ mod tests {
             &events[1],
             ResponseEvent::Completed {
                 response_id,
+                response_model: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,

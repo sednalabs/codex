@@ -3133,10 +3133,18 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::Completed {
                 response_id,
+                response_model,
                 token_usage,
                 usage_metadata,
                 end_turn,
             } => {
+                let mut usage_context = ProviderResponseUsageContext {
+                    started_at: provider_request_started_at.clone(),
+                    requested_model: step_context.settings.model_info.slug.clone(),
+                    actual_model_used: actual_model_used.take(),
+                    requested_service_tier: step_context.settings.service_tier.clone(),
+                };
+                usage_context.reconcile_completed_model(response_model);
                 sess.services
                     .analytics_events_client
                     .track_code_mode_tool_call(
@@ -3164,12 +3172,7 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
-                    ProviderResponseUsageContext {
-                        started_at: provider_request_started_at.clone(),
-                        requested_model: step_context.settings.model_info.slug.clone(),
-                        actual_model_used: actual_model_used.clone(),
-                        requested_service_tier: step_context.settings.service_tier.clone(),
-                    },
+                    usage_context,
                 )
                 .await;
                 let budget_result = sess
