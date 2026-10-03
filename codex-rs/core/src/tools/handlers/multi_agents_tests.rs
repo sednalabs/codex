@@ -2393,7 +2393,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+async fn multi_agent_v2_interrupted_turn_notifies_parent_action_required() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -2447,27 +2447,44 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
         )
         .await;
 
-    let notifications = manager
+    let parent_communications = manager
         .captured_ops()
         .into_iter()
         .filter_map(|(id, op)| {
             (id == root.thread_id)
                 .then_some(op)
                 .and_then(|op| match op {
-                    Op::InterAgentCommunication { communication, .. }
-                        if communication.author.as_str() == "/root/worker"
-                            && communication.recipient == AgentPath::root()
-                            && communication.other_recipients.is_empty()
-                            && !communication.trigger_turn =>
-                    {
-                        Some(communication.content)
-                    }
+                    Op::InterAgentCommunication {
+                        communication,
+                        start_options,
+                    } => Some((communication, start_options)),
                     _ => None,
                 })
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(notifications, Vec::<String>::new());
+    assert_eq!(parent_communications.len(), 1);
+    let (communication, start_options) = parent_communications
+        .into_iter()
+        .next()
+        .expect("interrupted child should hand back one parent notification");
+    assert_eq!(
+        communication,
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path"),
+            AgentPath::root(),
+            Vec::new(),
+            "Message Type: ACTION_REQUIRED\nTask name: /root\nSender: /root/worker\nPayload:\nThe agent requires intervention. Inspect its current status and goal before resuming."
+                .to_string(),
+            false,
+        )
+    );
+    assert!(start_options.turn_trigger.is_none());
+    assert!(start_options.final_output_json_schema.is_none());
+    assert!(start_options.service_tier.is_none());
+    assert!(start_options.parent_turn_id.is_none());
+    assert!(start_options.root_turn_id.is_none());
+    assert!(start_options.cyber_access_program.is_none());
 }
 
 #[tokio::test]
