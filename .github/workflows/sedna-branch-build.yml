@@ -271,8 +271,8 @@ jobs:
               changed_paths.append(path)
               if state == "??":
                   untracked_paths.append(path)
-          if "codex-rs/Cargo.lock" not in changed_paths:
-              raise SystemExit("Cargo.lock did not change; refusing to emit an incomplete prep artifact")
+          if not changed_paths:
+              raise SystemExit("no generated paths changed; refusing incomplete prep artifact")
           changed_paths = sorted(set(changed_paths))
 
           if untracked_paths:
