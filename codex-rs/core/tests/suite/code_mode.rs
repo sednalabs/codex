@@ -7961,12 +7961,17 @@ text(JSON.stringify({ name: tool.name, result: result.structuredContent?.result 
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    let output_preview = output.chars().take(512).collect::<String>();
     assert_ne!(
         success,
         Some(false),
-        "second-page Code Mode MCP call failed unexpectedly: {output}"
+        "second-page Code Mode MCP call failed unexpectedly; output preview (first 512 chars): {output_preview:?}"
     );
-    let parsed: Value = serde_json::from_str(&output)?;
+    let parsed: Value = serde_json::from_str(&output).with_context(|| {
+        format!(
+            "parse second-page Code Mode output as JSON; output preview (first 512 chars): {output_preview:?}"
+        )
+    })?;
     assert_eq!(
         parsed,
         serde_json::json!({ "name": "mcp__rmcp__sync", "result": "ok" })
