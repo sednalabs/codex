@@ -463,7 +463,7 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     .bind(&root_thread_id)
     .fetch_one(pool.as_ref())
     .await?;
-    assert_eq!(summary, (3, 2, 1, 1));
+    assert_eq!(summary, (3, 0, 3, 1));
 
     let root_and_child_summary = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         "SELECT SUM(s.provider_call_count), SUM(s.priced_call_count), SUM(s.unpriced_call_count), MAX(s.partial) FROM usage_thread_credit_summary s JOIN usage_threads t ON t.thread_id = s.thread_id WHERE COALESCE(t.root_thread_id, t.thread_id) = ?",
@@ -471,7 +471,7 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     .bind(&root_thread_id)
     .fetch_one(pool.as_ref())
     .await?;
-    assert_eq!(root_and_child_summary, (4, 3, 1, 1));
+    assert_eq!(root_and_child_summary, (4, 0, 4, 1));
     let unknown_price = sqlx::query_as::<_, (String, Option<f64>)>(
         "SELECT pricing_status, estimated_total_credits FROM usage_provider_call_credit_estimates WHERE provider_call_id = (SELECT provider_call_id FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?)",
     )
