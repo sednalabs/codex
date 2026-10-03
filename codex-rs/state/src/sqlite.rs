@@ -7,7 +7,7 @@
 )]
 
 use crate::DbTelemetry;
-use crate::runtime::migration_repair::bridge_state_migrations;
+use crate::runtime::migration_repair::run_state_migrations;
 use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
@@ -321,12 +321,13 @@ impl SqliteConfig {
             };
             let migration_migrator = usage_migrator.as_ref().unwrap_or(migrator);
             if matches!(spec.kind, DbKind::State) {
-                bridge_state_migrations(&pool, migrator).await?;
+                run_state_migrations(&pool, migrator).await
+            } else {
+                migration_migrator
+                    .run(&pool)
+                    .await
+                    .map_err(anyhow::Error::from)
             }
-            migration_migrator
-                .run(&pool)
-                .await
-                .map_err(anyhow::Error::from)
         }
         .await;
         telemetry::record_init_result(

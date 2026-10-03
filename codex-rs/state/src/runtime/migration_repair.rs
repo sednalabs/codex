@@ -103,6 +103,18 @@ pub(crate) async fn bridge_state_migrations(
     }
 }
 
+/// Run the guarded compatibility bridge before the full state migrator.
+///
+/// State database opens and ordinary full-state fixtures must share this
+/// sequence so the SQLx migrator never bypasses the ledger/schema classifier.
+pub(crate) async fn run_state_migrations(
+    pool: &SqlitePool,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    bridge_state_migrations(pool, migrator).await?;
+    migrator.run(pool).await.map_err(anyhow::Error::from)
+}
+
 async fn bridge_locked(
     connection: &mut SqliteConnection,
     migrator: &Migrator,

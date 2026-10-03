@@ -8,9 +8,9 @@ use std::borrow::Cow;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
-use super::repair_legacy_recency_migration_version;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
+use crate::runtime::migration_repair::run_state_migrations;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
@@ -83,8 +83,7 @@ INSERT INTO threads (
     .await
     .expect("legacy metadata rows should insert");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("guardian metadata cleanup should apply");
 
@@ -179,8 +178,7 @@ async fn thread_section_migration_preserves_legacy_pin_compatibility() {
                 .execute(&pool)
                 .await
                 .expect("legacy pin should remain writable before section migration");
-            STATE_MIGRATOR
-                .run(&pool)
+            run_state_migrations(&pool, &STATE_MIGRATOR)
                 .await
                 .expect("section migration should apply");
         }
@@ -346,8 +344,7 @@ async fn thread_attachment_migration_preserves_existing_data() {
     .await
     .expect("existing attachment should be inserted using the released schema");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("attachment migration should apply without rewriting released migrations");
     let section = sqlx::query_as::<_, (String, String, Option<String>)>(
@@ -458,8 +455,7 @@ INSERT INTO threads (
         .expect("legacy section row should insert");
     }
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("section ordering migration should apply");
     let custom_order = sqlx::query_scalar::<_, String>(
@@ -761,8 +757,7 @@ INSERT INTO agent_job_items (
     .await
     .expect("legacy agent job item should insert");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("current migrations should apply");
 
@@ -836,8 +831,7 @@ INSERT INTO threads (
     .await
     .expect("legacy row should insert");
 
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("recency migration should apply");
 
@@ -916,6 +910,25 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("pre-recency migrations should apply");
 
+    sqlx::query(
+        "INSERT INTO threads (id, rollout_path, created_at, updated_at, created_at_ms, updated_at_ms, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("legacy-recency-38")
+    .bind("/synthetic/legacy-recency.jsonl")
+    .bind(1_700_000_200_i64)
+    .bind(1_700_000_300_i64)
+    .bind(1_700_000_200_123_i64)
+    .bind(1_700_000_300_456_i64)
+    .bind("cli")
+    .bind("synthetic-provider")
+    .bind("/synthetic")
+    .bind("preserved legacy recency")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(&pool)
+    .await
+    .expect("legacy thread data should insert");
+
     let recency_migration = STATE_MIGRATOR
         .migrations
         .iter()
@@ -940,13 +953,17 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("legacy recency migration should apply as version 38");
 
-    repair_legacy_recency_migration_version(&pool, &STATE_MIGRATOR)
+    let source_checksum = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 38",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("legacy version-38 row should remain intact before bridge");
+    assert_eq!(source_checksum, recency_migration.checksum.to_vec());
+
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
-        .expect("legacy migration history should be repaired");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("current migrations should apply after repair");
+        .expect("legacy recency should rekey before current migrations apply");
 
     let applied = sqlx::query(
         "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 38 ORDER BY version",
@@ -970,7 +987,96 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
 
+    let canonical_38 = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == 38)
+        .expect("canonical version 38 should exist");
+    let canonical_39 = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == 39)
+        .expect("canonical recency version 39 should exist");
+    let checksum_38 = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 38",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("canonical version-38 row should be installed");
+    let checksum_39 = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = 39",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("canonical version-39 row should be installed");
+    assert_eq!(checksum_38, canonical_38.checksum.to_vec());
+    assert_eq!(checksum_39, canonical_39.checksum.to_vec());
+    assert_ne!(checksum_38, checksum_39);
+    let receipt = sqlx::query_scalar::<_, i64>(
+        "SELECT new_version FROM state_migration_rekey_receipts WHERE old_version = 38",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("old-38 to canonical-39 receipt should persist");
+    assert_eq!(receipt, 39);
+
+    let migrated_data = sqlx::query_as::<_, (String, i64)>(
+        "SELECT title, recency_at_ms FROM threads WHERE id = 'legacy-recency-38'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("legacy recency data should survive bridge and migration");
+    assert_eq!(
+        migrated_data,
+        ("preserved legacy recency".to_owned(), 1_700_000_300_456)
+    );
+
     pool.close().await;
+    let reopened = sqlite
+        .open_read_write_pool(&state_path)
+        .await
+        .expect("historical fixture should reopen");
+    let before_reopen = sqlx::query(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE version IN (38, 39) ORDER BY version",
+    )
+    .fetch_all(&reopened)
+    .await
+    .expect("canonical recency ledger should reload")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<i64, _>("version"),
+            row.get::<Vec<u8>, _>("checksum"),
+        )
+    })
+    .collect::<Vec<_>>();
+    run_state_migrations(&reopened, &STATE_MIGRATOR)
+        .await
+        .expect("historical fixture bridge and migrations should reopen idempotently");
+    let after_reopen = sqlx::query(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE version IN (38, 39) ORDER BY version",
+    )
+    .fetch_all(&reopened)
+    .await
+    .expect("reopened canonical recency ledger should reload")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<i64, _>("version"),
+            row.get::<Vec<u8>, _>("checksum"),
+        )
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(before_reopen, after_reopen);
+    let reopened_data = sqlx::query_as::<_, (String, i64)>(
+        "SELECT title, recency_at_ms FROM threads WHERE id = 'legacy-recency-38'",
+    )
+    .fetch_one(&reopened)
+    .await
+    .expect("legacy data should survive reopen");
+    assert_eq!(reopened_data, migrated_data);
+
+    reopened.close().await;
 }
 
 #[tokio::test]
@@ -988,8 +1094,7 @@ async fn repair_recency_migration_succeeds_while_another_connection_holds_writer
         .open_read_write_pool(&state_path)
         .await
         .expect("database should open");
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("current migrations should apply");
     let read_pool = sqlite

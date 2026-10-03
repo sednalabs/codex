@@ -46,8 +46,8 @@ mod goals;
 mod logs;
 mod logs_maintenance;
 mod memories;
-pub(crate) mod migration_repair;
 mod memory_versions;
+pub(crate) mod migration_repair;
 mod projects;
 mod queued_items;
 pub(crate) mod reclamation;
@@ -672,8 +672,7 @@ mod tests {
             .open_read_write_pool(&state_path)
             .await
             .expect("open state db");
-        STATE_MIGRATOR
-            .run(&pool)
+        crate::runtime::migration_repair::run_state_migrations(&pool, &STATE_MIGRATOR)
             .await
             .expect("apply current state schema");
         sqlx::query(

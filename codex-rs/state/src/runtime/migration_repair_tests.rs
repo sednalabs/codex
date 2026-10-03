@@ -141,13 +141,9 @@ async fn assert_all_applied(pool: &SqlitePool) {
 }
 
 async fn bridge_migrate_reopen(sqlite: crate::SqliteConfig, pool: SqlitePool) {
-    bridge_state_migrations(&pool, &STATE_MIGRATOR)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
-        .expect("recognized lineage should bridge");
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("all upstream and fork migrations should coexist");
+        .expect("recognized lineage should bridge and migrate");
     assert_all_applied(&pool).await;
     pool.close().await;
     let reopened = sqlite
@@ -155,13 +151,9 @@ async fn bridge_migrate_reopen(sqlite: crate::SqliteConfig, pool: SqlitePool) {
         .await
         .expect("synthetic fixture should reopen");
     let before = ledger(&reopened).await;
-    bridge_state_migrations(&reopened, &STATE_MIGRATOR)
+    run_state_migrations(&reopened, &STATE_MIGRATOR)
         .await
-        .expect("second bridge should be idempotent");
-    STATE_MIGRATOR
-        .run(&reopened)
-        .await
-        .expect("second migrator run should be idempotent");
+        .expect("second bridge and migrator run should be idempotent");
     assert_eq!(ledger(&reopened).await, before);
     reopened.close().await;
 }
@@ -219,9 +211,9 @@ async fn old_fork_56_58_and_shifted_history_rekey_without_checksum_change() {
     .fetch_one(&pool)
     .await
     .expect("old fork row");
-    bridge_state_migrations(&pool, &STATE_MIGRATOR)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
-        .expect("old fork rows should rekey");
+        .expect("old fork rows should rekey before full migrations");
     let new_checksum =
         sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
             .bind(FORK_56)
@@ -236,10 +228,6 @@ async fn old_fork_56_58_and_shifted_history_rekey_without_checksum_change() {
     .await
     .expect("durable mapping receipt");
     assert_eq!(receipt, FORK_56);
-    STATE_MIGRATOR
-        .run(&pool)
-        .await
-        .expect("upstream 56-58 should apply after rekey");
     assert_all_applied(&pool).await;
     assert_eq!(
         sqlx::query_scalar::<_, String>(
@@ -255,9 +243,9 @@ async fn old_fork_56_58_and_shifted_history_rekey_without_checksum_change() {
         .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("fork fixture should reopen");
-    bridge_state_migrations(&reopened, &STATE_MIGRATOR)
+    run_state_migrations(&reopened, &STATE_MIGRATOR)
         .await
-        .expect("fork second open should be idempotent");
+        .expect("fork second open and migration should be idempotent");
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             "SELECT first_user_message FROM threads WHERE id = '00000000-0000-0000-0000-000000000123'",
@@ -318,6 +306,22 @@ async fn unknown_failed_gapped_and_partial_history_reject_without_bridge_writes(
         .run(&pool)
         .await
         .expect("baseline upstream fixture");
+        sqlx::query(
+            "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("negative-bridge-preservation")
+        .bind("/synthetic/negative.jsonl")
+        .bind(1_700_000_000_i64)
+        .bind(1_700_000_001_i64)
+        .bind("cli")
+        .bind("synthetic-provider")
+        .bind("/synthetic")
+        .bind("preserve this row")
+        .bind("read-only")
+        .bind("on-request")
+        .execute(&pool)
+        .await
+        .expect("synthetic preservation row should insert");
         match defect {
             "checksum" => {
                 sqlx::query("UPDATE _sqlx_migrations SET checksum = X'01' WHERE version = 56")
@@ -371,11 +375,34 @@ async fn unknown_failed_gapped_and_partial_history_reject_without_bridge_writes(
         }
         let before_ledger = ledger(&pool).await;
         let before_schema = schema(&pool).await;
-        bridge_state_migrations(&pool, &STATE_MIGRATOR)
+        let before_data = sqlx::query(
+            "SELECT id, title, updated_at FROM threads WHERE id = 'negative-bridge-preservation'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("synthetic preservation row should load");
+        run_state_migrations(&pool, &STATE_MIGRATOR)
             .await
             .expect_err("unrecognized or partial history must reject");
         assert_eq!(ledger(&pool).await, before_ledger, "{defect}");
         assert_eq!(schema(&pool).await, before_schema, "{defect}");
+        let after_data = sqlx::query(
+            "SELECT id, title, updated_at FROM threads WHERE id = 'negative-bridge-preservation'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("synthetic preservation row should remain readable");
+        assert_eq!(after_data.len(), before_data.len(), "{defect}");
+        assert_eq!(
+            after_data[0].get::<String, _>("title"),
+            before_data[0].get::<String, _>("title"),
+            "{defect}"
+        );
+        assert_eq!(
+            after_data[0].get::<i64, _>("updated_at"),
+            before_data[0].get::<i64, _>("updated_at"),
+            "{defect}"
+        );
         pool.close().await;
         let _ = sqlite;
     }
