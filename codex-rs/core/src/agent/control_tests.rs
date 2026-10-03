@@ -1168,6 +1168,15 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     let sibling_thread_id = harness
         .spawn_anonymous_child(parent_thread_id, SpawnAgentOptions::default())
         .await;
+    let expected_descendant_metadata = [worker_thread_id, reviewer_thread_id, sibling_thread_id]
+        .map(|thread_id| {
+            harness
+                .control
+                .runtime
+                .registry
+                .agent_metadata_for_thread(thread_id)
+                .expect("spawned descendant metadata should exist")
+        });
 
     let worker_thread = harness
         .manager
@@ -1212,6 +1221,48 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
         harness.state_db.clone(),
     );
     let resumed_control = resumed_manager.agent_control();
+
+    // Root resume automatically attempts the bounded metadata restore. Reserve
+    // the colliding path first so the test exercises that failure boundary.
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&worker_path),
+        None
+    );
+    for thread_id in [worker_thread_id, reviewer_thread_id, sibling_thread_id] {
+        assert!(
+            resumed_control
+                .runtime
+                .ensure_agent_known(thread_id)
+                .is_err()
+        );
+    }
+
+    let collision_thread_id = ThreadId::new();
+    let mut collision = resumed_control
+        .runtime
+        .registry
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve conflicting path");
+    collision
+        .reserve_agent_path(&worker_path)
+        .expect("reserve worker path for conflict fixture");
+    collision.commit(AgentMetadata {
+        agent_id: Some(collision_thread_id),
+        agent_path: Some(worker_path.clone()),
+        agent_nickname: Some("collision".to_string()),
+        agent_role: None,
+    });
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&worker_path),
+        Some(collision_thread_id)
+    );
+
     let resumed_parent_thread_id = resumed_control
         .resume_agent_from_rollout(
             harness.config.clone(),
@@ -1229,53 +1280,96 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
 
-    // A colliding in-memory path must abort the whole restore batch, including
-    // the unrelated anonymous sibling. Removing the collision permits retry.
-    let collision_thread_id = ThreadId::new();
-    let mut collision = resumed_control
-        .runtime
-        .registry
-        .reserve_spawn_slot(/*max_threads*/ None)
-        .expect("reserve conflicting path");
-    collision
-        .reserve_agent_path(&worker_path)
-        .expect("reserve worker path for conflict fixture");
-    collision.commit(AgentMetadata {
-        agent_id: Some(collision_thread_id),
-        agent_path: Some(worker_path.clone()),
-        agent_nickname: Some("collision".to_string()),
-        agent_role: None,
-    });
-    resumed_control
-        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
-        .await;
-    assert!(
+    // The automatic restore failed closed atomically, preserving only the fake
+    // reservation and leaving every real descendant identity absent.
+    assert_eq!(
         resumed_control
             .runtime
-            .ensure_agent_known(worker_thread_id)
-            .is_err()
+            .registry
+            .agent_id_for_path(&worker_path),
+        Some(collision_thread_id)
     );
-    assert!(
-        resumed_control
-            .runtime
-            .ensure_agent_known(sibling_thread_id)
-            .is_err()
-    );
-    resumed_control
-        .runtime
-        .registry
-        .release_spawned_thread(collision_thread_id);
-    resumed_control
-        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
-        .await;
-    for thread_id in [worker_thread_id, sibling_thread_id] {
+    for thread_id in [worker_thread_id, reviewer_thread_id, sibling_thread_id] {
         assert!(
             resumed_control
                 .runtime
                 .ensure_agent_known(thread_id)
-                .is_ok()
+                .is_err()
         );
+        assert_thread_not_loaded(&resumed_manager, thread_id).await;
     }
+
+    // An explicit retry under the same collision must also be all-or-nothing.
+    resumed_control
+        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .await;
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&worker_path),
+        Some(collision_thread_id)
+    );
+    for thread_id in [worker_thread_id, reviewer_thread_id, sibling_thread_id] {
+        assert!(
+            resumed_control
+                .runtime
+                .ensure_agent_known(thread_id)
+                .is_err()
+        );
+        assert_thread_not_loaded(&resumed_manager, thread_id).await;
+    }
+
+    resumed_control
+        .runtime
+        .registry
+        .release_spawned_thread(collision_thread_id);
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&worker_path),
+        None
+    );
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(collision_thread_id)
+            .is_err()
+    );
+
+    resumed_control
+        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .await;
+    for (thread_id, expected) in [
+        (worker_thread_id, &expected_descendant_metadata[0]),
+        (reviewer_thread_id, &expected_descendant_metadata[1]),
+        (sibling_thread_id, &expected_descendant_metadata[2]),
+    ] {
+        let metadata = resumed_control
+            .runtime
+            .ensure_agent_known(thread_id)
+            .expect("restored descendant identity should be registered");
+        assert_eq!(metadata.agent_id, expected.agent_id);
+        assert_eq!(metadata.agent_path, expected.agent_path);
+        assert_eq!(metadata.agent_nickname, expected.agent_nickname);
+        assert_eq!(metadata.agent_role, expected.agent_role);
+        assert_thread_not_loaded(&resumed_manager, thread_id).await;
+    }
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&worker_path),
+        Some(worker_thread_id)
+    );
+    assert_eq!(
+        resumed_control
+            .runtime
+            .registry
+            .agent_id_for_path(&reviewer_path),
+        Some(reviewer_thread_id)
+    );
 
     let resumed_worker_id = resumed_control
         .resume_agent_from_rollout(
@@ -1292,6 +1386,20 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
         .await
         .expect("the restored child should resume by its persisted ID and path");
     assert_eq!(resumed_worker_id, worker_thread_id);
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(reviewer_thread_id)
+            .is_ok()
+    );
+    assert!(
+        resumed_control
+            .runtime
+            .ensure_agent_known(sibling_thread_id)
+            .is_ok()
+    );
+    assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
+    assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
 
     resumed_control
         .close_agent(worker_thread_id)
