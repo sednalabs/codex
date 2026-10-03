@@ -235,7 +235,7 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
         "plan": [{ "step": "same-turn replay", "status": "in_progress" }]
     })
     .to_string();
-    mount_sse_once_match(
+    let spawn_followup = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| request_has_call_output(request, "spawn-usage-child"),
         sse(vec![
@@ -314,15 +314,18 @@ async fn completed_response_usage_reaches_sqlite_lineage_and_credit_views_after_
     let rollout_path = test.codex.rollout_path().expect("root rollout path");
     let home = test.home.clone();
     test.submit_turn(ROOT_PROMPT).await?;
-    test.submit_turn("second turn with missing model").await?;
-    test.codex.shutdown_and_wait().await?;
+    let spawn_output = spawn_followup
+        .function_call_output_text("spawn-usage-child")
+        .expect("root should receive the spawn_agent result");
     let child_id = test
         .thread_manager
         .list_thread_ids()
         .await
         .into_iter()
         .find(|thread_id| thread_id.to_string() != root_thread_id)
-        .expect("spawned child thread");
+        .unwrap_or_else(|| panic!("spawn_agent did not register a child: {spawn_output}"));
+    test.submit_turn("second turn with missing model").await?;
+    test.codex.shutdown_and_wait().await?;
     let sqlite = test.config.sqlite.clone();
 
     let records = token_usage_records(&rollout_path);
