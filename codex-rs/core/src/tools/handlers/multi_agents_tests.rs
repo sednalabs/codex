@@ -77,6 +77,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_thread_store::PersistContext;
 use core_test_support::TempDirExt;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -1758,14 +1759,39 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
         .await
         .expect("worker should be loaded before unload");
     let child_config = child_thread.config_snapshot().await;
+    child_thread
+        .session
+        .abort_all_tasks(TurnAbortReason::Interrupted)
+        .await;
+    child_thread
+        .inject_response_items(vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "persisted child resume context".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }])
+        .await
+        .expect("test child context should persist before resume");
+    child_thread
+        .session
+        .ensure_rollout_materialized(PersistContext::Standard)
+        .await;
+    child_thread
+        .session
+        .flush_rollout()
+        .await
+        .expect("test child rollout should flush before resume");
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("worker should shut down before unload");
     let removed_thread = manager
         .remove_thread(&worker_id)
         .await
         .expect("worker should be loaded before unload");
-    removed_thread
-        .submit(Op::Shutdown {})
-        .await
-        .expect("unloaded worker should accept shutdown");
     removed_thread.wait_until_terminated().await;
     assert!(manager.get_thread(worker_id).await.is_err());
     manager
