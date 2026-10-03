@@ -1753,6 +1753,11 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
             .expect("spawn output should include agent_id"),
     );
 
+    let child_thread = manager
+        .get_thread(worker_id)
+        .await
+        .expect("worker should be loaded before unload");
+    let child_config = child_thread.config_snapshot().await;
     let removed_thread = manager
         .remove_thread(&worker_id)
         .await
@@ -1793,7 +1798,10 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
         Some("/root/resume_worker")
     );
     assert!(!worker.agent_status.is_null());
-    assert!(worker.configured_model.is_some());
+    assert_eq!(
+        worker.configured_model.as_deref(),
+        Some(child_config.model.as_str())
+    );
 
     let removed_thread = manager
         .remove_thread(&worker_id)
