@@ -1,0 +1,7 @@
+---
+source: tui/src/multi_agents.rs
+expression: "cell_to_text(&cell)"
+---
+• Started `/root/worker`
+  └ Configured model: gpt-5
+  └ Configured reasoning effort: high

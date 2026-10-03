@@ -443,6 +443,8 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
             ThreadItem::SubAgentActivity {
                 id,
                 agent_thread_id,
+                configured_model: None,
+                configured_reasoning_effort: None,
                 ..
             } if id == "call-0" => Some(agent_thread_id.clone()),
             _ => None,

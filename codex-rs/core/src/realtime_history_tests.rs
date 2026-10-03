@@ -258,6 +258,8 @@ fn promotes_backing_agent_artifacts_once_without_a_client_request() {
         kind: SubAgentActivityKind::Started,
         agent_thread_id: ThreadId::new(),
         agent_path: AgentPath::root(),
+        configured_model: None,
+        configured_reasoning_effort: None,
     }));
     for (event, item_id) in [(image, "image-1"), (subagent, "subagent-1")] {
         assert_eq!(

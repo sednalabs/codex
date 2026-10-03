@@ -4410,6 +4410,14 @@ pub struct SubAgentActivityEvent {
     /// Canonical v2 path of the affected sub-agent.
     pub agent_path: AgentPath,
     pub kind: SubAgentActivityKind,
+    /// Resolved configured model at spawn time; absent on older events and non-Started actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_model: Option<String>,
+    /// Resolved configured effort at spawn time; absent on older events and non-Started actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -5825,6 +5833,21 @@ mod tests {
         let event = serde_json::from_value::<ItemCompletedEvent>(value).unwrap();
         assert_eq!(event.started_at_ms, None);
         assert_eq!(event.completed_at_ms, 0);
+    }
+
+    #[test]
+    fn sub_agent_activity_deserializes_legacy_events_without_configured_identity() {
+        let event = serde_json::from_value::<SubAgentActivityEvent>(json!({
+            "event_id": "activity-1",
+            "occurred_at_ms": 123,
+            "agent_thread_id": "00000000-0000-0000-0000-000000000123",
+            "agent_path": "/root/worker",
+            "kind": "started",
+        }))
+        .expect("legacy activity event without configured metadata deserializes");
+
+        assert_eq!(event.configured_model, None);
+        assert_eq!(event.configured_reasoning_effort, None);
     }
 
     #[test]

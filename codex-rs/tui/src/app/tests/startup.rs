@@ -1103,6 +1103,7 @@ async fn known_thread_started_preserves_session_without_reading_unmaterialized_r
             agent_path: None,
             is_running: false,
             is_closed: false,
+            ..Default::default()
         })
     );
 }
