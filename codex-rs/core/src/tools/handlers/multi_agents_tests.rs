@@ -1720,6 +1720,12 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("root thread should start");
+    root.thread.session.new_default_turn().await;
+    assert!(root.thread.is_running());
+    assert_eq!(
+        root.thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
     set_agent_control(&mut session, manager.agent_control());
     session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
@@ -1756,12 +1762,12 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
         .await
         .expect("unloaded worker should accept shutdown");
     removed_thread.wait_until_terminated().await;
-    session
-        .services
-        .agent_control
-        .ensure_child_loaded(root.thread_id, worker_id)
+    assert!(manager.get_thread(worker_id).await.is_err());
+    manager
+        .ensure_multi_agent_v2_child_loaded(worker_id)
         .await
-        .expect("known child should resume through AgentControl");
+        .expect("known child should resume through its loaded parent");
+    assert!(manager.get_thread(worker_id).await.is_ok());
 
     let list_output = ListAgentsHandlerV2
         .handle(invocation(
@@ -1788,6 +1794,36 @@ async fn multi_agent_v2_list_agents_includes_identity_after_child_resume() {
     );
     assert!(!worker.agent_status.is_null());
     assert!(worker.configured_model.is_some());
+
+    let removed_thread = manager
+        .remove_thread(&worker_id)
+        .await
+        .expect("resumed worker should be loaded before cleanup");
+    removed_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("resumed worker should accept shutdown");
+    removed_thread.wait_until_terminated().await;
+    let removed_root = manager
+        .remove_thread(&root.thread_id)
+        .await
+        .expect("managed parent should be loaded before cleanup");
+    removed_root
+        .submit(Op::Shutdown {})
+        .await
+        .expect("managed parent should accept shutdown");
+    removed_root.wait_until_terminated().await;
+
+    let error = manager
+        .ensure_multi_agent_v2_child_loaded(worker_id)
+        .await
+        .expect_err("child reload should reject when its recorded parent is absent");
+    assert!(
+        error
+            .to_string()
+            .contains("is not loaded; resume the parent first")
+    );
+    assert!(manager.get_thread(worker_id).await.is_err());
 }
 
 #[tokio::test]
