@@ -145,6 +145,12 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Configure target-matched Rusty V8 artifacts
+        uses: ./.workflow-src/.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+          source-root: ${{ github.workspace }}/validation-target
+
       - uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c # v2
         if: ${{ inputs.generate_app_server_schema_patch }}
         with:

@@ -4,6 +4,10 @@ inputs:
   target:
     description: Rust target triple with Codex-built V8 release artifacts.
     required: true
+  source-root:
+    description: Fixed validation target checkout providing the V8 version and sandbox manifest.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -12,31 +16,144 @@ runs:
       shell: bash
       env:
         TARGET: ${{ inputs.target }}
+        SOURCE_ROOT: ${{ inputs.source-root }}
       run: |
         set -euo pipefail
 
-        version="$(python3 "${GITHUB_WORKSPACE}/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
-        release_tag="rusty-v8-v${version}"
-        base_url="https://github.com/openai/codex/releases/download/${release_tag}"
-        binding_dir="${RUNNER_TEMP}/rusty_v8"
-        archive_path="${binding_dir}/librusty_v8_release_${TARGET}.a.gz"
-        binding_path="${binding_dir}/src_binding_release_${TARGET}.rs"
-        checksums_path="${binding_dir}/rusty_v8_release_${TARGET}.sha256"
+        workspace_root="${GITHUB_WORKSPACE%/}"
+        if [[ -n "${SOURCE_ROOT}" ]]; then
+          expected_source_root="${workspace_root}/validation-target"
+          if [[ "${SOURCE_ROOT}" != "${expected_source_root}" ]]; then
+            echo "source-root must be the fixed validation-target checkout" >&2
+            exit 1
+          fi
+          source_root="${expected_source_root}"
+          if [[ ! -d "${source_root}/.git" && ! -f "${source_root}/.git" ]]; then
+            echo "validation-target checkout is unavailable at ${source_root}" >&2
+            exit 1
+          fi
+          profile="ptrcomp_sandbox_release"
+        else
+          source_root="${GITHUB_WORKSPACE}"
+          profile="release"
+        fi
 
-        mkdir -p "${binding_dir}"
-        curl -fsSL "${base_url}/librusty_v8_release_${TARGET}.a.gz" -o "${archive_path}"
-        curl -fsSL "${base_url}/src_binding_release_${TARGET}.rs" -o "${binding_path}"
-        curl -fsSL "${base_url}/rusty_v8_release_${TARGET}.sha256" -o "${checksums_path}"
-
-        if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
-          echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
+        if [[ ! "${TARGET}" =~ ^[a-z0-9_]+(-[a-z0-9_]+)+$ ]]; then
+          echo "target must be a Rust target triple" >&2
           exit 1
         fi
 
-        if command -v sha256sum >/dev/null 2>&1; then
-          (cd "${binding_dir}" && sha256sum -c "${checksums_path}")
+        if [[ "${profile}" == "release" ]]; then
+          version="$(python3 "${source_root}/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
         else
-          (cd "${binding_dir}" && shasum -a 256 -c "${checksums_path}")
+          version="$(python3 - "${source_root}/codex-rs/Cargo.lock" <<'PY'
+        import sys
+        import tomllib
+        from pathlib import Path
+
+        lock = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+        versions = sorted(
+            {
+                package["version"]
+                for package in lock.get("package", [])
+                if package.get("name") == "v8"
+            }
+        )
+        if len(versions) != 1:
+            raise SystemExit(f"expected exactly one locked v8 version, found: {versions}")
+        print(versions[0])
+        PY
+          )"
+        fi
+        if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "resolved rusty_v8 version is not a stable semantic version" >&2
+          exit 1
+        fi
+        release_tag="rusty-v8-v${version}"
+        base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+        binding_dir="${RUNNER_TEMP}/rusty_v8"
+
+        mkdir -p "${binding_dir}"
+        if [[ "${profile}" == "release" ]]; then
+          # Preserve the existing default-workspace release artifact contract.
+          archive_name="librusty_v8_release_${TARGET}.a.gz"
+          binding_name="src_binding_release_${TARGET}.rs"
+          checksums_name="rusty_v8_release_${TARGET}.sha256"
+          archive_path="${binding_dir}/${archive_name}"
+          binding_path="${binding_dir}/${binding_name}"
+          checksums_path="${binding_dir}/${checksums_name}"
+
+          curl -fsSL "${base_url}/${archive_name}" -o "${archive_path}"
+          curl -fsSL "${base_url}/${binding_name}" -o "${binding_path}"
+          curl -fsSL "${base_url}/${checksums_name}" -o "${checksums_path}"
+
+          if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
+            echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
+            exit 1
+          fi
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "${binding_dir}" && sha256sum -c "${checksums_path}")
+          else
+            (cd "${binding_dir}" && shasum -a 256 -c "${checksums_path}")
+          fi
+        else
+          if [[ "${TARGET}" == *-pc-windows-msvc ]]; then
+            archive_name="rusty_v8_${profile}_${TARGET}.lib.gz"
+          else
+            archive_name="librusty_v8_${profile}_${TARGET}.a.gz"
+          fi
+          binding_name="src_binding_${profile}_${TARGET}.rs"
+          checksums_name="rusty_v8_${profile}_${TARGET}.sha256"
+          archive_path="${binding_dir}/${archive_name}"
+          binding_path="${binding_dir}/${binding_name}"
+          checksums_path="${binding_dir}/${checksums_name}"
+          trusted_checksums="${source_root}/third_party/v8/rusty_v8_${version//./_}_release_manifests.sha256"
+
+          if [[ ! -f "${trusted_checksums}" ]]; then
+            echo "trusted rusty_v8 release manifest is missing: ${trusted_checksums}" >&2
+            exit 1
+          fi
+          manifest_entry_count="$(
+            awk -v name="${checksums_name}" \
+              '$2 == name { count += 1 } END { print count + 0 }' \
+              "${trusted_checksums}"
+          )"
+          if [[ "${manifest_entry_count}" -ne 1 ]]; then
+            echo "expected exactly one trusted checksum for ${checksums_name}" >&2
+            exit 1
+          fi
+          expected_manifest_checksum="$(
+            awk -v name="${checksums_name}" '$2 == name { print $1 }' \
+              "${trusted_checksums}"
+          )"
+          if [[ ! "${expected_manifest_checksum}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "expected exactly one trusted checksum for ${checksums_name}" >&2
+            exit 1
+          fi
+
+          curl -fsSL "${base_url}/${checksums_name}" -o "${checksums_path}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual_manifest_checksum="$(sha256sum "${checksums_path}" | cut -d ' ' -f 1)"
+          else
+            actual_manifest_checksum="$(shasum -a 256 "${checksums_path}" | cut -d ' ' -f 1)"
+          fi
+          if [[ "${actual_manifest_checksum}" != "${expected_manifest_checksum}" ]]; then
+            echo "Checksum mismatch for ${checksums_name}: expected ${expected_manifest_checksum}, got ${actual_manifest_checksum}" >&2
+            exit 1
+          fi
+
+          curl -fsSL "${base_url}/${archive_name}" -o "${archive_path}"
+          curl -fsSL "${base_url}/${binding_name}" -o "${binding_path}"
+          if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
+            echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "${binding_dir}" && tr -d '\r' < "${checksums_path}" | sha256sum --check -)
+          else
+            (cd "${binding_dir}" && tr -d '\r' < "${checksums_path}" | shasum -a 256 --check -)
+          fi
         fi
         echo "RUSTY_V8_ARCHIVE=${archive_path}" >> "${GITHUB_ENV}"
         echo "RUSTY_V8_SRC_BINDING_PATH=${binding_path}" >> "${GITHUB_ENV}"

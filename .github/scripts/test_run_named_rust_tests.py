@@ -297,6 +297,8 @@ class NamedRustTests(TestCase):
                         "CARGO_INCREMENTAL": "0",
                         "CARGO_TARGET_DIR": str(target_dir),
                         "RUST_MIN_STACK": "8388608",
+                        "RUSTY_V8_ARCHIVE": "/runner-temp/rusty_v8/archive.a.gz",
+                        "RUSTY_V8_SRC_BINDING_PATH": "/runner-temp/rusty_v8/src_binding.rs",
                     },
                     clear=False,
                 ),
@@ -336,6 +338,14 @@ class NamedRustTests(TestCase):
             self.assertEqual(build_call.kwargs["env"], execution_call.kwargs["env"])
             self.assertEqual(
                 build_call.kwargs["env"]["CARGO_TARGET_DIR"], str(target_dir)
+            )
+            self.assertEqual(
+                build_call.kwargs["env"]["RUSTY_V8_ARCHIVE"],
+                "/runner-temp/rusty_v8/archive.a.gz",
+            )
+            self.assertEqual(
+                build_call.kwargs["env"]["RUSTY_V8_SRC_BINDING_PATH"],
+                "/runner-temp/rusty_v8/src_binding.rs",
             )
             self.assertIs(build_call.kwargs["shell"], False)
         self.assertEqual(
@@ -611,12 +621,56 @@ class NamedRustTests(TestCase):
             / "_validation-named-tests.yml"
         ).read_text(encoding="utf-8")
         preflight = workflow.index("name: Test named Rust runner controls")
+        identity_check = workflow.index("name: Verify H/B/T checkout identity")
         rust_toolchain = workflow.index("dtolnay/rust-toolchain@")
+        rusty_v8 = workflow.index(
+            "name: Configure target-matched Rusty V8 artifacts"
+        )
         cargo_runner = workflow.index("name: Inventory and run exact named tests")
 
         self.assertIn("python3 .github/scripts/test_run_named_rust_tests.py", workflow)
         self.assertLess(preflight, rust_toolchain)
+        self.assertLess(identity_check, rusty_v8)
+        self.assertLess(rust_toolchain, rusty_v8)
+        self.assertLess(rusty_v8, cargo_runner)
+        rusty_v8_step = workflow[rusty_v8:cargo_runner]
+        self.assertIn(
+            "uses: ./.workflow-src/.github/actions/setup-rusty-v8", rusty_v8_step
+        )
+        self.assertIn("target: x86_64-unknown-linux-gnu", rusty_v8_step)
+        self.assertIn(
+            "source-root: ${{ github.workspace }}/validation-target", rusty_v8_step
+        )
         self.assertLess(preflight, cargo_runner)
+
+    def test_setup_rusty_v8_preserves_default_and_fixes_only_validation_root(
+        self,
+    ) -> None:
+        action = (
+            Path(__file__).resolve().parents[1]
+            / "actions"
+            / "setup-rusty-v8"
+            / "action.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('source-root:\n    description:', action)
+        self.assertIn('default: ""', action)
+        self.assertIn('source_root="${GITHUB_WORKSPACE}"', action)
+        self.assertIn(
+            'expected_source_root="${workspace_root}/validation-target"', action
+        )
+        self.assertIn(
+            'if [[ "${SOURCE_ROOT}" != "${expected_source_root}" ]]', action
+        )
+        self.assertIn('profile="release"', action)
+        self.assertIn('profile="ptrcomp_sandbox_release"', action)
+        self.assertIn('release_manifests.sha256', action)
+        self.assertIn('codex-rs/Cargo.lock', action)
+        self.assertIn('if [[ "${profile}" == "release" ]]; then', action)
+        self.assertIn('if [[ "${manifest_entry_count}" -ne 1 ]]', action)
+        self.assertIn('sha256sum --check -', action)
+        self.assertIn('RUSTY_V8_ARCHIVE=${archive_path}', action)
+        self.assertIn('RUSTY_V8_SRC_BINDING_PATH=${binding_path}', action)
 
 
 if __name__ == "__main__":
