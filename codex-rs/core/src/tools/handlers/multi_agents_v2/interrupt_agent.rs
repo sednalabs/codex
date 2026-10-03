@@ -67,6 +67,8 @@ async fn handle_interrupt_agent(
             agent_thread_id: agent_id,
             agent_path,
             kind: SubAgentActivityKind::Interrupted,
+            configured_model: None,
+            configured_reasoning_effort: None,
         },
     )
     .await;

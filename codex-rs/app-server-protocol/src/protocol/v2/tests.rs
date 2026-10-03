@@ -3465,6 +3465,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
             .expect("worker path"),
+        configured_model: None,
+        configured_reasoning_effort: None,
     });
 
     assert_eq!(
@@ -3474,6 +3476,30 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
+            configured_model: None,
+            configured_reasoning_effort: None,
+        }
+    );
+
+    let started_activity = ThreadItem::from(TurnItem::SubAgentActivity(SubAgentActivityItem {
+        id: "activity-started".to_string(),
+        kind: CoreSubAgentActivityKind::Started,
+        agent_thread_id: receiver_thread_id,
+        agent_path: codex_protocol::AgentPath::root()
+            .join("worker")
+            .expect("worker path"),
+        configured_model: Some("gpt-5".to_string()),
+        configured_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+    }));
+    assert_eq!(
+        started_activity,
+        ThreadItem::SubAgentActivity {
+            id: "activity-started".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: receiver_thread_id.to_string(),
+            agent_path: "/root/worker".to_string(),
+            configured_model: Some("gpt-5".to_string()),
+            configured_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High,),
         }
     );
 

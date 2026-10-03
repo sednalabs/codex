@@ -159,6 +159,8 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: "01912345-1234-7123-8123-123456789abc".to_string(),
             agent_path: "/root/reviewer".to_string(),
+            configured_model: None,
+            configured_reasoning_effort: None,
         },
         ThreadItem::ExitedReviewMode {
             id: "review-end".to_string(),

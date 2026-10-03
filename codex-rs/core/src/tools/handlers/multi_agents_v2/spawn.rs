@@ -232,6 +232,8 @@ async fn handle_spawn_agent(
             agent_thread_id: new_thread_id,
             agent_path: new_agent_path.clone(),
             kind: SubAgentActivityKind::Started,
+            configured_model: Some(agent_snapshot.model.clone()),
+            configured_reasoning_effort: agent_snapshot.reasoning_effort.clone(),
         },
     )
     .await;

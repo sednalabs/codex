@@ -34,7 +34,7 @@ const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.
     pub(crate) agent_nickname: Option<String>,
@@ -42,6 +42,14 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_role: Option<String>,
     /// Canonical v2 agent path, when the thread was observed through v2 activity.
     pub(crate) agent_path: Option<String>,
+    /// Configured model from thread/list or thread/read, when available.
+    pub(crate) model: Option<String>,
+    /// Configured reasoning effort from thread/list or thread/read, when available.
+    pub(crate) reasoning_effort: Option<String>,
+    /// Immediate parent thread from thread/list or thread/read, when available.
+    pub(crate) parent_thread_id: Option<String>,
+    /// Latest explicit thread status or activity-derived liveness, when observed.
+    pub(crate) status: Option<String>,
     /// Whether the latest liveness refresh says the agent thread is actively working.
     pub(crate) is_running: bool,
     /// Whether the thread has emitted a close event and should render dimmed.
@@ -323,14 +331,41 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
 
 pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     let ThreadItem::SubAgentActivity {
-        kind, agent_path, ..
+        kind,
+        agent_path,
+        configured_model,
+        configured_reasoning_effort,
+        ..
     } = item
     else {
         return None;
     };
+    let details = if *kind == SubAgentActivityKind::Started {
+        vec![
+            Line::from(vec![
+                Span::from("Configured model: ").dim(),
+                Span::from(
+                    configured_model
+                        .clone()
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                ),
+            ]),
+            Line::from(vec![
+                Span::from("Configured reasoning effort: ").dim(),
+                Span::from(
+                    configured_reasoning_effort
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                ),
+            ]),
+        ]
+    } else {
+        Vec::new()
+    };
     Some(collab_event(
         sub_agent_activity_title(*kind, agent_path),
-        Vec::new(),
+        details,
     ))
 }
 
@@ -790,6 +825,8 @@ mod tests {
             kind: SubAgentActivityKind::Interacted,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
+            configured_model: None,
+            configured_reasoning_effort: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
@@ -803,6 +840,8 @@ mod tests {
             kind: SubAgentActivityKind::Completed,
             agent_thread_id: thread_id.to_string(),
             agent_path: "/root/child".to_string(),
+            configured_model: None,
+            configured_reasoning_effort: None,
         };
 
         assert_eq!(
@@ -812,6 +851,42 @@ mod tests {
                 agent_path: "/root/child".to_string(),
                 is_running_hint: false,
             })
+        );
+    }
+
+    #[test]
+    fn started_sub_agent_activity_renders_configured_identity() {
+        let item = ThreadItem::SubAgentActivity {
+            id: "activity-1".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: "00000000-0000-0000-0000-000000000123".to_string(),
+            agent_path: "/root/worker".to_string(),
+            configured_model: Some("gpt-5".to_string()),
+            configured_reasoning_effort: Some(ReasoningEffortConfig::High),
+        };
+        let cell = sub_agent_activity_history_cell(&item).expect("Started activity renders");
+
+        assert_snapshot!(
+            "started_sub_agent_activity_configured_identity",
+            cell_to_text(&cell)
+        );
+    }
+
+    #[test]
+    fn started_sub_agent_activity_keeps_missing_identity_unknown() {
+        let item = ThreadItem::SubAgentActivity {
+            id: "activity-1".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: "00000000-0000-0000-0000-000000000123".to_string(),
+            agent_path: "/root/worker".to_string(),
+            configured_model: None,
+            configured_reasoning_effort: None,
+        };
+        let cell = sub_agent_activity_history_cell(&item).expect("Started activity renders");
+
+        assert_snapshot!(
+            "started_sub_agent_activity_missing_identity",
+            cell_to_text(&cell)
         );
     }
 

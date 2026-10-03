@@ -24,6 +24,8 @@ fn sub_agent_activity_is_a_terminal_tool_runtime_event() -> anyhow::Result<()> {
         agent_thread_id,
         agent_path: AgentPath::try_from("/root/reviewer").map_err(anyhow::Error::msg)?,
         kind: SubAgentActivityKind::Started,
+        configured_model: Some("gpt-5".to_string()),
+        configured_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
     });
 
     let Some(ToolRuntimeTraceEvent::Ended {
@@ -58,6 +60,8 @@ fn completed_sub_agent_activity_is_not_a_tool_runtime_event() -> anyhow::Result<
         agent_thread_id: ThreadId::new(),
         agent_path: AgentPath::try_from("/root/reviewer").map_err(anyhow::Error::msg)?,
         kind: SubAgentActivityKind::Completed,
+        configured_model: None,
+        configured_reasoning_effort: None,
     });
 
     assert!(tool_runtime_trace_event(&event).is_none());

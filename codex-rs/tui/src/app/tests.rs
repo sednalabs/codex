@@ -2047,6 +2047,7 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             agent_path: None,
             is_running: false,
             is_closed: false,
+            ..Default::default()
         })
     );
 }
@@ -2174,6 +2175,8 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             agent_path: None,
             is_running: false,
             is_closed: true,
+            status: Some("Closed".to_string()),
+            ..Default::default()
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -2197,6 +2200,13 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         Some("explorer".to_string()),
         /*is_closed*/ true,
     );
+    app.agent_navigation.set_thread_details(
+        thread_id,
+        Some("gpt-child".to_string()),
+        Some("high".to_string()),
+        Some("00000000-0000-0000-0000-000000000321".to_string()),
+        Some("Closed".to_string()),
+    );
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
@@ -2207,11 +2217,54 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             agent_path: None,
+            model: Some("gpt-child".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            parent_thread_id: Some("00000000-0000-0000-0000-000000000321".to_string()),
+            status: Some("Closed".to_string()),
             is_running: false,
             is_closed: true,
         })
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_selected_description_preserves_configured_identity_and_unknowns() {
+    let mut app = make_test_app().await;
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000321").expect("valid root id");
+    let child_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000654").expect("valid child id");
+    app.primary_thread_id = Some(root_thread_id);
+    app.agent_navigation
+        .upsert(child_thread_id, None, None, /*is_closed*/ false);
+    app.agent_navigation
+        .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+    app.agent_navigation.set_thread_details(
+        child_thread_id,
+        Some("gpt-child".to_string()),
+        Some("high".to_string()),
+        Some(root_thread_id.to_string()),
+        Some("Active".to_string()),
+    );
+
+    let selected = app.agent_picker_selection_view_params(Some(0));
+    assert_eq!(
+        selected.items[0].selected_description.as_deref(),
+        Some(format!(
+            "Thread ID: {child_thread_id}\nPath: /root/worker\nParent: {root_thread_id}\nConfigured model: gpt-child\nConfigured reasoning effort: high\nStatus: Active"
+        ).as_str())
+    );
+
+    app.agent_navigation
+        .set_thread_details(child_thread_id, None, None, None, None);
+    let selected = app.agent_picker_selection_view_params(Some(0));
+    assert_eq!(
+        selected.items[0].selected_description.as_deref(),
+        Some(format!(
+            "Thread ID: {child_thread_id}\nPath: /root/worker\nParent: Unknown\nConfigured model: Unknown\nConfigured reasoning effort: Unknown\nStatus: Unknown"
+        ).as_str())
+    );
 }
 
 #[tokio::test]
@@ -2240,6 +2293,8 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         agent_path: Some("/root/child".to_string()),
         is_running: true,
         is_closed: false,
+        status: Some("Running".to_string()),
+        ..Default::default()
     };
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
     let status = loop {
@@ -2336,6 +2391,8 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
             agent_path: Some("/root/child".to_string()),
             is_running: false,
             is_closed: false,
+            status: Some("Not running".to_string()),
+            ..Default::default()
         })
     );
     Ok(())
@@ -2362,10 +2419,20 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
-    assert_app_snapshot!(
-        "path_backed_agent_picker",
-        render_bottom_popup(&app.chat_widget, /*width*/ 80)
-    );
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("Configured model: Unknown"));
+    assert!(picker.contains("Configured reasoning effort: Unknown"));
+    assert!(picker.contains("Parent: Unknown"));
+    assert!(picker.contains("Status: Running"));
+    let narrow_picker = render_bottom_popup(&app.chat_widget, /*width*/ 40);
+    let narrow_picker = narrow_picker
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(narrow_picker.contains("Configured model: Unknown"));
+    assert!(narrow_picker.contains("Configured reasoning effort: Unknown"));
+    assert!(narrow_picker.contains("Parent: Unknown"));
+    assert!(narrow_picker.contains("Status: Running"));
     while app_event_rx.try_recv().is_ok() {}
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2409,6 +2476,8 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
             agent_path: Some("/root/child".to_string()),
             is_running: false,
             is_closed: true,
+            status: Some("Closed".to_string()),
+            ..Default::default()
         })
     );
     Ok(())
@@ -2465,6 +2534,8 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
             agent_path: None,
             is_running: false,
             is_closed: true,
+            status: Some("Closed".to_string()),
+            ..Default::default()
         })
     );
     Ok(())
@@ -2505,6 +2576,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
                 agent_path: None,
                 is_running: false,
                 is_closed: false,
+                ..Default::default()
             })
         );
         Ok(())
@@ -2645,6 +2717,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 agent_path: Some("/root/child-0".to_string()),
                 is_running: true,
                 is_closed: false,
+                status: Some("Running".to_string()),
+                ..Default::default()
             })
         );
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
@@ -4616,6 +4690,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
             agent_path: None,
             is_running: false,
             is_closed: false,
+            ..Default::default()
         })
     );
 

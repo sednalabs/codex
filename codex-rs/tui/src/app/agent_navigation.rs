@@ -122,17 +122,41 @@ impl AgentNavigationState {
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
-        let (previous_agent_path, previous_is_running) = self
+        let (
+            previous_agent_path,
+            previous_model,
+            previous_reasoning_effort,
+            previous_parent_thread_id,
+            previous_status,
+            previous_is_running,
+        ) = self
             .threads
             .get(&thread_id)
-            .map(|entry| (entry.agent_path.clone(), entry.is_running))
-            .unwrap_or((None, false));
+            .map(|entry| {
+                (
+                    entry.agent_path.clone(),
+                    entry.model.clone(),
+                    entry.reasoning_effort.clone(),
+                    entry.parent_thread_id.clone(),
+                    entry.status.clone(),
+                    entry.is_running,
+                )
+            })
+            .unwrap_or((None, None, None, None, None, false));
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
                 agent_nickname,
                 agent_role,
                 agent_path: previous_agent_path,
+                model: previous_model,
+                reasoning_effort: previous_reasoning_effort,
+                parent_thread_id: previous_parent_thread_id,
+                status: if is_closed {
+                    Some("Closed".to_string())
+                } else {
+                    previous_status
+                },
                 is_running: previous_is_running && !is_closed,
                 is_closed,
             },
@@ -150,6 +174,10 @@ impl AgentNavigationState {
                     agent_nickname: None,
                     agent_role: None,
                     agent_path: None,
+                    model: None,
+                    reasoning_effort: None,
+                    parent_thread_id: None,
+                    status: None,
                     is_running: false,
                     is_closed: false,
                 });
@@ -162,6 +190,27 @@ impl AgentNavigationState {
         } else {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
+        }
+        entry.status = Some(if entry.is_running {
+            "Running".to_string()
+        } else {
+            "Not running".to_string()
+        });
+    }
+
+    pub(crate) fn set_thread_details(
+        &mut self,
+        thread_id: ThreadId,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        parent_thread_id: Option<String>,
+        status: Option<String>,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.model = model;
+            entry.reasoning_effort = reasoning_effort;
+            entry.parent_thread_id = parent_thread_id;
+            entry.status = status;
         }
     }
 
@@ -185,6 +234,11 @@ impl AgentNavigationState {
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
+            entry.status = Some(if is_running {
+                "Running".to_string()
+            } else {
+                "Not running".to_string()
+            });
         }
     }
 
@@ -206,6 +260,7 @@ impl AgentNavigationState {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
+            entry.status = Some("Closed".to_string());
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,

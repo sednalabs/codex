@@ -139,10 +139,26 @@ impl App {
             if !live && update_liveness {
                 self.agent_navigation.set_running(thread_id, is_running);
             }
+            self.agent_navigation.set_thread_details(
+                thread_id,
+                thread.model,
+                thread.reasoning_effort.map(|effort| effort.to_string()),
+                thread.parent_thread_id,
+                Some(thread_status_label(&thread.status).to_string()),
+            );
         }
 
         let params = self.agent_picker_selection_view_params(selected);
         self.chat_widget
             .replace_selection_view_if_present(AGENT_PICKER_VIEW_ID, params);
+    }
+}
+
+fn thread_status_label(status: &ThreadStatus) -> &'static str {
+    match status {
+        ThreadStatus::NotLoaded => "Not loaded",
+        ThreadStatus::Idle => "Idle",
+        ThreadStatus::SystemError => "System error",
+        ThreadStatus::Active { .. } => "Active",
     }
 }

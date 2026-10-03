@@ -408,6 +408,14 @@ pub struct SubAgentActivityItem {
     pub kind: SubAgentActivityKind,
     pub agent_thread_id: ThreadId,
     pub agent_path: AgentPath,
+    /// Resolved configured model at spawn time; absent on older events and non-Started actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_model: Option<String>,
+    /// Resolved configured effort at spawn time; absent on older events and non-Started actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub configured_reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
@@ -827,6 +835,24 @@ mod tests {
                 "durationMs": 1_000,
             })
         );
+    }
+
+    #[test]
+    fn sub_agent_activity_deserializes_legacy_items_without_configured_identity() {
+        let item: TurnItem = serde_json::from_value(json!({
+            "type": "SubAgentActivity",
+            "id": "activity-1",
+            "kind": "started",
+            "agent_thread_id": "00000000-0000-0000-0000-000000000123",
+            "agent_path": "/root/worker",
+        }))
+        .expect("legacy activity without configured metadata deserializes");
+
+        let TurnItem::SubAgentActivity(item) = item else {
+            panic!("expected sub-agent activity item");
+        };
+        assert_eq!(item.configured_model, None);
+        assert_eq!(item.configured_reasoning_effort, None);
     }
 
     #[test]

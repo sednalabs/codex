@@ -197,10 +197,23 @@ impl App {
                         )
                     });
                 let uuid = thread_id.to_string();
+                let selected_description = format!(
+                    "Thread ID: {uuid}\nPath: {}\nParent: {}\nConfigured model: {}\nConfigured reasoning effort: {}\nStatus: {}",
+                    entry.agent_path.as_deref().unwrap_or("Unknown"),
+                    entry.parent_thread_id.as_deref().unwrap_or("Unknown"),
+                    entry
+                        .model
+                        .as_deref()
+                        .filter(|model| !model.is_empty())
+                        .unwrap_or("Unknown"),
+                    entry.reasoning_effort.as_deref().unwrap_or("Unknown"),
+                    entry.status.as_deref().unwrap_or("Unknown"),
+                );
                 SelectionItem {
                     name: name.clone(),
                     name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
                     description: Some(uuid.clone()),
+                    selected_description: (!is_primary).then_some(selected_description),
                     is_current: self.active_thread_id == Some(thread_id),
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
@@ -326,6 +339,21 @@ impl App {
                     self.agent_navigation
                         .set_running(thread_id, /*is_running*/ false);
                 }
+                self.agent_navigation.set_thread_details(
+                    thread_id,
+                    thread.model,
+                    thread.reasoning_effort.map(|effort| effort.to_string()),
+                    thread.parent_thread_id,
+                    Some(
+                        match &thread.status {
+                            codex_app_server_protocol::ThreadStatus::NotLoaded => "Not loaded",
+                            codex_app_server_protocol::ThreadStatus::Idle => "Idle",
+                            codex_app_server_protocol::ThreadStatus::SystemError => "System error",
+                            codex_app_server_protocol::ThreadStatus::Active { .. } => "Active",
+                        }
+                        .to_string(),
+                    ),
+                );
                 true
             }
             Err(err) => {

@@ -443,6 +443,8 @@ impl SubAgentActivityItem {
             agent_thread_id: self.agent_thread_id,
             agent_path: self.agent_path.clone(),
             kind: self.kind,
+            configured_model: self.configured_model.clone(),
+            configured_reasoning_effort: self.configured_reasoning_effort,
         })
     }
 }

@@ -4652,9 +4652,12 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
                 id,
                 kind: SubAgentActivityKind::Started,
                 agent_thread_id,
+                configured_model: Some(configured_model),
+                configured_reasoning_effort: None,
                 ..
             } = completed.item
                 && id == SPAWN_CALL_ID
+                && configured_model == "koffing"
             {
                 return Ok::<String, anyhow::Error>(agent_thread_id);
             }
