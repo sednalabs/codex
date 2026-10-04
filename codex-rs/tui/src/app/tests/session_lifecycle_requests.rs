@@ -2035,6 +2035,78 @@ async fn browser_dynamic_tool_requests_dispatch_provider_and_preserve_image() ->
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_dynamic_tool_requests_from_abandoned_threads_do_not_start_provider(
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let abandoned_thread_id = ThreadId::new();
+    app.abandoned_side_threads.insert(abandoned_thread_id);
+
+    let provider = codex_home.path().join("browser-provider.sh");
+    let provider_invocations = codex_home.path().join("provider-invocations");
+    std::fs::write(
+        &provider,
+        "#!/bin/sh\nprintf invoked > \"$1\"\ncat >/dev/null\nprintf '%s' '{\"contentItems\":[{\"type\":\"inputText\",\"text\":\"provider response\"}],\"success\":true}'\n",
+    )?;
+    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(
+        codex_home.path().join("browser-computer-use.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "command",
+            "command": [
+                "sh",
+                provider.to_string_lossy(),
+                provider_invocations.to_string_lossy()
+            ]
+        }))?,
+    )?;
+    let (app_server, _requests, proxy) = start_recording_remote_app_server(&app.config).await?;
+
+    app.handle_app_server_event(
+        &app_server,
+        AppServerEvent::ServerRequest(Box::new(ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::Integer(702),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: abandoned_thread_id.to_string(),
+                turn_id: "discarded-browser-fixture-turn".to_string(),
+                call_id: "late-browser-fixture-call".to_string(),
+                namespace: Some("codex_browser".to_string()),
+                tool: "browser_observe".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        })),
+    )
+    .await;
+
+    let AppEvent::DynamicToolCallCompleted {
+        request_id,
+        response,
+    } = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 5), events.recv())
+        .await?
+        .expect("abandoned Browser request rejection")
+    else {
+        panic!("expected Browser dynamic-tool completion")
+    };
+    assert_eq!(request_id, AppServerRequestId::Integer(702));
+    assert!(!response.success);
+    assert!(matches!(
+        response.content_items.first(),
+        Some(codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText { text })
+            if text == "TUI dynamic tools require an active external task"
+    ));
+    assert!(!provider_invocations.exists());
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
 #[tokio::test]
 async fn older_pagination_reconciles_review_prompts_across_page_boundaries() -> Result<()> {
     let (mut app, codex_home) = make_history_test_app().await?;

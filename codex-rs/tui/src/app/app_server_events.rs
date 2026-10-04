@@ -554,6 +554,17 @@ impl App {
                 if self.dynamic_tool_tasks.contains_key(request_id) {
                     return;
                 }
+                if codex_protocol::ThreadId::from_string(&params.thread_id)
+                    .is_ok_and(|thread_id| self.abandoned_side_threads.contains(&thread_id))
+                {
+                    self.app_event_tx.send(AppEvent::DynamicToolCallCompleted {
+                        request_id: request_id.clone(),
+                        response: crate::dynamic_tools::failure_response(
+                            "TUI dynamic tools require an active external task",
+                        ),
+                    });
+                    return;
+                }
                 let request_id = request_id.clone();
                 let task_request_id = request_id.clone();
                 let source_thread_id = params.thread_id.clone();
