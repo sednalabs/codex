@@ -281,7 +281,28 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             picker = _open_subagents(tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
             tui.send("\x1b[B")
-            child_details = tui.until_screen(child_id)
+            narrow_picker = tui.until_screen("/root/worker")
+            selected_child_rows = [
+                line.strip().strip("│").strip()
+                for line in narrow_picker.splitlines()
+                if line.strip().strip("│").strip().startswith("›")
+                and "/root/worker" in line
+            ]
+            assert len(selected_child_rows) == 1, narrow_picker
+            assert "PRIVATE_PROMPT_SENTINEL" not in narrow_picker, narrow_picker
+            tui.send("\x1b")
+            tui.until("Ask Codex to do anything")
+
+        # The production picker intentionally hides selected descriptions when
+        # the remaining details column is too narrow. Keep the 40-column row-
+        # selection witness above, then verify rich child details in a fresh
+        # default-width TUI while the child is still held behind its route gate.
+        with PackagedTui(isolated, "resume", root_id) as details_tui:
+            details_tui.until("Ask Codex to do anything")
+            picker = _open_subagents(details_tui)
+            assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
+            details_tui.send("\x1b[B")
+            child_details = details_tui.until_screen(child_id)
             child_details_text = _normalized_screen(child_details)
             assert f"Thread ID: {child_id}" in child_details_text, child_details
             assert "Path: /root/worker" in child_details_text, child_details
@@ -296,12 +317,12 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "instructions" not in child_details.lower()
             assert "credentials" not in child_details.lower()
 
-            tui.send("\x1b")
-            tui.until("Ask Codex to do anything")
-            replay_picker = _open_subagents(tui)
+            details_tui.send("\x1b")
+            details_tui.until("Ask Codex to do anything")
+            replay_picker = _open_subagents(details_tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker, replay_picker
-            tui.send("\x1b[B")
-            replay_details = tui.until_screen(child_id)
+            details_tui.send("\x1b[B")
+            replay_details = details_tui.until_screen(child_id)
             replay_details_text = _normalized_screen(replay_details)
             assert f"Thread ID: {child_id}" in replay_details_text, replay_details
             assert f"Parent: {root_id}" in replay_details_text, replay_details
@@ -310,9 +331,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "Status: Active" in replay_details_text, replay_details
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_details, replay_details
             child_gate.set()
-            tui.send("\x1b")
-            tui.until("Ask Codex to do anything")
-            child_final = tui.until_screen(
+            details_tui.send("\x1b")
+            details_tui.until("Ask Codex to do anything")
+            child_final = details_tui.until_screen(
                 "TUI_RICH_CHILD_TERMINAL",
             )
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
