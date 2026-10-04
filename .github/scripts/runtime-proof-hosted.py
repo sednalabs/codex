@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 from typing import Any
 
@@ -132,6 +133,17 @@ PACKAGE_SOURCE_DIRS = {
     "codex-core": "core",
     "codex-exec": "exec",
 }
+STANDARD_RUST_CRATES = {
+    "alloc",
+    "compiler_builtins",
+    "core",
+    "proc_macro",
+    "std",
+    "test",
+}
+INCOMPATIBLE_RUSTC_METADATA_MESSAGE = re.compile(
+    r"found crate [`']([A-Za-z0-9_-]+)[`'] compiled by an incompatible version of rustc"
+)
 
 
 def refuse(message: str) -> None:
@@ -1266,14 +1278,72 @@ def verify_test_summary_parser_contract() -> None:
         "build_succeeded": False,
         "compiler_error_count": 1,
         "compiler_error_codes": ["E0001"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
         refuse("Cargo no-run compiler failure contract failed")
+
+    incompatible_metadata_error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "code": {"code": "E0514"},
+                "message": "found crate `serde` compiled by an incompatible version of rustc",
+            },
+        }
+    )
+    incompatible_metadata_failure = bounded_library_failure_summary(
+        "codex-core",
+        f"{incompatible_metadata_error}\n{build_failed}",
+        101,
+        set(),
+        {"serde"},
+    )
+    if incompatible_metadata_failure != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": "incompatible_rustc_metadata",
+        "incompatible_crates": ["serde"],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo incompatible metadata diagnostic contract failed")
+    unknown_metadata_failure = bounded_library_failure_summary(
+        "codex-core",
+        f"{incompatible_metadata_error.replace('serde', 'not-a-direct-dependency')}\n{build_failed}",
+        101,
+        set(),
+        {"serde"},
+    )
+    if unknown_metadata_failure != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo unknown metadata crate withholding contract failed")
+
     postbuild_error = json.dumps(
         {
             "reason": "compiler-message",
-            "message": {"level": "error", "code": {"code": "E0002"}},
+            "message": {
+                "level": "error",
+                "code": {"code": "E0514"},
+                "message": "found crate `serde` compiled by an incompatible version of rustc",
+            },
         }
     )
     build_succeeded = json.dumps({"reason": "build-finished", "success": True})
@@ -1290,6 +1360,8 @@ def verify_test_summary_parser_contract() -> None:
         "build_succeeded": True,
         "compiler_error_count": 0,
         "compiler_error_codes": [],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
@@ -1346,13 +1418,71 @@ def package_source_location(
     return location if len(location) <= 240 else None
 
 
+def direct_rust_crate_allowlist(package: str) -> set[str]:
+    manifest_path = EXPECTED_PACKAGE_MANIFESTS.get(package)
+    if manifest_path is None:
+        return set()
+    relative_path = f"codex-rs/{manifest_path}"
+    entry = run_git("ls-tree", "-z", "HEAD", "--", relative_path)
+    entry = entry[:-1] if entry.endswith("\0") else entry
+    metadata, separator, tracked_path = entry.partition("\t")
+    fields = metadata.split()
+    if (
+        not separator
+        or tracked_path != relative_path
+        or len(fields) != 3
+        or fields[0] not in {"100644", "100755"}
+        or fields[1] != "blob"
+    ):
+        return set()
+    try:
+        manifest = tomllib.loads(run_git("show", f"HEAD:{relative_path}"))
+    except (tomllib.TOMLDecodeError, ValueError):
+        return set()
+
+    crate_names = set(STANDARD_RUST_CRATES)
+
+    def add_dependencies(table: Any) -> None:
+        if not isinstance(table, dict):
+            return
+        for alias, specification in table.items():
+            if not isinstance(alias, str):
+                continue
+            names = [alias]
+            if isinstance(specification, dict):
+                package_name = specification.get("package")
+                if isinstance(package_name, str):
+                    names.append(package_name)
+            for name in names:
+                normalized = name.replace("-", "_")
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", normalized):
+                    crate_names.add(normalized)
+
+    def visit(value: Any) -> None:
+        if not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            if key in {"dependencies", "dev-dependencies", "build-dependencies"}:
+                add_dependencies(child)
+            else:
+                visit(child)
+
+    visit(manifest)
+    return crate_names
+
+
 def bounded_library_failure_summary(
-    package: str, output: str, exit_code: int, admitted_paths: set[str]
+    package: str,
+    output: str,
+    exit_code: int,
+    admitted_paths: set[str],
+    allowed_crates: set[str] | None = None,
 ) -> dict[str, Any]:
     build_events: list[bool | None] = []
     prebuild_compiler_errors = 0
     compiler_codes: list[str] = []
     source_locations: list[str] = []
+    incompatible_crates: list[str] = []
 
     for raw_line in output.splitlines():
         try:
@@ -1375,6 +1505,20 @@ def bounded_library_failure_summary(
             if isinstance(code_value, str) and re.fullmatch(r"E[0-9]{4}", code_value):
                 if code_value not in compiler_codes and len(compiler_codes) < 8:
                     compiler_codes.append(code_value)
+                if code_value == "E0514" and allowed_crates is not None:
+                    diagnostic = message.get("message")
+                    match = (
+                        INCOMPATIBLE_RUSTC_METADATA_MESSAGE.fullmatch(diagnostic)
+                        if isinstance(diagnostic, str)
+                        else None
+                    )
+                    crate = match.group(1).replace("-", "_") if match else None
+                    if (
+                        crate in allowed_crates
+                        and crate not in incompatible_crates
+                        and len(incompatible_crates) < 8
+                    ):
+                        incompatible_crates.append(crate)
             spans = message.get("spans")
             if not isinstance(spans, list):
                 spans = []
@@ -1412,6 +1556,7 @@ def bounded_library_failure_summary(
         classification = "build_phase_unknown"
         compiler_codes = []
         source_locations = []
+        incompatible_crates = []
     elif build_succeeded is False and compiler_errors:
         classification = "compiler_error"
     elif build_succeeded is False:
@@ -1420,6 +1565,13 @@ def bounded_library_failure_summary(
         classification = "post_build_failure_unclassified"
     else:
         classification = "build_failure_unclassified"
+    metadata_cause = (
+        "incompatible_rustc_metadata"
+        if valid_build_event
+        and build_succeeded is False
+        and incompatible_crates
+        else None
+    )
     return {
         "classification": classification,
         "cargo_exit_code": exit_code,
@@ -1427,6 +1579,8 @@ def bounded_library_failure_summary(
         "build_succeeded": build_succeeded,
         "compiler_error_count": compiler_errors,
         "compiler_error_codes": compiler_codes,
+        "compiler_metadata_cause": metadata_cause,
+        "incompatible_crates": incompatible_crates,
         "primary_source_locations": source_locations,
         "test_summary_count": 0,
         "passed": 0,
@@ -1690,7 +1844,11 @@ def cargo_artifact_details(
         if capture_library_failure:
             output_hash = sha256_bytes(result.stdout.encode())
             failure = bounded_library_failure_summary(
-                package_name, result.stdout, result.returncode, admitted_paths or set()
+                package_name,
+                result.stdout,
+                result.returncode,
+                admitted_paths or set(),
+                direct_rust_crate_allowlist(package_name),
             )
             refuse(
                 f"required locked library build failed: {package_name}; "
