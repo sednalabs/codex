@@ -40,6 +40,7 @@ use std::sync::atomic::AtomicI64;
 use std::time::Instant;
 use tracing::warn;
 
+pub(crate) mod agent_mailbox;
 mod backfill;
 mod external_agent_config_imports;
 mod goals;
@@ -64,6 +65,12 @@ mod threads;
 mod usage;
 pub(crate) mod usage_migration_compat;
 
+pub use agent_mailbox::AgentMailboxStore;
+pub use agent_mailbox::MailboxAcceptOutcome;
+pub use agent_mailbox::MailboxIntent;
+pub use agent_mailbox::MailboxMessage;
+pub use agent_mailbox::MailboxSendRequest;
+pub use agent_mailbox::MailboxStage;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
@@ -104,6 +111,7 @@ pub struct StateRuntime {
     thread_goals: GoalStore,
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
+    agent_mailbox: AgentMailboxStore,
     thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -289,6 +297,7 @@ impl StateRuntime {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             memories_v2: Arc::new(tokio::sync::OnceCell::new()),
+            agent_mailbox: AgentMailboxStore::new(Arc::clone(&pool)),
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
@@ -328,6 +337,11 @@ impl StateRuntime {
     /// Return the durable, SQLite-backed user-message queue.
     pub fn thread_queue(&self) -> &SqliteQueueStore {
         &self.thread_queue
+    }
+
+    /// Return the durable mailbox journal; this store records custody only.
+    pub fn agent_mailbox(&self) -> &AgentMailboxStore {
+        &self.agent_mailbox
     }
 
     /// Return the usage ledger pool for state-owned provenance and accounting.

@@ -21,6 +21,10 @@ const FORK_9000: i64 = FORK_BASE + 3;
 const FORK_9001: i64 = FORK_BASE + 4;
 const FORK_9002: i64 = FORK_BASE + 5;
 const FORK_9003: i64 = FORK_BASE + 6;
+const FORK_9004: i64 = FORK_BASE + 7;
+const EMBEDDED_FORK_VERSIONS: &[i64] = &[
+    FORK_56, FORK_57, FORK_58, FORK_9000, FORK_9001, FORK_9002, FORK_9003, FORK_9004,
+];
 const LEGACY_FORK_IDS: &[(i64, i64)] = &[
     (56, FORK_56),
     (57, FORK_57),
@@ -244,13 +248,12 @@ fn validate_embedded_namespace(migrator: &Migrator) -> anyhow::Result<()> {
     for version in 1..=58 {
         embedded(migrator, version)?;
     }
-    for version in FORK_BASE..=FORK_9003 {
-        embedded(migrator, version)?;
+    for version in EMBEDDED_FORK_VERSIONS {
+        embedded(migrator, *version)?;
     }
-    if migrator
-        .iter()
-        .any(|migration| migration.version >= FORK_BASE && migration.version > FORK_9003)
-    {
+    if migrator.iter().any(|migration| {
+        migration.version >= FORK_BASE && !EMBEDDED_FORK_VERSIONS.contains(&migration.version)
+    }) {
         anyhow::bail!("state migration uses an unreviewed fork namespace version");
     }
     Ok(())
@@ -367,6 +370,15 @@ fn validate_prefixes(rows: &[RowIdentity], deployed_thread_source: bool) -> anyh
     {
         anyhow::bail!("fork state migration 56-58 history has a gap");
     }
+    if targets.contains(&FORK_9004)
+        && [
+            FORK_56, FORK_57, FORK_58, FORK_9000, FORK_9001, FORK_9002, FORK_9003,
+        ]
+        .iter()
+        .any(|version| !targets.contains(version))
+    {
+        anyhow::bail!("mailbox migration is missing a prerequisite fork migration");
+    }
     Ok(())
 }
 
@@ -402,6 +414,46 @@ async fn index_exists(connection: &mut SqliteConnection, name: &str) -> anyhow::
     .await?)
 }
 
+async fn index_matches(
+    connection: &mut SqliteConnection,
+    name: &str,
+    table: &str,
+    columns: &[&str],
+    sql_fragment: &str,
+) -> anyhow::Result<bool> {
+    let Some(row) =
+        sqlx::query("SELECT tbl_name, sql FROM sqlite_schema WHERE type = 'index' AND name = ?")
+            .bind(name)
+            .fetch_optional(&mut *connection)
+            .await?
+    else {
+        return Ok(false);
+    };
+    let index_table: String = row.try_get("tbl_name")?;
+    let definition: Option<String> = row.try_get("sql")?;
+    if index_table != table {
+        return Ok(false);
+    }
+    let index_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
+            .bind(name)
+            .fetch_all(&mut *connection)
+            .await?;
+    let expected_columns = columns
+        .iter()
+        .map(|column| (*column).to_string())
+        .collect::<Vec<_>>();
+    let Some(definition) = definition else {
+        return Ok(false);
+    };
+    let normalized = definition
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    Ok(index_columns == expected_columns && normalized.contains(sql_fragment))
+}
+
 async fn validate_schema(
     connection: &mut SqliteConnection,
     rows: &[RowIdentity],
@@ -419,6 +471,75 @@ async fn validate_schema(
     ] {
         if applied.contains(&version) != table_exists(connection, table).await? {
             anyhow::bail!("state migration {version} disagrees with table {table}");
+        }
+    }
+    let mailbox_tables = [
+        table_exists(connection, "agent_mailbox").await?,
+        table_exists(connection, "agent_mailbox_supersessions").await?,
+    ];
+    let mailbox_index_presence = [
+        index_matches(
+            connection,
+            "idx_agent_mailbox_recipient_pending_sequence",
+            "agent_mailbox",
+            &[
+                "recipient_instance_id",
+                "recipient_task_generation",
+                "enqueue_sequence",
+            ],
+            "where context_committed_at_ms is null and delivered_at_ms is null",
+        )
+        .await?,
+        index_matches(
+            connection,
+            "idx_agent_mailbox_reply_to",
+            "agent_mailbox",
+            &["reply_to"],
+            "where reply_to is not null",
+        )
+        .await?,
+    ];
+    let mailbox_index_exists = [
+        index_exists(connection, "idx_agent_mailbox_recipient_pending_sequence").await?,
+        index_exists(connection, "idx_agent_mailbox_reply_to").await?,
+    ];
+    let mailbox_applied = applied.contains(&FORK_9004);
+    if mailbox_tables
+        .iter()
+        .any(|present| *present != mailbox_applied)
+        || (mailbox_applied && mailbox_index_presence.iter().any(|present| !*present))
+        || (!mailbox_applied && mailbox_index_exists.iter().any(|present| *present))
+    {
+        anyhow::bail!("mailbox schema objects disagree with the mailbox migration");
+    }
+    if mailbox_applied {
+        for column in [
+            "message_id",
+            "sender_instance_id",
+            "sender_task_generation",
+            "recipient_instance_id",
+            "recipient_task_generation",
+            "intent",
+            "idempotency_key",
+            "reply_to",
+            "encrypted_payload",
+            "enqueue_sequence",
+            "created_at_ms",
+            "wait_signalled_at_ms",
+            "wait_returned_at_ms",
+            "context_committed_at_ms",
+            "delivered_at_ms",
+            "acknowledged_at_ms",
+            "acknowledgement_message_id",
+        ] {
+            if !column_exists(connection, "agent_mailbox", column).await? {
+                anyhow::bail!("mailbox table is missing required column {column}");
+            }
+        }
+        for column in ["covered_message_id", "covering_message_id", "created_at_ms"] {
+            if !column_exists(connection, "agent_mailbox_supersessions", column).await? {
+                anyhow::bail!("mailbox supersession table is missing required column {column}");
+            }
         }
     }
     let configured_provenance =

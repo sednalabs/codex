@@ -75,6 +75,18 @@ fn shifted_fork_through(last: i64) -> Migrator {
     with_migrations(migrations)
 }
 
+#[test]
+fn namespace_guard_rejects_an_unlisted_fork_id() {
+    let mut migrations = STATE_MIGRATOR.iter().cloned().collect::<Vec<_>>();
+    let mut unknown = embedded(&STATE_MIGRATOR, FORK_9004)
+        .expect("mailbox migration is embedded")
+        .clone();
+    unknown.version = FORK_9004 + 1;
+    migrations.push(unknown);
+    let migrator = with_migrations(migrations);
+    assert!(validate_embedded_namespace(&migrator).is_err());
+}
+
 async fn fixture() -> (crate::SqliteConfig, SqlitePool) {
     let home = unique_temp_dir();
     tokio::fs::create_dir_all(&home)
@@ -285,6 +297,48 @@ async fn deployed_thread_source_column_without_row_is_recognized() {
         .await
         .expect("synthetic deployed column");
     bridge_migrate_reopen(sqlite, pool).await;
+}
+
+#[tokio::test]
+async fn partial_mailbox_schema_without_migration_row_rejects_without_bridge_writes() {
+    let (_sqlite, pool) = fixture().await;
+    upstream_through(58)
+        .run(&pool)
+        .await
+        .expect("upstream baseline");
+    sqlx::query("CREATE TABLE agent_mailbox (message_id TEXT PRIMARY KEY NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("partial mailbox schema");
+    let before_ledger = ledger(&pool).await;
+    let before_schema = schema(&pool).await;
+    bridge_state_migrations(&pool, &STATE_MIGRATOR)
+        .await
+        .expect_err("unrecorded partial mailbox schema must reject");
+    assert_eq!(before_ledger, ledger(&pool).await);
+    assert_eq!(before_schema, schema(&pool).await);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn recorded_mailbox_migration_with_missing_index_rejects_without_bridge_writes() {
+    let (_sqlite, pool) = fixture().await;
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("complete synthetic state migrations");
+    sqlx::query("DROP INDEX idx_agent_mailbox_reply_to")
+        .execute(&pool)
+        .await
+        .expect("remove one mailbox index");
+    let before_ledger = ledger(&pool).await;
+    let before_schema = schema(&pool).await;
+    bridge_state_migrations(&pool, &STATE_MIGRATOR)
+        .await
+        .expect_err("partial mailbox schema must reject");
+    assert_eq!(before_ledger, ledger(&pool).await);
+    assert_eq!(before_schema, schema(&pool).await);
+    pool.close().await;
 }
 
 #[tokio::test]
