@@ -55,6 +55,9 @@ PUBLIC_FAILURE_CODES = {
     "runtime_preparation_failed", "inventory_failed", "inventory_reconciliation_failed",
     "execution_reconciliation_failed", "named_test_ignored", "named_test_failed",
     "runner_unexpected_exception", "public_projection_incomplete", "public_result_overflow",
+    "core_diagnostic_mode_invalid", "core_diagnostic_mode_collision",
+    "core_diagnostic_request_invalid", "core_diagnostic_identity_invalid",
+    "core_diagnostic_sample_failed", "core_diagnostic_sample_incomplete",
 }
 CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
 CORE_RUNTIME_BUILDS = (
@@ -83,6 +86,29 @@ CORE_RUNTIME_ENV_KEYS = {
     "codex": ("CARGO_BIN_EXE_codex",),
 }
 RUNTIME_PREPARATION_ONLY_ENV = "VALIDATION_RUNTIME_PREPARATION_ONLY"
+CORE_DIAGNOSTIC_ONLY_ENV = "VALIDATION_CORE_RUNTIME_DIAGNOSTIC_ONLY"
+CORE_DIAGNOSTIC_CASE_ENV = "CODEX_CORE_RUNTIME_DIAGNOSTIC_CASE"
+CORE_DIAGNOSTIC_CASES = (
+    ("restricted", "suite::agents_md::restricted_project_without_instructions_starts_successfully",
+     ("mock_server", "sse_mount", "builder", "instruction_assertion", "turn_submit", "response_match")),
+    ("project_docs", "suite::agents_md::agents_docs_are_concatenated_from_project_root_to_cwd",
+     ("mock_server", "sse_mount", "builder", "turn_submit", "response_match", "final_assertion")),
+)
+CORE_DIAGNOSTIC_ERRORS = {
+    "none", "not_found", "permission_denied", "connection_refused", "connection_reset",
+    "broken_pipe", "invalid_input", "invalid_data", "timed_out", "interrupted",
+    "unexpected_eof", "other",
+}
+CORE_DIAGNOSTIC_PREFIX = "codex-core-runtime-diagnostic-"
+CORE_DIAGNOSTIC_FRAME = re.compile(
+    r"codex-core-runtime-diagnostic-v1 case=(restricted|project_docs) "
+    r"stage=([a-z_]+) state=(entered|returned|error) error=([a-z_]+)"
+)
+VALIDATION_IDENTITY_ENV = {
+    "harness_sha": "VALIDATION_HARNESS_SHA", "base_ref": "VALIDATION_BASE_REF",
+    "base_sha": "VALIDATION_BASE_SHA", "target_sha": "VALIDATION_TARGET_SHA",
+    "run_id": "GITHUB_RUN_ID", "run_attempt": "GITHUB_RUN_ATTEMPT",
+}
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -393,6 +419,8 @@ def request_requires_core_runtime(
     try:
         select_target(request, manifest)
     except ValueError:
+        return False
+    if core_diagnostic_request_error(request, os.environ.get(RUNTIME_PREPARATION_ONLY_ENV) == "true"):
         return False
     return (
         request["package"],
@@ -972,6 +1000,111 @@ def matched_test_evidence(lines: list[str]) -> dict[str, Any]:
     }
 
 
+def core_diagnostic_fields() -> dict[str, Any]:
+    return {"result_kind": "core_runtime_diagnostic", "diagnostic_only": True,
+            "full_target_execution": False, "qualification_status": "not_attempted",
+            "sampling_complete": False, "diagnostic_samples": []}
+
+
+def core_diagnostic_request_error(request: dict[str, Any], preparation_only: bool) -> str:
+    value = os.environ.get(CORE_DIAGNOSTIC_ONLY_ENV, "false")
+    if value not in {"true", "false"}:
+        return "core_diagnostic_mode_invalid"
+    if value == "false":
+        return ""
+    if preparation_only or os.environ.get(RUNTIME_PREPARATION_ONLY_ENV) not in (None, "true", "false"):
+        return "core_diagnostic_mode_collision"
+    if (request.get("profile") != "rust_integration"
+            or tuple(request.get(key) for key in ("package", "target_kind", "target")) != CORE_RUNTIME_TARGET
+            or request.get("tests") != [name for _, name, _ in CORE_DIAGNOSTIC_CASES]):
+        return "core_diagnostic_request_invalid"
+    identity = _safe_identity({key: os.environ.get(variable, "")
+                              for key, variable in VALIDATION_IDENTITY_ENV.items()})
+    return "" if all(identity.get(key) for key in VALIDATION_IDENTITY_ENV) else "core_diagnostic_identity_invalid"
+
+
+def core_diagnostic_command(selector: str) -> list[str]:
+    # Only callers iterating the trusted constant pair may use this command.
+    if selector not in {name for _, name, _ in CORE_DIAGNOSTIC_CASES}:
+        raise ValueError("diagnostic selector is not in the fixed pair")
+    return ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all",
+            selector, "--", "--exact", "--test-threads=1", "--nocapture"]
+
+
+def core_stage_sequence(case: str, records: list[dict[str, str]]) -> str:
+    stages = next(stages for key, _, stages in CORE_DIAGNOSTIC_CASES if key == case)
+    expected = [(stage, state, "none") for stage in stages for state in ("entered", "returned")]
+    if not records:
+        return "missing"
+    for index, record in enumerate(records):
+        if index >= len(expected) or record.get("case") != case:
+            return "invalid"
+        actual = (record.get("stage"), record.get("state"), record.get("error"))
+        if (index % 2 == 1 and actual[0] == expected[index][0] and actual[1] == "error"
+                and actual[2] in CORE_DIAGNOSTIC_ERRORS - {"none"} and index == len(records) - 1):
+            return "partial"
+        if actual != expected[index]:
+            return "invalid"
+    return "complete" if len(records) == len(expected) else "partial"
+
+
+def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
+    records = []
+    candidates = invalid = 0
+    for line in stderr.splitlines():
+        if CORE_DIAGNOSTIC_PREFIX not in line:
+            continue
+        candidates += 1
+        match = CORE_DIAGNOSTIC_FRAME.fullmatch(line)
+        if not match or match[1] != case or match[4] not in CORE_DIAGNOSTIC_ERRORS:
+            invalid += 1
+        elif len(records) < 12:
+            records.append(dict(zip(("case", "stage", "state", "error"), match.groups())))
+    ambiguity = sum(CORE_DIAGNOSTIC_PREFIX in line for line in stdout.splitlines())
+    status = core_stage_sequence(case, records)
+    if invalid or ambiguity or candidates != len(records):
+        status = "invalid"
+    return {"designated_channel": "stderr", "sequence_status": status, "records": records,
+            "stderr_candidate_count": candidates, "invalid_marker_count": invalid,
+            "omitted_marker_count": candidates - len(records),
+            "stdout_ambiguity_count": ambiguity, "attribution_complete": status == "complete",
+            "last_entered_stage": next((item["stage"] for item in reversed(records)
+                                         if item["state"] == "entered"), ""),
+            "cross_stream_chronology": "unknown", "writer_process_identity": "unknown"}
+
+
+def run_core_diagnostic_samples(result: dict[str, Any], manifest_root: Path,
+                                env: dict[str, str]) -> dict[str, Any]:
+    for case, selector, _ in CORE_DIAGNOSTIC_CASES:
+        child_env = {**env, CORE_DIAGNOSTIC_CASE_ENV: case}
+        try:
+            completed = subprocess.run(core_diagnostic_command(selector), cwd=manifest_root,
+                                       env=child_env, text=True, capture_output=True,
+                                       check=False, shell=False)
+        except OSError:
+            result["diagnostic_samples"].append({"case": case, "name": selector,
+                "status": "failure", "exit_code": None, "command_returned": False,
+                "observed_outcomes": [], "result_counts": None,
+                "stage_evidence": core_stage_evidence(case, "", "")})
+            continue
+        output = "\n".join((completed.stdout or "", completed.stderr or ""))
+        counts = test_result_counts(output)
+        outcomes = test_outcomes(output).get(selector, [])
+        evidence = core_stage_evidence(case, completed.stdout or "", completed.stderr or "")
+        success = (completed.returncode == 0 and outcomes == ["ok"]
+                   and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
+                                  "filtered": result["inventory"]["test_count"] - 1}
+                   and evidence["attribution_complete"])
+        result["diagnostic_samples"].append({"case": case, "name": selector,
+            "status": "success" if success else "failure", "exit_code": completed.returncode,
+            "command_returned": True, "observed_outcomes": outcomes, "result_counts": counts,
+            "stage_evidence": evidence, "diagnostics": command_diagnostics(completed)})
+    result["sampling_complete"] = all(item["command_returned"] for item in result["diagnostic_samples"])
+    if any(item["status"] != "success" for item in result["diagnostic_samples"]):
+        result.update(status="failure", failure_code="core_diagnostic_sample_failed")
+    return result
+
+
 def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     manifest_root = repo_root / "codex-rs"
     try:
@@ -986,6 +1119,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     elif runtime_preparation_only_value == "false":
         runtime_preparation_only = False
     else:
+        if os.environ.get(CORE_DIAGNOSTIC_ONLY_ENV, "false") != "false":
+            return {**fail("core_diagnostic_mode_collision", "invalid preparation/diagnostic mode"),
+                    **core_diagnostic_fields(), "request": request}
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "failure",
@@ -1004,6 +1140,11 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     request_fingerprint = hashlib.sha256(
         json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    diagnostic_only = os.environ.get(CORE_DIAGNOSTIC_ONLY_ENV, "false") == "true"
+    diagnostic_error = core_diagnostic_request_error(request, runtime_preparation_only)
+    if diagnostic_error:
+        return {**fail(diagnostic_error, "fixed diagnostic route rejected"), **core_diagnostic_fields(),
+                "request": request, "request_fingerprint": request_fingerprint}
     if runtime_preparation_only and (
         request["package"],
         request["target_kind"],
@@ -1024,6 +1165,8 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         }
     env = os.environ.copy()
     env.pop(RUNTIME_PREPARATION_ONLY_ENV, None)
+    env.pop(CORE_DIAGNOSTIC_ONLY_ENV, None)
+    env.pop(CORE_DIAGNOSTIC_CASE_ENV, None)
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
@@ -1045,7 +1188,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             **(
                 {"result_kind": "runtime_preflight"}
                 if runtime_preparation_only
-                else {}
+                else core_diagnostic_fields() if diagnostic_only else {}
             ),
             "failure_code": "runtime_preparation_failed",
             "message": "required core integration runtime preparation failed",
@@ -1073,18 +1216,24 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     inventory_command = cargo_args(
         request, list_only=True, command_record=command_record
     )
-    inventory = subprocess.run(
-        inventory_command,
-        cwd=manifest_root,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        shell=False,
-    )
+    try:
+        inventory = subprocess.run(
+            inventory_command, cwd=manifest_root, env=env, text=True,
+            capture_output=True, check=False, shell=False,
+        )
+    except OSError:
+        if not diagnostic_only:
+            raise
+        return {**fail("inventory_failed", "inventory command did not return"), **core_diagnostic_fields(),
+                "request": request, "request_fingerprint": request_fingerprint,
+                "candidate_sha": source_sha, "runtime_preparation": runtime_preparation}
     names = listed_tests(inventory.stdout)
     if inventory.returncode != 0:
         result = fail("inventory_failed", "Cargo test inventory failed")
+        if diagnostic_only:
+            result.update(**core_diagnostic_fields(), request=request,
+                          request_fingerprint=request_fingerprint, candidate_sha=source_sha,
+                          runtime_preparation=runtime_preparation)
         result["inventory"] = {
             "status": "failure",
             "tests": [],
@@ -1102,6 +1251,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         "request": request,
         "request_fingerprint": request_fingerprint,
         "candidate_sha": source_sha or git_sha(repo_root),
+        **(core_diagnostic_fields() if diagnostic_only else {}),
         **(
             {"runtime_preparation": runtime_preparation}
             if runtime_preparation is not None
@@ -1124,6 +1274,8 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
+    if diagnostic_only:
+        return run_core_diagnostic_samples(result, manifest_root, env)
     # Run the complete immutable target command.  This keeps the command
     # surface closed while the requested names remain exact post-run selectors.
     test_command = cargo_args(
@@ -1449,6 +1601,58 @@ def _safe_reconciliation(result: dict[str, Any], known: set[str]) -> dict[str, A
     return {key: _safe_names(result.get(key), known, MAX_TESTS) for key in ("missing_tests", "ambiguous_tests")}
 
 
+def _safe_core_stage_evidence(case: str, value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    stages = next(stages for key, _, stages in CORE_DIAGNOSTIC_CASES if key == case)
+    values = source.get("records") if isinstance(source.get("records"), list) else []
+    records = [{key: item[key] for key in ("case", "stage", "state", "error")}
+               for item in values[:12] if isinstance(item, dict) and item.get("case") == case
+               and isinstance(item.get("stage"), str) and item["stage"] in stages
+               and isinstance(item.get("state"), str) and item["state"] in {"entered", "returned", "error"}
+               and isinstance(item.get("error"), str) and item["error"] in CORE_DIAGNOSTIC_ERRORS]
+    safe = _safe_fields(source, counts=("stderr_candidate_count", "invalid_marker_count",
+                        "omitted_marker_count", "stdout_ambiguity_count"), handled=(
+                        "records", "designated_channel", "sequence_status", "attribution_complete",
+                        "last_entered_stage", "cross_stream_chronology", "writer_process_identity"))
+    status = core_stage_sequence(case, records)
+    if (len(values) != len(records) or safe.get("invalid_marker_count") != 0
+            or safe.get("stdout_ambiguity_count") != 0 or safe.get("omitted_marker_count") != 0
+            or safe.get("stderr_candidate_count") != len(records)
+            or source.get("designated_channel") != "stderr" or source.get("sequence_status") != status):
+        status = "invalid"
+    safe.update(designated_channel="stderr", sequence_status=status, records=records,
+                projection_omitted_marker_count=len(values) - len(records),
+                attribution_complete=status == "complete",
+                last_entered_stage=next((item["stage"] for item in reversed(records)
+                                         if item["state"] == "entered"), ""),
+                cross_stream_chronology="unknown", writer_process_identity="unknown")
+    return safe
+
+
+def _safe_core_samples(value: Any) -> dict[str, Any]:
+    values = value if isinstance(value, list) else []
+    samples = []
+    selected = {key: name for key, name, _ in CORE_DIAGNOSTIC_CASES}
+    for item in values[:2]:
+        if not isinstance(item, dict) or not isinstance(item.get("case"), str) or item["case"] not in selected:
+            continue
+        case = item["case"]
+        if item.get("name") != selected[case]:
+            continue
+        safe = _safe_fields(item, booleans=("command_returned",), enums={"status": {"success", "failure"}},
+                            handled=("case", "name", "exit_code", "result_counts", "observed_outcomes", "stage_evidence", "diagnostics"))
+        outcomes = item.get("observed_outcomes") if isinstance(item.get("observed_outcomes"), list) else []
+        accepted = [outcome for outcome in outcomes if isinstance(outcome, str) and outcome in {"ok", "FAILED", "ignored"}][:4]
+        safe.update(case=case, name=selected[case], exit_code=_safe_exit(item.get("exit_code")),
+                    result_counts=_safe_counts(item.get("result_counts")), observed_outcomes=accepted,
+                    outcome_original_count=len(outcomes), outcome_omitted_count=len(outcomes) - len(accepted),
+                    stage_evidence=_safe_core_stage_evidence(case, item.get("stage_evidence")))
+        if "diagnostics" in item:
+            safe["diagnostics"] = _safe_diagnostics(item["diagnostics"])
+        samples.append(safe)
+    return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
+
+
 def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     """Project every public field afresh; omitted raw content is never hashed."""
     inventory = _safe_inventory(result.get("inventory"))
@@ -1459,13 +1663,19 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION, "status": "success" if result.get("status") == "success" else "failure",
         "failure_code": result.get("failure_code") if isinstance(result.get("failure_code"), str) and result["failure_code"] in PUBLIC_FAILURE_CODES else "",
-        "result_kind": "runtime_preflight" if result.get("result_kind") == "runtime_preflight" else "named_tests",
+        "result_kind": result["result_kind"] if result.get("result_kind") in ("runtime_preflight", "core_runtime_diagnostic") else "named_tests",
         "request_fingerprint": _safe_token(result.get("request_fingerprint"), SHA256_RE),
         "candidate_sha": _safe_token(result.get("candidate_sha"), GIT_SHA_RE),
         "identity": identity, "request": request, "inventory": inventory,
         "tests": tests.pop("records"), "test_projection": tests,
-        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests"}),
+        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples"}),
     }
+    if safe["result_kind"] == "core_runtime_diagnostic":
+        samples = _safe_core_samples(result.get("diagnostic_samples"))
+        safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
+                    diagnostic_samples=samples.pop("records"), sample_projection=samples)
+        safe["sampling_complete"] = (samples["original_count"] == 2 and samples["omitted_count"] == 0
+                                     and all(item.get("command_returned") is True for item in safe["diagnostic_samples"]))
     if "runtime_preparation" in result:
         safe["runtime_preparation"] = _safe_runtime_preparation(result["runtime_preparation"])
     if "failure_evidence" in result:
@@ -1473,16 +1683,35 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("missing_tests") or result.get("ambiguous_tests"):
         safe["inventory_reconciliation"] = _safe_reconciliation(result, known)
     if safe["status"] == "success":
-        complete = (result.get("schema_version") == SCHEMA_VERSION and ("result_kind" not in result or result["result_kind"] in ("named_tests", "runtime_preflight")) and request["catalog_validated"]
+        complete = (result.get("schema_version") == SCHEMA_VERSION and ("result_kind" not in result or result["result_kind"] in ("named_tests", "runtime_preflight", "core_runtime_diagnostic")) and request["catalog_validated"]
                     and all(identity.get(key) for key in ("harness_sha", "base_ref", "base_sha", "target_sha", "run_id", "run_attempt"))
                     and safe["candidate_sha"] == identity.get("target_sha") and bool(safe["request_fingerprint"]))
         complete = complete and request["request_fingerprint"] == safe["request_fingerprint"]
-        if safe["result_kind"] == "named_tests":
+        if safe["result_kind"] == "core_runtime_diagnostic":
+            complete = complete and (result.get("diagnostic_only") is True and result.get("full_target_execution") is False
+                        and result.get("qualification_status") == "not_attempted" and result.get("sampling_complete") is True
+                        and safe["sampling_complete"] and request.get("profile") == "rust_integration"
+                        and tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET
+                        and request["tests"] == [name for _, name, _ in CORE_DIAGNOSTIC_CASES]
+                        and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"]
+                        and not inventory["omitted_count"] and not request["selectors"]["omitted_count"]
+                        and not safe["tests"] and tests["original_count"] == 0
+                        and [(item["case"], item["name"]) for item in safe["diagnostic_samples"]]
+                        == [(case, name) for case, name, _ in CORE_DIAGNOSTIC_CASES])
+            complete = complete and all(inventory["tests"].count(item["name"]) == 1
+                        and item.get("status") == "success" and item["exit_code"] == 0
+                        and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1
+                        and item["result_counts"] == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
+                                                      "filtered": inventory.get("test_count", 0) - 1}
+                        and item["stage_evidence"]["attribution_complete"] for item in safe["diagnostic_samples"])
+        elif safe["result_kind"] == "named_tests":
             complete = complete and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"] and not inventory["omitted_count"] and not request["selectors"]["omitted_count"] and not tests["omitted_count"]
             complete = complete and [item["name"] for item in safe["tests"]] == request["tests"] and bool(safe["tests"])
             complete = complete and all(inventory["tests"].count(item["name"]) == 1 and item.get("status") == "success" and item["exit_code"] == 0 and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1 and item.get("matched_line_count") == 1 and item["result_counts"] is not None for item in safe["tests"])
         else:
             complete = complete and tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET and inventory.get("status") == "not-run" and not safe["tests"] and tests["original_count"] == 0
+        if safe["result_kind"] != "core_runtime_diagnostic":
+            complete = complete and not any(key in result for key in core_diagnostic_fields() if key != "result_kind")
         runtime = safe.get("runtime_preparation")
         if runtime is not None or safe["result_kind"] == "runtime_preflight" or tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET:
             runtime = runtime or {}
@@ -1505,6 +1734,8 @@ def public_artifact_bytes(result: dict[str, Any]) -> bytes:
                 "result_kind": safe["result_kind"], "original_serialized_bytes": len(encoded),
                 "omitted": "full_result_not_emitted", "truncated": True,
                 "identity": safe["identity"], "request_fingerprint": safe["request_fingerprint"]}
+        if safe["result_kind"] == "core_runtime_diagnostic":
+            safe.update(core_diagnostic_fields())
         encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
         raise PublicResultError("public_result_overflow")
@@ -1539,17 +1770,11 @@ def main() -> int:
         result = error or run_request(request or {}, Path.cwd().resolve())
     except Exception:
         result = fail("runner_unexpected_exception", "runner execution failed")
+    if os.environ.get(CORE_DIAGNOSTIC_ONLY_ENV, "false") != "false" and result.get("result_kind") != "core_runtime_diagnostic":
+        result.update(core_diagnostic_fields())
+        result.update(status="failure", failure_code=result.get("failure_code") or "core_diagnostic_sample_incomplete")
     result.setdefault("identity", {})
-    result["identity"].update(
-        {
-            "harness_sha": os.environ.get("VALIDATION_HARNESS_SHA", ""),
-            "base_ref": os.environ.get("VALIDATION_BASE_REF", ""),
-            "base_sha": os.environ.get("VALIDATION_BASE_SHA", ""),
-            "target_sha": os.environ.get("VALIDATION_TARGET_SHA", ""),
-            "run_id": os.environ.get("GITHUB_RUN_ID", ""),
-            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
-        }
-    )
+    result["identity"].update({key: os.environ.get(variable, "") for key, variable in VALIDATION_IDENTITY_ENV.items()})
     try:
         data = public_artifact_bytes(result)
     except PublicResultError:

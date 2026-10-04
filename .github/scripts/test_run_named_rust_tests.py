@@ -1202,6 +1202,197 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
         run.assert_not_called()
 
 
+class CoreRuntimeDiagnosticTests(unittest.TestCase):
+    root = Path(named_tests.__file__).resolve().parents[2]
+    identity = {"harness_sha": "b" * 40, "base_sha": "c" * 40, "target_sha": "a" * 40,
+                "base_ref": "validation/base", "run_id": "123", "run_attempt": "2"}
+    request = {"schema_version": named_tests.SCHEMA_VERSION, "profile": "rust_integration",
+               "package": "codex-core", "target_kind": "integration", "target": "all",
+               "tests": [name for _, name, _ in named_tests.CORE_DIAGNOSTIC_CASES]}
+
+    def _markers(self, case: str) -> str:
+        stages = next(stages for key, _, stages in named_tests.CORE_DIAGNOSTIC_CASES if key == case)
+        return "\n".join(f"codex-core-runtime-diagnostic-v1 case={case} stage={stage} state={state} error=none"
+                         for stage in stages for state in ("entered", "returned"))
+
+    def _sample(self, case: str, outcome: str = "ok", stderr: str | None = None) -> subprocess.CompletedProcess[str]:
+        name = next(name for key, name, _ in named_tests.CORE_DIAGNOSTIC_CASES if key == case)
+        output = (f"test {name} ... {outcome}\n"
+                  f"test result: ok. {int(outcome == 'ok')} passed; {int(outcome == 'FAILED')} failed; "
+                  f"{int(outcome == 'ignored')} ignored; 0 measured; 1 filtered out\n")
+        return subprocess.CompletedProcess(named_tests.core_diagnostic_command(name),
+                                          101 if outcome == "FAILED" else 0, output,
+                                          self._markers(case) if stderr is None else stderr)
+
+    def _run(self, *, request: dict[str, object] | None = None, extra_env: dict[str, str] | None = None,
+             samples: list[object] | None = None, inventory: str | None = None, inventory_exit: int = 0,
+             build_exit: int = 0) -> tuple[dict[str, object], list[list[str]]]:
+        request = self.request if request is None else request
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env.update({named_tests.CORE_DIAGNOSTIC_ONLY_ENV: "true", named_tests.CORE_DIAGNOSTIC_CASE_ENV: "INHERITED_PRIVATE"})
+        env.update(extra_env or {})
+        record = named_tests.select_target(self.request, named_tests.load_manifest(self.root))
+        expected = [["git", "rev-parse", "HEAD"], *[list(argv) for _, argv in named_tests.CORE_RUNTIME_BUILDS],
+                    list(record["inventory_argv"]), *[named_tests.core_diagnostic_command(name) for _, name, _ in named_tests.CORE_DIAGNOSTIC_CASES]]
+        inventory = "\n".join(f"{name}: test" for name in self.request["tests"]) if inventory is None else inventory
+        samples = [self._sample(case) for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES] if samples is None else samples
+        calls = []
+
+        def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            index = len(calls)
+            self.assertLess(index, len(expected), "unexpected subprocess call")
+            self.assertEqual(argv, expected[index])
+            calls.append(argv)
+            self.assertEqual({key: kwargs[key] for key in ("text", "capture_output", "check")},
+                             {"text": True, "capture_output": True, "check": False})
+            self.assertEqual(kwargs["cwd"], self.root if index == 0 else self.root / "codex-rs")
+            if index == 0:
+                self.assertNotIn("env", kwargs)
+                return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+            child_env = {key: value for key, value in env.items() if key not in
+                         (named_tests.CORE_DIAGNOSTIC_ONLY_ENV, named_tests.CORE_DIAGNOSTIC_CASE_ENV, named_tests.RUNTIME_PREPARATION_ONLY_ENV)}
+            child_env["RUST_MIN_STACK"] = "8388608"
+            if index >= 4:
+                child_env[named_tests.CORE_DIAGNOSTIC_CASE_ENV] = named_tests.CORE_DIAGNOSTIC_CASES[index - 4][0]
+            self.assertEqual(kwargs["env"], child_env)
+            self.assertFalse(kwargs["shell"])
+            if index < 3:
+                return subprocess.CompletedProcess(argv, build_exit if index == 1 else 0, "", "PRIVATE_BUILD")
+            if index == 3:
+                return subprocess.CompletedProcess(argv, inventory_exit, inventory, "PRIVATE_INVENTORY")
+            returned = samples[index - 4]
+            if isinstance(returned, OSError):
+                raise returned
+            return returned
+
+        states = [(False, False), (False, False), (True, True), (True, True)]
+        paths = [self.root / "codex-rs" / "target" / "debug" / name for name, _ in named_tests.CORE_RUNTIME_BUILDS] * 2
+        with patch.dict(os.environ, env, clear=True), patch.object(named_tests.subprocess, "run", side_effect=fake_run), \
+                patch.object(named_tests, "_core_runtime_binary_state", side_effect=states) as binary_state:
+            result = named_tests.run_request(request, self.root)
+        self.assertEqual([call.args[0] for call in binary_state.call_args_list], paths if calls else [])
+        result["identity"] = dict(self.identity)
+        return result, calls
+
+    def test_fixed_calls_and_positive_public_sample_are_not_whole_target(self) -> None:
+        result, calls = self._run()
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual(6, len(calls))
+        self.assertEqual(("success", "core_runtime_diagnostic", True, False, "not_attempted", True, []),
+                         tuple(public[key] for key in ("status", "result_kind", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "tests")))
+        self.assertEqual([case for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES], [item["case"] for item in public["diagnostic_samples"]])
+        self.assertTrue(all(item["stage_evidence"]["attribution_complete"] for item in public["diagnostic_samples"]))
+
+    def test_closed_mode_tuple_selectors_and_identity_reject_before_any_call(self) -> None:
+        variants = [(self.request, {named_tests.CORE_DIAGNOSTIC_ONLY_ENV: "TRUE"}),
+                    (self.request, {named_tests.RUNTIME_PREPARATION_ONLY_ENV: "true"}),
+                    (self.request, {named_tests.RUNTIME_PREPARATION_ONLY_ENV: "TRUE"}),
+                    (self.request, {"VALIDATION_BASE_SHA": "PRIVATE_BAD_IDENTITY"}),
+                    ({**self.request, "tests": self.request["tests"][:1]}, {}),
+                    ({**self.request, "tests": list(reversed(self.request["tests"]))}, {}),
+                    ({**self.request, "tests": [*self.request["tests"], "suite::extra"]}, {}),
+                    ({**self.request, "package": "codex-cli", "target_kind": "bin", "target": "codex", "profile": "rust_minimal"}, {})]
+        for request, env in variants:
+            with self.subTest(request=request, env=env):
+                result, calls = self._run(request=request, extra_env=env)
+                self.assertEqual(("failure", []), (result["status"], calls))
+        with self.assertRaises(ValueError):
+            named_tests.core_diagnostic_command("suite::untrusted")
+
+    def test_classifier_rejects_bad_diagnostic_before_v8_route(self) -> None:
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+        manifest = named_tests.load_manifest(self.root)
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(named_tests.request_requires_core_runtime(json.dumps(self.request), "rust_integration", manifest))
+            self.assertFalse(named_tests.request_requires_core_runtime(json.dumps({**self.request, "tests": ["suite::other"]}), "rust_integration", manifest))
+
+    def test_first_red_ignored_or_launch_failure_retains_second(self) -> None:
+        error = "\n".join(self._markers("restricted").splitlines()[:5]) + "\ncodex-core-runtime-diagnostic-v1 case=restricted stage=builder state=error error=permission_denied"
+        for first in (self._sample("restricted", "FAILED"), self._sample("restricted", "FAILED", error), self._sample("restricted", "ignored", ""), OSError("PRIVATE_LAUNCH")):
+            with self.subTest(first=type(first).__name__):
+                result, calls = self._run(samples=[first, self._sample("project_docs")])
+                public = json.loads(named_tests.public_artifact_bytes(result))
+                self.assertEqual(6, len(calls))
+                self.assertEqual("failure", public["status"])
+                self.assertEqual("success", public["diagnostic_samples"][1]["status"])
+                self.assertEqual(not isinstance(first, OSError), public["sampling_complete"])
+                self.assertNotIn(b"PRIVATE_LAUNCH", named_tests.public_artifact_bytes(result))
+
+    def test_build_or_inventory_rejection_runs_no_sample(self) -> None:
+        for options, count in (({"build_exit": 101}, 2), ({"inventory_exit": 101}, 4),
+                               ({"inventory": ""}, 4), ({"inventory": "\n".join(f"{self.request['tests'][0]}: test" for _ in range(2))}, 4)):
+            with self.subTest(options=options):
+                result, calls = self._run(**options)
+                self.assertEqual(("failure", count, []), (result["status"], len(calls), result["diagnostic_samples"]))
+
+    def test_stderr_order_and_stdout_ambiguity_never_manufacture_attribution(self) -> None:
+        valid = self._markers("restricted")
+        variants = [(valid, ""), (valid, valid), (valid, valid.replace("case=restricted", "case=project_docs")),
+                    (valid, valid.replace("state=entered", "state=error", 1)), ("", valid + "\n" + valid),
+                    ("", "\n".join(reversed(valid.splitlines()))), ("", valid.replace("-v1", "-v2")),
+                    ("", valid.replace("case=restricted", "case=project_docs"))]
+        for stdout, stderr in variants:
+            with self.subTest(stdout=bool(stdout), stderr=bool(stderr)):
+                evidence = named_tests.core_stage_evidence("restricted", stdout, stderr)
+                self.assertFalse(evidence["attribution_complete"])
+                self.assertEqual("unknown", evidence["cross_stream_chronology"])
+                self.assertEqual("unknown", evidence["writer_process_identity"])
+        partial = "\n".join(valid.splitlines()[:5])
+        self.assertEqual(("partial", "builder"), tuple(named_tests.core_stage_evidence("restricted", "", partial)[key] for key in ("sequence_status", "last_entered_stage")))
+        error = partial + "\ncodex-core-runtime-diagnostic-v1 case=restricted stage=builder state=error error=permission_denied"
+        self.assertEqual("permission_denied", named_tests.core_stage_evidence("restricted", "", error)["records"][-1]["error"])
+
+    def test_incomplete_markers_counts_or_outcomes_keep_sample_red(self) -> None:
+        for first in (self._sample("restricted", stderr=""), self._sample("restricted", stderr=self._markers("restricted").splitlines()[0]),
+                      subprocess.CompletedProcess([], 0, self._sample("restricted").stdout.replace("1 filtered", "0 filtered"), self._markers("restricted")),
+                      subprocess.CompletedProcess([], 0, "PRIVATE_PANIC", self._markers("restricted"))):
+            result, _ = self._run(samples=[first, self._sample("project_docs")])
+            self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(result))["status"])
+
+    def test_whole_projection_privacy_identity_and_sample_laundering(self) -> None:
+        first = self._sample("restricted")
+        first.stdout += "\nPRIVATE_BODY /private/secret"
+        first.stderr += "\nPRIVATE_PANIC https://private.invalid github_pat_PRIVATE"
+        result, _ = self._run(samples=[first, self._sample("project_docs")])
+        sample = result["diagnostic_samples"][0]
+        sample.update(raw_output="PRIVATE_BODY", exception="PRIVATE_EXCEPTION", argv=["/private/secret"])
+        sample["stage_evidence"].update(raw_stderr="github_pat_PRIVATE_CREDENTIAL", process_identity="PRIVATE_PID")
+        sample["stage_evidence"]["records"][0]["raw"] = "https://private.invalid/PRIVATE_URL"
+        data = named_tests.public_artifact_bytes(result)
+        for canary in (b"PRIVATE", b"/private", b"github_pat_", b"https://", b"stdout_tail", b"stderr_tail"):
+            self.assertNotIn(canary, data)
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "run_request", return_value=result) as run, \
+                patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+            self.assertEqual(0, named_tests.main())
+        run.assert_called_once_with(self.request, Path.cwd().resolve())
+        write.assert_called_once_with(data)
+        output.assert_called_once_with('{"failure_code": "", "status": "success"}')
+        for mutate in (lambda value: value["identity"].update(target_sha="PRIVATE_ID"),
+                       lambda value: value.update(full_target_execution=True),
+                       lambda value: value["diagnostic_samples"][0]["stage_evidence"].update(stdout_ambiguity_count=1),
+                       lambda value: value["diagnostic_samples"].reverse()):
+            damaged = copy.deepcopy(result)
+            mutate(damaged)
+            self.assertEqual("public_projection_incomplete", json.loads(named_tests.public_artifact_bytes(damaged))["failure_code"])
+        normal = PublicArtifactBoundaryTests()._minimal()
+        normal.update(named_tests.core_diagnostic_fields())
+        normal["result_kind"] = "named_tests"
+        self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(normal))["status"])
+
+    def test_diagnostic_overflow_keeps_nonqualification_scope(self) -> None:
+        result, _ = self._run()
+        names = [f"suite::{index:04}_{'x' * 238}" for index in range(named_tests.MAX_PUBLIC_INVENTORY_NAMES)]
+        result["inventory"].update(tests=names, test_count=len(names))
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual(("failure", "public_result_overflow", "core_runtime_diagnostic", True, False, "not_attempted"),
+                         tuple(public[key] for key in ("status", "failure_code", "result_kind", "diagnostic_only", "full_target_execution", "qualification_status")))
+
+
 class PublicArtifactBoundaryTests(unittest.TestCase):
     root = Path(named_tests.__file__).resolve().parents[2]
     identity = {"harness_sha": "b" * 40, "base_sha": "c" * 40,

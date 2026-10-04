@@ -26,6 +26,10 @@ on:
         required: false
         type: boolean
         default: false
+      core_runtime_diagnostic_only:
+        required: false
+        type: boolean
+        default: false
       artifact_name:
         required: false
         type: string
@@ -37,7 +41,9 @@ permissions:
 jobs:
   run:
     name: >-
-      ${{ inputs.runtime_preparation_only
+      ${{ inputs.core_runtime_diagnostic_only
+          && 'Core runtime diagnostic sample (not whole target qualification)'
+          || inputs.runtime_preparation_only
           && 'Runtime preflight only (not full target qualification)'
           || 'Run exact named Rust tests' }}
     runs-on: ubuntu-24.04
@@ -153,6 +159,9 @@ jobs:
       - name: Classify exact core runtime prerequisite
         id: core_runtime_requirement
         working-directory: validation-target
+        env:
+          VALIDATION_RUNTIME_PREPARATION_ONLY: ${{ inputs.runtime_preparation_only }}
+          VALIDATION_CORE_RUNTIME_DIAGNOSTIC_ONLY: ${{ inputs.core_runtime_diagnostic_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -171,7 +180,9 @@ jobs:
           cargo_lock: ${{ github.workspace }}/validation-target/codex-rs/Cargo.lock
 
       - name: >-
-          ${{ inputs.runtime_preparation_only
+          ${{ inputs.core_runtime_diagnostic_only
+              && 'Sample fixed two core runtime diagnostic cases'
+              || inputs.runtime_preparation_only
               && 'Prepare fixed core runtime only'
               || 'Inventory and run exact named tests' }}
         id: named_tests
@@ -179,6 +190,7 @@ jobs:
         working-directory: validation-target
         env:
           VALIDATION_RUNTIME_PREPARATION_ONLY: ${{ inputs.runtime_preparation_only }}
+          VALIDATION_CORE_RUNTIME_DIAGNOSTIC_ONLY: ${{ inputs.core_runtime_diagnostic_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -206,6 +218,11 @@ jobs:
               if payload.get("result_kind") == "runtime_preflight":
                   print("- Result kind: `runtime_preflight`")
                   print("- Scope: runtime preparation only; full target tests were not run.")
+              if payload.get("result_kind") == "core_runtime_diagnostic":
+                  print("- Result kind: `core_runtime_diagnostic`")
+                  print("- Scope: fixed two-case diagnostic sample; whole-target qualification not attempted.")
+                  print(f"- Sampling complete: `{payload.get('sampling_complete', False)}`")
+                  print(f"- Sample records: `{len(payload.get('diagnostic_samples') or [])}`")
               print(f"- Status: `{payload.get('status', 'unknown')}`")
               print(f"- Request fingerprint: `{payload.get('request_fingerprint', '')}`")
               print(f"- Harness SHA: `{identity.get('harness_sha', '')}`")
@@ -226,7 +243,9 @@ jobs:
           retention-days: 3
 
       - name: >-
-          ${{ inputs.runtime_preparation_only
+          ${{ inputs.core_runtime_diagnostic_only
+              && 'Preserve failed diagnostic sample result'
+              || inputs.runtime_preparation_only
               && 'Preserve failed runtime preflight result'
               || 'Preserve failed exact-test result' }}
         if: ${{ steps.named_tests.outcome == 'failure' }}

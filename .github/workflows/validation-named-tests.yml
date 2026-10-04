@@ -1,7 +1,9 @@
 name: validation-named-tests
 
 run-name: >-
-  ${{ inputs.runtime_preparation_only
+  ${{ inputs.core_runtime_diagnostic_only
+      && 'core-runtime-diagnostic-only/not-whole-target'
+      || inputs.runtime_preparation_only
       && 'runtime-preflight-only'
       || format('validation-named-tests/{0}', inputs.profile) }}
 
@@ -40,6 +42,11 @@ on:
         required: false
         type: boolean
         default: false
+      core_runtime_diagnostic_only:
+        description: Sample only the fixed two core diagnostic cases; never qualifies the full target
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
@@ -59,4 +66,5 @@ jobs:
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
       runtime_preparation_only: ${{ inputs.runtime_preparation_only }}
+      core_runtime_diagnostic_only: ${{ inputs.core_runtime_diagnostic_only }}
       artifact_name: validation-named-tests-${{ github.run_id }}
