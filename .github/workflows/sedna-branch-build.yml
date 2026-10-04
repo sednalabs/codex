@@ -153,6 +153,58 @@ jobs:
           if [[ "${MODE}" == "consume-existing" ]]; then
             python3 .github/scripts/verify_existing_first_binary_producer.py --validate-accepted-inputs
           fi
+      - name: Test static consumer contract regression controls
+        if: ${{ inputs.mode != 'prepare-only' }}
+        working-directory: .workflow-src
+        run: python3 .github/scripts/test_first_binary_contracts.py -v
+      - name: Check out exact selected consumer source for early contracts
+        if: ${{ inputs.mode != 'prepare-only' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.mode == 'build' && inputs.target_sha || inputs.fixture_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .contract-source
+          sparse-checkout: scripts/codex_package/smoke_tests/first_binary
+      - name: Check out exact SDK source for early contracts
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sdk_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .contract-sdk
+          sparse-checkout: sdk/python/tests
+      - name: Check out exact historical producer workflow for early contracts
+        if: ${{ inputs.mode == 'consume-existing' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.producer_workflow_host_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: .contract-producer
+          sparse-checkout: .github/workflows/sedna-branch-build.yml
+          sparse-checkout-cone-mode: false
+      - name: Check exact selected consumer contracts before package work
+        if: ${{ inputs.mode != 'prepare-only' }}
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+        run: |
+          python3 .workflow-src/.github/scripts/check_first_binary_contracts.py \
+            --workflow-root .workflow-src \
+            --source-root .contract-source \
+            --sdk-root .contract-sdk \
+            --producer-root .contract-producer
       - name: Test the runner graph regression fixtures
         working-directory: .workflow-src
         shell: bash

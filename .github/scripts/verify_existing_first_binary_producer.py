@@ -495,8 +495,13 @@ def _read_manifest(path: Path = ACCEPTED_INPUTS_PATH) -> Mapping[str, Any]:
     rows = manifest.get("records")
     _require(isinstance(rows, list) and rows, "accepted-input manifest has no records")
     seen: set[str] = set()
-    for row_value in rows:
-        row = _validate_manifest_record(row_value)
+    for index, row_value in enumerate(rows):
+        try:
+            row = _validate_manifest_record(row_value)
+        except ValueError as exc:
+            record_id = row_value.get("record_id") if isinstance(row_value, dict) else None
+            label = record_id if isinstance(record_id, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", record_id) else f"index {index}"
+            raise ValueError(f"accepted-input record {label} rejected: {exc}") from exc
         _require(row["record_id"] not in seen, "accepted-input manifest repeats a record ID")
         seen.add(row["record_id"])
     return manifest

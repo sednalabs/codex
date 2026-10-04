@@ -1,6 +1,7 @@
 """Hosted regression controls for selected static consumer contracts."""
 
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,7 +134,7 @@ class OptionContractTests(CheckerFixture):
         self.assertTrue(any("unknown pytest option --consumer-context-file" in error for error in result.errors))
 
     def test_unsupported_dynamic_registration_fails_closed(self):
-        with self.assertRaisesRegex(ValueError, "unsupported"):
+        with self.assertRaisesRegex(ValueError, "literal long option"):
             checker._registered_options("def pytest_addoption(parser):\n    group = parser.getgroup('x')\n    group.addoption(option_name)\n")
         with self.assertRaisesRegex(ValueError, "pytest_addoption"):
             checker._registered_options("def other(parser):\n    group = parser.getgroup('x')\n")
@@ -263,10 +264,19 @@ class WorkflowAndObserverTests(CheckerFixture):
 
     def test_existing_authority_rejects_malformed_base_sha(self):
         import verify_existing_first_binary_producer as verifier
-        record = copy.deepcopy(verifier.DIAGNOSTIC_RECORD)
+        manifest = copy.deepcopy(verifier._read_manifest())
+        record = manifest["records"][0]
         record["identity"]["comparison_base_sha"] = "b" * 38
-        with self.assertRaisesRegex(ValueError, "comparison_base_sha is invalid"):
-            verifier._validate_manifest_record(record)
+        path = self.root / "malformed-manifest.json"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaises(ValueError) as failure:
+            verifier._read_manifest(path)
+        self.assertIn("record " + record["record_id"] + " rejected", str(failure.exception))
+        self.assertIn("comparison_base_sha is invalid", str(failure.exception))
+        record["record_id"] = "unsafe\nidentifier"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "record index 0 rejected"):
+            verifier._read_manifest(path)
 
     def test_producer_names_require_one_literal_per_top_level_job(self):
         self.assertEqual(len(checker._producer_job_names(self.producer / checker.WORKFLOW)), 6)
