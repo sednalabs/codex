@@ -1268,6 +1268,7 @@ def verify_test_summary_parser_contract() -> None:
         }
     )
     build_failed = json.dumps({"reason": "build-finished", "success": False})
+    build_succeeded = json.dumps({"reason": "build-finished", "success": True})
     no_run_tests = {"test_summary_count": 0, "passed": 0, "failed": 0, "ignored": 0}
     if bounded_library_failure_summary(
         "codex-core", f"{prebuild_error}\n{build_failed}", 101, set()
@@ -1336,6 +1337,27 @@ def verify_test_summary_parser_contract() -> None:
     }:
         refuse("Cargo unknown metadata crate withholding contract failed")
 
+    successful_metadata_build = bounded_library_failure_summary(
+        "codex-core",
+        f"{incompatible_metadata_error}\n{build_succeeded}",
+        0,
+        set(),
+        {"serde"},
+    )
+    if successful_metadata_build != {
+        "classification": "build_failure_unclassified",
+        "cargo_exit_code": 0,
+        "build_finished_count": 1,
+        "build_succeeded": True,
+        "compiler_error_count": 0,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo successful build metadata withholding contract failed")
+
     postbuild_error = json.dumps(
         {
             "reason": "compiler-message",
@@ -1346,13 +1368,13 @@ def verify_test_summary_parser_contract() -> None:
             },
         }
     )
-    build_succeeded = json.dumps({"reason": "build-finished", "success": True})
     if bounded_library_failure_summary(
         "codex-core",
         f'{build_succeeded}\n{postbuild_error}\n'
         "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
         101,
         set(),
+        {"serde"},
     ) != {
         "classification": "post_build_failure_unclassified",
         "cargo_exit_code": 101,
@@ -1565,6 +1587,8 @@ def bounded_library_failure_summary(
         classification = "post_build_failure_unclassified"
     else:
         classification = "build_failure_unclassified"
+    if not valid_build_event or build_succeeded is not False:
+        incompatible_crates = []
     metadata_cause = (
         "incompatible_rustc_metadata"
         if valid_build_event
