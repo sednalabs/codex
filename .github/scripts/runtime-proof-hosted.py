@@ -82,7 +82,7 @@ EXPECTED_LOCAL_HELPERS = {
     ".github/scripts/setup-dev-drive.ps1": "e11b6a0bc5f4f51d6a4159e145b75fdee7ed4b5c7a2dfb683b9156e47746c794",
 }
 TEST_SUMMARY = re.compile(
-    r"test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;"
+    r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;"
 )
 PACKAGE_SOURCE_DIRS = {
     "codex-runtime-proof": "runtime-proof",
@@ -267,6 +267,7 @@ def verify_inputs(manifest: dict[str, Any]) -> tuple[str, str]:
     head, workflow_sha = verify_commit_binding(manifest)
     verify_hash_map(manifest["product_inputs"], "product source")
     verify_hash_map(manifest["local_helpers"], "host helper/toolchain")
+    verify_test_summary_parser_contract()
     return head, workflow_sha
 
 
@@ -378,12 +379,15 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
     summaries = []
     for match in TEST_SUMMARY.finditer(output):
         decimal_values = match.groups()[1:]
-        if any(len(value) > 10 for value in decimal_values):
-            continue
+        if any(
+            len(value) > 10 or not value.isascii() or not value.isdecimal()
+            for value in decimal_values
+        ):
+            refuse("test summary count is unsupported")
         try:
             passed, failed, ignored = (int(value) for value in decimal_values)
         except ValueError:
-            continue
+            refuse("test summary count is unsupported")
         summaries.append(
             {
                 "status": match.group(1),
@@ -393,6 +397,31 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
             }
         )
     return summaries
+
+
+def verify_test_summary_parser_contract() -> None:
+    single_summary = "test result: ok. 1 passed; 0 failed; 0 ignored;"
+    expected_single = [
+        {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
+    ]
+    if parse_test_summaries(single_summary) != expected_single:
+        refuse("test summary parser contract failed")
+
+    child_and_outer = f"{single_summary}\n{single_summary}"
+    if parse_test_summaries(child_and_outer) != expected_single * 2:
+        refuse("test summary parser contract failed")
+
+    oversized_failed_then_success = (
+        "test result: FAILED. 10000000000 passed; 1 failed; 0 ignored;\n"
+        "test result: ok. 1 passed; 0 failed; 0 ignored;"
+    )
+    try:
+        parse_test_summaries(oversized_failed_then_success)
+    except SystemExit as error:
+        if error.code != "test summary count is unsupported":
+            refuse("test summary parser contract failed")
+    else:
+        refuse("test summary parser contract failed")
 
 
 def package_source_location(
