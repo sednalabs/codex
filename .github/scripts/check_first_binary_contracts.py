@@ -14,6 +14,10 @@ WORKFLOW = ".github/workflows/sedna-branch-build.yml"
 STEP_BUILD = "Run packaged first-binary consumers and preserve pytest status"
 STEP_EXISTING = "Run existing-package consumers with explicit producer provenance"
 TEST_ROOT = "scripts/codex_package/smoke_tests/first_binary"
+CONSUMER_JOBS = {
+    "consume-linux-x86_64": "Consume native Linux x86_64 package",
+    "consume-linux-aarch64": "Consume native Linux ARM64 package",
+}
 
 
 class Diagnostics:
@@ -67,6 +71,13 @@ def _workflow_steps(path):
                 break
             block.append(lines[i])
             i += 1
+        mode = "build" if step_name == STEP_BUILD else "consume-existing"
+        conditions = [line.strip() for line in block if re.match(r"^\s{8}if:", line)]
+        expected_condition = "if: ${{ inputs.mode == '" + mode + "' }}"
+        if conditions != [expected_condition]:
+            raise ValueError("{} has unsupported mode condition".format(step_name))
+        if CONSUMER_JOBS.get(current_job) != current_job_name:
+            raise ValueError("{} is not in its declared native consumer job".format(step_name))
         run = None
         j = 0
         while j < len(block):
@@ -85,12 +96,15 @@ def _workflow_steps(path):
             raise ValueError("{} step has no literal run block".format(step_name))
         found[match.group(2)].append((current_job_name or current_job or "unknown-job", run))
     for key in wanted:
-        if len(found[key]) != 2:
-            raise ValueError("expected two architecture steps named {!r}, found {}".format(key, len(found[key])))
+        labels = [label for label, _ in found[key]]
+        if len(labels) != 2 or set(labels) != set(CONSUMER_JOBS.values()):
+            raise ValueError("{} must occur once in each native consumer architecture".format(key))
     return found
 
 
 def _pytest_argv(run):
+    if len(re.findall(r"^\s*(?:python(?:3)?\s+-m\s+)?pytest\b", run, re.M)) != 1:
+        raise ValueError("expected exactly one literal pytest command")
     lines = run.splitlines()
     command = []
     in_pytest = False
@@ -109,7 +123,10 @@ def _pytest_argv(run):
     if not command:
         raise ValueError("literal pytest -q command not found")
     try:
-        return shlex.split(" ".join(command))
+        argv = shlex.split(" ".join(command))
+        if any(any(char in token for char in ";|&<>`") or "$(" in token for token in argv):
+            raise ValueError("unsupported shell control, substitution or redirection in pytest command")
+        return argv
     except ValueError as exc:
         raise ValueError("unsupported pytest quoting: {}".format(exc))
 
@@ -154,7 +171,7 @@ def _custom_options(argv):
 def _selected_nodeids(argv):
     nodeids = []
     for arg in argv:
-        normalized = arg.replace("${TEST_ROOT}", TEST_ROOT).replace("${test_root}", TEST_ROOT)
+        normalized = arg.replace("${PRODUCT_ROOT}/", "").replace("${TEST_ROOT}", TEST_ROOT).replace("${test_root}", TEST_ROOT)
         if normalized == TEST_ROOT or normalized.startswith(TEST_ROOT + "/"):
             nodeids.append(normalized)
         elif "::" in normalized:
@@ -341,7 +358,10 @@ def run(args, env=None):
             for job, run_block in step_runs:
                 try:
                     argv = _selected_pytest_argv(run_block, mode, env.get("CONSUMER_PROFILE", ""), step_name)
-                    arch_nodeids_by_arch.append((job, _selected_nodeids(argv)))
+                    nodeids = _selected_nodeids(argv)
+                    arch_nodeids_by_arch.append((job, nodeids))
+                    if mode == "build" and nodeids != [TEST_ROOT]:
+                        diagnostics.error(mode, job, str(workflow_path), "build must select exactly the first_binary directory")
                     if reg is not None:
                         opts = _custom_options(argv)
                         for opt in sorted(opts - reg):
@@ -426,8 +446,10 @@ def run(args, env=None):
                         diagnostics.error(mode, "historical-producer", str(producer_workflow), "static job-name set differs from selected manifest record {} (missing={}, extra={})".format(accepted["record_id"], sorted(wanted - names), sorted(names - wanted)))
                 except Exception as exc:
                     diagnostics.error(mode, "manifest", "selected producer record", "cannot select/validate accepted record: {}".format(exc))
+                observer = args.source_root / TEST_ROOT / "test_agent_control_tui_acceptance.py"
                 try:
-                    _observer_warnings(args.source_root / TEST_ROOT / "test_agent_control_tui_acceptance.py", mode, step_name, diagnostics)
+                    if observer.is_file():  # Older admitted fixture generations have no rich TUI observer.
+                        _observer_warnings(observer, mode, step_name, diagnostics)
                 except (OSError, SyntaxError) as exc:
                     diagnostics.error(mode, step_name, str(args.source_root / TEST_ROOT), "observer static source unavailable: {}".format(exc))
     return diagnostics

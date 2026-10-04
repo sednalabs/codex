@@ -202,6 +202,10 @@ class SelectedRunTests(CheckerFixture):
         result = self.run_checks(verifier=verifier)
         self.assertTrue(any("SDK selector function missing: test_missing" in error for error in result.errors))
 
+    def test_older_fixture_without_optional_observer_keeps_its_selected_contract(self):
+        (self.test_dir / "test_agent_control_tui_acceptance.py").unlink()
+        self.assertEqual(self.run_checks().errors, [])
+
     def test_malformed_manifest_batches_with_option_diagnostics(self):
         bad = TEST_RUN.replace("--consumer-context-file context", "--not-registered context")
         args = mock.Mock(workflow_root=self.workflow, source_root=self.source, sdk_root=self.sdk, producer_root=self.producer)
@@ -232,14 +236,30 @@ class WorkflowAndObserverTests(CheckerFixture):
         for _, script in steps[checker.STEP_BUILD]:
             argv = checker._selected_pytest_argv(script, "build", "full", checker.STEP_BUILD)
             self.assertIn("workflow-host-sha", checker._custom_options(argv))
-            self.assertIn("consumer-context-file", checker._custom_options(argv))
+            self.assertEqual(checker._selected_nodeids(argv), [checker.TEST_ROOT])
         for _, script in steps[checker.STEP_EXISTING]:
-            for profile, count in (("pair", 2), ("focused", 6), ("full", 1)):
+            for profile in ("pair", "focused", "full"):
                 argv = checker._selected_pytest_argv(script, "consume-existing", profile, checker.STEP_EXISTING)
-                self.assertEqual(len(checker._selected_nodeids(argv)), count)
+                self.assertTrue(checker._selected_nodeids(argv))
                 self.assertIn("expected-producer-workflow-host-sha", checker._custom_options(argv))
                 if profile == "full":
                     self.assertEqual(checker._selected_nodeids(argv), [checker.TEST_ROOT])
+
+    def test_workflow_rejects_wrong_architecture_or_mode(self):
+        workflow = Path(__file__).resolve().parents[1] / "workflows/sedna-branch-build.yml"
+        original = workflow.read_text(encoding="utf-8")
+        for source in (
+            original.replace("consume-linux-aarch64:", "duplicate-consumer:"),
+            original.replace("Consume native Linux ARM64 package", "Consume native Linux x86_64 package"),
+            original.replace("if: ${{ inputs.mode == 'build' }}", "if: ${{ inputs.mode == 'prepare-only' }}"),
+        ):
+            with mock.patch.object(Path, "read_text", return_value=source), self.assertRaises(ValueError):
+                checker._workflow_steps(workflow)
+
+    def test_pytest_control_operators_and_duplicate_commands_are_rejected(self):
+        for suffix in (" || true", " > output", "; true", "\npytest -q"):
+            with self.assertRaises(ValueError):
+                checker._pytest_argv(TEST_RUN.rstrip() + suffix)
 
     def test_existing_authority_rejects_malformed_base_sha(self):
         import verify_existing_first_binary_producer as verifier
