@@ -384,10 +384,20 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         # list. Reopen at the default width to verify the root details pane.
         with PackagedTui(isolated, "resume", root_id) as root_details_tui:
             root_details_tui.until("Ask Codex to do anything")
+            resumed_root_screen = root_details_tui.screen.text()
+            if (
+                "Agent command center" in resumed_root_screen
+                and "Group: Project" in resumed_root_screen
+            ):
+                # A resumed session can already be on its persisted overview.
+                # Leave it before invoking /agents so this assertion observes
+                # the command transition rather than an unchanged screen.
+                root_details_tui.send("\x1b")
+                root_details_tui.until_screen("Ask Codex to do anything")
             root_overview = _open_agents(
                 root_details_tui,
                 required_markers=(
-                    "All 1",
+                    "All 2",
                     "tui-root-task",
                     f"Thread ID: {root_id}",
                     "Configured/resolved model: package-smoke",
