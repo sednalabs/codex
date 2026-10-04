@@ -274,17 +274,6 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "tui-root-task" in overview, overview
             assert child_id not in overview and "/root/worker" not in overview, overview
             assert "PRIVATE_PROMPT_SENTINEL" not in overview, overview
-            tui.send("f")
-            tui.until_screen("Search ›", required_markers=("Agent command center",))
-            tui.send("tui-root-task")
-            details = tui.until_screen(root_id)
-            details_text = _normalized_screen(details)
-            assert f"Thread ID: {root_id}" in details_text, details
-            assert "Configured/resolved model: package-smoke" in details_text, details
-            assert "Configured/resolved effort: medium" in details_text, details
-            assert "Provider-effective identity: Unknown" in details_text, details
-            assert "PRIVATE_PROMPT_SENTINEL" not in details, details
-
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
             _open_subagents(tui)
@@ -327,6 +316,29 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 "TUI_RICH_CHILD_TERMINAL",
             )
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
+
+        # At width 40 the command center intentionally renders only its task
+        # list. Reopen at the default width to verify the root details pane.
+        with PackagedTui(isolated, "resume", root_id) as root_details_tui:
+            root_details_tui.until("Ask Codex to do anything")
+            root_overview = _open_agents(
+                root_details_tui,
+                required_markers=(
+                    "All 1",
+                    "tui-root-task",
+                    f"Thread ID: {root_id}",
+                    "Configured/resolved model: package-smoke",
+                    "Configured/resolved effort: medium",
+                    "Provider-effective identity: Unknown",
+                ),
+            )
+            root_details_text = _normalized_screen(root_overview)
+            assert f"Thread ID: {root_id}" in root_details_text, root_overview
+            assert "Configured/resolved model: package-smoke" in root_details_text
+            assert "Configured/resolved effort: medium" in root_details_text
+            assert "Provider-effective identity: Unknown" in root_details_text
+            assert child_id not in root_overview and "/root/worker" not in root_overview
+            assert "PRIVATE_PROMPT_SENTINEL" not in root_overview, root_overview
 
         with PackagedTui(isolated, "resume", root_id, columns=40) as replay_tui:
             replay_started = replay_tui.until_screen(
