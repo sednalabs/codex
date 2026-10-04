@@ -53,6 +53,7 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod cloud_config;
+mod control_plane;
 mod daemon_install;
 mod daemon_telemetry;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -262,6 +263,9 @@ enum DebugSubcommand {
 
     /// Render the model-visible prompt input list as JSON.
     PromptInput(DebugPromptInputCommand),
+
+    /// Summarize an explicitly selected bounded control-plane metadata range.
+    ControlPlane(control_plane::ControlPlaneCommand),
 
     /// Replay a rollout trace bundle and write reduced state JSON.
     #[clap(hide = true)]
@@ -1735,6 +1739,14 @@ async fn cli_main(
                     arg0_paths.clone(),
                 )
                 .await?;
+            }
+            DebugSubcommand::ControlPlane(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug control-plane",
+                )?;
+                control_plane::run(cmd).await?;
             }
             DebugSubcommand::TraceReduce(cmd) => {
                 reject_remote_mode_for_subcommand(
