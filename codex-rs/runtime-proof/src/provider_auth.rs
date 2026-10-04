@@ -55,6 +55,24 @@ pub(crate) fn valid_provider_recipient(recipient: &str, class: &ProviderCredenti
     }
 }
 
+/// Protected runtime currently admits only account classes that the existing
+/// cloud-config service treats as ineligible for its credential-bearing fetch.
+pub(crate) fn ensure_protected_cloud_config_ineligible(plan_type: Option<&str>) -> Result<()> {
+    let Some(plan_type) = plan_type else {
+        bail!("protected runtime cannot classify cloud-config credential eligibility");
+    };
+    let plan_type = plan_type.to_ascii_lowercase();
+    match plan_type.as_str() {
+        "business" | "ent26" | "enterprise_cbp_usage_based" | "enterprise" | "hc" | "edu"
+        | "education" => {
+            bail!("protected runtime account requires an unadmitted cloud-config credential consumer")
+        }
+        "free" | "go" | "plus" | "pro" | "prolite" | "team"
+        | "self_serve_business_usage_based" => Ok(()),
+        _ => bail!("protected runtime cannot classify cloud-config credential eligibility"),
+    }
+}
+
 pub(crate) fn validate_provider_credential(
     provider: &ProviderAuth,
     recipient: &str,

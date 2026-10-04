@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
 #[cfg(target_os = "linux")]
+use crate::provider_auth::ensure_protected_cloud_config_ineligible;
+#[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::valid_provider_recipient;
@@ -170,6 +172,7 @@ fn validate_and_import(
         &frame.mcp_bearer.0,
         frame.expires_at,
     )?;
+    ensure_protected_cloud_config_ineligible(frame.provider.plan_type.as_deref())?;
 
     let home = Path::new(&frame.codex_home).canonicalize()?;
     let environment_home = std::env::var_os("CODEX_HOME")
@@ -401,10 +404,17 @@ pub fn protected_mcp_target() -> Result<Option<(String, String)>> {
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
     };
+    protected_mcp_target_from_store(store, &PROTECTED_RUNTIME_FAILED)
+}
+
+fn protected_mcp_target_from_store(
+    store: &Mutex<Option<BootstrapAuth>>,
+    failed: &AtomicBool,
+) -> Result<Option<(String, String)>> {
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
-    ensure_auth_active(&mut stored)?;
+    ensure_auth_active_with_latch(&mut stored, failed)?;
     let Some(auth) = stored.as_ref() else {
         return Ok(None);
     };
@@ -463,6 +473,14 @@ pub fn capture_mcp_redaction_context(
 }
 
 fn ensure_auth_active(stored: &mut Option<BootstrapAuth>) -> Result<()> {
+    ensure_auth_active_with_latch(stored, &PROTECTED_RUNTIME_FAILED)
+}
+
+fn ensure_auth_active_with_latch(
+    stored: &mut Option<BootstrapAuth>,
+    failed: &AtomicBool,
+) -> Result<()> {
+    ensure_auth_not_failed(failed)?;
     let Some(expires_at) = stored.as_ref().map(|auth| auth.expires_at) else {
         return Ok(());
     };
@@ -473,6 +491,13 @@ fn ensure_auth_active(stored: &mut Option<BootstrapAuth>) -> Result<()> {
     if unix_seconds()? >= expires_at {
         invalidate_auth(stored)?;
         bail!("protected runtime authentication expired or its protection changed");
+    }
+    Ok(())
+}
+
+fn ensure_auth_not_failed(failed: &AtomicBool) -> Result<()> {
+    if failed.load(Ordering::Acquire) {
+        bail!("protected runtime credentials are unavailable");
     }
     Ok(())
 }
@@ -488,9 +513,24 @@ fn invalidate_auth(stored: &mut Option<BootstrapAuth>) -> Result<()> {
             codex_login::AuthKeyringBackendKind::default(),
         );
     }
-    *stored = None;
+    clear_auth_state(
+        stored,
+        &PROTECTED_RUNTIME_EVER_ACTIVE,
+        &PROTECTED_RUNTIME_FAILED,
+    );
     signer::erase_signer_authority()?;
     Ok(())
+}
+
+fn clear_auth_state(
+    stored: &mut Option<BootstrapAuth>,
+    ever_active: &AtomicBool,
+    failed: &AtomicBool,
+) {
+    if ever_active.load(Ordering::Acquire) {
+        failed.store(true, Ordering::Release);
+    }
+    *stored = None;
 }
 
 fn failed_target_match(_server: &str, _recipient: &str) -> Result<bool> {
