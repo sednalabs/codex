@@ -38,6 +38,7 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         wait_id: id.into(),
         phase: WaitPhase::Completed,
         primitive: WaitPrimitive::V2Wait,
+        return_when: ReturnWhen::Any,
         helper_id: Some("wait_agent".into()),
         helper_version: None,
         requested_timeout_ms: Some(-1),
@@ -46,6 +47,7 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         any_targets: Some(true),
         target_ids: vec!["resolved-thread".into()],
         target_set_complete: true,
+        resolved_target_kind: TargetReferenceKind::ThreadId,
         requested_target_ids: vec!["agent/path".into()],
         requested_target_kind: TargetReferenceKind::ExposedAgentPath,
         requested_target_set_complete: true,
@@ -125,6 +127,11 @@ fn wait_metadata_conflicts_quarantine_same_outcome_with_different_duration() {
     let active = recorder("capture-a");
     let mut first = event(EventKind::WaitCompleted);
     first.wait = Some(wait("wait-1", SelectedOutcome::Timeout));
+    first.wait.as_mut().unwrap().selected_producer = Some(EventIdentity {
+        capture_instance_id: "producer-capture".into(),
+        sequence: 7,
+    });
+    first.wait.as_mut().unwrap().selected_target_id = Some("resolved-thread".into());
     let mut second = first.clone();
     second.wait.as_mut().unwrap().blocked_duration_ns = Some(11);
     active.record(first).unwrap();
@@ -134,6 +141,159 @@ fn wait_metadata_conflicts_quarantine_same_outcome_with_different_duration() {
     assert_eq!(summary.waits_by_outcome.get(&SelectedOutcome::Unknown), Some(&1));
     assert!(summary.wait_timelines[0].conflicting);
     assert!(!summary.wait_timelines[0].complete);
+    assert_eq!(summary.wait_timelines[0].blocked_duration_ns, None);
+    assert_eq!(summary.wait_timelines[0].resolved_target_ids, Vec::<String>::new());
+    assert_eq!(summary.wait_timelines[0].selected_producer, None);
+    assert_eq!(summary.wait_timelines[0].selected_target_id, None);
+    assert_eq!(summary.wait_timelines[0].source_events.len(), 2);
+    assert_eq!(summary.wait_timelines[0].phase, WaitPhase::Unknown);
+}
+
+#[test]
+fn wait_timeline_retains_exact_requested_and_resolved_target_planes_and_lineage() {
+    let active = recorder("capture-a");
+    let mut input = event(EventKind::WaitCompleted);
+    input.operation_id = Some("wait-op".into());
+    input.root_thread_id = Some("root-thread".into());
+    input.parent_thread_id = Some("parent-thread".into());
+    input.fork_parent_thread_id = Some("fork-thread".into());
+    input.window_id = Some("window-2".into());
+    input.window_number = Some(2);
+    input.previous_window_id = Some("window-1".into());
+    input.wait = Some(wait("wait-1", SelectedOutcome::TargetTerminal));
+    active.record(input).unwrap();
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    let timeline = &summary.wait_timelines[0];
+    assert_eq!(timeline.operation_id.as_deref(), Some("wait-op"));
+    assert_eq!(timeline.root_thread_id.as_deref(), Some("root-thread"));
+    assert_eq!(timeline.parent_thread_id.as_deref(), Some("parent-thread"));
+    assert_eq!(timeline.fork_parent_thread_id.as_deref(), Some("fork-thread"));
+    assert_eq!(timeline.window_id.as_deref(), Some("window-2"));
+    assert_eq!(timeline.window_number, Some(2));
+    assert_eq!(timeline.previous_window_id.as_deref(), Some("window-1"));
+    assert_eq!(timeline.requested_target_ids, vec!["agent/path".to_owned()]);
+    assert_eq!(timeline.requested_target_kind, TargetReferenceKind::ExposedAgentPath);
+    assert!(timeline.requested_target_set_complete);
+    assert_eq!(timeline.resolved_target_ids, vec!["resolved-thread".to_owned()]);
+    assert_eq!(timeline.resolved_target_kind, TargetReferenceKind::ThreadId);
+    assert_eq!(timeline.resolved_target_set_complete, Some(true));
+    assert_eq!(timeline.helper_id.as_deref(), Some("wait_agent"));
+}
+
+#[test]
+fn incomplete_wait_start_is_preserved_as_unknown_incomplete_timeline() {
+    let active = recorder("capture-a");
+    let mut input = event(EventKind::WaitBlockingStarted);
+    let mut observation = wait("wait-start-only", SelectedOutcome::Timeout);
+    observation.phase = WaitPhase::Blocking;
+    observation.blocked_start_offset_ns = Some(15);
+    observation.blocked_end_offset_ns = None;
+    observation.operation_duration_ns = None;
+    observation.blocked_duration_ns = None;
+    input.wait = Some(observation);
+    let identity = active.record(input).unwrap();
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    assert_eq!(summary.wait_timelines.len(), 1);
+    let timeline = &summary.wait_timelines[0];
+    assert_eq!(timeline.source_events, vec![identity]);
+    assert_eq!(timeline.phase, WaitPhase::Blocking);
+    assert_eq!(timeline.selected_outcome, SelectedOutcome::Unknown);
+    assert_eq!(timeline.blocked_duration_ns, None);
+    assert!(!timeline.complete);
+}
+
+#[test]
+fn message_and_window_recovery_boundaries_remain_exact_observation_rows() {
+    let active = recorder("capture-a");
+    let mut message_event = event(EventKind::MessageAccepted);
+    message_event.operation_id = Some("send-op".into());
+    message_event.root_thread_id = Some("root-thread".into());
+    message_event.window_id = Some("window-2".into());
+    message_event.window_number = Some(2);
+    message_event.previous_window_id = Some("window-1".into());
+    message_event.message = Some(MessageObservation {
+        submission_id: Some("submission-1".into()),
+        sender_thread_id: Some("sender".into()),
+        recipient_thread_id: Some("recipient".into()),
+        intent: DeliveryIntent::QueueOnly,
+        accepted_event: None,
+        enqueued_event: None,
+        drained_event: None,
+        input_recorded_event: None,
+        activity_event: None,
+        selected_by_waits: vec!["wait-1".into()],
+        scheduled_turn_id: None,
+        semantic_acknowledgement: None,
+        followup_selection: FollowupSelection::Unknown,
+        superseded_submission_ids: vec![],
+        superseded_selection_complete: false,
+    });
+    active.record(message_event).unwrap();
+    let mut window = event(EventKind::WindowBoundaryObserved);
+    window.window_id = Some("window-2".into());
+    window.window_number = Some(2);
+    window.previous_window_id = Some("window-1".into());
+    active.record(window).unwrap();
+    let mut boundary = event(EventKind::RecoveryBoundaryObserved);
+    boundary.root_thread_id = Some("root-thread".into());
+    boundary.window_number = Some(3);
+    boundary.previous_window_id = Some("window-2".into());
+    active.record(boundary).unwrap();
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    assert_eq!(summary.message_timelines.len(), 1);
+    assert_eq!(summary.message_timelines[0].observation.intent, DeliveryIntent::QueueOnly);
+    assert_eq!(summary.message_timelines[0].observation.semantic_acknowledgement, None);
+    assert_eq!(summary.message_timelines[0].observation.selected_by_waits, vec!["wait-1".to_owned()]);
+    assert_eq!(summary.message_timelines[0].window_number, Some(2));
+    assert_eq!(summary.message_timelines[0].previous_window_id.as_deref(), Some("window-1"));
+    assert_eq!(summary.boundary_timelines.len(), 2);
+    assert_eq!(summary.boundary_timelines[0].kind, EventKind::WindowBoundaryObserved);
+    assert_eq!(summary.boundary_timelines[0].window_number, Some(2));
+    assert_eq!(summary.boundary_timelines[1].kind, EventKind::RecoveryBoundaryObserved);
+    assert_eq!(summary.boundary_timelines[1].window_number, Some(3));
+    assert_eq!(summary.boundary_timelines[1].previous_window_id.as_deref(), Some("window-2"));
+}
+
+#[test]
+fn truncated_producer_version_and_scheduler_rows_remain_incomplete() {
+    let active = recorder("capture-a");
+    let mut versioned = event(EventKind::OperationValidated);
+    versioned.producer_version = Some("v".repeat(257));
+    active.record(versioned).unwrap();
+    let first = active.snapshot().unwrap().events.remove(0);
+    assert!(first.truncated);
+    assert_eq!(first.input.producer_version, None);
+    assert!(first.input.field_coverage.iter().any(|mark|
+        mark.field == CoverageField::ProducerVersion && mark.unknown == Some(UnknownReason::Truncated)));
+
+    let mut scheduler_event = event(EventKind::MessageDrained);
+    scheduler_event.scheduler = Some(SchedulerObservation {
+        primitive: "pending-work".into(),
+        correlation_id: Some("schedule-1".into()),
+        pending_mail_observed: Some(true),
+        trigger_turn_mail_observed: Some(false),
+        durable_sleep_observed: Some(true),
+        idle_reservation_accepted: Some(true),
+        reservation_still_matches: Some(true),
+        eligibility_basis: EligibilityBasis::QueueOnlyDurableSleep,
+        drained_message_cohort_ids: vec!["submission-1".into()],
+        drained_cohort_complete: true,
+        drained_cohort_contains_trigger_turn_mail: Some(false),
+        phase: SchedulerPhase::CohortDrained,
+        task_registration_event: None,
+        scheduled_turn_id: Some("turn-1".into()),
+        turn_start_publication_event: None,
+        outcome: SchedulerOutcome::TaskRegistered,
+    });
+    let summary = Summary::reduce(&[RecordedEvent {
+        identity: EventIdentity { capture_instance_id: "capture-a".into(), sequence: 1 },
+        input: scheduler_event,
+        truncated: true,
+    }]);
+    assert_eq!(summary.scheduler_timelines.len(), 1);
+    assert!(summary.scheduler_timelines[0].incomplete);
+    assert!(!summary.scheduler_timelines[0].drained_cohort_complete);
+    assert!(!summary.scheduler_timelines[0].complete);
 }
 
 #[test]
@@ -205,6 +365,24 @@ fn repeated_wait_groups_are_namespaced_by_capture_plane_and_thread() {
     }
     let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
     assert_eq!(summary.repeated_wait_groups, 1);
+}
+
+#[test]
+fn helper_return_when_remains_distinct_from_primitive_any_target_selector() {
+    let active = recorder("capture-a");
+    for (operation, return_when) in [("op-any", ReturnWhen::Any), ("op-all", ReturnWhen::All)] {
+        let mut input = event(EventKind::WaitCompleted);
+        input.operation_id = Some(operation.into());
+        let mut observation = wait(operation, SelectedOutcome::Timeout);
+        observation.any_targets = Some(true);
+        observation.return_when = return_when;
+        observation.request_fingerprint = Some("same-opaque-fingerprint".into());
+        observation.result_fingerprint = Some("same-opaque-fingerprint".into());
+        input.wait = Some(observation);
+        active.record(input).unwrap();
+    }
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    assert_eq!(summary.repeated_wait_groups, 0);
 }
 
 #[test]

@@ -36,12 +36,13 @@ impl ControlPlaneRecorder {
             self.disabled_loss.fetch_add(1, Ordering::Relaxed);
             return None;
         }
+        let version_incomplete = bound_producer_version(&mut input);
         let projection_incomplete = sanitize_status_projection(&mut input);
         if !valid_input_ids(&input) {
             self.invalid_identity_loss.fetch_add(1, Ordering::Relaxed);
             return None;
         }
-        let truncated = bound_and_compact(&mut input) || projection_incomplete;
+        let truncated = bound_and_compact(&mut input) || projection_incomplete || version_incomplete;
         let payload = payload_capacity(&input) + self.capture_instance_id.capacity();
         let structural = structural_size(&input) + std::mem::size_of::<RecordedEvent>();
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
@@ -172,6 +173,18 @@ fn compact_option(value: &mut Option<String>) {
     if let Some(text) = value { *text = compact(std::mem::take(text)); }
 }
 fn compact_readiness(value: &mut ReadinessObservation) { compact_option(&mut value.target_turn_id); }
+fn bound_producer_version(input: &mut EventInput) -> bool {
+    if input.producer_version.as_ref().is_some_and(|value| value.len() > MAX_IDENTIFIER_BYTES) {
+        input.producer_version = None;
+        if input.field_coverage.len() < MAX_COVERAGE_MARKS_PER_EVENT {
+            input.field_coverage.push(CoverageMark {
+                field: CoverageField::ProducerVersion,
+                unknown: Some(UnknownReason::Truncated),
+            });
+        }
+        true
+    } else { false }
+}
 fn sanitize_status_projection(input: &mut EventInput) -> bool {
     let mut incomplete = false;
     let Some(query) = &mut input.status_query else { return false };

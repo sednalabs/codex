@@ -26,6 +26,8 @@ pub enum WaitPrimitive { V2Wait, ClockSleep, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TargetMode { Targeted, Untargeted, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ReturnWhen { Any, All, Unknown }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TargetReferenceKind { ExposedAgentPath, ThreadId, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SelectedOutcome {
@@ -110,10 +112,12 @@ pub struct SleepObservation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitObservation {
     pub wait_id: String, pub phase: WaitPhase, pub primitive: WaitPrimitive,
+    pub return_when: ReturnWhen,
     pub helper_id: Option<String>, pub helper_version: Option<String>,
     pub requested_timeout_ms: Option<i64>, pub effective_timeout_ms: Option<u64>,
     pub target_mode: TargetMode, pub any_targets: Option<bool>,
     pub target_ids: Vec<String>, pub target_set_complete: bool,
+    pub resolved_target_kind: TargetReferenceKind,
     pub requested_target_ids: Vec<String>, pub requested_target_kind: TargetReferenceKind,
     pub requested_target_set_complete: bool, pub resolved_target_set_complete: Option<bool>,
     pub subscribed_readiness: Vec<ReadinessObservation>,
@@ -181,3 +185,61 @@ pub struct RecorderSnapshot {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidCaptureId;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SleepTimeline {
+    pub capture_instance_id: String,
+    pub source_plane: SourcePlane,
+    pub thread_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub pending_activity: SleepPendingActivity,
+    pub selection: SleepSelection,
+    pub requested_duration_ns: Option<u64>,
+    pub operation_duration_ns: Option<u64>,
+    pub blocked_duration_ns: Option<u64>,
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulerTimeline {
+    pub capture_instance_id: String,
+    pub source_plane: SourcePlane,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub eligible: Option<bool>,
+    pub eligibility_basis: EligibilityBasis,
+    pub pending_mail_observed: Option<bool>,
+    pub trigger_turn_mail_observed: Option<bool>,
+    pub durable_sleep_observed: Option<bool>,
+    pub reservation_accepted: Option<bool>,
+    pub reservation_still_matches: Option<bool>,
+    pub reservation_lost: Option<bool>,
+    pub task_registered: Option<bool>,
+    pub turn_start_published: Option<bool>,
+    pub drained_cohort_ids: Vec<String>,
+    pub drained_cohort_complete: bool,
+    pub drained_cohort_contains_trigger_turn_mail: Option<bool>,
+    pub outcome: SchedulerOutcome,
+    pub complete: bool,
+    pub conflicting: bool,
+    pub incomplete: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalDuration {
+    pub identity: EventIdentity,
+    pub source_plane: SourcePlane,
+    pub thread_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub call_id: String,
+    pub observed_request_return_ns: Option<u64>,
+    pub quality: ObservationQuality,
+    pub conflicting: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueTimeline {
+    pub capture_instance_id: String,
+    pub source_plane: SourcePlane,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub observation: QueueObservation,
+}

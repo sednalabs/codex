@@ -1,87 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::lifecycle_timelines::{
+    BoundaryTimeline, MessageTimeline, WaitTimeline, project as project_lifecycles,
+};
 use super::types::*;
 
 pub const MAX_REDUCER_EVENTS: usize = 2048;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WaitTimeline {
-    pub capture_instance_id: String,
-    pub source_plane: SourcePlane,
-    pub thread_id: Option<String>,
-    pub operation_id: Option<String>,
-    pub wait_id: String,
-    pub primitive: WaitPrimitive,
-    pub requested_timeout_ms: Option<i64>,
-    pub effective_timeout_ms: Option<u64>,
-    pub blocked_start_offset_ns: Option<u64>,
-    pub blocked_end_offset_ns: Option<u64>,
-    pub operation_duration_ns: Option<u64>,
-    pub blocked_duration_ns: Option<u64>,
-    pub selected_outcome: SelectedOutcome,
-    pub selected_producer: Option<EventIdentity>,
-    pub subscribed_readiness: Vec<ReadinessObservation>,
-    pub selected_readiness: Vec<ReadinessObservation>,
-    pub coverage: Vec<CoverageMark>,
-    pub complete: bool,
-    pub conflicting: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SleepTimeline {
-    pub capture_instance_id: String,
-    pub source_plane: SourcePlane,
-    pub thread_id: Option<String>,
-    pub operation_id: Option<String>,
-    pub pending_activity: SleepPendingActivity,
-    pub selection: SleepSelection,
-    pub requested_duration_ns: Option<u64>,
-    pub operation_duration_ns: Option<u64>,
-    pub blocked_duration_ns: Option<u64>,
-    pub complete: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SchedulerTimeline {
-    pub capture_instance_id: String,
-    pub source_plane: SourcePlane,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub correlation_id: Option<String>,
-    pub eligible: Option<bool>,
-    pub eligibility_basis: EligibilityBasis,
-    pub pending_mail_observed: Option<bool>,
-    pub trigger_turn_mail_observed: Option<bool>,
-    pub durable_sleep_observed: Option<bool>,
-    pub reservation_accepted: Option<bool>,
-    pub reservation_still_matches: Option<bool>,
-    pub reservation_lost: Option<bool>,
-    pub task_registered: Option<bool>,
-    pub turn_start_published: Option<bool>,
-    pub drained_cohort_ids: Vec<String>,
-    pub drained_cohort_complete: bool,
-    pub drained_cohort_contains_trigger_turn_mail: Option<bool>,
-    pub outcome: SchedulerOutcome,
-    pub complete: bool,
-    pub conflicting: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExternalDuration {
-    pub identity: EventIdentity,
-    pub source_plane: SourcePlane,
-    pub thread_id: Option<String>,
-    pub operation_id: Option<String>,
-    pub call_id: String,
-    pub observed_request_return_ns: Option<u64>,
-    pub quality: ObservationQuality,
-    pub conflicting: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QueueTimeline {
-    pub capture_instance_id: String,
-    pub source_plane: SourcePlane,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub observation: QueueObservation,
-}
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Summary {
     pub event_count: usize,
@@ -96,6 +21,8 @@ pub struct Summary {
     pub scheduler_timelines: Vec<SchedulerTimeline>,
     pub external_durations: Vec<ExternalDuration>,
     pub queue_timelines: Vec<QueueTimeline>,
+    pub message_timelines: Vec<MessageTimeline>,
+    pub boundary_timelines: Vec<BoundaryTimeline>,
     pub conflicting_wait_count: usize,
     pub repeated_wait_groups: usize,
     pub repeated_status_query_groups: usize,
@@ -155,7 +82,12 @@ impl Summary {
                 }
             }
         }
-        Self::waits(&mut out, &clean);
+        let lifecycle = project_lifecycles(&clean);
+        out.wait_timelines = lifecycle.wait_timelines;
+        out.message_timelines = lifecycle.message_timelines;
+        out.boundary_timelines = lifecycle.boundary_timelines;
+        out.waits_by_outcome = lifecycle.waits_by_outcome;
+        out.conflicting_wait_count = lifecycle.conflicting_wait_count;
         Self::sleeps(&mut out, &clean);
         Self::schedulers(&mut out, &clean);
         Self::external(&mut out, &clean);
@@ -164,50 +96,11 @@ impl Summary {
         if out.capture_loss_observed || out.omitted_input_events > 0 {
             for row in &mut out.wait_timelines { row.complete = false; }
             for row in &mut out.sleep_timelines { row.complete = false; }
-            for row in &mut out.scheduler_timelines { row.complete = false; }
+            for row in &mut out.scheduler_timelines { row.complete = false; row.incomplete = true; }
+            for row in &mut out.message_timelines { row.incomplete = true; }
+            for row in &mut out.boundary_timelines { row.incomplete = true; }
         }
         out
-    }
-    fn waits(out: &mut Self, events: &[&RecordedEvent]) {
-        let mut grouped = BTreeMap::<(String, SourcePlane, Option<String>, String, Option<u64>), Vec<&RecordedEvent>>::new();
-        for event in events {
-            if let Some(wait) = &event.input.wait {
-                grouped.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                    event.input.thread_id.clone(), wait.wait_id.clone(), event.input.thread_id.is_none().then_some(event.identity.sequence))).or_default().push(event);
-            }
-        }
-        for ((capture, source, thread, wait_id, _), mut rows) in grouped {
-            rows.sort_by_key(|event| event.identity.sequence);
-            let terminal = rows.iter().filter_map(|event| event.input.wait.as_ref().filter(|wait|
-                matches!(wait.phase, WaitPhase::Completed | WaitPhase::Abandoned)).map(|wait| (*event, wait))).collect::<Vec<_>>();
-            if terminal.is_empty() { continue; }
-            let (event, wait) = terminal[0];
-            let mut conflicting = terminal.iter().any(|(other_event, other)| *other != wait
-                || other_event.input.operation_id != event.input.operation_id);
-            let (mut start, mut end) = (wait.blocked_start_offset_ns, wait.blocked_end_offset_ns);
-            for row in &rows {
-                if let Some(obs) = &row.input.wait {
-                    start = start.or(obs.blocked_start_offset_ns);
-                    end = end.or(obs.blocked_end_offset_ns);
-                }
-            }
-            let zero_block = wait.blocked_duration_ns == Some(0);
-            let complete = !conflicting && rows.iter().all(|row| !row.truncated)
-                && (zero_block || start.is_some() && end.is_some()) && wait.blocked_duration_ns.is_some();
-            if conflicting { out.conflicting_wait_count += 1; }
-            *out.waits_by_outcome.entry(if conflicting { SelectedOutcome::Unknown } else { wait.selected_outcome }).or_default() += 1;
-            out.wait_timelines.push(WaitTimeline {
-                capture_instance_id: capture, source_plane: source, thread_id: thread,
-                operation_id: event.input.operation_id.clone(), wait_id, primitive: wait.primitive,
-                requested_timeout_ms: wait.requested_timeout_ms, effective_timeout_ms: wait.effective_timeout_ms,
-                blocked_start_offset_ns: start, blocked_end_offset_ns: end,
-                operation_duration_ns: wait.operation_duration_ns, blocked_duration_ns: wait.blocked_duration_ns,
-                selected_outcome: if conflicting { SelectedOutcome::Unknown } else { wait.selected_outcome },
-                selected_producer: wait.selected_producer.clone(), subscribed_readiness: wait.subscribed_readiness.clone(),
-                selected_readiness: wait.selected_readiness.clone(), coverage: event.input.field_coverage.clone(),
-                complete, conflicting,
-            });
-        }
     }
     fn sleeps(out: &mut Self, events: &[&RecordedEvent]) {
         for event in events {
@@ -224,14 +117,14 @@ impl Summary {
         }
     }
     fn schedulers(out: &mut Self, events: &[&RecordedEvent]) {
-        let mut groups = BTreeMap::<(String, SourcePlane, String, String, String), Vec<&SchedulerObservation>>::new();
+        let mut groups = BTreeMap::<(String, SourcePlane, String, String, String), Vec<(&SchedulerObservation, bool)>>::new();
         let mut unjoined = Vec::new();
         for event in events {
             if let Some(s) = &event.input.scheduler {
                 if let (Some(thread), Some(turn), Some(correlation)) =
                     (&event.input.thread_id, &s.scheduled_turn_id, &s.correlation_id) {
                     groups.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                        thread.clone(), turn.clone(), correlation.clone())).or_default().push(s);
+                        thread.clone(), turn.clone(), correlation.clone())).or_default().push((s, event.truncated));
                 } else {
                     unjoined.push((event, s));
                 }
@@ -245,8 +138,9 @@ impl Summary {
             let mut cohort = Vec::new(); let mut cohort_complete = false; let mut cohort_trigger_mail = None;
             let mut cohort_seen = false; let mut outcome = SchedulerOutcome::Unknown;
             let mut stage_rows = Vec::<&SchedulerObservation>::new();
-            let mut conflicting = false;
-            for row in rows {
+            let mut conflicting = false; let mut incomplete = false;
+            for (row, truncated) in rows {
+                incomplete |= truncated;
                 if let Some(previous) = stage_rows.iter().find(|previous| previous.phase == row.phase) {
                     conflicting |= *previous != row;
                 } else {
@@ -287,7 +181,7 @@ impl Summary {
             }
             let complete = eligible == Some(true) && reservation == Some(true) && cohort_seen
                 && registered.is_some() && published.is_some() && !lost.unwrap_or(false) && cohort_complete
-                && !conflicting;
+                && !conflicting && !incomplete;
             out.scheduler_timelines.push(SchedulerTimeline {
                 capture_instance_id: capture, source_plane: _source, thread_id: thread, turn_id: turn, correlation_id: correlation,
                 eligible: if conflicting { None } else { eligible },
@@ -301,7 +195,7 @@ impl Summary {
                 task_registered: if conflicting { None } else { registered },
                 turn_start_published: if conflicting { None } else { published },
                 drained_cohort_ids: if conflicting { Vec::new() } else { cohort },
-                drained_cohort_complete: cohort_complete && !conflicting, complete, conflicting,
+                drained_cohort_complete: cohort_complete && !conflicting && !incomplete, complete, conflicting, incomplete,
                 drained_cohort_contains_trigger_turn_mail: if conflicting { None } else { cohort_trigger_mail },
                 outcome: if conflicting { SchedulerOutcome::Unknown } else { outcome },
             });
@@ -317,7 +211,7 @@ impl Summary {
                 reservation_still_matches: None,
                 turn_start_published: None, drained_cohort_ids: Vec::new(),
                 drained_cohort_complete: false, drained_cohort_contains_trigger_turn_mail: None,
-                outcome: SchedulerOutcome::Unknown, complete: false, conflicting: false,
+                outcome: SchedulerOutcome::Unknown, complete: false, conflicting: false, incomplete: event.truncated,
             });
         }
     }
@@ -356,24 +250,24 @@ impl Summary {
         }
     }
     fn repetitions(out: &mut Self, events: &[&RecordedEvent]) {
-        type WaitRequest = (WaitPrimitive, TargetMode, Option<bool>, Option<i64>, Option<u64>,
+        type WaitRequest = (WaitPrimitive, ReturnWhen, TargetMode, Option<bool>, Option<i64>, Option<u64>,
             TargetReferenceKind, Vec<String>, bool, bool, Option<String>, Option<String>);
         type WaitResult = (SelectedOutcome, Vec<ReadinessObservation>, Option<String>, Option<String>,
-            Vec<ReadinessObservation>, Vec<String>, Option<bool>);
+            Vec<ReadinessObservation>, Vec<String>, TargetReferenceKind, Option<bool>);
         let mut waits = BTreeMap::<(String, SourcePlane, Option<String>, WaitRequest, WaitResult), BTreeSet<String>>::new();
         let mut queries = BTreeMap::<(String, SourcePlane, Option<String>, StatusRequestProjection, StatusResultProjection), BTreeSet<String>>::new();
         for event in events {
             let Some(operation) = event.input.operation_id.as_ref() else { continue };
             if let Some(wait) = &event.input.wait {
                 if !event.truncated {
-                    let request = (wait.primitive, wait.target_mode, wait.any_targets,
+                    let request = (wait.primitive, wait.return_when, wait.target_mode, wait.any_targets,
                         wait.requested_timeout_ms, wait.effective_timeout_ms, wait.requested_target_kind,
                         wait.requested_target_ids.clone(), wait.requested_target_set_complete,
                         wait.target_set_complete, wait.helper_id.clone(), wait.helper_version.clone());
                     let result = (wait.selected_outcome, wait.selected_readiness.clone(),
                         wait.selected_target_id.clone(), wait.selected_target_turn_id.clone(),
                         wait.subscribed_readiness.clone(), wait.target_ids.clone(),
-                        wait.resolved_target_set_complete);
+                        wait.resolved_target_kind, wait.resolved_target_set_complete);
                     waits.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
                         event.input.thread_id.clone(), request, result)).or_default().insert(operation.clone());
                 }
