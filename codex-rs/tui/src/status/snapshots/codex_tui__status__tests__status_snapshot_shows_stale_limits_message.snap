@@ -13,6 +13,7 @@ expression: sanitized
   Directory:       [[workspace]]
   Permissions:     Custom (workspace with network access, Ask for approval)
   Agents.md:       <none>
+  Account:         No account data available
 
   Token usage:     1.9K total  (1K input + 900 output)
   Context window:  100% left (2.25K used / 272K)

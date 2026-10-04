@@ -435,6 +435,66 @@ async fn status_snapshot_shows_chatgpt_plan_without_email() {
 }
 
 #[tokio::test]
+async fn status_account_identity_states_are_explicit_in_display_and_copy() {
+    let temp_home = TempDir::new().expect("temp home");
+    let config = test_config(&temp_home).await;
+    let usage = TokenUsage::default();
+    let captured_at = chrono::Local
+        .with_ymd_and_hms(2024, 1, 2, 3, 4, 5)
+        .single()
+        .expect("timestamp");
+    let model_slug = get_model_offline_for_tests(config.model.as_deref());
+    let cases = [
+        (
+            Some(StatusAccountDisplay::ChatGpt {
+                email: None,
+                plan: None,
+            }),
+            "ChatGPT identity unavailable",
+        ),
+        (
+            Some(StatusAccountDisplay::ApiKey),
+            "API key configured (run codex login to use ChatGPT)",
+        ),
+        (None, "No account data available"),
+    ];
+
+    for (account_display, expected) in cases {
+        let (status, handle) = new_status_output_with_rate_limits_handle(
+            &config,
+            /*requires_openai_auth*/ true,
+            /*model_provider_id*/ None,
+            /*remote_connection*/ None,
+            account_display.as_ref(),
+            /*token_info*/ None,
+            &usage,
+            /*session_id*/ &None,
+            /*thread_name*/ None,
+            /*forked_from*/ None,
+            /*rate_limits*/ &[],
+            /*plan_type*/ None,
+            captured_at,
+            &model_slug,
+            /*collaboration_mode*/ None,
+            /*reasoning_effort_override*/ None,
+            "<none>".to_string(),
+            /*refreshing_rate_limits*/ false,
+        );
+        let narrow_lines = status.display_lines(/*width*/ 40);
+        assert!(
+            narrow_lines.iter().all(|line| line.width() <= 40),
+            "overwide status line: {:?}",
+            render_lines(&narrow_lines)
+        );
+        assert!(
+            handle.copy_text().contains(expected),
+            "copied status did not contain {expected:?}: {}",
+            handle.copy_text()
+        );
+    }
+}
+
+#[tokio::test]
 async fn status_permissions_non_default_workspace_write_uses_workspace_label() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home).await;

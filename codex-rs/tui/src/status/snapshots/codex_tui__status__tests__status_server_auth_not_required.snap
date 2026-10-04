@@ -11,6 +11,7 @@ expression: rendered
   Directory:       [[workspace]]
   Permissions:     Custom (workspace with network access, Ask for approval)
   Agents.md:       <none>
+  Account:         No account data available
 
   Token usage:     0 total  (0 input + 0 output)
   Limits:          data not available yet

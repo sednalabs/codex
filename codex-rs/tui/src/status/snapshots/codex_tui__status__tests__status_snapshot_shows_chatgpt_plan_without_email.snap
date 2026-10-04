@@ -13,6 +13,6 @@ expression: sanitized
   Directory:    [[workspace]]
   Permissions:  Custom (workspace with network access, Ask for approval)
   Agents.md:    <none>
-  Account:      Enterprise (Automation)
+  Account:      ChatGPT identity unavailable — Enterprise (Automation)
 
   Limits:       data not available yet

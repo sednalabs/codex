@@ -14,6 +14,7 @@ expression: sanitized
   Permissions:            Custom (workspace with network access, Ask for
                           approval)
   Agents.md:              <none>
+  Account:                No account data available
 
   Token usage:            1.2K total  (800 input + 400 output)
   Context window:         100% left (1.2K used / 272K)
