@@ -4,9 +4,9 @@ Codex exposes configured computer-use providers as namespaced `DynamicTool`
 functions. The provider owns environment-specific interaction; Codex owns
 session registration, request correlation, failure projection and forwarding
 native `InputImage` content to the active model turn. Browser remains the
-separate `codex_browser` adapter; this carry restores the isolated
-`codex_android` provider namespace. Namespace collisions fail closed; there is
-no generic provider registry or fallback.
+separate `codex_browser` adapter; the Android and Desktop carries restore the
+isolated `codex_android` and `codex_desktop` provider namespaces. Namespace
+collisions fail closed; there is no generic provider registry or fallback.
 
 ## Android
 
@@ -29,6 +29,31 @@ tool calls the existing MCP method
 `interactive_session.install_build_from_run` with its 300-second timeout and
 then requests a fresh observation. These interfaces do not imply permission to
 contact a real service or device.
+
+## Desktop
+
+The opt-in `codex_desktop` namespace exposes `desktop_observe` and
+`desktop_step` only for one configured command provider. Configuration may be
+provided by `CODEX_DESKTOP_COMPUTER_USE_COMMAND` and the existing
+`CODEX_DESKTOP_COMPUTER_USE_PROVIDER` / `CODEX_DESKTOP_COMPUTER_USE_TIMEOUT_SECS`
+controls, or by `~/.codex/desktop-computer-use.json` and the legacy
+`desktop-dynamic-tools.json`. The configured command is parsed to argv and
+executed directly; no shell, default executable, multi-provider list, or
+fallback is implied. Explicit `none` and unsupported provider values remain
+unavailable.
+
+The source policy rejects serialized requests above 65,536 bytes before spawn,
+accepts at most 50,331,648 stdout bytes as complete response JSON, and captures
+at most 16,384 stderr bytes while continuing to drain excess output. Excess
+stderr is marked as truncated; verbosity alone is not failure. The default
+timeout is 120 seconds; configured values above 300 seconds are rejected, not
+clamped. Timeout, cancellation, stdout overflow, or lost output can leave a
+step's effect uncertain. Codex kills its owned child on timeout/cancellation,
+never parses truncated JSON as success, and never replays a step automatically;
+recover with `desktop_observe`. Successful visual results require native
+`InputImage` content. Very large or multiple-image responses may exceed the
+stdout ceiling, and commands configured for more than five minutes are
+intentionally rejected.
 
 ## Shared boundary
 

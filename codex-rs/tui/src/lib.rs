@@ -118,6 +118,7 @@ mod bottom_pane;
 mod branch_summary;
 mod android_computer_use_provider;
 mod browser_dynamic_tools;
+mod desktop_computer_use_provider;
 mod chatwidget;
 mod cli;
 mod clipboard_copy;

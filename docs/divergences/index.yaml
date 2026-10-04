@@ -3,12 +3,12 @@
   "divergences": [
     {
       "id": "codex-native-computer-use-adapters",
-      "title": "Namespaced native Android computer-use adapter",
+      "title": "Namespaced native Android and Desktop computer-use adapters",
       "status": "live",
       "category": "core-protocol",
       "surface_type": "agent-facing",
       "surface": [
-        "per-session Android DynamicTool namespace",
+        "per-session Android and Desktop DynamicTool namespaces",
         "exact namespace/tool app-server request routing",
         "native InputImage completion in the active turn"
       ],
@@ -20,6 +20,7 @@
         "codex-rs/tui/Cargo.toml",
         "codex-rs/tui/src/lib.rs",
         "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/dynamic_tools_mcp.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
         "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
@@ -29,7 +30,7 @@
         "docs/downstream-regression-matrix.md",
         "justfile"
       ],
-      "behavior": "The configured Android MCP provider is advertised as the isolated codex_android DynamicTool namespace. Exact routes preserve request correlation and typed native images for the active turn; duplicate IDs and abandoned threads fail closed before provider start. Ordered action batches stop on first failure, report completed actions, request fresh recovery observations, and never automatically replay uncertain actions.",
+      "behavior": "Configured Android MCP and Desktop command providers are advertised as isolated codex_android and codex_desktop DynamicTool namespaces. Exact routes preserve request correlation and typed native images for the active turn; duplicate IDs and abandoned threads fail closed before provider start. Android ordered action batches stop on first failure and never replay uncertain actions. Desktop command I/O is explicitly bounded and never automatically replayed after uncertain outcomes.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -38,8 +39,9 @@
       "guardrail_lane": "codex-android-computer-use/lib; tui-native-computer-use-targeted; standard GitHub-hosted Rust validation",
       "tests": [
         "Android configured tools and ordered action provider tests",
-        "Android abandoned-thread routing fixture",
-        "Android native-image and post-failure observation fixtures"
+        "Android and Desktop abandoned-thread routing fixtures",
+        "Android native-image and post-failure observation fixtures",
+        "Desktop bounded full-duplex, timeout, cancellation, and image fixtures"
       ],
       "owner": "downstream",
       "notes": "Runtime provider authority remains external. No real device, service, executable, credential, profile, install, or release action is implied. Cargo.lock and MODULE.bazel.lock must be generated and verified from complete hosted candidate inputs, not guessed or locally generated.",
