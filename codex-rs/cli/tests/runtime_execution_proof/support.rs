@@ -20,6 +20,8 @@ use std::process::Output;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -50,6 +52,7 @@ pub enum AuthFault {
     CredentialClass,
     MutatedToken,
     ExtraTokenSegment,
+    ExpireAfterFirstClaim,
 }
 
 #[derive(Clone)]
@@ -60,6 +63,7 @@ struct ModelResponder {
     account_headers: Arc<Mutex<Vec<Option<String>>>>,
     root_calls: Arc<Mutex<usize>>,
     delegate_calls: Arc<Mutex<usize>>,
+    wait_targets: Arc<Mutex<Vec<String>>>,
 }
 
 impl Respond for ModelResponder {
@@ -135,6 +139,22 @@ impl Respond for ModelResponder {
                     },
                     "root-spawn-call",
                 )
+            } else if *calls == 2 {
+                *calls += 1;
+                let target = find_spawned_agent_id(&body).unwrap_or_default();
+                if let Ok(mut targets) = self.wait_targets.lock() {
+                    targets.push(target.clone());
+                }
+                (
+                    "multi_agent_v1",
+                    "wait_agent",
+                    serde_json::json!({
+                        "targets": [target],
+                        "timeout_ms": 80000
+                    })
+                    .to_string(),
+                    "root-wait-call",
+                )
             } else {
                 ("", "", String::new(), "root-final")
             };
@@ -196,10 +216,29 @@ fn request_has_user_text(request: &Value, expected: &str) -> bool {
         })
 }
 
+fn find_spawned_agent_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(object) => object
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .or_else(|| object.values().find_map(find_spawned_agent_id)),
+        Value::Array(values) => values.iter().find_map(find_spawned_agent_id),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|parsed| find_spawned_agent_id(&parsed)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => None,
+    }
+}
+
 #[derive(Clone)]
 struct McpResponder {
     calls: Arc<Mutex<Vec<Value>>>,
     authorization_headers: Arc<Mutex<Vec<Option<String>>>>,
+    redirect_claims: bool,
+    delay_first_claim: bool,
+    error_claims: bool,
 }
 
 impl Respond for McpResponder {
@@ -239,13 +278,33 @@ impl Respond for McpResponder {
                 }]}
             }),
             "tools/call" => {
+                let first_claim = self
+                    .calls
+                    .lock()
+                    .map(|calls| calls.is_empty())
+                    .unwrap_or(false);
                 if let Ok(mut calls) = self.calls.lock() {
                     calls.push(body.clone());
+                }
+                if self.delay_first_claim && first_claim {
+                    std::thread::sleep(Duration::from_secs(22));
+                }
+                if self.redirect_claims {
+                    return ResponseTemplate::new(307)
+                        .insert_header("location", "/redirect-target");
                 }
                 let proof = body
                     .pointer("/params/_meta/runtime~1execution-proof")
                     .cloned()
                     .unwrap_or(Value::Null);
+                if self.error_claims {
+                    return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "jsonrpc":"2.0","id":id,"error":{
+                            "code":-32000,
+                            "message":format!("{} {OPS_BEARER_TOKEN}", proof)
+                        }
+                    }));
+                }
                 let echo = format!("{} {OPS_BEARER_TOKEN}", proof);
                 serde_json::json!({
                     "jsonrpc":"2.0","id":id,"result":{
@@ -283,10 +342,34 @@ pub struct ProtectedRuntimeFixture {
     model_account_headers: Arc<Mutex<Vec<Option<String>>>>,
     claim_calls: Arc<Mutex<Vec<Value>>>,
     mcp_authorization_headers: Arc<Mutex<Vec<Option<String>>>>,
+    followed_redirects: Arc<AtomicUsize>,
+    wait_targets: Arc<Mutex<Vec<String>>>,
+    delay_first_claim: bool,
+    expiring_provider_token: Arc<Mutex<Option<String>>>,
 }
 
 impl ProtectedRuntimeFixture {
     pub async fn start() -> Result<Self> {
+        Self::start_config(false, false, false).await
+    }
+
+    pub async fn start_with_redirect(redirect_claims: bool) -> Result<Self> {
+        Self::start_config(redirect_claims, false, false).await
+    }
+
+    pub async fn start_expiring_cached_send() -> Result<Self> {
+        Self::start_config(false, true, false).await
+    }
+
+    pub async fn start_with_mcp_error() -> Result<Self> {
+        Self::start_config(false, false, true).await
+    }
+
+    async fn start_config(
+        redirect_claims: bool,
+        delay_first_claim: bool,
+        error_claims: bool,
+    ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let root = temp.path();
         let home = root.join("immutable-home");
@@ -311,6 +394,9 @@ impl ProtectedRuntimeFixture {
         let model_account_headers = Arc::new(Mutex::new(Vec::new()));
         let claim_calls = Arc::new(Mutex::new(Vec::new()));
         let mcp_authorization_headers = Arc::new(Mutex::new(Vec::new()));
+        let followed_redirects = Arc::new(AtomicUsize::new(0));
+        let wait_targets = Arc::new(Mutex::new(Vec::new()));
+        let expiring_provider_token = Arc::new(Mutex::new(None));
         let model_responder = ModelResponder {
             requests: model_requests.clone(),
             request_paths: model_request_paths.clone(),
@@ -318,6 +404,7 @@ impl ProtectedRuntimeFixture {
             account_headers: model_account_headers.clone(),
             root_calls: Arc::new(Mutex::new(0)),
             delegate_calls: Arc::new(Mutex::new(0)),
+            wait_targets: wait_targets.clone(),
         };
         Mock::given(method("POST"))
             .and(path("/v1/responses"))
@@ -334,6 +421,18 @@ impl ProtectedRuntimeFixture {
             .respond_with(McpResponder {
                 calls: claim_calls.clone(),
                 authorization_headers: mcp_authorization_headers.clone(),
+                redirect_claims,
+                delay_first_claim,
+                error_claims,
+            })
+            .mount(&mcp)
+            .await;
+        let redirect_counter = followed_redirects.clone();
+        Mock::given(method("POST"))
+            .and(path("/redirect-target"))
+            .respond_with(move |_request: &wiremock::Request| {
+                redirect_counter.fetch_add(1, Ordering::AcqRel);
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
             })
             .mount(&mcp)
             .await;
@@ -396,6 +495,10 @@ impl ProtectedRuntimeFixture {
             model_account_headers,
             claim_calls,
             mcp_authorization_headers,
+            followed_redirects,
+            wait_targets,
+            delay_first_claim,
+            expiring_provider_token,
         })
     }
 
@@ -425,6 +528,25 @@ impl ProtectedRuntimeFixture {
         prompt: &str,
         fault: Option<AuthFault>,
     ) -> Result<Output> {
+        self.run_cli_with_prompt_fault_and_log_filter(prompt, fault, None)
+            .await
+    }
+
+    pub async fn run_cli_with_log_filter(
+        &self,
+        prompt: &str,
+        log_filter: &str,
+    ) -> Result<Output> {
+        self.run_cli_with_prompt_fault_and_log_filter(prompt, None, Some(log_filter))
+            .await
+    }
+
+    async fn run_cli_with_prompt_fault_and_log_filter(
+        &self,
+        prompt: &str,
+        fault: Option<AuthFault>,
+        log_filter: Option<&str>,
+    ) -> Result<Output> {
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
         let stdout = File::create(&self.output_path)?;
         let stderr = File::create(&self.errors_path)?;
@@ -446,6 +568,9 @@ impl ProtectedRuntimeFixture {
             .stdin(Stdio::piped())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
+        if let Some(log_filter) = log_filter {
+            command.env("RUST_LOG", log_filter);
+        }
         unsafe {
             command.pre_exec(move || {
                 if libc::dup2(child_fd, BOOTSTRAP_FD) < 0
@@ -514,6 +639,21 @@ impl ProtectedRuntimeFixture {
                 auth_packet["expires_at"] = serde_json::json!(
                     SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 - 1
                 )
+            }
+            Some(AuthFault::ExpireAfterFirstClaim) => {
+                anyhow::ensure!(
+                    self.delay_first_claim,
+                    "expiring auth control requires the delayed MCP fixture"
+                );
+                let expires_at =
+                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 + 15;
+                auth_packet["expires_at"] = serde_json::json!(expires_at);
+                let access_token = synthetic_access_token(expires_at)?;
+                *self
+                    .expiring_provider_token
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(access_token.clone());
+                auth_packet["provider"]["access_token"] = serde_json::json!(access_token);
             }
             Some(AuthFault::ProviderRecipient) => {
                 auth_packet["provider_recipient"] = serde_json::json!("http://127.0.0.1:1/v1")
@@ -606,8 +746,26 @@ impl ProtectedRuntimeFixture {
         &self.provider_token
     }
 
+    pub fn expiring_provider_token(&self) -> Option<String> {
+        self.expiring_provider_token
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     pub fn mcp_authorization_headers(&self) -> Vec<Option<String>> {
         self.mcp_authorization_headers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn followed_redirects(&self) -> usize {
+        self.followed_redirects.load(Ordering::Acquire)
+    }
+
+    pub fn wait_targets(&self) -> Vec<String> {
+        self.wait_targets
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -635,6 +793,14 @@ impl ProtectedRuntimeFixture {
 
     pub fn fixture_root(&self) -> PathBuf {
         self.home.parent().unwrap_or(&self.home).to_path_buf()
+    }
+
+    pub fn captured_output(&self) -> Result<String> {
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&fs::read(&self.output_path)?),
+            String::from_utf8_lossy(&fs::read(&self.errors_path)?)
+        ))
     }
 }
 

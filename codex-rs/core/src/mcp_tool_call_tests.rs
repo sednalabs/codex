@@ -1576,31 +1576,6 @@ fn runtime_proof_metadata_preserves_trace_fields_and_rejects_collision() {
 }
 
 #[test]
-fn echoed_runtime_proof_is_removed_from_all_tool_result_surfaces() {
-    let proof = serde_json::json!({
-        "certificate": "certificate-token",
-        "proof": "invocation-token",
-    });
-    let mut result = CallToolResult {
-        content: vec![serde_json::json!({
-            "type": "text",
-            "text": "server echoed invocation-token",
-        })],
-        structured_content: Some(serde_json::json!({
-            "certificate": "certificate-token",
-        })),
-        is_error: None,
-        meta: Some(serde_json::json!({
-            "proof": "invocation-token",
-        })),
-    };
-    redact_runtime_proof_from_result(&mut result, &proof);
-    let returned = serde_json::to_string(&result).unwrap();
-    assert!(!returned.contains("certificate-token"));
-    assert!(!returned.contains("invocation-token"));
-}
-
-#[test]
 fn accepted_elicitation_content_converts_to_request_user_input_response() {
     let response = request_user_input_response_from_elicitation_content(Some(serde_json::json!(
         {

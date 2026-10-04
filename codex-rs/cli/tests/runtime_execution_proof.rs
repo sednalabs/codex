@@ -152,6 +152,10 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         "expected root and delegate claim requests, got {}",
         calls.len()
     );
+    anyhow::ensure!(
+        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
+        "root did not wait on the spawned delegate's terminal status before finalizing"
+    );
     let issuer_key = fixture.issuer_verifying_key();
     let mut invocation_nonces = Vec::new();
     let mut execution_nonces = Vec::new();
@@ -440,6 +444,123 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an explicitly invoked disposable Linux root fixture"]
+async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
+    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
+    let fixture = ProtectedRuntimeFixture::start().await?;
+    let result = fixture.run_cli_with_log_filter("root-claim", "trace").await?;
+    anyhow::ensure!(
+        result.status.success(),
+        "TRACE protected CLI failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let emitted = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    anyhow::ensure!(
+        !emitted.contains(fixture.provider_token())
+            && !emitted.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+        "protected TRACE output exposed a credential"
+    );
+    let calls = fixture.claim_calls();
+    anyhow::ensure!(
+        calls.len() == 2,
+        "TRACE control did not exercise root and delegate MCP calls"
+    );
+    for call in calls {
+        let envelope = call
+            .pointer("/params/_meta/runtime~1execution-proof")
+            .cloned()
+            .unwrap_or(Value::Null);
+        for key in ["certificate", "proof"] {
+            if let Some(secret) = envelope.get(key).and_then(Value::as_str) {
+                anyhow::ensure!(!emitted.contains(secret), "protected TRACE output exposed proof");
+                anyhow::ensure!(
+                    fixture
+                        .model_requests()
+                        .iter()
+                        .all(|request| !request.to_string().contains(secret)),
+                    "protected TRACE proof reached a later model request"
+                );
+            }
+        }
+    }
+    for request in fixture.model_requests() {
+        let serialized = request.to_string();
+        anyhow::ensure!(
+            !serialized.contains(fixture.provider_token())
+                && !serialized.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+            "protected TRACE credential reached a later model request"
+        );
+    }
+    anyhow::ensure!(
+        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
+        "TRACE control did not wait for delegate terminal status"
+    );
+    assert_no_secret(
+        &fixture.fixture_root(),
+        &[
+            fixture.provider_token(),
+            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+        ],
+    )?;
+    assert_no_auth_files(&fixture.fixture_root())?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly invoked disposable Linux root fixture"]
+async fn protected_mcp_error_does_not_echo_proof_or_bearer() -> Result<()> {
+    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
+    let fixture = ProtectedRuntimeFixture::start_with_mcp_error().await?;
+    let _ = fixture.run_cli().await?;
+    let emitted = fixture.captured_output()?;
+    anyhow::ensure!(
+        !emitted.contains(fixture.provider_token())
+            && !emitted.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+        "protected MCP error exposed a credential"
+    );
+    let calls = fixture.claim_calls();
+    anyhow::ensure!(calls.len() == 2, "error fixture did not exercise root and delegate");
+    for call in calls {
+        let envelope = call
+            .pointer("/params/_meta/runtime~1execution-proof")
+            .cloned()
+            .unwrap_or(Value::Null);
+        for key in ["certificate", "proof"] {
+            if let Some(secret) = envelope.get(key).and_then(Value::as_str) {
+                anyhow::ensure!(!emitted.contains(secret), "protected MCP error exposed proof");
+                anyhow::ensure!(
+                    fixture
+                        .model_requests()
+                        .iter()
+                        .all(|request| !request.to_string().contains(secret)),
+                    "protected MCP error proof reached a later model request"
+                );
+            }
+        }
+    }
+    for request in fixture.model_requests() {
+        let serialized = request.to_string();
+        anyhow::ensure!(
+            !serialized.contains(fixture.provider_token())
+                && !serialized.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+            "protected MCP error credential reached a later model request"
+        );
+    }
+    assert_no_secret(
+        &fixture.fixture_root(),
+        &[
+            fixture.provider_token(),
+            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+        ],
+    )?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly invoked disposable Linux root fixture"]
 async fn invalid_auth_bootstraps_are_rejected_before_credential_egress() -> Result<()> {
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
     for fault in [
@@ -521,6 +642,10 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
         fixture.claim_calls().len() == 1,
         "delegate MCP claim was not rejected before credential egress"
     );
+    anyhow::ensure!(
+        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
+        "root did not wait for the rejected delegate to become terminal"
+    );
     let expected_authorization = format!("Bearer {}", fixture.provider_token());
     anyhow::ensure!(
         fixture
@@ -536,6 +661,76 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
             runtime_execution_proof_support::OPS_BEARER_TOKEN,
         ],
     )?;
+    assert_no_auth_files(&fixture.fixture_root())?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly invoked disposable Linux root fixture"]
+async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<()> {
+    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
+    let fixture = ProtectedRuntimeFixture::start_with_redirect(true).await?;
+    let _ = fixture.run_cli().await?;
+    anyhow::ensure!(
+        fixture.claim_calls().len() == 2,
+        "root and delegate must both reach the pinned MCP recipient"
+    );
+    anyhow::ensure!(
+        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
+        "root did not wait on the spawned delegate before finalizing"
+    );
+    let expected_authorization = format!(
+        "Bearer {}",
+        runtime_execution_proof_support::OPS_BEARER_TOKEN
+    );
+    anyhow::ensure!(
+        fixture
+            .mcp_authorization_headers()
+            .iter()
+            .all(|header| header.as_deref() == Some(expected_authorization.as_str())),
+        "protected calls did not use the selected MCP bearer"
+    );
+    anyhow::ensure!(
+        fixture.followed_redirects() == 0,
+        "protected HTTP transport followed a redirect to another recipient"
+    );
+    assert_no_secret(
+        &fixture.fixture_root(),
+        &[
+            fixture.provider_token(),
+            runtime_execution_proof_support::OPS_BEARER_TOKEN,
+        ],
+    )?;
+    assert_no_auth_files(&fixture.fixture_root())?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly invoked disposable Linux root fixture"]
+async fn expired_protected_runtime_cannot_reuse_a_cached_mcp_client() -> Result<()> {
+    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
+    let fixture = ProtectedRuntimeFixture::start_expiring_cached_send().await?;
+    let _ = fixture
+        .run_cli_with_auth_fault(Some(
+            runtime_execution_proof_support::AuthFault::ExpireAfterFirstClaim,
+        ))
+        .await?;
+    anyhow::ensure!(
+        fixture.claim_calls().len() == 1,
+        "cached protected MCP client sent after its runtime lease expired"
+    );
+    anyhow::ensure!(
+        fixture.mcp_authorization_headers().len() == 1,
+        "protected MCP bearer was reused after expiry"
+    );
+    let output = fixture.captured_output()?;
+    if let Some(token) = fixture.expiring_provider_token() {
+        anyhow::ensure!(!output.contains(&token), "expired provider token leaked to output");
+    }
+    anyhow::ensure!(
+        !output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),
+        "protected MCP bearer leaked to output"
+    );
     assert_no_auth_files(&fixture.fixture_root())?;
     Ok(())
 }

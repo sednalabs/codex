@@ -168,6 +168,7 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::warn;
+use anyhow::Context;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
@@ -246,12 +247,24 @@ fn exec_root_span() -> tracing::Span {
     )
 }
 
-fn exec_stderr_env_filter() -> EnvFilter {
+fn exec_stderr_env_filter() -> anyhow::Result<EnvFilter> {
     // OTEL export is best-effort; keep exporter self-diagnostics out of
     // headless command output unless the caller opts in with RUST_LOG.
-    EnvFilter::try_from_default_env()
+    let mut filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(EXEC_DEFAULT_LOG_FILTER))
-        .unwrap_or_else(|_| EnvFilter::new("error"))
+        .unwrap_or_else(|_| EnvFilter::new("error"));
+    if codex_runtime_proof::protected_runtime_active_or_failed() {
+        filter = filter
+            .add_directive("rmcp=off".parse()?)
+            .add_directive("codex_rmcp_client=off".parse()?);
+    }
+    Ok(filter)
+}
+
+fn protected_runtime_target_enabled(metadata: &tracing::Metadata<'_>) -> bool {
+    !codex_runtime_proof::protected_runtime_active_or_failed()
+        || !(metadata.target().starts_with("rmcp")
+            || metadata.target().starts_with("codex_rmcp_client"))
 }
 
 fn validate_protected_runtime_config(
@@ -373,7 +386,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(stderr_with_ansi)
         .with_writer(std::io::stderr)
-        .with_filter(exec_stderr_env_filter());
+        .with_filter(exec_stderr_env_filter()?)
+        .with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ));
 
     let sandbox_mode = if removed_full_auto {
         Some(SandboxMode::WorkspaceWrite)
@@ -635,15 +651,29 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     codex_core::otel_init::record_process_start(otel.as_ref(), "codex_exec");
     codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), "codex_exec");
 
-    let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
+    let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer()).map(|layer| {
+        layer.with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ))
+    });
 
-    let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
+    let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer()).map(|layer| {
+        layer.with_filter(tracing_subscriber::filter::filter_fn(
+            protected_runtime_target_enabled,
+        ))
+    });
 
-    let _ = tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(fmt_layer)
         .with(otel_tracing_layer)
-        .with(otel_logger_layer)
-        .try_init();
+        .with(otel_logger_layer);
+    if codex_runtime_proof::protected_runtime_active_or_failed() {
+        subscriber
+            .try_init()
+            .context("could not install protected runtime telemetry filter")?;
+    } else {
+        let _ = subscriber.try_init();
+    }
 
     let exec_span = exec_root_span();
     if let Some(context) = traceparent_context_from_env() {

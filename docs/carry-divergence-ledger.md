@@ -3781,3 +3781,12 @@ process. The
 synthetic Linux fixture uses a fixed public fake JWT and a loopback URL through
 the same importer and transport path; invalid frame, recipient, or token
 variants must fail before provider credential egress.
+
+Protected runtime failure is terminal within the process, including retained
+MCP credential caches. Every protected HTTP send and recovery rechecks the
+active recipient and prevents redirects before network access. Per-invocation
+redaction covers successful and failed results and JSON keys before output
+sinks; protected server notifications and elicitation payloads are suppressed.
+Formatter and OpenTelemetry layers exclude raw SDK transport targets even
+when TRACE is enabled. Linux custody is gated so ordinary Windows startup
+remains supported; protected non-Linux startup fails closed.

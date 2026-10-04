@@ -1126,3 +1126,12 @@ protected Linux process
 state, issuer validation by the service, or an end-to-end lease; those require
 the separately authorized protected-host and service-consumer validation
 paths. Dependency and Bazel lock generation is hosted-only.
+
+The protected CLI fixture additionally waits for the delegated process terminal
+result, checks redirected MCP requests have zero off-recipient egress, checks
+error echoes and TRACE output for public synthetic credential/proof remnants,
+and proves an expired protected context cannot send through a retained MCP
+client. Invoke the ignored root test binary explicitly on a disposable hosted
+Linux runner. Ordinary non-Linux compile coverage must include the new
+crate and all production consumers. These fixture and compile lanes supplement
+the exact protected contribution checks; source inspection does not replace them.
