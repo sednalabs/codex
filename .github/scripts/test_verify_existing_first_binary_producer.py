@@ -46,6 +46,7 @@ from verify_existing_first_binary_producer import (
     Q62_FIXTURE_SHA,
     Q63_FIXTURE_SHA,
     Q64_FIXTURE_SHA,
+    Q66_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
@@ -1720,6 +1721,50 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 select_accepted_record(manifest, inputs)["record_id"],
             )
 
+    def test_q66_s4_rows_bind_exact_h2_seven_job_producer_contract(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = manifest["records"]
+        q64_rows_list = [
+            row
+            for row in rows
+            if row["identity"]["fixture_sha"] == Q64_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S4_SDK_SHA
+        ]
+        q66_rows_list = [
+            row
+            for row in rows
+            if row["identity"]["fixture_sha"] == Q66_FIXTURE_SHA
+        ]
+        self.assertEqual(2, len(q64_rows_list))
+        self.assertEqual(2, len(q66_rows_list))
+        q64_rows = {row["identity"]["profile"]: row for row in q64_rows_list}
+        q66_rows = {row["identity"]["profile"]: row for row in q66_rows_list}
+        self.assertEqual({"focused", "full"}, set(q64_rows))
+        self.assertEqual({"focused", "full"}, set(q66_rows))
+
+        for profile in ("focused", "full"):
+            q64 = q64_rows[profile]
+            q66 = q66_rows[profile]
+            expected = {
+                **q64,
+                "record_id": f"accepted-producer-37126137319-{profile}-q66-s4",
+                "identity": {
+                    **q64["identity"],
+                    "fixture_sha": Q66_FIXTURE_SHA,
+                },
+            }
+            self.assertEqual(expected, q66)
+            _validate_manifest_record(q66)
+            inputs = {
+                **q66["identity"],
+                "producer_run_id": q66["producer"]["run_id"],
+                "producer_workflow_host_sha": q66["producer"]["workflow_host_sha"],
+            }
+            self.assertEqual(
+                q66["record_id"],
+                select_accepted_record(manifest, inputs)["record_id"],
+            )
+
     def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
         q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
         self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
@@ -1864,6 +1909,14 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q64_full["state"])
         self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q64_full["plain"])
         self.assertEqual(17, len(q64_full["plain"]))
+        q66_focused = consume_existing_test_plan(Q66_FIXTURE_SHA, S4_SDK_SHA, "focused")
+        self.assertEqual(frozenset(), q66_focused["state"])
+        self.assertEqual(FOCUSED_REPAIR_PLAIN_TESTS, q66_focused["plain"])
+        self.assertEqual(6, len(q66_focused["plain"]))
+        q66_full = consume_existing_test_plan(Q66_FIXTURE_SHA, S4_SDK_SHA, "full")
+        self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q66_full["state"])
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q66_full["plain"])
+        self.assertEqual(17, len(q66_full["plain"]))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
@@ -1922,6 +1975,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
             (Q63_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             (Q64_FIXTURE_SHA, S3_SDK_SHA, "focused"),
             (Q64_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q66_FIXTURE_SHA, S3_SDK_SHA, "focused"),
+            (Q66_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
@@ -3215,6 +3270,52 @@ class ConsumerResultTests(unittest.TestCase):
                 mode="consume-existing",
                 profile="full",
                 fixture_sha=Q64_FIXTURE_SHA,
+                sdk_sha=S4_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], accepted["issues"])
+            self.assertEqual(41, accepted["executed_cases"])
+            self.assertEqual(24, accepted["state_history_witnesses"])
+
+    def test_q66_s4_focused_result_requires_exact_six_cases_without_witnesses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="focused", fixture_sha=Q66_FIXTURE_SHA, sdk_sha=S4_SDK_SHA
+            )
+            accepted = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="focused",
+                fixture_sha=Q66_FIXTURE_SHA,
+                sdk_sha=S4_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual([], accepted["issues"])
+            self.assertEqual(6, accepted["executed_cases"])
+            self.assertEqual(0, accepted["state_history_witnesses"])
+
+    def test_q66_s4_full_result_requires_exact_inventory_and_all_witnesses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                root, profile="full", fixture_sha=Q66_FIXTURE_SHA, sdk_sha=S4_SDK_SHA
+            )
+            accepted = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=0,
+                mode="consume-existing",
+                profile="full",
+                fixture_sha=Q66_FIXTURE_SHA,
                 sdk_sha=S4_SDK_SHA,
                 runner_temp=witnesses.parent,
             )
