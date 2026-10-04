@@ -1278,7 +1278,41 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                 source, expected = self._minimal(), self._expected()
                 source.update(status="failure", failure_code=code, message="PRIVATE_MESSAGE")
                 expected.update(status="failure", failure_code=code, omitted_field_count=1)
+                outcomes = ["FAILED"] if code == "named_test_failed" else ["ignored"] if code == "named_test_ignored" else ["ok", "FAILED"]
+                counts = {"passed": int("ok" in outcomes), "failed": int("FAILED" in outcomes),
+                          "ignored": int("ignored" in outcomes), "measured": 0, "filtered": 0}
+                record = {"status": "failure", "exit_code": 101 if code == "named_test_failed" else 0,
+                          "execution_reconciled": False, "observed_outcomes": outcomes,
+                          "matched_line_count": len(outcomes), "result_counts": counts,
+                          "matched_lines": [f"test suite::selected ... {outcome}" for outcome in outcomes]}
+                source["tests"][0].update(record)
+                expected["tests"][0].update(record, outcome_original_count=len(outcomes))
                 self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
+
+    def test_complete_inventory_failure_and_missing_selector_bytes(self) -> None:
+        source = named_tests.fail("inventory_failed", "PRIVATE_MESSAGE")
+        source["identity"] = dict(self.identity)
+        source["inventory"] = {"status": "failure", "tests": [], "diagnostics": named_tests.command_diagnostics(subprocess.CompletedProcess([], 101, "", ""))}
+        expected = self._expected()
+        diagnostic = copy.deepcopy(expected["tests"][0]["diagnostics"])
+        diagnostic["exit_code"] = 101
+        for stream in ("stdout", "stderr"):
+            diagnostic[stream].update(original_char_count=0, truncated=False)
+        expected.update(status="failure", failure_code="inventory_failed", candidate_sha="", request_fingerprint="", omitted_field_count=1,
+            request={"tests": [], "selectors": {"original_count": 0, "omitted_count": 0, "truncated": False}, "catalog_validated": False, "request_fingerprint": "", "omitted_field_count": 0},
+            inventory={"status": "failure", "tests": [], "original_count": 0, "omitted_count": 0, "truncated": False, "omitted_field_count": 0, "diagnostics": diagnostic},
+            tests=[], test_projection={"original_count": 0, "omitted_count": 0, "truncated": False})
+        self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
+        source, expected = self._minimal(), self._expected()
+        source["request"]["tests"] = ["suite::absent"]
+        fingerprint = hashlib.sha256(json.dumps(source["request"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        source.update(status="failure", failure_code="inventory_reconciliation_failed", tests=[],
+                      request_fingerprint=fingerprint, missing_tests=["suite::absent"], ambiguous_tests=["suite::absent"])
+        expected.update(status="failure", failure_code="inventory_reconciliation_failed", tests=[], request_fingerprint=fingerprint,
+                        test_projection={"original_count": 0, "omitted_count": 0, "truncated": False},
+                        inventory_reconciliation={key: {"names": [], "original_count": 1, "omitted_count": 1, "truncated": True} for key in ("missing_tests", "ambiguous_tests")})
+        expected["request"].update(tests=[], request_fingerprint=fingerprint, selectors={"original_count": 1, "omitted_count": 1, "truncated": True})
+        self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
 
     def test_actual_new_and_existing_targets_keep_closed_argv(self) -> None:
         for package, kind, target in (("codex-cli", "bin", "codex"), ("codex-diagnostics", "lib", ""), ("codex-state", "lib", "")):
