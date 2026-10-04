@@ -22,7 +22,8 @@ OPTION_SOURCE = """def pytest_addoption(parser):
     group.addoption('--consumer-context-file', required=True, type=Path)
     group.addoption('--fixture-sha')
 """
-TEST_RUN = '''case "${CONSUMER_PROFILE}" in
+TEST_RUN = '''test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+case "${CONSUMER_PROFILE}" in
   focused)
     test_args=("${test_root}/test_selected.py::test_selected")
     ;;
@@ -48,7 +49,8 @@ PAIR_RUN = TEST_RUN.replace("focused)", "pair)").replace(
     '"${test_root}/state_history/test_state_history.py::test_packaged_historical_upgrade_and_reopen[fresh]" '
     '"${test_root}/state_history/test_state_history.py::test_packaged_historical_rejection_preserves_preimage[bad_checksum]"',
 )
-BUILD_RUN = '''case "${MODE}:${CONSUMER_PROFILE}" in
+BUILD_RUN = '''TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+case "${MODE}:${CONSUMER_PROFILE}" in
   build:*)
     TEST_ARGS=("${TEST_ROOT}")
     PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
@@ -256,6 +258,19 @@ class WorkflowAndObserverTests(CheckerFixture):
         ):
             with mock.patch.object(Path, "read_text", return_value=source), self.assertRaises(ValueError):
                 checker._workflow_steps(workflow)
+
+    def test_checked_in_workflow_rejects_changed_root_and_parser_bindings(self):
+        workflow = Path(__file__).resolve().parents[1] / "workflows/sedna-branch-build.yml"
+        for step, invocations in checker._workflow_steps(workflow).items():
+            mode = "build" if step == checker.STEP_BUILD else "consume-existing"
+            for _, script in invocations:
+                if '${FIXTURE_ROOT}/' in script:
+                    wrong = script.replace('${FIXTURE_ROOT}/', '${FIXTURE_ROOT}/wrong/', 1)
+                    with self.assertRaisesRegex(ValueError, "selected test root"):
+                        checker._selected_pytest_argv(wrong, mode, "full", step)
+                wrong = script.replace('--confcutdir="', '--confcutdir="wrong/', 1)
+                with self.assertRaisesRegex(ValueError, "confcutdir"):
+                    checker._selected_pytest_argv(wrong, mode, "full", step)
 
     def test_pytest_control_operators_and_duplicate_commands_are_rejected(self):
         for suffix in (" || true", " > output", "; true", "\npytest -q"):

@@ -133,6 +133,15 @@ def _pytest_argv(run):
 
 def _selected_pytest_argv(run, mode, profile, step_name):
     argv = _pytest_argv(run)
+    for variable in ("TEST_ROOT", "test_root"):
+        if any("${" + variable + "}" in token for token in argv):
+            bindings = re.findall(r"^\s*" + variable + r"=(.*)$", run, re.M)
+            if bindings != ['"${FIXTURE_ROOT}/' + TEST_ROOT + '"']:
+                raise ValueError("selected test root {} must bind the literal fixture directory".format(variable))
+    cutdirs = [token.split("=", 1)[1] for token in argv if token.startswith("--confcutdir=")]
+    normalized = [value.replace("${PRODUCT_ROOT}/", "").replace("${TEST_ROOT}", TEST_ROOT).replace("${test_root}", TEST_ROOT) for value in cutdirs]
+    if normalized != [TEST_ROOT]:
+        raise ValueError("pytest confcutdir must bind the selected first_binary parser directory")
     arrays = re.findall(r"\$\{([A-Za-z_]+)\[@\]\}", " ".join(argv))
     if not arrays:
         if mode != "build" or any("${" in arg and "[@]" in arg for arg in argv):
