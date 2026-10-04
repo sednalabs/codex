@@ -113,7 +113,7 @@ use codex_terminal_detection::TerminalName;
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = concat!("Sedna v", env!("CARGO_PKG_VERSION")),
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
@@ -2706,6 +2706,18 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn version_output_identifies_sedna_and_preserves_package_version() {
+        let error = MultitoolCli::try_parse_from(["codex", "--version"])
+            .expect_err("--version should exit with the version display");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string().trim(),
+            format!("codex Sedna v{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
 
     #[test]
     fn interactive_tui_future_stays_bounded() {

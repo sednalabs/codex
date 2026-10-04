@@ -1,6 +1,7 @@
 //! Rate-limit warning, prompt, and notice surfaces, plus quota-aware account refresh cadence.
 
 use super::*;
+use crate::status::rate_limit_snapshot_display_for_limit;
 pub(super) const WORKSPACE_NUDGE_VIEW_ID: &str = "workspace-usage-nudge";
 use crate::bottom_pane::ActionableBanner;
 use crate::model_catalog::LUNA_RESERVE_MODEL;
@@ -378,11 +379,14 @@ impl ChatWidget {
                     .limit_name
                     .clone()
                     .unwrap_or_else(|| limit_id.clone());
+                let captured_at = Local::now();
+                let previous = self.rate_limit_snapshots_by_limit_id.get(&limit_id);
                 let display = rate_limit_snapshot_display_for_limit(
                     &snapshot,
                     limit_label,
-                    Local::now(),
+                    captured_at,
                     self.clock_format,
+                    previous,
                 );
                 self.rate_limit_snapshots_by_limit_id
                     .insert(limit_id, display);

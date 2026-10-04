@@ -710,6 +710,18 @@ impl ChatWidget {
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
     pub(super) fn status_line_value(&mut self, item: StatusLineItem) -> Option<String> {
+        self.status_line_value_at(item, Local::now())
+    }
+
+    /// Resolve a status-line item using one caller-provided observation time.
+    ///
+    /// The ordinary human status line delegates here with a single current-time capture. Tests can
+    /// provide an exact time for age-sensitive output without replacing the item dispatch.
+    pub(super) fn status_line_value_at(
+        &mut self,
+        item: StatusLineItem,
+        now: chrono::DateTime<Local>,
+    ) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
@@ -771,7 +783,7 @@ impl ChatWidget {
                     .get("codex")
                     .and_then(weekly_status_window)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
-                self.status_line_limit_display(Some(window), &label)
+                self.status_line_weekly_limit_display_at(Some(window), &label, now)
             }
             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
             StatusLineItem::ContextWindowSize => self

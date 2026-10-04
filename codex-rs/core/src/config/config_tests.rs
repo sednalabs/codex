@@ -1357,6 +1357,26 @@ fn test_tui_vim_mode_default_true() {
 }
 
 #[tokio::test]
+async fn tui_weekly_limit_pacing_style_reaches_effective_config() {
+    for (value, expected) in [
+        ("", WeeklyLimitPacingStyle::Qualitative),
+        (r#"weekly_limit_pacing_style = "ratio""#, WeeklyLimitPacingStyle::Ratio),
+    ] {
+        let cfg_toml: ConfigToml = toml::from_str(&format!("[tui]\n{value}\n"))
+            .expect("deserialize TUI pacing style");
+        let cfg = Config::load_from_base_config_with_overrides(
+            cfg_toml,
+            ConfigOverrides::default(),
+            tempdir().expect("tempdir").abs(),
+        )
+        .await
+        .expect("load config");
+
+        assert_eq!(cfg.tui_weekly_limit_pacing_style, expected);
+    }
+}
+
+#[tokio::test]
 async fn runtime_config_uses_tui_raw_output_mode() {
     let toml = r#"
         [tui]
