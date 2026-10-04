@@ -131,21 +131,31 @@ def _pytest_argv(run):
         raise ValueError("unsupported pytest quoting: {}".format(exc))
 
 
-def _selected_pytest_argv(run, mode, profile, step_name):
-    argv = _pytest_argv(run)
+def _validate_selected_paths(run, argv):
+    command = re.search(r"^\s*(?:python(?:3)?\s+-m\s+)?pytest\b", run, re.M)
+    case = re.search(r"^\s*case\b", run, re.M)
+    binding_limit = min(command.start(), case.start()) if case else command.start()
     for variable in ("TEST_ROOT", "test_root"):
         if any("${" + variable + "}" in token for token in argv):
-            bindings = re.findall(r"^\s*" + variable + r"=(.*)$", run, re.M)
-            if bindings != ['"${FIXTURE_ROOT}/' + TEST_ROOT + '"']:
+            bindings = list(re.finditer(r"^\s*" + variable + r"=(.*)$", run, re.M))
+            if (len(bindings) != 1 or bindings[0].group(1) != '"${FIXTURE_ROOT}/' + TEST_ROOT + '"'
+                    or bindings[0].start() >= binding_limit):
                 raise ValueError("selected test root {} must bind the literal fixture directory".format(variable))
+    if "--confcutdir" in argv:
+        raise ValueError("pytest confcutdir must use exactly one supported --confcutdir= form")
     cutdirs = [token.split("=", 1)[1] for token in argv if token.startswith("--confcutdir=")]
     normalized = [value.replace("${PRODUCT_ROOT}/", "").replace("${TEST_ROOT}", TEST_ROOT).replace("${test_root}", TEST_ROOT) for value in cutdirs]
     if normalized != [TEST_ROOT]:
         raise ValueError("pytest confcutdir must bind the selected first_binary parser directory")
+
+
+def _selected_pytest_argv(run, mode, profile, step_name):
+    argv = _pytest_argv(run)
     arrays = re.findall(r"\$\{([A-Za-z_]+)\[@\]\}", " ".join(argv))
     if not arrays:
         if mode != "build" or any("${" in arg and "[@]" in arg for arg in argv):
             raise ValueError("selected consumer argument array missing")
+        _validate_selected_paths(run, argv)
         return argv  # Native ARM build uses direct literal arguments.
     expected = {"TEST_ARGS", "PRODUCER_ARGS", "FIXTURE_ARGS"} if mode == "build" else {"test_args"}
     if set(arrays) != expected or len(arrays) != len(expected):
@@ -164,7 +174,9 @@ def _selected_pytest_argv(run, mode, profile, step_name):
         if len(values) != 1 or "`" in values[0]:
             raise ValueError("selected argv array {} missing or unsupported".format(variable))
         expanded["${" + variable + "[@]}"] = shlex.split(values[0])
-    return [value for arg in argv for value in expanded.get(arg, [arg])]
+    selected = [value for arg in argv for value in expanded.get(arg, [arg])]
+    _validate_selected_paths(run, selected)
+    return selected
 
 
 def _custom_options(argv):

@@ -277,6 +277,26 @@ class WorkflowAndObserverTests(CheckerFixture):
             with self.assertRaises(ValueError):
                 checker._pytest_argv(TEST_RUN.rstrip() + suffix)
 
+    def test_expanded_array_cannot_override_parser_root(self):
+        for script, mode, profile, step, array in (
+            (TEST_RUN, "consume-existing", "focused", checker.STEP_EXISTING, "test_args"),
+            (BUILD_RUN, "build", "full", checker.STEP_BUILD, "PRODUCER_ARGS"),
+        ):
+            for override in ("--confcutdir=wrong ", "--confcutdir wrong "):
+                wrong = script.replace(array + "=(", array + "=(" + override, 1)
+                with self.assertRaisesRegex(ValueError, "confcutdir"):
+                    checker._selected_pytest_argv(wrong, mode, profile, step)
+
+    def test_root_binding_must_precede_selected_case_and_pytest(self):
+        for script, mode, profile, step in (
+            (TEST_RUN, "consume-existing", "focused", checker.STEP_EXISTING),
+            (BUILD_RUN, "build", "full", checker.STEP_BUILD),
+        ):
+            binding, rest = script.split("\n", 1)
+            for wrong in (rest + "\n" + binding, rest.replace("esac\n", "esac\n" + binding + "\n")):
+                with self.assertRaisesRegex(ValueError, "selected test root"):
+                    checker._selected_pytest_argv(wrong, mode, profile, step)
+
     def test_existing_authority_rejects_malformed_base_sha(self):
         import verify_existing_first_binary_producer as verifier
         manifest = copy.deepcopy(verifier._read_manifest())
