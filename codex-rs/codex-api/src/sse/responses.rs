@@ -108,6 +108,8 @@ pub fn spawn_response_stream(
 struct ResponseCompleted {
     id: String,
     #[serde(default)]
+    service_tier: Option<String>,
+    #[serde(default)]
     usage: Option<ResponseCompletedUsage>,
     usage_metadata: Option<ResponseUsageMetadata>,
     #[serde(default)]
@@ -451,6 +453,7 @@ pub fn process_responses_event(
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,
                             response_model,
+                            response_service_tier: resp.service_tier,
                             token_usage: resp.usage.map(Into::into),
                             usage_metadata: resp.usage_metadata,
                             end_turn: if interrupted {
@@ -792,6 +795,7 @@ mod tests {
             Ok(ResponseEvent::Completed {
                 response_id,
                 response_model: None,
+                response_service_tier: None,
                 token_usage,
                 usage_metadata,
                 end_turn,
@@ -991,6 +995,7 @@ mod tests {
             Ok(ResponseEvent::Completed {
                 response_id,
                 response_model: None,
+                response_service_tier: None,
                 token_usage,
                 usage_metadata,
                 end_turn,
@@ -1555,6 +1560,7 @@ mod tests {
                 "response": {
                     "id": "resp-1",
                     "model": "gpt-6.1-sol",
+                    "service_tier": "priority",
                     "usage": {
                         "input_tokens": 12,
                         "input_tokens_details": { "cached_tokens": 3 },
@@ -1574,11 +1580,13 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 response_model: Some(model),
+                response_service_tier: Some(service_tier),
                 token_usage: Some(token_usage),
                 usage_metadata: Some(usage_metadata),
                 end_turn: None,
             } if response_id == "resp-1"
                 && model == "gpt-6.1-sol"
+                && service_tier == "priority"
                 && token_usage.input_tokens == 12
                 && token_usage.cached_input_tokens == 3
                 && token_usage.output_tokens == 4
@@ -1628,6 +1636,44 @@ mod tests {
                     token_usage: Some(usage),
                     ..
                 } if usage.total_tokens == 2
+            );
+        }
+    }
+
+    #[test]
+    fn completed_service_tier_is_provider_response_local_and_optional() {
+        for (tier, expected) in [
+            (None, None),
+            (Some(Value::Null), None),
+            (
+                Some(json!("provider-tier-unpriced")),
+                Some("provider-tier-unpriced"),
+            ),
+        ] {
+            let mut response = json!({
+                "id": "resp-tier",
+                "model": "response-model",
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2
+                }
+            });
+            if let Some(tier) = tier {
+                response["service_tier"] = tier;
+            }
+            let event = serde_json::from_value(json!({
+                "type": "response.completed",
+                "response": response
+            }))
+            .expect("completed response event should parse");
+
+            assert_matches!(
+                process_responses_event(event).expect("completed response should be valid"),
+                Some(ResponseEvent::Completed {
+                    response_service_tier,
+                    ..
+                }) if response_service_tier.as_deref() == expected
             );
         }
     }
@@ -1697,6 +1743,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 response_model: None,
+                response_service_tier: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
@@ -1734,6 +1781,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 response_model: None,
+                response_service_tier: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,
@@ -1771,6 +1819,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 response_model: None,
+                response_service_tier: None,
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: None,

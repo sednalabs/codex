@@ -831,11 +831,16 @@ async fn collect_local_compaction_output(
             Ok(ResponseEvent::Completed {
                 response_id,
                 response_model,
+                response_service_tier,
                 token_usage,
                 usage_metadata,
                 ..
             }) => {
                 usage_context.reconcile_completed_model(response_model);
+                usage_context.actual_service_tier_source = response_service_tier
+                    .as_ref()
+                    .map(|_| "provider_response".to_string());
+                usage_context.actual_service_tier = response_service_tier;
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
@@ -923,6 +928,7 @@ mod completion_usage_tests {
             events.push(Ok(ResponseEvent::Completed {
                 response_id: "resp-local-compact".to_string(),
                 response_model: response_model.map(str::to_string),
+                response_service_tier: Some("provider-tier-unpriced".to_string()),
                 token_usage: Some(TokenUsage {
                     input_tokens: 12,
                     cached_input_tokens: 3,
@@ -958,8 +964,8 @@ mod completion_usage_tests {
                 panic!("expected raw response completion, got {:?}", event.msg);
             };
             assert_eq!(completed.response_id, "resp-local-compact");
-            let rows = sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<i64>, Option<i64>)>(
-                "SELECT requested_model, actual_model_used, input_tokens_uncached, output_tokens, total_tokens FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+            let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>)>(
+                "SELECT requested_model, actual_model_used, actual_service_tier, actual_service_tier_source, input_tokens_uncached, output_tokens, total_tokens FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
             )
             .bind(sess.thread_id.to_string())
             .bind("resp-local-compact")
@@ -971,6 +977,8 @@ mod completion_usage_tests {
                 vec![(
                     "requested-compact-model".to_string(),
                     expected_model.map(str::to_string),
+                    Some("provider-tier-unpriced".to_string()),
+                    Some("provider_response".to_string()),
                     Some(9),
                     Some(4),
                     Some(16),

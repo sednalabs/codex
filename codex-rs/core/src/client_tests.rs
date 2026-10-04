@@ -1577,6 +1577,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         Ok(ResponseEvent::Completed {
             response_id: "resp-123".to_string(),
             response_model: None,
+            response_service_tier: Some("provider-tier-unpriced".to_string()),
             token_usage: None,
             usage_metadata: None,
             end_turn: Some(true),
@@ -1590,7 +1591,20 @@ async fn response_stream_records_last_model_feedback_ids() {
         test_model_provider(),
     );
 
-    while stream.next().await.is_some() {}
+    let mut observed_service_tier = None;
+    while let Some(event) = stream.next().await {
+        if let ResponseEvent::Completed {
+            response_service_tier,
+            ..
+        } = event.expect("mapped stream event")
+        {
+            observed_service_tier = response_service_tier;
+        }
+    }
+    assert_eq!(
+        observed_service_tier.as_deref(),
+        Some("provider-tier-unpriced")
+    );
 
     let tags = tags.lock().unwrap().clone();
     assert_eq!(
@@ -2093,6 +2107,7 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
         .send(Ok(ResponseEvent::Completed {
             response_id: "response".into(),
             response_model: None,
+            response_service_tier: None,
             token_usage: None,
             usage_metadata: None,
             end_turn: None,

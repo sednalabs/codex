@@ -495,12 +495,17 @@ async fn collect_compaction_output(
             ResponseEvent::Completed {
                 response_id,
                 response_model,
+                response_service_tier,
                 token_usage,
                 usage_metadata,
                 ..
             } => {
                 let mut usage_context = usage_context;
                 usage_context.reconcile_completed_model(response_model);
+                usage_context.actual_service_tier_source = response_service_tier
+                    .as_ref()
+                    .map(|_| "provider_response".to_string());
+                usage_context.actual_service_tier = response_service_tier;
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
@@ -1283,6 +1288,7 @@ mod tests {
             Ok(ResponseEvent::Completed {
                 response_id: "resp-compact".to_string(),
                 response_model: Some("actual-compact-model".to_string()),
+                response_service_tier: None,
                 token_usage: Some(TokenUsage {
                     input_tokens: 123_456,
                     cached_input_tokens: 7_890,
@@ -1367,6 +1373,7 @@ mod tests {
             events.push(Ok(ResponseEvent::Completed {
                 response_id: "resp-remote-compact".to_string(),
                 response_model: None,
+                response_service_tier: Some("provider-tier-unpriced".to_string()),
                 token_usage: None,
                 usage_metadata: None,
                 end_turn: Some(true),
@@ -1399,8 +1406,8 @@ mod tests {
                 panic!("expected raw response completion, got {:?}", event.msg);
             };
             assert_eq!(completed.response_id, "resp-remote-compact");
-            let rows = sqlx::query_as::<_, (String, Option<String>)>(
-                "SELECT requested_model, actual_model_used FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
+            let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+                "SELECT requested_model, actual_model_used, actual_service_tier, actual_service_tier_source FROM usage_provider_calls WHERE thread_id = ? AND request_id = ?",
             )
             .bind(sess.thread_id.to_string())
             .bind("resp-remote-compact")
@@ -1412,6 +1419,8 @@ mod tests {
                 vec![(
                     "requested-compact-model".to_string(),
                     observed_model.map(str::to_string),
+                    Some("provider-tier-unpriced".to_string()),
+                    Some("provider_response".to_string()),
                 )]
             );
         }

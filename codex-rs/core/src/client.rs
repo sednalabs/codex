@@ -2437,6 +2437,7 @@ where
                 Ok(ResponseEvent::Completed {
                     response_id,
                     response_model,
+                    response_service_tier,
                     token_usage,
                     usage_metadata,
                     end_turn,
@@ -2461,6 +2462,7 @@ where
                         .send(Ok(ResponseEvent::Completed {
                             response_id,
                             response_model,
+                            response_service_tier,
                             token_usage,
                             usage_metadata,
                             end_turn,
