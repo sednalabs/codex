@@ -429,6 +429,8 @@ async fn run_remote_compaction_request_v2(
             requested_model: turn_context.model_info().slug.clone(),
             actual_model_used: None,
             requested_service_tier: step_context.settings.service_tier.clone(),
+            actual_service_tier: None,
+            actual_service_tier_source: None,
         };
         let result = match client_session
             .stream(
@@ -1317,6 +1319,8 @@ mod tests {
                 requested_model: "requested-compact-model".to_string(),
                 actual_model_used: None,
                 requested_service_tier: None,
+                actual_service_tier: None,
+                actual_service_tier_source: None,
             },
         )
         .await
@@ -1393,6 +1397,8 @@ mod tests {
                     requested_model: "requested-compact-model".to_string(),
                     actual_model_used: None,
                     requested_service_tier: None,
+                    actual_service_tier: None,
+                    actual_service_tier_source: None,
                 },
             )
             .await

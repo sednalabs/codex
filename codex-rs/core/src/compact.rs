@@ -765,6 +765,8 @@ async fn drain_to_completed(
         requested_model: turn_context.model_info().slug.clone(),
         actual_model_used: None,
         requested_service_tier: turn_context.config.service_tier.clone(),
+        actual_service_tier: None,
+        actual_service_tier_source: None,
     };
     let stream = client_session
         .stream(
@@ -951,6 +953,8 @@ mod completion_usage_tests {
                     requested_model: "requested-compact-model".to_string(),
                     actual_model_used: None,
                     requested_service_tier: None,
+                    actual_service_tier: None,
+                    actual_service_tier_source: None,
                 },
             )
             .await

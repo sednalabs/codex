@@ -2419,6 +2419,8 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
                 requested_model: turn_context.initial_settings.model_info.slug.clone(),
                 actual_model_used: None,
                 requested_service_tier: turn_context.initial_settings.service_tier.clone(),
+                actual_service_tier: None,
+                actual_service_tier_source: None,
             },
         )
         .await;

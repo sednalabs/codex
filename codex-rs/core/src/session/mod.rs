@@ -426,6 +426,8 @@ pub(crate) struct ProviderResponseUsageContext {
     pub(crate) requested_model: String,
     pub(crate) actual_model_used: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
+    pub(crate) actual_service_tier: Option<String>,
+    pub(crate) actual_service_tier_source: Option<String>,
 }
 
 impl ProviderResponseUsageContext {
@@ -4881,8 +4883,8 @@ impl Session {
                 actual_model_used: context.actual_model_used,
                 response_id: response_id.to_string(),
                 requested_service_tier: context.requested_service_tier,
-                actual_service_tier: None,
-                actual_service_tier_source: None,
+                actual_service_tier: context.actual_service_tier,
+                actual_service_tier_source: context.actual_service_tier_source,
                 fast_mode_requested: None,
                 fast_mode_used: None,
                 billing_surface: None,

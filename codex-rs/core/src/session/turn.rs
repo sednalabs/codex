@@ -3134,6 +3134,7 @@ async fn try_run_sampling_request(
             ResponseEvent::Completed {
                 response_id,
                 response_model,
+                response_service_tier,
                 token_usage,
                 usage_metadata,
                 end_turn,
@@ -3143,8 +3144,15 @@ async fn try_run_sampling_request(
                     requested_model: step_context.settings.model_info.slug.clone(),
                     actual_model_used: actual_model_used.take(),
                     requested_service_tier: step_context.settings.service_tier.clone(),
+                    actual_service_tier: None,
+                    actual_service_tier_source: None,
                 };
                 usage_context.reconcile_completed_model(response_model);
+                usage_context.actual_service_tier = response_service_tier;
+                usage_context.actual_service_tier_source = usage_context
+                    .actual_service_tier
+                    .as_ref()
+                    .map(|_| "provider_response".to_string());
                 sess.services
                     .analytics_events_client
                     .track_code_mode_tool_call(

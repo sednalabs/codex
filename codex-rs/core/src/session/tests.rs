@@ -118,6 +118,8 @@ fn completed_response_model_reconciliation_preserves_only_consistent_evidence() 
         requested_model: String::new(),
         actual_model_used: Some("gpt-6-luna".to_string()),
         requested_service_tier: None,
+        actual_service_tier: None,
+        actual_service_tier_source: None,
     };
     usage.reconcile_completed_model(Some("GPT-6-LUNA".to_string()));
     assert_eq!(usage.actual_model_used.as_deref(), Some("GPT-6-LUNA"));
@@ -133,6 +135,75 @@ fn completed_response_model_reconciliation_preserves_only_consistent_evidence() 
     usage.actual_model_used = None;
     usage.reconcile_completed_model(Some("gpt-6.1-sol".to_string()));
     assert_eq!(usage.actual_model_used.as_deref(), Some("gpt-6.1-sol"));
+}
+
+#[tokio::test]
+async fn completed_response_usage_persists_reported_or_absent_service_tier() {
+    let sqlite_home = tempfile::tempdir().expect("isolated usage database home");
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs()),
+        "openai".to_string(),
+    )
+    .await
+    .expect("initialize usage database");
+    let (mut session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    Arc::get_mut(&mut session)
+        .expect("test session has one owner")
+        .services
+        .state_db = Some(Arc::clone(&state_db));
+
+    for (response_id, actual_service_tier, actual_service_tier_source) in [
+        (
+            "resp-unknown-tier",
+            Some("future-provider-tier"),
+            Some("provider_response"),
+        ),
+        ("resp-no-tier", None, None),
+    ] {
+        session
+            .record_observed_response_completed(
+                &turn_context,
+                response_id,
+                /*usage*/ None,
+                /*usage_metadata*/ None,
+                ProviderResponseUsageContext {
+                    started_at: "2026-10-04T00:00:00.000Z".to_string(),
+                    requested_model: turn_context.initial_settings.model_info.slug.clone(),
+                    actual_model_used: None,
+                    requested_service_tier: Some("requested-tier".to_string()),
+                    actual_service_tier: actual_service_tier.map(str::to_string),
+                    actual_service_tier_source: actual_service_tier_source.map(str::to_string),
+                },
+            )
+            .await;
+    }
+
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, String)>(
+        "SELECT request_id, requested_service_tier, actual_service_tier, actual_service_tier_source, status FROM usage_provider_calls WHERE thread_id = ? ORDER BY request_id",
+    )
+    .bind(session.thread_id.to_string())
+    .fetch_all(state_db.usage_pool().as_ref())
+    .await
+    .expect("read persisted provider usage");
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "resp-no-tier".to_string(),
+                Some("requested-tier".to_string()),
+                None,
+                None,
+                "provider_usage_missing".to_string(),
+            ),
+            (
+                "resp-unknown-tier".to_string(),
+                Some("requested-tier".to_string()),
+                Some("future-provider-tier".to_string()),
+                Some("provider_response".to_string()),
+                "provider_usage_missing".to_string(),
+            ),
+        ]
+    );
 }
 
 use crate::connectors::AppInfo;
