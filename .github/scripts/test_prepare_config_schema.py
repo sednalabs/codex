@@ -100,7 +100,7 @@ class OutputFixture(unittest.TestCase):
         self.schema = self.root / prepare_config_schema.SCHEMA_PATH
         self.lock = self.root / prepare_config_schema.LOCK_PATH
         self.schema.parent.mkdir(parents=True)
-        self.lock.parent.mkdir(parents=True)
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
         self.schema_before = b'{"title":"before"}\n'
         self.lock_before = b"version = 4\n"
         self.schema.write_bytes(self.schema_before)
