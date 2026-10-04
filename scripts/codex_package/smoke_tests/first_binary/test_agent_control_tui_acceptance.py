@@ -359,11 +359,25 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 required_markers=("Ask Codex to do anything",),
             )
             assert "Completed `/root/worker`" in parent_completion, parent_completion
-
-        # The worker's final answer belongs to its child transcript; the root
-        # view reports completion instead of inlining that child message.
-        with PackagedTui(isolated, "resume", child_id) as completed_child_tui:
-            child_final = completed_child_tui.until_screen("TUI_RICH_CHILD_TERMINAL")
+            # Keep the parent loaded in this app-server: parent-owned V2 child
+            # threads are selected through the parent's Subagents picker, not
+            # resumed by child ID in a fresh app-server.
+            completed_picker = _open_subagents(details_tui)
+            assert "PRIVATE_PROMPT_SENTINEL" not in completed_picker, completed_picker
+            completed_picker_rows = details_tui.until_screen(
+                "2. • /root/worker",
+                required_markers=("1. • Main [default] (current)",),
+            )
+            assert "PRIVATE_PROMPT_SENTINEL" not in completed_picker_rows
+            details_tui.send("\x1b[B")
+            completed_child_row = details_tui.until_screen(
+                f"Thread ID: {child_id}",
+            )
+            assert f"Thread ID: {child_id}" in _normalized_screen(completed_child_row)
+            assert "Path: /root/worker" in _normalized_screen(completed_child_row)
+            assert "PRIVATE_PROMPT_SENTINEL" not in completed_child_row
+            details_tui.send("\r")
+            child_final = details_tui.until_screen("TUI_RICH_CHILD_TERMINAL")
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
 
         # At width 40 the command center intentionally renders only its task
