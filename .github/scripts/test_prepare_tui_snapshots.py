@@ -1,6 +1,7 @@
 """Hosted regression controls for the closed TUI snapshot preparation route."""
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -532,12 +533,12 @@ class InputIdentityTests(IdentityFixture):
 
 
 class PrepareExecutionTests(IdentityFixture):
-    def _prepare_with_result(self, exit_code):
+    def _prepare_with_result(self, exit_code, all_outputs=False):
         baseline = prepare_tui_snapshots._capture_baseline(self.product_root)
         locks = prepare_tui_snapshots._capture_locks(self.product_root)
         relative = f"{prepare_tui_snapshots.SNAPSHOT_PATHS[0]}.new"
         contents = b"review-pending generated snapshot\n"
-        pending_path = self.product_root / relative
+        pending = [path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS] if all_outputs else [relative]
         generator_kwargs = {
             "cwd": self.product_root,
             "env": self.environment,
@@ -596,7 +597,8 @@ class PrepareExecutionTests(IdentityFixture):
                 self.assertFalse(args)
                 self.assertEqual(kwargs, generator_kwargs)
                 generator_calls.append((argv, kwargs.copy()))
-                pending_path.write_bytes(contents)
+                for path in pending:
+                    (self.product_root / path).write_bytes(contents)
                 return mock.Mock(returncode=exit_code)
             if argv in allowed_git_commands:
                 self.assertFalse(args)
@@ -660,19 +662,17 @@ class PrepareExecutionTests(IdentityFixture):
                 "paths": list(prepare_tui_snapshots.SNAPSHOT_PATHS),
             },
         )
-        self.assertEqual(generated, {"count": 1, "paths": [relative]})
+        self.assertEqual(generated, {"count": len(pending), "paths": sorted(pending)})
         self.assertEqual(
             identity["baseline_snapshot_sha256"],
             {path: state["sha256"] for path, state in sorted(baseline.items())},
         )
         self.assertEqual(identity["lock_files"], locks)
-        self.assertEqual(
-            identity["generated_snapshot_sha256"][relative],
-            hashlib.sha256(contents).hexdigest(),
-        )
-        self.assertEqual(
-            (artifact_root / "snapshots" / relative).read_bytes(), contents
-        )
+        self.assertEqual(identity["generated_snapshot_sha256"],
+                         {path: hashlib.sha256(contents).hexdigest() for path in pending})
+        for path in pending:
+            self.assertEqual((artifact_root / "snapshots" / path).read_bytes(), contents)
+        self.assertFalse((artifact_root / "diagnostic.json").exists())
         self.assertFalse(
             (runner_temp / prepare_tui_snapshots.ARTIFACT_STAGING_DIRECTORY_NAME).exists()
         )
@@ -680,7 +680,7 @@ class PrepareExecutionTests(IdentityFixture):
             prepare_tui_snapshots.validate_outputs(
                 self.product_root, baseline, locks, self.environment
             ),
-            {relative: contents},
+            {path: contents for path in pending},
         )
         return result
 
@@ -689,6 +689,289 @@ class PrepareExecutionTests(IdentityFixture):
 
     def test_red_suite_exit_writes_artifact_and_remains_a_failure(self):
         self.assertEqual(self._prepare_with_result(17), 17)
+
+    def test_all_69_valid_outputs_with_red_generator_preserve_accepted_artifact(self):
+        self.assertEqual(self._prepare_with_result(17, all_outputs=True), 17)
+
+
+class RejectedGenerationDiagnosticTests(IdentityFixture):
+    def _additional_snapshot(self, relative="codex-rs/tui/src/chatwidget/snapshots/codex_tui__diagnostic_extra.snap"):
+        path = self.product_root / relative
+        path.write_bytes(b"tracked public fixture\n")
+        self._git(self.product_root, "add", "--", relative)
+        self._commit(self.product_root, "additional tracked fixture")
+        self.target_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
+        self.environment["TARGET_SHA"] = self.target_sha
+        return relative + ".new"
+
+    def _pending(self, relative, contents=b"PRIVATE_BODY /home/runner/private ghp_abcdefghijklmnopqrstuvwxyz123456 https://private.invalid\n"):
+        destination = self.product_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(contents)
+
+    def _invoke(self, action, exit_code=101, generator_count=1):
+        original_run = subprocess.run
+        calls, generators = [], []
+        roots = {str(self.workflow_root), str(self.product_root)}
+        suffixes = {
+            ("rev-parse", "HEAD"), ("rev-parse", "HEAD^{tree}"),
+            ("rev-parse", "FETCH_HEAD^{commit}"), ("rev-parse", f"{self.base_sha}^{{tree}}"),
+            ("cat-file", "-e", f"{self.base_sha}^{{commit}}"),
+            ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            ("ls-files", "-z"), ("ls-files", "--others", "--exclude-standard", "-z"),
+            *(("ls-files", "--error-unmatch", "--", relative) for relative in (*prepare_tui_snapshots.SNAPSHOT_PATHS, *prepare_tui_snapshots.LOCK_PATHS)),
+        }
+
+        def run(command, *args, **kwargs):
+            argv = tuple(command)
+            calls.append(argv)
+            if argv == tuple(prepare_tui_snapshots.COMMAND):
+                generators.append(argv)
+                self.assertFalse(args)
+                self.assertEqual(kwargs, {"cwd": self.product_root, "env": self.environment, "check": False,
+                                          "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+                action()
+                return subprocess.CompletedProcess(command, exit_code)
+            self.assertEqual(argv[:2], ("git", "-C"))
+            self.assertIn(argv[2], roots)
+            self.assertIn(argv[3:], suffixes)
+            self.assertFalse(args)
+            return original_run(command, **kwargs)
+
+        with mock.patch.object(subprocess, "run", side_effect=run) as intercepted, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            result = prepare_tui_snapshots.prepare(self.environment)
+        self.assertEqual(result, 1)
+        self.assertEqual(generators, [tuple(prepare_tui_snapshots.COMMAND)] * generator_count)
+        self.assertEqual(intercepted.call_count, len(calls))
+        self.assertTrue(any(command[3:] == ("rev-parse", "FETCH_HEAD^{commit}") for command in calls if command[0] == "git"))
+        artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
+        data = (artifact / "diagnostic.json").read_bytes() if artifact.exists() else None
+        if artifact.exists():
+            self.assertEqual({path.name for path in artifact.iterdir()}, {"diagnostic.json"})
+        return data, stderr.getvalue()
+
+    def _expected(self, pending, code="output_count_exceeded", exit_code=101):
+        def states(paths):
+            return {relative: {"sha256": hashlib.sha256((self.product_root / relative).read_bytes()).hexdigest(),
+                               "mode": (self.product_root / relative).stat().st_mode & 0o777} for relative in paths}
+        verified = {"status": "verified", "actual_matches": True, "failure_code": ""}
+        identity = {
+            "workflow_host_sha": self.host_sha,
+            "workflow_host_tree": self._git(self.workflow_root, "rev-parse", "HEAD^{tree}").decode().strip(),
+            "product_sha": self.target_sha,
+            "product_tree": self._git(self.product_root, "rev-parse", "HEAD^{tree}").decode().strip(),
+            "comparison_base_sha": self.base_sha,
+            "comparison_base_tree": self._git(self.product_root, "rev-parse", f"{self.base_sha}^{{tree}}").decode().strip(),
+            "workflow_run_id": "123", "workflow_run_attempt": "1", "repository": "sednalabs/codex",
+            "workflow": "sedna-branch-build", "runner_label": "ubuntu-24.04", "architecture": "x86_64",
+        }
+        paths = [{"path": relative, "origin": "historical69" if relative.removesuffix(".new") in prepare_tui_snapshots.SNAPSHOT_PATHS else "additional_tracked_snapshot",
+                  "classification": "historical_allowed" if relative.removesuffix(".new") in prepare_tui_snapshots.SNAPSHOT_PATHS else "pending_source_owner"} for relative in sorted(pending)]
+        return {"schema_version": "sedna-tui-snapshot-diagnostic-v1", "status": "failure", "artifact_kind": "diagnostic-only",
+                "generated_output_acceptance": False, "phase": "outputs-validation", "failure_code": code,
+                "generator_exit_code": exit_code, "generation_attempted": True, "identity": identity,
+                "historical_candidate_count": 69, "accepted_output_limit": 69,
+                "inventory": {"status": "complete", "observed_count": len(paths), "observed_entry_count": len(paths), "paths": paths,
+                    "emitted_count": len(paths), "omitted_count": 0, "unobserved_count": 0, "complete": True, "traversal_complete": True, "attribution_available": True},
+                "conservation": {"baselines": {**verified, "expected": states(prepare_tui_snapshots.SNAPSHOT_PATHS)},
+                    "locks": {**verified, "expected": states(prepare_tui_snapshots.LOCK_PATHS)},
+                    "other_files": dict(verified), "workflow_host": dict(verified)}, "metadata_status": "complete"}
+
+    def test_actual_70_outputs_persist_exact_safe_bytes_without_reading_bodies(self):
+        extra = self._additional_snapshot()
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), extra]
+        expected = self._expected(pending, exit_code=17)
+        original_read = Path.read_bytes
+
+        def read_without_pending(path):
+            self.assertFalse(str(path).endswith(".snap.new"))
+            return original_read(path)
+
+        with mock.patch.object(Path, "read_bytes", read_without_pending):
+            data, stderr = self._invoke(lambda: [self._pending(path) for path in pending], exit_code=17)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+        for private in (b"PRIVATE_BODY", b"/home/runner", b"ghp_", b"https://", hashlib.sha256(b"PRIVATE_BODY").hexdigest().encode()):
+            self.assertNotIn(private, data)
+        self.assertNotIn(hashlib.sha256(b"PRIVATE_BODY /home/runner/private ghp_abcdefghijklmnopqrstuvwxyz123456 https://private.invalid\n").hexdigest().encode(), data)
+        self.assertEqual(prepare_tui_snapshots.MAX_OUTPUTS, 69)
+
+    def test_additional_tracked_output_is_not_autoaccepted_below_count_cap(self):
+        extra = self._additional_snapshot()
+        expected = self._expected([extra], code="output_outside_allowlist")
+        data, _ = self._invoke(lambda: self._pending(extra))
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+
+    def test_unsafe_unattributed_names_are_omitted_with_actual_count(self):
+        pending = [prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new",
+                   "codex-rs/tui/src/chatwidget/PRIVATE_FILENAME credential-token.snap.new",
+                   "codex-rs/tui/src/chatwidget/codex_tui__unattributed.snap.new"]
+        data, _ = self._invoke(lambda: [self._pending(path) for path in pending])
+        inventory = json.loads(data)["inventory"]
+        self.assertEqual((inventory["observed_count"], inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (3, 1, 2, False))
+        self.assertNotIn(b"PRIVATE_FILENAME", data)
+        self.assertNotIn(b"credential-token", data)
+        self.assertNotIn(b"unattributed", data)
+        self.assertEqual(json.loads(data)["metadata_status"], "incomplete")
+
+    def test_token_like_tracked_name_is_omitted_not_trusted_for_publication(self):
+        pending = self._additional_snapshot("codex-rs/tui/src/chatwidget/snapshots/codex_tui__ghp_abcdefghijklmnopqrstuvwxyz123456.snap")
+        data, _ = self._invoke(lambda: self._pending(pending))
+        inventory = json.loads(data)["inventory"]
+        self.assertEqual((inventory["observed_count"], inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (1, 0, 1, False))
+        self.assertNotIn(b"ghp_", data)
+
+    def test_symlink_pending_and_hidden_symlink_directory_are_partial_unknown(self):
+        def action():
+            destination = self.product_root / (prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new")
+            destination.symlink_to(self.product_root / prepare_tui_snapshots.LOCK_PATHS[0])
+            (self.product_root / prepare_tui_snapshots.TUI_SOURCE_ROOT / "hidden-link").symlink_to(self.workflow_root, target_is_directory=True)
+        data, _ = self._invoke(action)
+        inventory = json.loads(data)["inventory"]
+        self.assertIsNone(inventory["observed_count"])
+        self.assertFalse(inventory["complete"])
+        self.assertEqual(inventory["omitted_count"], 1)
+
+    def test_conservation_checks_all_continue_after_first_baseline_rejection(self):
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending)
+            (self.product_root / prepare_tui_snapshots.SNAPSHOT_PATHS[0]).write_bytes(b"PRIVATE_BASELINE\n")
+            (self.product_root / prepare_tui_snapshots.LOCK_PATHS[0]).write_bytes(b"PRIVATE_LOCK\n")
+            (self.product_root / "other-file").write_bytes(b"PRIVATE_OTHER\n")
+            (self.workflow_root / "host.txt").write_bytes(b"PRIVATE_HOST\n")
+        data, _ = self._invoke(action)
+        public = json.loads(data)
+        self.assertEqual(public["failure_code"], "baseline_changed")
+        self.assertEqual({key: value["status"] for key, value in public["conservation"].items()},
+                         {"baselines": "failed", "locks": "failed", "other_files": "failed", "workflow_host": "failed"})
+        for private in (b"PRIVATE_BASELINE", b"PRIVATE_LOCK", b"PRIVATE_OTHER", b"PRIVATE_HOST"):
+            self.assertNotIn(private, data)
+            self.assertNotIn(hashlib.sha256(private + b"\n").hexdigest().encode(), data)
+
+    def test_generator_launch_exception_keeps_null_actual_exit_and_no_raw_error(self):
+        def action():
+            raise OSError("PRIVATE_EXCEPTION /private https://private.invalid credential-token")
+        data, stderr = self._invoke(action)
+        public = json.loads(data)
+        self.assertEqual((public["phase"], public["failure_code"], public["generator_exit_code"]), ("generator", "generator_launch_failed", None))
+        self.assertTrue(public["generation_attempted"])
+        self.assertNotIn(b"PRIVATE_EXCEPTION", data)
+        self.assertNotIn("credential-token", stderr)
+
+    def test_malformed_generator_return_never_claims_an_actual_exit(self):
+        data, _ = self._invoke(lambda: None, exit_code="PRIVATE_INVALID_EXIT")
+        public = json.loads(data)
+        self.assertEqual((public["phase"], public["failure_code"], public["generator_exit_code"]),
+                         ("generator", "generator_result_invalid", None))
+        self.assertNotIn(b"PRIVATE_INVALID_EXIT", data)
+
+    def test_hardlinked_pending_name_is_omitted_and_not_accepted(self):
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending)
+            os.link(self.product_root / pending, self.product_root / "private-hardlink")
+        data, _ = self._invoke(action)
+        public = json.loads(data)
+        self.assertEqual((public["inventory"]["observed_count"], public["inventory"]["emitted_count"],
+                          public["inventory"]["omitted_count"], public["inventory"]["complete"]), (1, 0, 1, False))
+        self.assertEqual(public["conservation"]["other_files"]["status"], "failed")
+        self.assertNotIn(b"private-hardlink", data)
+
+    def test_prelaunch_capture_failure_records_not_run_without_generator(self):
+        with mock.patch.object(prepare_tui_snapshots, "_capture_baseline", side_effect=OSError("PRIVATE_CAPTURE")) as capture:
+            data, _ = self._invoke(lambda: self.fail("generator must not run"), generator_count=0)
+        capture.assert_called_once()
+        public = json.loads(data)
+        self.assertEqual((public["phase"], public["generator_exit_code"], public["generation_attempted"]),
+                         ("prelaunch", None, False))
+        self.assertEqual(public["conservation"]["baselines"]["status"], "not-run")
+        self.assertEqual(public["conservation"]["locks"]["status"], "not-run")
+        self.assertEqual(public["conservation"]["workflow_host"]["status"], "verified")
+        self.assertNotIn(b"PRIVATE_CAPTURE", data)
+
+    def test_one_conservation_observation_failure_is_unknown_not_verified(self):
+        original_capture = prepare_tui_snapshots._capture_baseline
+        captures = []
+        def capture(root):
+            captures.append(root)
+            if len(captures) == 1:
+                return original_capture(root)
+            raise OSError("PRIVATE_OBSERVATION")
+        with mock.patch.object(prepare_tui_snapshots, "_capture_baseline", side_effect=capture):
+            data, _ = self._invoke(lambda: None)
+        self.assertEqual(captures, [self.product_root] * 3)
+        public = json.loads(data)
+        self.assertEqual(public["conservation"]["baselines"]["status"], "unknown")
+        self.assertEqual(public["conservation"]["locks"]["status"], "verified")
+        self.assertEqual(public["conservation"]["other_files"]["status"], "verified")
+        self.assertEqual(public["conservation"]["workflow_host"]["status"], "verified")
+        self.assertEqual(public["metadata_status"], "incomplete")
+        self.assertNotIn(b"PRIVATE_OBSERVATION", data)
+
+    def test_collector_failure_does_not_suppress_independent_checks(self):
+        extra = self._additional_snapshot()
+        with mock.patch.object(prepare_tui_snapshots, "_diagnostic_inventory", side_effect=OSError("PRIVATE_COLLECTOR")) as collector:
+            data, _ = self._invoke(lambda: self._pending(extra))
+        collector.assert_called_once()
+        public = json.loads(data)
+        self.assertIsNone(public["inventory"]["observed_count"])
+        self.assertFalse(public["inventory"]["complete"])
+        self.assertEqual(public["conservation"]["baselines"]["status"], "verified")
+        self.assertEqual(public["conservation"]["locks"]["status"], "verified")
+        self.assertEqual(public["conservation"]["workflow_host"]["status"], "verified")
+        self.assertNotIn(b"PRIVATE_COLLECTOR", data)
+
+    def test_diagnostic_persistence_failure_is_unknown_with_no_retry(self):
+        extra = self._additional_snapshot()
+        original_write = Path.write_bytes
+        writes = []
+        def write(path, data):
+            if path.name == "diagnostic.json":
+                writes.append(path)
+                raise OSError("PRIVATE_PERSISTENCE")
+            return original_write(path, data)
+        with mock.patch.object(Path, "write_bytes", write):
+            data, stderr = self._invoke(lambda: self._pending(extra))
+        self.assertIsNone(data)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(stderr, "TUI snapshot preparation failed: diagnostic_persistence_failed; artifact_state=unknown\n")
+
+    def test_unpersistable_metadata_cap_has_coded_unknown_artifact_state(self):
+        extra = self._additional_snapshot()
+        with mock.patch.object(prepare_tui_snapshots, "MAX_METADATA_BYTES", 1):
+            data, stderr = self._invoke(lambda: self._pending(extra))
+        self.assertIsNone(data)
+        self.assertEqual(stderr, "TUI snapshot preparation failed: diagnostic_metadata_overflow; artifact_state=unknown\n")
+        self.assertFalse((Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_STAGING_DIRECTORY_NAME).exists())
+
+    def test_metadata_overflow_persists_only_incomplete_bounded_metadata(self):
+        diagnostic = self._expected([])
+        paths = [{"path": f"codex-rs/tui/src/snapshots/codex_tui__{'x' * 180}{index}.snap.new", "origin": "additional_tracked_snapshot", "classification": "pending_source_owner"} for index in range(2000)]
+        diagnostic["inventory"].update(paths=paths, observed_count=2000, observed_entry_count=2000, emitted_count=2000)
+        runner = Path(self.environment["RUNNER_TEMP"])
+        staging, artifact = runner / "overflow-staging", runner / "overflow-artifact"
+        prepare_tui_snapshots._write_diagnostic_artifact(staging, artifact, diagnostic)
+        data = (artifact / "diagnostic.json").read_bytes()
+        public = json.loads(data)
+        self.assertLessEqual(len(data), prepare_tui_snapshots.MAX_METADATA_BYTES)
+        self.assertEqual((public["status"], public["metadata_status"], public["inventory"]["complete"]), ("failure", "incomplete", False))
+        self.assertEqual((public["inventory"]["paths"], public["inventory"]["omitted_count"]), ([], 2000))
+        self.assertGreater(public["original_metadata_bytes"], prepare_tui_snapshots.MAX_METADATA_BYTES)
+        with mock.patch.object(prepare_tui_snapshots, "MAX_METADATA_BYTES", 1):
+            with self.assertRaises(prepare_tui_snapshots.SnapshotPreparationError):
+                prepare_tui_snapshots._write_diagnostic_artifact(runner / "tiny-staging", runner / "tiny-artifact", diagnostic)
+            self.assertFalse((runner / "tiny-staging").exists())
+
+    def test_invalid_identity_never_launches_or_persists_and_main_error_is_coded(self):
+        with mock.patch.dict(os.environ, {**self.environment, "TARGET_SHA": "PRIVATE_IDENTITY"}, clear=True), \
+                mock.patch("sys.argv", ["runner"]), mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                mock.patch.object(subprocess, "run") as run:
+            self.assertEqual(prepare_tui_snapshots.main(), 1)
+        run.assert_not_called()
+        self.assertEqual(stderr.getvalue(), "TUI snapshot preparation failed: input_identity_invalid; artifact_state=unknown\n")
+        self.assertFalse((Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME).exists())
 
 
 if __name__ == "__main__":

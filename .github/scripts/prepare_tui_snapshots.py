@@ -25,6 +25,19 @@ MAX_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
 MAX_ARTIFACT_BYTES = 40 * 1024 * 1024
 MAX_METADATA_BYTES = 128 * 1024
+DIAGNOSTIC_SCHEMA = "sedna-tui-snapshot-diagnostic-v1"
+SAFE_PENDING_PATH = re.compile(
+    r"codex-rs/tui/src/(?:[A-Za-z0-9_-]{1,64}/)*"
+    r"codex_tui__[A-Za-z0-9_]{1,240}(?:@(windows|macos|linux))?\.snap\.new"
+)
+FAILURE_CODES = {
+    "input_identity_invalid", "prelaunch_failed", "generator_launch_failed",
+    "generator_result_invalid", "outputs_validation_failed", "output_count_exceeded",
+    "output_outside_allowlist", "baseline_changed", "locks_changed",
+    "output_size_limit", "other_files_changed", "workflow_host_changed",
+    "accepted_artifact_persistence_failed", "diagnostic_persistence_failed",
+    "diagnostic_metadata_overflow", "preparation_failed",
+}
 FIXED_TARGET_SUFFIX = TARGET_DIRECTORY_NAME
 FIXED_ARTIFACT_SUFFIX = ARTIFACT_DIRECTORY_NAME
 SNAPSHOT_PATHS = (
@@ -98,6 +111,14 @@ SNAPSHOT_PATHS = (
     "codex-rs/tui/src/snapshots/codex_tui__status_indicator_widget__tests__renders_with_working_header.snap",
     "codex-rs/tui/src/status_indicator_widget/snapshots/codex_tui__status_indicator_widget__effects_tests__shimmer_and_progress_are_independent_and_obey_master_switch.snap",
 )
+
+
+class SnapshotPreparationError(ValueError):
+    """A closed public failure code with an internal validation explanation."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code if code in FAILURE_CODES else "preparation_failed"
 
 
 def validate_profile(mode: str, profile: str | None) -> str:
@@ -255,17 +276,17 @@ def validate_outputs(
         raise ValueError("snapshot allowlist baseline tracking changed during the run")
     baseline_after = _capture_baseline(product_root)
     if baseline_after != baseline:
-        raise ValueError("accepted .snap baseline content or mode changed")
+        raise SnapshotPreparationError("baseline_changed", "accepted .snap baseline content or mode changed")
     locks_after = _capture_locks(product_root)
     if locks_after != locks_before:
-        raise ValueError("Cargo.lock or MODULE.bazel.lock changed during snapshot preparation")
+        raise SnapshotPreparationError("locks_changed", "Cargo.lock or MODULE.bazel.lock changed during snapshot preparation")
 
     generated = _snapshot_inventory(product_root)
     if len(generated) > MAX_OUTPUTS:
-        raise ValueError("pending snapshot output count exceeds its fixed limit")
+        raise SnapshotPreparationError("output_count_exceeded", "pending snapshot output count exceeds its fixed limit")
     expected_paths = {f"{path}.new" for path in SNAPSHOT_PATHS}
     if not set(generated).issubset(expected_paths):
-        raise ValueError("pending snapshot output is outside the exact allowlist")
+        raise SnapshotPreparationError("output_outside_allowlist", "pending snapshot output is outside the exact allowlist")
 
     outputs: dict[str, bytes] = {}
     total_bytes = 0
@@ -278,23 +299,23 @@ def validate_outputs(
             raise ValueError(f"pending snapshot has unexpected hard links: {relative}")
         contents = path.read_bytes()
         if not contents or len(contents) > MAX_FILE_BYTES:
-            raise ValueError(f"pending snapshot is empty or exceeds the per-file limit: {relative}")
+            raise SnapshotPreparationError("output_size_limit", "pending snapshot is empty or exceeds the per-file limit")
         _validate_public_output(contents, relative, environment)
         total_bytes += len(contents)
         if total_bytes > MAX_OUTPUT_BYTES:
-            raise ValueError("pending snapshot output exceeds the aggregate byte limit")
+            raise SnapshotPreparationError("output_size_limit", "pending snapshot output exceeds the aggregate byte limit")
         outputs[relative] = contents
 
     expected_untracked = set(generated)
     for state, relative in _parse_status(product_root):
         if state == "??" and relative in expected_untracked:
             continue
-        raise ValueError(f"product checkout contains an unexpected change: {relative}")
+        raise SnapshotPreparationError("other_files_changed", "product checkout contains an unexpected change")
     nonignored_untracked = _git(
         product_root, "ls-files", "--others", "--exclude-standard", "-z"
     ).decode("utf-8", errors="strict").split("\0")
     if not {path for path in nonignored_untracked if path}.issubset(expected_untracked):
-        raise ValueError("product checkout has an unexpected nonignored untracked file")
+        raise SnapshotPreparationError("other_files_changed", "product checkout has an unexpected nonignored untracked file")
     return outputs
 
 
@@ -368,7 +389,7 @@ def validate_input_identity(
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise ValueError("snapshot preparation requires standard ubuntu-24.04 x86_64")
 
-    return {
+    identity = {
         "workflow_host_sha": expected_h,
         "workflow_host_tree": _git(
             workspace / ".workflow-src", "rev-parse", "HEAD^{tree}"
@@ -382,6 +403,11 @@ def validate_input_identity(
         "workflow_run_id": run_id,
         "workflow_run_attempt": attempt,
     }
+    if any(re.fullmatch(r"[0-9a-f]{40}", identity[key]) is None for key in (
+        "workflow_host_tree", "product_tree", "comparison_base_tree"
+    )) or len(run_id) > 20 or len(attempt) > 20:
+        raise SnapshotPreparationError("input_identity_invalid", "tree or run identity is malformed")
+    return identity
 
 
 def _json_bytes(value: object, name: str) -> bytes:
@@ -447,34 +473,189 @@ def _write_artifact(
     (artifact_root / "identity.json").write_bytes(metadata)
 
 
+def _diagnostic_attribution(root: Path) -> set[str]:
+    """Bind public pending names to regular tracked snapshots before generation."""
+    attributed = set()
+    for relative in _tracked_path_set(root):
+        if not SAFE_PENDING_PATH.fullmatch(relative + ".new"):
+            continue
+        path = _relative_path(root, relative)
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            attributed.add(relative + ".new")
+    return attributed
+
+
+def _diagnostic_inventory(root: Path, attributed: set[str] | None) -> tuple[dict[str, object], set[str]]:
+    """Count entries and expose attributable names, never pending file bodies."""
+    observed: set[str] = set()
+    paths = []
+    traversal_complete = True
+
+    def walk_error(_error):
+        nonlocal traversal_complete
+        traversal_complete = False
+
+    source = root / TUI_SOURCE_ROOT
+    if source.is_symlink() or not source.is_dir():
+        traversal_complete = False
+    else:
+        for directory, subdirectories, filenames in os.walk(source, followlinks=False, onerror=walk_error):
+            directory_path = Path(directory)
+            safe_directories = []
+            for name in subdirectories:
+                if (directory_path / name).is_symlink():
+                    traversal_complete = False
+                else:
+                    safe_directories.append(name)
+            subdirectories[:] = safe_directories
+            for name in filenames:
+                if not name.endswith(".snap.new"):
+                    continue
+                relative = (directory_path / name).relative_to(root).as_posix()
+                observed.add(relative)
+                if (attributed is None or relative not in attributed
+                        or len(relative) > 1024 or not SAFE_PENDING_PATH.fullmatch(relative)
+                        or re.search(r"(?:gh[pousr]_|sk-)[A-Za-z0-9_]{20,}", relative)):
+                    continue
+                try:
+                    info = _relative_path(root, relative).lstat()
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        continue
+                except (OSError, ValueError):
+                    continue
+                paths.append({"path": relative, "origin": "historical69" if relative.removesuffix(".new") in SNAPSHOT_PATHS else "additional_tracked_snapshot",
+                              "classification": "historical_allowed" if relative.removesuffix(".new") in SNAPSHOT_PATHS else "pending_source_owner"})
+    complete = traversal_complete and attributed is not None and len(paths) == len(observed)
+    return {"status": "complete" if complete else "partial" if observed else "unknown",
+            "observed_count": len(observed) if traversal_complete else None,
+            "observed_entry_count": len(observed), "paths": sorted(paths, key=lambda item: item["path"]),
+            "emitted_count": len(paths), "omitted_count": len(observed) - len(paths),
+            "unobserved_count": 0 if traversal_complete else None,
+            "complete": complete, "traversal_complete": traversal_complete,
+            "attribution_available": attributed is not None}, observed
+
+
+def _observe_check(operation) -> dict[str, object]:
+    try:
+        matches = operation()
+        return {"status": "verified" if matches else "failed", "actual_matches": bool(matches),
+                "failure_code": "" if matches else "conservation_mismatch"}
+    except ValueError:
+        return {"status": "failed", "actual_matches": None, "failure_code": "conservation_invalid"}
+    except (OSError, subprocess.CalledProcessError):
+        return {"status": "unknown", "actual_matches": None, "failure_code": "observation_failed"}
+
+
+def _other_files_unchanged(root: Path, pending: set[str]) -> bool:
+    independently_checked = set(SNAPSHOT_PATHS) | set(LOCK_PATHS)
+    for state, relative in _parse_status(root):
+        if relative in independently_checked or (state == "??" and relative in pending):
+            continue
+        return False
+    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z").decode("utf-8", errors="strict").split("\0")
+    return {path for path in untracked if path}.issubset(pending)
+
+
+def _rejection_diagnostic(
+    workspace: Path, identity: dict[str, str], baseline, locks, attributed,
+    phase: str, code: str, exit_code: int | None, generation_attempted: bool,
+) -> dict[str, object]:
+    product = workspace / "product"
+    try:
+        inventory, observed = _diagnostic_inventory(product, attributed)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        inventory = {"status": "unknown", "observed_count": None, "observed_entry_count": 0, "paths": [],
+                     "emitted_count": 0, "omitted_count": None, "unobserved_count": None,
+                     "complete": False, "traversal_complete": False, "attribution_available": attributed is not None}
+        observed = set()
+    not_run = {"status": "not-run", "actual_matches": None, "failure_code": "expected_identity_unavailable"}
+    conservation = {
+        "baselines": {**(_observe_check(lambda: _capture_baseline(product) == baseline) if baseline is not None else not_run), "expected": baseline},
+        "locks": {**(_observe_check(lambda: _capture_locks(product) == locks) if locks is not None else not_run), "expected": locks},
+        "other_files": _observe_check(lambda: _other_files_unchanged(product, observed)),
+        "workflow_host": _observe_check(lambda: not _git(workspace / ".workflow-src", "status", "--porcelain=v1", "-z", "--untracked-files=all")),
+    }
+    return {"schema_version": DIAGNOSTIC_SCHEMA, "status": "failure", "artifact_kind": "diagnostic-only",
+            "generated_output_acceptance": False, "phase": phase, "failure_code": code,
+            "generator_exit_code": exit_code, "generation_attempted": generation_attempted,
+            "identity": {**identity, "repository": "sednalabs/codex", "workflow": "sedna-branch-build",
+                         "runner_label": "ubuntu-24.04", "architecture": "x86_64"},
+            "historical_candidate_count": len(SNAPSHOT_PATHS), "accepted_output_limit": MAX_OUTPUTS,
+            "inventory": inventory, "conservation": conservation,
+            "metadata_status": "complete" if inventory["complete"] and all(item["status"] != "unknown" for item in conservation.values()) else "incomplete"}
+
+
+def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[str, object]) -> None:
+    encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_METADATA_BYTES:
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_metadata_overflow",
+                      "original_metadata_bytes": len(encoded), "inventory": {**diagnostic["inventory"],
+                          "status": "partial", "paths": [], "emitted_count": 0,
+                          "omitted_count": diagnostic["inventory"]["observed_count"], "complete": False}}
+        encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
+        raise SnapshotPreparationError("diagnostic_metadata_overflow", "diagnostic metadata exceeds its fixed limit")
+    # Never reuse a partial accepted-output staging directory or recursively
+    # repair persistence. Only a completed metadata file becomes upload-visible.
+    if any(path.exists() or path.is_symlink() for path in (staging, artifact)):
+        raise SnapshotPreparationError("diagnostic_persistence_failed", "diagnostic output path is already occupied")
+    staging.mkdir(mode=0o700)
+    (staging / "diagnostic.json").write_bytes(encoded)
+    staging.rename(artifact)
+
+
 def prepare(environment: dict[str, str]) -> int:
     workspace = Path(environment["GITHUB_WORKSPACE"])
     product_root = workspace / "product"
     runner_temp = Path(environment["RUNNER_TEMP"])
-    identity = validate_input_identity(environment, workspace)
+    try:
+        identity = validate_input_identity(environment, workspace)
+    except (KeyError, OSError, subprocess.CalledProcessError, ValueError) as error:
+        raise SnapshotPreparationError("input_identity_invalid", "input identity validation failed") from error
     target_dir, artifact_dir, staging_dir = _fixed_runner_paths(environment, workspace)
     _check_clean_checkout(workspace / ".workflow-src", "workflow host")
     _check_clean_checkout(product_root, "product")
 
-    baseline = _capture_baseline(product_root)
-    locks_before = _capture_locks(product_root)
-    validate_no_preexisting_pending(product_root)
-
-    target_dir.mkdir(mode=0o700)
-    output_env = dict(environment)
-    output_env["INSTA_UPDATE"] = "new"
-    output_env["CARGO_TARGET_DIR"] = str(target_dir)
-    result = subprocess.run(
-        COMMAND,
-        cwd=product_root,
-        env=output_env,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    outputs = validate_outputs(product_root, baseline, locks_before, environment)
-    _check_clean_checkout(workspace / ".workflow-src", "workflow host")
+    baseline = locks_before = attributed = None
+    phase = "prelaunch"
+    fallback_code = "prelaunch_failed"
+    actual_exit = None
+    generation_attempted = False
+    try:
+        baseline = _capture_baseline(product_root)
+        locks_before = _capture_locks(product_root)
+        validate_no_preexisting_pending(product_root)
+        attributed = _diagnostic_attribution(product_root)
+        target_dir.mkdir(mode=0o700)
+        output_env = dict(environment)
+        output_env["INSTA_UPDATE"] = "new"
+        output_env["CARGO_TARGET_DIR"] = str(target_dir)
+        phase, fallback_code = "generator", "generator_launch_failed"
+        generation_attempted = True
+        result = subprocess.run(
+            COMMAND, cwd=product_root, env=output_env, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if type(result.returncode) is not int or not -99999 <= result.returncode <= 99999:
+            raise SnapshotPreparationError("generator_result_invalid", "generator result is not a valid exit code")
+        actual_exit = result.returncode
+        phase, fallback_code = "outputs-validation", "outputs_validation_failed"
+        outputs = validate_outputs(product_root, baseline, locks_before, environment)
+        phase, fallback_code = "workflow-conservation", "workflow_host_changed"
+        _check_clean_checkout(workspace / ".workflow-src", "workflow host")
+    except (KeyError, OSError, subprocess.CalledProcessError, ValueError) as error:
+        code = error.code if isinstance(error, SnapshotPreparationError) else fallback_code
+        diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed,
+                                            phase, code, actual_exit, generation_attempted)
+        try:
+            _write_diagnostic_artifact(staging_dir, artifact_dir, diagnostic)
+        except (OSError, ValueError) as persistence_error:
+            persistence_code = persistence_error.code if isinstance(persistence_error, SnapshotPreparationError) else "diagnostic_persistence_failed"
+            print(f"TUI snapshot preparation failed: {persistence_code}; artifact_state=unknown", file=sys.stderr)
+            return 1
+        print(f"TUI snapshot preparation failed: {code}; artifact_state=diagnostic-only", file=sys.stderr)
+        return 1
     identity.update(
         {
             "schema_version": "sedna-tui-snapshot-prep-v1",
@@ -508,8 +689,12 @@ def prepare(environment: dict[str, str]) -> int:
             ),
         }
     )
-    _write_artifact(staging_dir, identity, baseline, locks_before, outputs)
-    staging_dir.rename(artifact_dir)
+    try:
+        _write_artifact(staging_dir, identity, baseline, locks_before, outputs)
+        staging_dir.rename(artifact_dir)
+    except (OSError, ValueError):
+        print("TUI snapshot preparation failed: accepted_artifact_persistence_failed; artifact_state=unknown", file=sys.stderr)
+        return 1
     if result.returncode < 0:
         return 128 + abs(result.returncode)
     return result.returncode
@@ -526,7 +711,8 @@ def main() -> int:
             return 0
         return prepare(environment)
     except (KeyError, OSError, subprocess.CalledProcessError, ValueError) as error:
-        print(f"TUI snapshot preparation failed: {error}", file=sys.stderr)
+        code = error.code if isinstance(error, SnapshotPreparationError) else "preparation_failed"
+        print(f"TUI snapshot preparation failed: {code}; artifact_state=unknown", file=sys.stderr)
         return 1
 
 
