@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,173 @@ class NamedTestOutcomeEvidenceTests(unittest.TestCase):
                 for line in evidence["matched_lines"]
             )
         )
+
+
+class CoreRuntimeRequestClassificationTests(unittest.TestCase):
+    core_manifest = {
+        ("codex-core", "integration", "all"): {
+            "profiles": ("rust_integration",),
+        }
+    }
+
+    def test_exact_valid_core_integration_request_requires_runtime(self) -> None:
+        request = {
+            "schema_version": named_tests.SCHEMA_VERSION,
+            "profile": "rust_integration",
+            "package": "codex-core",
+            "target_kind": "integration",
+            "target": "all",
+            "tests": ["suite::selected"],
+        }
+
+        self.assertTrue(
+            named_tests.request_requires_core_runtime(
+                json.dumps(request), "rust_integration", self.core_manifest
+            )
+        )
+
+    def test_malformed_or_invalid_request_does_not_require_runtime(self) -> None:
+        invalid_requests = [
+            "not json",
+            json.dumps(
+                {
+                    "schema_version": named_tests.SCHEMA_VERSION,
+                    "profile": "rust_integration",
+                    "package": "codex-core",
+                    "target_kind": "integration",
+                    "target": "all",
+                }
+            ),
+            json.dumps(
+                {
+                    "schema_version": named_tests.SCHEMA_VERSION,
+                    "profile": "rust_minimal",
+                    "package": "codex-core",
+                    "target_kind": "integration",
+                    "target": "all",
+                    "tests": ["suite::selected"],
+                }
+            ),
+        ]
+
+        for raw in invalid_requests:
+            with self.subTest(raw=raw):
+                self.assertFalse(
+                    named_tests.request_requires_core_runtime(
+                        raw, "rust_integration", self.core_manifest
+                    )
+                )
+
+    def test_other_valid_targets_do_not_require_runtime(self) -> None:
+        request = {
+            "schema_version": named_tests.SCHEMA_VERSION,
+            "profile": "rust_minimal",
+            "package": "codex-test",
+            "target_kind": "lib",
+            "target": "",
+            "tests": ["suite::selected"],
+        }
+
+        self.assertFalse(
+            named_tests.request_requires_core_runtime(
+                json.dumps(request),
+                "rust_minimal",
+                {
+                    ("codex-test", "lib", ""): {
+                        "profiles": ("rust_minimal",),
+                    }
+                },
+            )
+        )
+
+    def test_unknown_exact_core_selector_does_not_require_runtime(self) -> None:
+        request = {
+            "schema_version": named_tests.SCHEMA_VERSION,
+            "profile": "rust_integration",
+            "package": "codex-core",
+            "target_kind": "integration",
+            "target": "all",
+            "tests": ["suite::selected"],
+        }
+
+        self.assertFalse(
+            named_tests.request_requires_core_runtime(
+                json.dumps(request), "rust_integration", {}
+            )
+        )
+
+    def test_cli_classifies_from_actual_target_cwd_manifest(self) -> None:
+        script = Path(named_tests.__file__).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            target_root = Path(directory) / "validation-target"
+            manifest_path = target_root / ".github" / named_tests.MANIFEST_NAME
+            manifest_path.parent.mkdir(parents=True)
+
+            def write_manifest(
+                package: str, target_kind: str, target: str, profile: str
+            ) -> None:
+                inventory, execution = named_tests.expected_commands(
+                    package, target_kind, target
+                )
+                manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": named_tests.MANIFEST_SCHEMA_VERSION,
+                            "targets": [
+                                {
+                                    "package": package,
+                                    "target_kind": target_kind,
+                                    "target": target,
+                                    "profiles": [profile],
+                                    "inventory_argv": inventory,
+                                    "execution_argv": execution,
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            def classify(request: dict[str, object], profile: str) -> str:
+                completed = subprocess.run(
+                    [sys.executable, str(script), "--requires-core-runtime"],
+                    cwd=target_root,
+                    env={
+                        **os.environ,
+                        "RUST_TEST_REQUEST_JSON": json.dumps(request),
+                        "VALIDATION_PROFILE": profile,
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return completed.stdout.strip()
+
+            core_request = {
+                "schema_version": named_tests.SCHEMA_VERSION,
+                "profile": "rust_integration",
+                "package": "codex-core",
+                "target_kind": "integration",
+                "target": "all",
+                "tests": ["suite::selected"],
+            }
+            write_manifest("codex-core", "integration", "all", "rust_integration")
+            self.assertEqual(classify(core_request, "rust_integration"), "true")
+
+            other_request = {
+                **core_request,
+                "profile": "rust_minimal",
+                "package": "codex-test",
+                "target_kind": "lib",
+                "target": "",
+            }
+            write_manifest("codex-test", "lib", "", "rust_minimal")
+            self.assertEqual(classify(other_request, "rust_minimal"), "false")
+
+            # The core request is not admitted unless this target checkout
+            # contains its exact closed selector row.
+            self.assertEqual(classify(core_request, "rust_integration"), "false")
 
 
 class NamedFailureObserverTests(unittest.TestCase):

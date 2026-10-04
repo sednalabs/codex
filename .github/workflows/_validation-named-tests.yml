@@ -143,11 +143,32 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Test named-test result parser
+      - name: Test named-test parser and fixed V8 runtime controls
         shell: bash
         run: |
           set -euo pipefail
           python3 -m unittest discover -s .workflow-src/.github/scripts -p 'test_run_named_rust_tests.py'
+          python3 -m unittest discover -s .workflow-src/.github/scripts -p 'test_rusty_v8_bazel.py'
+
+      - name: Classify exact core runtime prerequisite
+        id: core_runtime_requirement
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          required="$(
+            python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py \
+              --requires-core-runtime
+          )"
+          echo "required=${required}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure verified rusty_v8 artifacts for fixed core runtime builds
+        if: ${{ steps.core_runtime_requirement.outputs.required == 'true' }}
+        uses: ./.workflow-src/.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+          trusted_root: ${{ github.workspace }}/.workflow-src
+          cargo_lock: ${{ github.workspace }}/validation-target/codex-rs/Cargo.lock
 
       - name: >-
           ${{ inputs.runtime_preparation_only

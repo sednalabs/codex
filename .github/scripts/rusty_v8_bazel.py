@@ -139,19 +139,33 @@ def release_pair_label(target: str, sandbox: bool = False) -> str:
     return f"//third_party/v8:rusty_v8_{pair_kind}_{target_suffix}"
 
 
-def resolved_v8_crate_version() -> str:
-    cargo_lock = tomllib.loads((ROOT / "codex-rs" / "Cargo.lock").read_text())
-    versions = sorted(
-        {
-            package["version"]
-            for package in cargo_lock["package"]
-            if package["name"] == "v8"
-        }
-    )
+def resolved_v8_crate_version(cargo_lock_path: Path | None = None) -> str:
+    lock_path = cargo_lock_path or ROOT / "codex-rs" / "Cargo.lock"
+    cargo_lock = tomllib.loads(lock_path.read_text())
+    v8_versions = [
+        package.get("version")
+        for package in cargo_lock["package"]
+        if package.get("name") == "v8"
+    ]
+    if cargo_lock_path is not None and any(
+        not isinstance(version, str) for version in v8_versions
+    ):
+        raise SystemExit("supplied Cargo.lock has an invalid resolved v8 version")
+    versions = sorted(set(v8_versions))
     if len(versions) == 1:
-        return versions[0]
+        version = versions[0]
+        if cargo_lock_path is not None and not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", version
+        ):
+            raise SystemExit("supplied Cargo.lock has an invalid resolved v8 version")
+        return version
     if len(versions) > 1:
         raise SystemExit(f"expected exactly one resolved v8 version, found: {versions}")
+
+    if cargo_lock_path is not None:
+        raise SystemExit(
+            "expected exactly one resolved v8 version in the supplied Cargo.lock"
+        )
 
     module_bazel = (ROOT / "MODULE.bazel").read_text()
     matches = sorted(
@@ -342,7 +356,10 @@ def parse_args() -> argparse.Namespace:
     stage_upstream_release_pair_parser.add_argument("--output-dir", required=True)
     stage_upstream_release_pair_parser.add_argument("--sandbox", action="store_true")
 
-    subparsers.add_parser("resolved-v8-crate-version")
+    resolved_v8_crate_version_parser = subparsers.add_parser(
+        "resolved-v8-crate-version"
+    )
+    resolved_v8_crate_version_parser.add_argument("--cargo-lock", type=Path)
 
     check_module_bazel_parser = subparsers.add_parser("check-module-bazel")
     check_module_bazel_parser.add_argument("--version")
@@ -386,7 +403,7 @@ def main() -> int:
         )
         return 0
     if args.command == "resolved-v8-crate-version":
-        print(resolved_v8_crate_version())
+        print(resolved_v8_crate_version(args.cargo_lock))
         return 0
     if args.command == "check-module-bazel":
         version = command_version(args.version)

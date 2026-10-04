@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -304,8 +305,9 @@ def select_target(
     return record
 
 
-def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    raw = os.environ.get("RUST_TEST_REQUEST_JSON", "")
+def parse_request(
+    raw: str, expected_profile: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if len(raw) > MAX_REQUEST_CHARS:
         return None, fail("request_too_large", "request exceeds the hosted size bound")
     try:
@@ -332,7 +334,6 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
-    expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
     if not isinstance(tests, list) or not tests or len(tests) > MAX_TESTS:
@@ -350,6 +351,32 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         "tests": tests,
     }
     return normalized, None
+
+
+def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    return parse_request(
+        os.environ.get("RUST_TEST_REQUEST_JSON", ""),
+        os.environ.get("VALIDATION_PROFILE", ""),
+    )
+
+
+def request_requires_core_runtime(
+    raw: str,
+    expected_profile: str,
+    manifest: dict[tuple[str, str, str], dict[str, Any]],
+) -> bool:
+    request, error = parse_request(raw, expected_profile)
+    if error is not None or request is None:
+        return False
+    try:
+        select_target(request, manifest)
+    except ValueError:
+        return False
+    return (
+        request["package"],
+        request["target_kind"],
+        request["target"],
+    ) == CORE_RUNTIME_TARGET
 
 
 def cargo_args(
@@ -1157,6 +1184,21 @@ def git_sha(repo_root: Path) -> str:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--requires-core-runtime"]:
+        try:
+            manifest = load_manifest(Path.cwd().resolve())
+        except ValueError:
+            manifest = {}
+        print(
+            str(
+                request_requires_core_runtime(
+                    os.environ.get("RUST_TEST_REQUEST_JSON", ""),
+                    os.environ.get("VALIDATION_PROFILE", ""),
+                    manifest,
+                )
+            ).lower()
+        )
+        return 0
     request, error = load_request()
     result = error or run_request(request or {}, Path.cwd().resolve())
     result.setdefault("identity", {})

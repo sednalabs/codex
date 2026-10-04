@@ -4,6 +4,14 @@ inputs:
   target:
     description: Rust target triple with Codex-built V8 release artifacts.
     required: true
+  trusted_root:
+    description: >-
+      Optional trusted Codex checkout containing the helper and checksum manifests.
+    required: false
+  cargo_lock:
+    description: >-
+      Optional Cargo.lock whose resolved V8 version selects the release.
+    required: false
 
 runs:
   using: composite
@@ -12,10 +20,38 @@ runs:
       shell: bash
       env:
         TARGET: ${{ inputs.target }}
+        TRUSTED_ROOT: ${{ inputs.trusted_root }}
+        CARGO_LOCK: ${{ inputs.cargo_lock }}
       run: |
         set -euo pipefail
 
-        version="$(python3 "${GITHUB_WORKSPACE}/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
+        trusted_root="${TRUSTED_ROOT:-${GITHUB_WORKSPACE}}"
+        trusted_helper="${trusted_root}/.github/scripts/rusty_v8_bazel.py"
+        version_args=(resolved-v8-crate-version)
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          trusted_root_resolved="$(realpath -e -- "${TRUSTED_ROOT}" 2>/dev/null || true)"
+          if [[ ! -d "${TRUSTED_ROOT}" || \
+            "${trusted_root_resolved}" != "${TRUSTED_ROOT}" ]]; then
+            echo "trusted checkout root must be a canonical existing directory" >&2
+            exit 1
+          fi
+          trusted_helper_resolved="$(realpath -e -- "${trusted_helper}" 2>/dev/null || true)"
+          if [[ -L "${trusted_helper}" || ! -f "${trusted_helper}" || \
+            "${trusted_helper_resolved}" != "${trusted_helper}" ]]; then
+            echo "trusted V8 helper must be a regular file inside the trusted checkout" >&2
+            exit 1
+          fi
+        fi
+        if [[ -n "${CARGO_LOCK}" ]]; then
+          cargo_lock_resolved="$(realpath -e -- "${CARGO_LOCK}" 2>/dev/null || true)"
+          if [[ -L "${CARGO_LOCK}" || ! -f "${CARGO_LOCK}" || \
+            "${cargo_lock_resolved}" != "${CARGO_LOCK}" ]]; then
+            echo "target Cargo.lock must be a canonical regular file" >&2
+            exit 1
+          fi
+          version_args+=(--cargo-lock "${CARGO_LOCK}")
+        fi
+        version="$(python3 "${trusted_helper}" "${version_args[@]}")"
         release_tag="rusty-v8-v${version}"
         base_url="https://github.com/openai/codex/releases/download/${release_tag}"
         binding_dir="${RUNNER_TEMP}/rusty_v8"
@@ -33,7 +69,22 @@ runs:
         archive_path="${binding_dir}/${archive_name}"
         binding_path="${binding_dir}/${binding_name}"
         checksums_path="${binding_dir}/${checksums_name}"
-        trusted_checksums="${GITHUB_WORKSPACE}/third_party/v8/rusty_v8_${version//./_}_release_manifests.sha256"
+        trusted_checksums="${trusted_root}/third_party/v8/rusty_v8_${version//./_}_release_manifests.sha256"
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          trusted_checksums_resolved="$(realpath -e -- "${trusted_checksums}" 2>/dev/null || true)"
+          if [[ -L "${trusted_checksums}" || ! -f "${trusted_checksums}" || \
+            "${trusted_checksums_resolved}" != "${trusted_checksums}" ]]; then
+            echo "trusted V8 manifest must be a regular file inside the trusted checkout" >&2
+            exit 1
+          fi
+        fi
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          runner_temp_resolved="$(realpath -e -- "${RUNNER_TEMP}" 2>/dev/null || true)"
+          if [[ "${runner_temp_resolved}" != "${RUNNER_TEMP}" ]]; then
+            echo "runner temporary directory must be canonical" >&2
+            exit 1
+          fi
+        fi
 
         if command -v sha256sum >/dev/null 2>&1; then
           checksum_command=(sha256sum --check -)
@@ -42,6 +93,20 @@ runs:
         fi
 
         mkdir -p "${binding_dir}"
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          binding_dir_resolved="$(realpath -e -- "${binding_dir}" 2>/dev/null || true)"
+          if [[ -L "${binding_dir}" || ! -d "${binding_dir}" || \
+            "${binding_dir_resolved}" != "${binding_dir}" ]]; then
+            echo "V8 artifact directory must be a canonical runner temporary directory" >&2
+            exit 1
+          fi
+        fi
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          if [[ -L "${checksums_path}" || -L "${archive_path}" || -L "${binding_path}" ]]; then
+            echo "V8 release destinations must not be symlinks" >&2
+            exit 1
+          fi
+        fi
         curl -fsSL "${base_url}/${checksums_name}" -o "${checksums_path}"
         # Check the original manifest bytes even when either checksum file uses CRLF.
         expected_manifest_checksum="$(grep -F "  ${checksums_name}" "${trusted_checksums}" | cut -d ' ' -f 1)"
@@ -52,6 +117,14 @@ runs:
         fi
         curl -fsSL "${base_url}/${archive_name}" -o "${archive_path}"
         curl -fsSL "${base_url}/${binding_name}" -o "${binding_path}"
+        if [[ -n "${TRUSTED_ROOT}" ]]; then
+          if [[ -L "${checksums_path}" || ! -f "${checksums_path}" || \
+            -L "${archive_path}" || ! -f "${archive_path}" || \
+            -L "${binding_path}" || ! -f "${binding_path}" ]]; then
+            echo "V8 archive and binding must be regular downloaded files" >&2
+            exit 1
+          fi
+        fi
 
         if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
           echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
