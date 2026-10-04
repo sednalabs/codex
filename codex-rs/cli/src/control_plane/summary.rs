@@ -20,6 +20,13 @@ pub(super) fn project(summary: &Summary) -> serde_json::Value {
         "eventCount": summary.event_count,
         "duplicateCount": summary.duplicate_count,
         "conflictingIdentityCount": summary.conflicting_identity_count,
+        "invalidEventIdentityCount": summary.invalid_event_identity_count,
+        "recorderLosses": summary.recorder_losses.map(|losses| json!({
+            "contention": losses.contention,
+            "capacity": losses.capacity,
+            "disabled": losses.disabled,
+            "invalidIdentity": losses.invalid_identity
+        })),
         "conflictingWaitCount": summary.conflicting_wait_count,
         "waitsByOutcome": debug_counts(&summary.waits_by_outcome),
         "waitTimelines": summary.wait_timelines.iter().map(wait).collect::<Vec<_>>(),
@@ -208,11 +215,31 @@ fn wait(row: &WaitTimeline) -> serde_json::Value {
         "selectedTargetTurnId": row.selected_target_turn_id,
         "continuationOfWaitId": row.continuation_of_wait_id,
         "subscribedReadiness": row.subscribed_readiness.iter().map(|value| json!({
+            "target": value.target.as_ref().map(|target| json!({
+                "id": target.id, "kind": format!("{:?}", target.kind)
+            })),
             "state": format!("{:?}", value.state), "targetTurnId": value.target_turn_id
         })).collect::<Vec<_>>(),
+        "subscribedReadinessComplete": row.subscribed_readiness_complete,
         "selectedReadiness": row.selected_readiness.iter().map(|value| json!({
+            "target": value.target.as_ref().map(|target| json!({
+                "id": target.id, "kind": format!("{:?}", target.kind)
+            })),
             "state": format!("{:?}", value.state), "targetTurnId": value.target_turn_id
         })).collect::<Vec<_>>(),
+        "selectedReadinessComplete": row.selected_readiness_complete,
+        "observedHostReturn": row.observed_host_return.as_ref().map(|result| json!({
+            "timedOut": result.timed_out,
+            "reason": format!("{:?}", result.reason),
+            "wakeCause": format!("{:?}", result.wake_cause),
+            "queuedUpdateCount": result.queued_update_count,
+            "targetStatuses": result.target_statuses.iter().map(|status| json!({
+                "targetReference": {"id": status.target_reference.id, "kind": format!("{:?}", status.target_reference.kind)},
+                "statusTag": format!("{:?}", status.status_tag)
+            })).collect::<Vec<_>>(),
+            "targetStatusComplete": result.target_status_complete,
+            "complete": result.complete
+        })),
         "coverage": row.coverage.iter().map(|mark| json!({
             "field": format!("{:?}", mark.field),
             "unknown": mark.unknown.map(|reason| format!("{:?}", reason))
@@ -224,6 +251,7 @@ fn wait(row: &WaitTimeline) -> serde_json::Value {
 
 fn sleep(row: &SleepTimeline) -> serde_json::Value {
     json!({
+        "identity": identity(&row.identity),
         "captureInstanceId": row.capture_instance_id,
         "sourcePlane": format!("{:?}", row.source_plane),
         "threadId": row.thread_id,
@@ -239,6 +267,7 @@ fn sleep(row: &SleepTimeline) -> serde_json::Value {
 
 fn scheduler(row: &SchedulerTimeline) -> serde_json::Value {
     json!({
+        "sourceEvents": row.source_events.iter().map(identity).collect::<Vec<_>>(),
         "captureInstanceId": row.capture_instance_id,
         "sourcePlane": format!("{:?}", row.source_plane),
         "threadId": row.thread_id,
@@ -321,6 +350,7 @@ fn boundary(row: &BoundaryTimeline) -> serde_json::Value {
 
 fn queue(row: &QueueTimeline) -> serde_json::Value {
     json!({
+        "identity": identity(&row.identity),
         "captureInstanceId": row.capture_instance_id,
         "sourcePlane": format!("{:?}", row.source_plane),
         "threadId": row.thread_id,

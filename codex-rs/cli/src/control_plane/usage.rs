@@ -156,9 +156,9 @@ fn build_state_request(
     if start >= end {
         return Err(UsageInputError::BoundExceeded);
     }
+    let claims = claims_from(&file);
     let snapshot_path = AbsolutePathBuf::try_from(PathBuf::from(file.snapshot_path))
         .map_err(|_| UsageInputError::InvalidRequest)?;
-    let claims = claims_from(&file);
     let request = UsageSnapshotReadRequest {
         snapshot_path,
         source_namespace: file.source_namespace,

@@ -29,7 +29,6 @@ use codex_diagnostics::control_plane::StatusResultProjection;
 use codex_diagnostics::control_plane::Summary;
 use codex_diagnostics::control_plane::TargetMode;
 use codex_diagnostics::control_plane::TargetReferenceKind;
-use codex_diagnostics::control_plane::TargetReferenceKind;
 use codex_diagnostics::control_plane::UnknownReason;
 use codex_diagnostics::control_plane::WaitObservation;
 use codex_diagnostics::control_plane::WaitPhase;
@@ -237,7 +236,9 @@ fn to_event(item: envelopes::EnvelopeObservation) -> Option<EventInput> {
                 resolved_target_kind: TargetReferenceKind::Unknown,
                 resolved_target_set_complete: Some(false),
                 subscribed_readiness: Vec::new(),
+                subscribed_readiness_complete: false,
                 selected_readiness: Vec::new(),
+                selected_readiness_complete: false,
                 blocked_start_offset_ns: None,
                 blocked_end_offset_ns: None,
                 operation_duration_ns: duration_ns,
@@ -257,6 +258,7 @@ fn to_event(item: envelopes::EnvelopeObservation) -> Option<EventInput> {
                 continuation_of_wait_id: None,
                 request_fingerprint: None,
                 result_fingerprint: None,
+                observed_host_return: item.observed_host_return,
             });
         }
         envelopes::EnvelopeKind::StatusQuery => {
@@ -447,6 +449,7 @@ fn render(
             "malformedRecords": parser.malformed_records,
             "oversizedRecords": parser.oversized_records,
             "unmatchedOutputs": parser.unmatched_outputs,
+            "unmatchedCalls": parser.unmatched_calls,
             "duplicateRecords": parser.duplicate_records,
             "conflictingPairs": parser.conflicting_pairs,
             "unsupportedRecords": parser.unsupported_records + coverage.rejected_events,

@@ -4,6 +4,10 @@ use chrono::{DateTime, Utc};
 use serde::de::IgnoredAny;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
+use codex_diagnostics::control_plane::{
+    HostTargetStatusObservation, ObservedHostStatusTag, ObservedHostWaitReason,
+    ObservedHostWakeCause, ObservedHostWaitReturn, TargetReference, TargetReferenceKind,
+};
 
 const MAX_RECORD_BYTES: usize = 65_536;
 const MAX_EVENTS: usize = 2_048;
@@ -33,7 +37,7 @@ pub(crate) struct WaitRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HostReturnWhen { Any, All, TargetTerminal, Unknown }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum ExternalStatusTag {
     Running,
     Completed,
@@ -71,6 +75,7 @@ pub(crate) struct EnvelopeObservation {
     pub host_target_status_wake: Option<bool>,
     pub queued_update_count: Option<u64>,
     pub target_status_observed: bool,
+    pub observed_host_return: Option<ObservedHostWaitReturn>,
     pub status_request: Option<StatusRequest>,
     pub status_result: Option<StatusResult>,
 }
@@ -80,6 +85,7 @@ pub(crate) struct EnvelopeCoverage {
     pub malformed_records: usize,
     pub oversized_records: usize,
     pub unmatched_outputs: usize,
+    pub unmatched_calls: usize,
     pub duplicate_records: usize,
     pub conflicting_pairs: usize,
     pub unsupported_records: usize,
@@ -156,12 +162,12 @@ struct RawOutput {
     #[serde(default)]
     queued_update_count: Option<u64>,
     #[serde(default)]
-    target_status: Option<IgnoredAny>,
+    target_status: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
     agents: Option<Vec<RawStatusActor>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Call {
     Wait { at: DateTime<Utc>, request: WaitRequest },
     StatusQuery { at: DateTime<Utc>, request: StatusRequest },
@@ -169,7 +175,7 @@ enum Call {
 
 type CallKey = (String, String);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum HostReason {
     TargetTerminal,
     Timeout,
@@ -177,21 +183,24 @@ enum HostReason {
     Missing,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum HostWakeCause {
     TargetStatus,
     Other,
     Missing,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct WaitReturn {
     timed_out: Option<bool>,
     reason: HostReason,
     wake_cause: HostWakeCause,
     queued_update_count: Option<u64>,
     target_status_observed: bool,
+    observed: ObservedHostWaitReturn,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedOutput {
     wait: Option<WaitReturn>,
     status: Option<StatusResult>,
@@ -284,9 +293,11 @@ pub(crate) fn parse(
                     }
                     _ => continue,
                 };
-                if calls.insert(key.clone(), request).is_some() {
+                if let Some(existing) = calls.get(&key) {
                     coverage.duplicate_records += 1;
-                    ambiguous.insert(key);
+                    if existing != &request { ambiguous.insert(key); }
+                } else {
+                    calls.insert(key, request);
                 }
                 relevant_records += 1;
             }
@@ -298,9 +309,11 @@ pub(crate) fn parse(
                 let Some(parsed_output) = parse_output(output, &mut coverage) else {
                     continue;
                 };
-                if outputs.insert(key.clone(), (at, parsed_output)).is_some() {
+                if let Some(existing) = outputs.get(&key) {
                     coverage.duplicate_records += 1;
-                    ambiguous.insert(key);
+                    if existing != &(at, parsed_output.clone()) { ambiguous.insert(key); }
+                } else {
+                    outputs.insert(key, (at, parsed_output));
                 }
                 relevant_records += 1;
             }
@@ -313,6 +326,7 @@ pub(crate) fn parse(
     }
 
     let mut observations = Vec::new();
+    let mut reported_conflicts = BTreeSet::new();
     for (key, (returned_at, output)) in outputs {
         if observations.len() >= MAX_EVENTS {
             coverage.unsupported_records += 1;
@@ -320,6 +334,8 @@ pub(crate) fn parse(
         }
         if ambiguous.contains(&key) {
             coverage.conflicting_pairs += 1;
+            reported_conflicts.insert(key.clone());
+            calls.remove(&key);
             continue;
         }
         let Some(call) = calls.remove(&key) else {
@@ -339,7 +355,7 @@ pub(crate) fn parse(
                     coverage.unmatched_outputs += 1;
                     continue;
                 };
-                EnvelopeObservation {
+            EnvelopeObservation {
                     kind: EnvelopeKind::StatusQuery,
                     call_id: key.1,
                     started_at: at,
@@ -351,6 +367,7 @@ pub(crate) fn parse(
                     host_target_status_wake: None,
                     queued_update_count: None,
                     target_status_observed: false,
+                    observed_host_return: None,
                     status_request: Some(request),
                     status_result: Some(result),
                 }
@@ -358,6 +375,11 @@ pub(crate) fn parse(
         };
         observations.push(observation);
     }
+    for key in &ambiguous {
+        calls.remove(key);
+        if !reported_conflicts.contains(key) { coverage.conflicting_pairs += 1; }
+    }
+    coverage.unmatched_calls += calls.len();
     (observations, coverage)
 }
 
@@ -372,12 +394,24 @@ fn parse_output(output: String, coverage: &mut EnvelopeCoverage) -> Option<Parse
         coverage.malformed_records += 1;
         return None;
     }
+    let (target_statuses, target_status_complete) = project_target_status(raw.target_status.as_ref());
+    let unsupported_reason = raw.reason.as_deref().is_some_and(|value| !matches!(value, "target_terminal" | "timeout"));
+    let unsupported_wake = raw.wake_cause.as_deref().is_some_and(|value| value != "target_status");
     let wait = recognized_wait_output(&raw).then(|| WaitReturn {
         timed_out: raw.timed_out,
         reason: host_reason(raw.reason.as_deref()),
         wake_cause: host_wake_cause(raw.wake_cause.as_deref()),
         queued_update_count: raw.queued_update_count,
         target_status_observed: raw.target_status.is_some(),
+        observed: ObservedHostWaitReturn {
+            timed_out: raw.timed_out,
+            reason: observed_host_reason(raw.reason.as_deref()),
+            wake_cause: observed_host_wake(raw.wake_cause.as_deref()),
+            queued_update_count: raw.queued_update_count,
+            target_statuses,
+            target_status_complete,
+            complete: target_status_complete && !unsupported_reason && !unsupported_wake,
+        },
     });
     let status = raw.agents.map(|agents| {
         let actor_count = agents.len();
@@ -428,7 +462,7 @@ fn valid_status_actor(actor: &RawStatusActor) -> bool {
         && valid_optional_id(actor.configured_model.as_deref())
         && valid_optional_id(actor.configured_reasoning_effort.as_deref())
         && match &actor.agent_status {
-            RawAgentStatus::Label(label) => label.len() <= 128,
+            RawAgentStatus::Label(label) => matches!(label.as_str(), "running" | "completed"),
             RawAgentStatus::Completed { completed: _ } => true,
         }
 }
@@ -464,6 +498,7 @@ fn wait_observation(
         },
         queued_update_count: output.queued_update_count,
         target_status_observed: output.target_status_observed,
+        observed_host_return: Some(output.observed),
         status_request: None,
         status_result: None,
     }
@@ -480,6 +515,46 @@ fn project_actor(actor: RawStatusActor) -> StatusActor {
             RawAgentStatus::Label(_) => ExternalStatusTag::Other,
             RawAgentStatus::Completed { completed: _ } => ExternalStatusTag::Completed,
         },
+    }
+}
+
+fn project_target_status(
+    status: Option<&BTreeMap<String, serde_json::Value>>,
+) -> (Vec<HostTargetStatusObservation>, bool) {
+    let Some(status) = status else { return (Vec::new(), true) };
+    if status.len() > MAX_STATUS_ACTORS { return (Vec::new(), false); }
+    let mut rows = Vec::with_capacity(status.len());
+    for (reference, value) in status {
+        if !valid_id(reference) { return (Vec::new(), false); }
+        let status_tag = match value {
+            serde_json::Value::String(tag) if tag == "running" => ObservedHostStatusTag::Running,
+            serde_json::Value::String(tag) if tag == "completed" => ObservedHostStatusTag::Completed,
+            serde_json::Value::Object(fields) if fields.len() == 1 && fields.contains_key("running") => ObservedHostStatusTag::Running,
+            serde_json::Value::Object(fields) if fields.len() == 1 && fields.contains_key("completed") => ObservedHostStatusTag::Completed,
+            _ => return (Vec::new(), false),
+        };
+        rows.push(HostTargetStatusObservation {
+            target_reference: TargetReference { id: reference.clone(), kind: TargetReferenceKind::ExposedAgentPath },
+            status_tag,
+        });
+    }
+    (rows, true)
+}
+
+fn observed_host_reason(value: Option<&str>) -> ObservedHostWaitReason {
+    match value {
+        Some("target_terminal") => ObservedHostWaitReason::TargetTerminal,
+        Some("timeout") => ObservedHostWaitReason::Timeout,
+        Some(_) => ObservedHostWaitReason::Other,
+        None => ObservedHostWaitReason::Unknown,
+    }
+}
+
+fn observed_host_wake(value: Option<&str>) -> ObservedHostWakeCause {
+    match value {
+        Some("target_status") => ObservedHostWakeCause::TargetStatus,
+        Some(_) => ObservedHostWakeCause::Other,
+        None => ObservedHostWakeCause::Unknown,
     }
 }
 
