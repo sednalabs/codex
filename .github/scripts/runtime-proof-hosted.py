@@ -1494,6 +1494,28 @@ def verify_test_summary_parser_contract() -> None:
     }:
         refuse("Cargo no-run post-build failure contract failed")
 
+    if bounded_library_failure_summary(
+        "codex-core",
+        f'{build_succeeded}\n{dependency_metadata_error}\n'
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
+        101,
+        set(),
+        {"serde"},
+    ) != {
+        "classification": "post_build_failure_unclassified",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": True,
+        "compiler_error_count": 0,
+        "compiler_error_codes": [],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo no-run post-build dependency withholding contract failed")
+
 
 def package_source_location(
     package: str, file_name: str, line: int, admitted_paths: set[str]
