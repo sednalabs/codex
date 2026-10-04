@@ -2114,6 +2114,188 @@
           "size_in_bytes": 276358701
         }
       }
+    },
+    {
+      "record_id": "accepted-producer-37126137319-focused-q59-s4",
+      "disposition": "accepted",
+      "w14780_eligible": true,
+      "identity": {
+        "product_sha": "2391be99dae78eab289324a2ba35660cbdcd328f",
+        "comparison_base_ref": "main",
+        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
+        "fixture_sha": "7d021a283d1378559c6c55370a99f8bab1094537",
+        "sdk_sha": "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a",
+        "profile": "focused"
+      },
+      "producer": {
+        "repository": "sednalabs/codex",
+        "repository_id": 1152496647,
+        "workflow_id": 250252262,
+        "workflow_path": ".github/workflows/sedna-branch-build.yml",
+        "run_id": 37126137319,
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "workflow_host_sha": "76a4538cd791f681a94db103da5940cb02d34165",
+        "branch": "reconstruct/first-binary-package-workflow-20261001",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      "jobs": [
+        {
+          "name": "Verify standard runner graph and exact identities",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Package native Linux x86_64",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Package native Linux ARM64",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04-arm",
+          "ran": true
+        },
+        {
+          "name": "Prepare exact Cargo lock and app-server schema diff",
+          "status": "completed",
+          "conclusion": "skipped",
+          "runner": "ubuntu-24.04",
+          "ran": false
+        },
+        {
+          "name": "Consume native Linux ARM64 package",
+          "status": "completed",
+          "conclusion": "failure",
+          "runner": "ubuntu-24.04-arm",
+          "ran": true
+        },
+        {
+          "name": "Consume native Linux x86_64 package",
+          "status": "completed",
+          "conclusion": "failure",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Verify exact SDK runtime-version parser selectors",
+          "status": "completed",
+          "conclusion": "skipped",
+          "runner": "ubuntu-24.04",
+          "ran": false
+        }
+      ],
+      "artifacts": {
+        "x86_64": {
+          "id": 11276316777,
+          "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-x86_64-37126137319",
+          "digest": "sha256:f53dff7fd55b9917655b9a22dbfa9673ff4fb023ee8ed0c06dc99160f2142b04",
+          "size_in_bytes": 279940829
+        },
+        "aarch64": {
+          "id": 11274859241,
+          "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-aarch64-37126137319",
+          "digest": "sha256:d3899e48dc2b014cf522c6021d45c3aa369d4a378e4525a9d05589ee9bbae91a",
+          "size_in_bytes": 276358701
+        }
+      }
+    },
+    {
+      "record_id": "accepted-producer-37126137319-full-q59-s4",
+      "disposition": "accepted",
+      "w14780_eligible": true,
+      "identity": {
+        "product_sha": "2391be99dae78eab289324a2ba35660cbdcd328f",
+        "comparison_base_ref": "main",
+        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
+        "fixture_sha": "7d021a283d1378559c6c55370a99f8bab1094537",
+        "sdk_sha": "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a",
+        "profile": "full"
+      },
+      "producer": {
+        "repository": "sednalabs/codex",
+        "repository_id": 1152496647,
+        "workflow_id": 250252262,
+        "workflow_path": ".github/workflows/sedna-branch-build.yml",
+        "run_id": 37126137319,
+        "run_attempt": 1,
+        "event": "workflow_dispatch",
+        "workflow_host_sha": "76a4538cd791f681a94db103da5940cb02d34165",
+        "branch": "reconstruct/first-binary-package-workflow-20261001",
+        "status": "completed",
+        "conclusion": "failure"
+      },
+      "jobs": [
+        {
+          "name": "Verify standard runner graph and exact identities",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Package native Linux x86_64",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Package native Linux ARM64",
+          "status": "completed",
+          "conclusion": "success",
+          "runner": "ubuntu-24.04-arm",
+          "ran": true
+        },
+        {
+          "name": "Prepare exact Cargo lock and app-server schema diff",
+          "status": "completed",
+          "conclusion": "skipped",
+          "runner": "ubuntu-24.04",
+          "ran": false
+        },
+        {
+          "name": "Consume native Linux ARM64 package",
+          "status": "completed",
+          "conclusion": "failure",
+          "runner": "ubuntu-24.04-arm",
+          "ran": true
+        },
+        {
+          "name": "Consume native Linux x86_64 package",
+          "status": "completed",
+          "conclusion": "failure",
+          "runner": "ubuntu-24.04",
+          "ran": true
+        },
+        {
+          "name": "Verify exact SDK runtime-version parser selectors",
+          "status": "completed",
+          "conclusion": "skipped",
+          "runner": "ubuntu-24.04",
+          "ran": false
+        }
+      ],
+      "artifacts": {
+        "x86_64": {
+          "id": 11276316777,
+          "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-x86_64-37126137319",
+          "digest": "sha256:f53dff7fd55b9917655b9a22dbfa9673ff4fb023ee8ed0c06dc99160f2142b04",
+          "size_in_bytes": 279940829
+        },
+        "aarch64": {
+          "id": 11274859241,
+          "name": "sedna-first-binary-2391be99dae78eab289324a2ba35660cbdcd328f-aarch64-37126137319",
+          "digest": "sha256:d3899e48dc2b014cf522c6021d45c3aa369d4a378e4525a9d05589ee9bbae91a",
+          "size_in_bytes": 276358701
+        }
+      }
     }
   ]
 }
