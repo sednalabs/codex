@@ -87,6 +87,7 @@ Q63_FIXTURE_SHA = "14e689f721d7a8bc3f1131281cdaba1f9921648e"
 Q64_FIXTURE_SHA = "cbbb99e99b40c533fa93d2851c02f4f87fbcb0ca"
 Q66_FIXTURE_SHA = "9fd64260e295861cab58d0a9b8fe6e852a3a2222"
 Q67_FIXTURE_SHA = "b9d83117a8eef946c00f89368e838eeb55dd9c45"
+Q68_FIXTURE_SHA = "e4970c51879dcda90a7bad93e1148f023d8b7225"
 S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
 S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
 S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
@@ -247,6 +248,11 @@ CONSUME_EXISTING_TEST_PLANS = {
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
     (Q67_FIXTURE_SHA, S4_SDK_SHA): {
+        "profiles": frozenset({"focused", "full"}),
+        "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
+        "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
+    },
+    (Q68_FIXTURE_SHA, S4_SDK_SHA): {
         "profiles": frozenset({"focused", "full"}),
         "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
