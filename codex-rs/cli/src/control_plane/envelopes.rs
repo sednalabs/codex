@@ -410,7 +410,11 @@ fn parse_output(output: String, coverage: &mut EnvelopeCoverage) -> Option<Parse
             queued_update_count: raw.queued_update_count,
             target_statuses,
             target_status_complete,
-            complete: target_status_complete && !unsupported_reason && !unsupported_wake,
+            complete: target_status_complete && raw.target_status.is_some()
+                && raw.timed_out.is_some() && raw.reason.is_some() && raw.wake_cause.is_some()
+                && !unsupported_reason && !unsupported_wake
+                && !matches!((raw.timed_out, raw.reason.as_deref()),
+                    (Some(true), Some("target_terminal")) | (Some(false), Some("timeout"))),
         },
     });
     let status = raw.agents.map(|agents| {
@@ -512,6 +516,7 @@ fn project_actor(actor: RawStatusActor) -> StatusActor {
         configured_effort: actor.configured_reasoning_effort,
         status: match actor.agent_status {
             RawAgentStatus::Label(label) if label == "running" => ExternalStatusTag::Running,
+            RawAgentStatus::Label(label) if label == "completed" => ExternalStatusTag::Completed,
             RawAgentStatus::Label(_) => ExternalStatusTag::Other,
             RawAgentStatus::Completed { completed: _ } => ExternalStatusTag::Completed,
         },

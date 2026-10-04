@@ -199,12 +199,9 @@ fn parse_time(value: &str) -> Result<DateTime<Utc>, UsageInputError> {
         .map_err(|_| UsageInputError::InvalidRequest)
 }
 
-fn project_snapshot(
-    snapshot: codex_state::UsageSnapshot,
-    diagnostic_snapshot: Option<&RecorderSnapshot>,
-) -> serde_json::Value {
+fn project_calls(snapshot: &codex_state::UsageSnapshot) -> Vec<UsageJoinCall> {
     let source = &snapshot.source_snapshot;
-    let calls = snapshot.calls.iter().map(|row| {
+    snapshot.calls.iter().map(|row| {
         let strict = row.strict_credit.as_ref();
         let scenario = row.standard_rate_scenario.as_ref();
         let verified_response = (!row.response_identity_quarantined)
@@ -252,7 +249,15 @@ fn project_snapshot(
             standard_scenario_status: scenario.map(|value| value.scenario_status.clone()),
             standard_scenario_credits: scenario.and_then(|value| value.estimated_total_credits),
         }
-    }).collect::<Vec<_>>();
+    }).collect()
+}
+
+fn project_snapshot(
+    snapshot: codex_state::UsageSnapshot,
+    diagnostic_snapshot: Option<&RecorderSnapshot>,
+) -> serde_json::Value {
+    let source = &snapshot.source_snapshot;
+    let calls = project_calls(&snapshot);
     let (capture_id, high_water, refs, diagnostic_complete) =
         diagnostic_references(diagnostic_snapshot);
     let scope = UsageJoinScope {
@@ -343,6 +348,8 @@ fn join_json(summary: &codex_diagnostics::control_plane::UsageJoinSummary) -> se
         "distinctCallCount": summary.distinct_call_count,
         "duplicateCallRows": summary.duplicate_call_rows,
         "conflictingCallIds": summary.conflicting_call_ids,
+        "quarantinedCallCount": summary.quarantined_call_count,
+        "associationTruncatedCount": summary.association_truncated_count,
         "conflictingIdentityEventCount": summary.conflicting_identity_event_count,
         "unqualifiedResponseEventCount": summary.unqualified_response_event_count,
         "associatedCallCount": summary.associated_call_count,
@@ -374,6 +381,7 @@ fn join_json(summary: &codex_diagnostics::control_plane::UsageJoinSummary) -> se
             })).collect::<Vec<_>>(),
             "unmatched": row.unmatched,
             "conflictingUsageIdentity": row.conflicting_usage_identity,
+            "identityQuarantined": row.identity_quarantined,
             "conflictingIdentityEventCount": row.conflicting_identity_event_count,
             "unqualifiedResponseEventCount": row.unqualified_response_event_count,
             "associationTruncated": row.association_truncated,

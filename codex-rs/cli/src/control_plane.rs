@@ -88,9 +88,17 @@ struct Coverage {
 }
 
 pub async fn run(command: ControlPlaneCommand) -> anyhow::Result<()> {
+    let output = execute(command).await?;
+    let encoded = serde_json::to_vec_pretty(&output)?;
+    println!("{}", String::from_utf8_lossy(&encoded));
+    Ok(())
+}
+
+/// The command's real read/parse/capture/reduce/render seam, shared with controls.
+async fn execute(command: ControlPlaneCommand) -> anyhow::Result<serde_json::Value> {
     validate(&command)?;
     let mut raw = read_range(&command.input, command.start_byte, command.end_byte)?;
-    let (observations, mut parser_coverage) =
+    let (observations, parser_coverage) =
         envelopes::parse(&raw, &command.source_namespace);
     raw.fill(0);
 
@@ -139,11 +147,9 @@ pub async fn run(command: ControlPlaneCommand) -> anyhow::Result<()> {
     );
     let encoded = serde_json::to_vec_pretty(&output)?;
     if encoded.len() > MAX_OUTPUT_BYTES {
-        println!("{{\"schemaVersion\":1,\"complete\":false,\"errorCode\":\"OutputBoundExceeded\"}}");
-        return Ok(());
+        return Ok(json!({"schemaVersion": 1, "complete": false, "errorCode": "OutputBoundExceeded"}));
     }
-    println!("{}", String::from_utf8_lossy(&encoded));
-    Ok(())
+    Ok(output)
 }
 
 fn validate(command: &ControlPlaneCommand) -> anyhow::Result<()> {
@@ -201,6 +207,13 @@ fn to_event(item: envelopes::EnvelopeObservation) -> Option<EventInput> {
             event_kind = EventKind::WaitCompleted;
             let request = item.wait_request?;
             let targets_present = !request.targets.is_empty();
+            let mut observed_host_return = item.observed_host_return;
+            if let Some(result) = &mut observed_host_return {
+                let returned = result.target_statuses.iter().map(|row| row.target_reference.id.as_str())
+                    .collect::<std::collections::BTreeSet<_>>();
+                result.complete &= request.targets.iter().all(|target| returned.contains(target.as_str()))
+                    && returned.len() == request.targets.len();
+            }
             if !request.target_set_complete {
                 coverage.push(CoverageMark {
                     field: CoverageField::TargetSet,
@@ -243,22 +256,16 @@ fn to_event(item: envelopes::EnvelopeObservation) -> Option<EventInput> {
                 blocked_end_offset_ns: None,
                 operation_duration_ns: duration_ns,
                 blocked_duration_ns: None,
-                selected_outcome: if item.timed_out == Some(true)
-                    || item.host_timeout_reason == Some(true)
-                {
-                    SelectedOutcome::Timeout
-                } else if item.host_target_terminal == Some(true) {
-                    SelectedOutcome::TargetTerminal
-                } else {
-                    SelectedOutcome::Unknown
-                },
+                // Host return metadata is retained below; it is not a native
+                // selected branch, producer receipt or logical readiness proof.
+                selected_outcome: SelectedOutcome::Unknown,
                 selected_producer: None,
                 selected_target_id: None,
                 selected_target_turn_id: None,
                 continuation_of_wait_id: None,
                 request_fingerprint: None,
                 result_fingerprint: None,
-                observed_host_return: item.observed_host_return,
+                observed_host_return,
             });
         }
         envelopes::EnvelopeKind::StatusQuery => {
