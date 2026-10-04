@@ -230,11 +230,11 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         # terminal completion removes it from the thread manager.
         with PackagedTui(isolated, "resume", root_id, columns=40) as tui:
             tui.until("Ask Codex to do anything")
-            tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
-            tui.until_screen(
-                "TUI_RICH_ROOT_MARKER:",
-                required_markers=("synthetic worker.",),
-            )
+            root_command = "TUI_RICH_ROOT_MARKER: start one synthetic worker."
+            tui.send(root_command)
+            composer_screen = tui.until_screen("synthetic worker.")
+            normalized_composer = _normalized_screen(composer_screen)
+            assert root_command in normalized_composer, composer_screen
             tui.send("\r")
             tui.until("TUI_RICH_ROOT_TERMINAL")
             active_child_route.wait_until_selected(timeout_s=30)
