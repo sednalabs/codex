@@ -25,6 +25,16 @@ CARGO_PACKAGES = [
     "codex-exec",
 ]
 WINDOWS_PACKAGES = [*CARGO_PACKAGES, "codex-cli"]
+EXPECTED_PACKAGE_MANIFESTS = {
+    "codex-cli": "cli/Cargo.toml",
+    "codex-mcp": "codex-mcp/Cargo.toml",
+}
+EXPECTED_ARTIFACT_TARGETS = {
+    ("codex-cli", "codex", "bin"): "cli/src/main.rs",
+    ("codex-cli", "runtime_execution_proof", "test"): "cli/tests/runtime_execution_proof.rs",
+    ("codex-mcp", "codex_mcp", "lib"): "codex-mcp/src/lib.rs",
+}
+TARGET_IDENTITY_FIELDS = ("name", "kind", "crate_types", "src_path", "edition", "test", "doctest")
 EXPECTED_FORMAT_PACKAGES = [
     "codex-runtime-proof",
     "codex-core",
@@ -229,6 +239,17 @@ def verify_commit_binding(manifest: dict[str, Any]) -> tuple[str, str]:
         or "permissions:\n  contents: read" not in workflow_source
     ):
         refuse("workflow trigger or permissions differ from the admitted fixed contract")
+    autocrlf_config = "git config --global core.autocrlf false"
+    eol_config = "git config --global core.eol lf"
+    windows_job = workflow_source.split("  validate-windows:", 1)[-1]
+    if (
+        "  validate-windows:" not in workflow_source
+        or autocrlf_config not in windows_job
+        or eol_config not in windows_job
+        or max(windows_job.index(autocrlf_config), windows_job.index(eol_config))
+        > windows_job.index("uses: actions/checkout@")
+    ):
+        refuse("Windows checkout must be preceded by fixed LF Git configuration")
     if not re.fullmatch(r"[0-9a-f]{40}", workflow_sha):
         refuse("workflow source SHA is unavailable or invalid")
     return head, workflow_sha
@@ -382,7 +403,79 @@ def run_library_suite(package: str) -> dict[str, Any]:
     }
 
 
-def cargo_artifact(command: list[str], package_name: str, target_name: str, kind: str) -> Path:
+def cargo_metadata_index() -> dict[str, dict[str, Any]]:
+    command = [
+        "cargo",
+        "metadata",
+        "--locked",
+        "--no-deps",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "Cargo.toml",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=CODEX_RS,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        refuse(f"locked Cargo metadata failed with exit {result.returncode}")
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        refuse("locked Cargo metadata did not return JSON")
+    packages = metadata.get("packages")
+    if not isinstance(packages, list):
+        refuse("locked Cargo metadata has no package inventory")
+    indexed: dict[str, dict[str, Any]] = {}
+    for name, relative_manifest in EXPECTED_PACKAGE_MANIFESTS.items():
+        expected_manifest = (CODEX_RS / relative_manifest).resolve(strict=True)
+        matches = [
+            package
+            for package in packages
+            if package.get("name") == name
+            and Path(package.get("manifest_path", "")).resolve(strict=True) == expected_manifest
+        ]
+        if (
+            len(matches) != 1
+            or not isinstance(matches[0].get("id"), str)
+            or not matches[0]["id"]
+        ):
+            refuse(f"Cargo metadata did not bind one exact package identity and manifest: {name}")
+        indexed[name] = matches[0]
+    return indexed
+
+
+def target_identity(target: dict[str, Any]) -> dict[str, Any]:
+    return {field: target.get(field) for field in TARGET_IDENTITY_FIELDS}
+
+
+def cargo_artifact(
+    command: list[str],
+    metadata: dict[str, dict[str, Any]],
+    package_name: str,
+    target_name: str,
+    kind: str,
+) -> Path:
+    package = metadata.get(package_name)
+    expected_source = EXPECTED_ARTIFACT_TARGETS.get((package_name, target_name, kind))
+    if package is None or expected_source is None:
+        refuse(f"artifact request is outside the exact Cargo metadata inventory: {package_name}/{target_name}")
+    expected_target_source = (CODEX_RS / expected_source).resolve(strict=True)
+    target_matches = [
+        target
+        for target in package.get("targets", [])
+        if target.get("name") == target_name
+        and kind in target.get("kind", [])
+        and Path(target.get("src_path", "")).resolve(strict=True) == expected_target_source
+    ]
+    if len(target_matches) != 1:
+        refuse(f"Cargo metadata did not bind one exact target source: {package_name}/{target_name}")
+    expected_target = target_identity(target_matches[0])
     result = subprocess.run(
         command,
         cwd=CODEX_RS,
@@ -401,12 +494,9 @@ def cargo_artifact(command: list[str], package_name: str, target_name: str, kind
         if event.get("reason") != "compiler-artifact":
             continue
         target = event.get("target", {})
-        package_id = event.get("package_id", "")
-        package_component = package_id.rsplit("#", 1)[-1].split("@", 1)[0]
         if (
-            package_component == package_name
-            and target.get("name") == target_name
-            and kind in target.get("kind", [])
+            event.get("package_id") == package["id"]
+            and target_identity(target) == expected_target
             and event.get("executable")
         ):
             artifacts.append(Path(event["executable"]))
@@ -458,9 +548,9 @@ def ignored_inventory(binary: Path) -> set[str]:
     if result.returncode != 0:
         refuse(f"could not enumerate ignored test inventory: {binary.name}")
     return {
-        line.split(":", 1)[0]
+        line[: -len(": test")]
         for line in result.stdout.splitlines()
-        if line.endswith(": test")
+        if line.endswith(": test") and len(line) > len(": test")
     }
 
 
@@ -493,17 +583,29 @@ def run_ignored_root_test(
         stderr=subprocess.STDOUT,
     )
     summaries = parse_test_summaries(result.stdout)
-    if result.returncode != 0 or len(summaries) != 1:
-        refuse(f"explicit synthetic root fixture did not produce one terminal test result: {test_name}")
-    summary = summaries[0]
-    if summary != {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}:
+    success = {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
+    if test_name == EXPECTED_MCP_TESTS[0]:
+        nested_runs = sum(line.strip() == "running 1 test" for line in result.stdout.splitlines())
+        named_runs = sum(line.startswith(f"test {test_name} ") for line in result.stdout.splitlines())
+        terminal = result.stdout.rstrip().splitlines()[-1] if result.stdout.strip() else ""
+        terminal_summary = parse_test_summaries(terminal)
+        if (
+            result.returncode != 0
+            or summaries != [success, success]
+            or nested_runs != 2
+            or named_runs != 2
+            or terminal_summary != [success]
+        ):
+            refuse("retained-client fixture did not produce one successful child and terminal outer test")
+    elif result.returncode != 0 or summaries != [success]:
         refuse(f"explicit synthetic root fixture was not exactly one successful executed test: {test_name}")
     if sha256_file(binary) != expected_binary_sha256:
         refuse(f"root fixture binary changed during invocation: {test_name}")
     return {
         "test": test_name,
         "status": "passed",
-        "counts": summary,
+        "counts": summaries[-1],
+        "summaries": summaries,
         "binary_sha256": expected_binary_sha256,
         "output_sha256": sha256_bytes(result.stdout.encode()),
     }
@@ -525,9 +627,11 @@ def validate_linux(manifest: dict[str, Any]) -> None:
     if os.environ.get("EXPECTED_RUNNER_OS") != "Linux" or os.environ.get("RUNNER_TEMP") is None:
         refuse("Linux validation runner identity is unavailable")
 
+    metadata = cargo_metadata_index()
     library_results = [run_library_suite(package) for package in manifest["linux_library_test_packages"]]
     cli_relative = cargo_artifact(
         ["cargo", "build", "--locked", "-p", "codex-cli", "--bin", "codex", "--message-format=json"],
+        metadata,
         "codex-cli",
         "codex",
         "bin",
@@ -544,12 +648,14 @@ def validate_linux(manifest: dict[str, Any]) -> None:
             "--no-run",
             "--message-format=json",
         ],
+        metadata,
         "codex-cli",
         "runtime_execution_proof",
         "test",
     )
     mcp_test_relative = cargo_artifact(
         ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--no-run", "--message-format=json"],
+        metadata,
         "codex-mcp",
         "codex_mcp",
         "lib",

@@ -100,6 +100,11 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
+      - name: Pin LF Git behavior before checkout
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
