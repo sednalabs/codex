@@ -1,9 +1,9 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
 #[cfg(target_os = "linux")]
-use crate::provider_auth::ensure_protected_cloud_config_ineligible;
-#[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
+#[cfg(target_os = "linux")]
+use crate::provider_auth::ensure_protected_cloud_config_ineligible;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::valid_provider_recipient;
 #[cfg(target_os = "linux")]
@@ -338,7 +338,9 @@ fn receive_auth_frame(file: &std::fs::File) -> Result<Zeroizing<Vec<u8>>> {
 
 pub fn bearer_for_mcp(server: &str, recipient: &str) -> Result<Option<Zeroizing<String>>> {
     if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
-        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+        return Err(anyhow::anyhow!(
+            "protected runtime credentials are unavailable"
+        ));
     }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
@@ -399,7 +401,9 @@ pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
 
 pub fn protected_mcp_target() -> Result<Option<(String, String)>> {
     if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
-        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+        return Err(anyhow::anyhow!(
+            "protected runtime credentials are unavailable"
+        ));
     }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
@@ -423,7 +427,9 @@ fn protected_mcp_target_from_store(
 
 pub fn protected_provider_recipient() -> Result<Option<String>> {
     if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
-        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+        return Err(anyhow::anyhow!(
+            "protected runtime credentials are unavailable"
+        ));
     }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);

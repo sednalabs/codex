@@ -9,10 +9,10 @@ mod wire;
 #[cfg(test)]
 mod tests;
 
+pub use auth::McpRedactionContext;
 pub use signer::ExecutionNonce;
 pub use signer::sign_claim_proof;
 pub use wire::RESERVED_META_KEY;
-pub use auth::McpRedactionContext;
 
 pub fn bearer_for_mcp(
     server: &str,

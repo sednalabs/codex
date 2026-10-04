@@ -13,6 +13,7 @@ pub mod exec_events;
 #[cfg(test)]
 mod lib_tests;
 
+use anyhow::Context;
 pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
@@ -168,7 +169,6 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::warn;
-use anyhow::Context;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;

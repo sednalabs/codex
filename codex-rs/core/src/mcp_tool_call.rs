@@ -461,14 +461,14 @@ async fn handle_approved_mcp_tool_call(
                         .start_mcp_call_trace(call_id);
                     let request_meta = mcp_call_trace.add_request_meta(request_meta);
                     if let Some(recipient) = transport_url.as_deref() {
-                        protected_call = codex_runtime_proof::is_protected_mcp_target(&server, recipient)
-                            .map_err(anyhow::Error::msg)?;
+                        protected_call =
+                            codex_runtime_proof::is_protected_mcp_target(&server, recipient)
+                                .map_err(anyhow::Error::msg)?;
                         if protected_call {
-                            runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
-                                &server,
-                                recipient,
-                                None,
-                            )?;
+                            runtime_redaction_context =
+                                codex_runtime_proof::capture_mcp_redaction_context(
+                                    &server, recipient, None,
+                                )?;
                         }
                     }
                     let empty_arguments = JsonValue::Null;
@@ -482,14 +482,17 @@ async fn handle_approved_mcp_tool_call(
                         proof_parameters,
                     )?;
                     if protected_call && proof.is_none() {
-                        anyhow::bail!("protected MCP operation is outside its issuer-bound claim scope");
+                        anyhow::bail!(
+                            "protected MCP operation is outside its issuer-bound claim scope"
+                        );
                     }
                     if protected_call {
-                        runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
-                            &server,
-                            transport_url.as_deref().unwrap_or_default(),
-                            proof.as_ref(),
-                        )?;
+                        runtime_redaction_context =
+                            codex_runtime_proof::capture_mcp_redaction_context(
+                                &server,
+                                transport_url.as_deref().unwrap_or_default(),
+                                proof.as_ref(),
+                            )?;
                     }
                     let request_meta = add_runtime_proof_meta(request_meta, proof)?;
                     Ok((rewritten_arguments, request_meta))
@@ -506,10 +509,7 @@ async fn handle_approved_mcp_tool_call(
                 &turn_context.model_info.input_modalities,
                 Ok(result),
             )?;
-            redact_protected_call_tool_result(
-                &mut result,
-                runtime_redaction_context.as_ref(),
-            );
+            redact_protected_call_tool_result(&mut result, runtime_redaction_context.as_ref());
             Ok(maybe_request_codex_apps_auth_elicitation(
                 sess,
                 turn_context,

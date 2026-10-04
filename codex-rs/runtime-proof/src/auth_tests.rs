@@ -6,10 +6,10 @@ use super::clear_auth_state;
 use super::failed_target_match;
 use super::protected_mcp_target_from_store;
 use pretty_assertions::assert_eq;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::sync::Mutex;
 use std::thread;
 use zeroize::Zeroizing;
 
@@ -57,7 +57,10 @@ fn invalidation_between_getter_precheck_and_lock_still_fails_closed() {
             store.lock().unwrap().is_none(),
             "invalidation cleared the protected state"
         );
-        assert!(failed.load(Ordering::Acquire), "invalidation latched failure");
+        assert!(
+            failed.load(Ordering::Acquire),
+            "invalidation latched failure"
+        );
     });
 }
 

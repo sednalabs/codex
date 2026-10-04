@@ -153,7 +153,11 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         calls.len()
     );
     anyhow::ensure!(
-        !fixture.wait_targets().is_empty() && fixture.wait_targets().iter().all(|target| !target.is_empty()),
+        !fixture.wait_targets().is_empty()
+            && fixture
+                .wait_targets()
+                .iter()
+                .all(|target| !target.is_empty()),
         "root did not wait on the spawned delegate before finalizing"
     );
     anyhow::ensure!(
@@ -451,7 +455,9 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
 async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
     let fixture = ProtectedRuntimeFixture::start().await?;
-    let result = fixture.run_cli_with_log_filter("root-claim", "trace").await?;
+    let result = fixture
+        .run_cli_with_log_filter("root-claim", "trace")
+        .await?;
     anyhow::ensure!(
         result.status.success(),
         "TRACE protected CLI failed: {}",
@@ -479,7 +485,10 @@ async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
             .unwrap_or(Value::Null);
         for key in ["certificate", "proof"] {
             if let Some(secret) = envelope.get(key).and_then(Value::as_str) {
-                anyhow::ensure!(!emitted.contains(secret), "protected TRACE output exposed proof");
+                anyhow::ensure!(
+                    !emitted.contains(secret),
+                    "protected TRACE output exposed proof"
+                );
                 anyhow::ensure!(
                     fixture
                         .model_requests()
@@ -526,7 +535,10 @@ async fn protected_mcp_error_does_not_echo_proof_or_bearer() -> Result<()> {
         "protected MCP error exposed a credential"
     );
     let calls = fixture.claim_calls();
-    anyhow::ensure!(calls.len() == 2, "error fixture did not exercise root and delegate");
+    anyhow::ensure!(
+        calls.len() == 2,
+        "error fixture did not exercise root and delegate"
+    );
     for call in calls {
         let envelope = call
             .pointer("/params/_meta/runtime~1execution-proof")
@@ -534,7 +546,10 @@ async fn protected_mcp_error_does_not_echo_proof_or_bearer() -> Result<()> {
             .unwrap_or(Value::Null);
         for key in ["certificate", "proof"] {
             if let Some(secret) = envelope.get(key).and_then(Value::as_str) {
-                anyhow::ensure!(!emitted.contains(secret), "protected MCP error exposed proof");
+                anyhow::ensure!(
+                    !emitted.contains(secret),
+                    "protected MCP error exposed proof"
+                );
                 anyhow::ensure!(
                     fixture
                         .model_requests()
@@ -647,7 +662,11 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
         "delegate MCP claim was not rejected before credential egress"
     );
     anyhow::ensure!(
-        !fixture.wait_targets().is_empty() && fixture.wait_targets().iter().all(|target| !target.is_empty()),
+        !fixture.wait_targets().is_empty()
+            && fixture
+                .wait_targets()
+                .iter()
+                .all(|target| !target.is_empty()),
         "root did not wait for the rejected delegate"
     );
     anyhow::ensure!(
@@ -728,10 +747,17 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         .iter()
         .filter(|request| request.http_method == "POST" && request.phase == "tools/call")
         .collect::<Vec<_>>();
-    anyhow::ensure!(claims.len() == 1, "fixture did not issue exactly one claim call");
     anyhow::ensure!(
-        mcp_requests.iter().any(|request| request.phase == "initialize")
-            && mcp_requests.iter().any(|request| request.phase == "tools/list"),
+        claims.len() == 1,
+        "fixture did not issue exactly one claim call"
+    );
+    anyhow::ensure!(
+        mcp_requests
+            .iter()
+            .any(|request| request.phase == "initialize")
+            && mcp_requests
+                .iter()
+                .any(|request| request.phase == "tools/list"),
         "fixture did not record lifecycle request phases separately from the claim"
     );
     let expected_authorization = format!(
@@ -739,14 +765,17 @@ async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Resul
         runtime_execution_proof_support::OPS_BEARER_TOKEN
     );
     anyhow::ensure!(
-        claims
-            .iter()
-            .all(|request| request.authorization.as_deref() == Some(expected_authorization.as_str())),
+        claims.iter().all(
+            |request| request.authorization.as_deref() == Some(expected_authorization.as_str())
+        ),
         "delayed claim did not use the selected MCP bearer"
     );
     let output = fixture.captured_output()?;
     if let Some(token) = fixture.expiring_provider_token() {
-        anyhow::ensure!(!output.contains(&token), "expired provider token leaked to output");
+        anyhow::ensure!(
+            !output.contains(&token),
+            "expired provider token leaked to output"
+        );
     }
     anyhow::ensure!(
         !output.contains(runtime_execution_proof_support::OPS_BEARER_TOKEN),

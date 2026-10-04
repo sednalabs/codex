@@ -1021,7 +1021,8 @@ impl RmcpClient {
                         auth_provider.clone()
                     };
 
-                let resolved_oauth_tokens = if !protected_output && bearer_token.is_none()
+                let resolved_oauth_tokens = if !protected_output
+                    && bearer_token.is_none()
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {

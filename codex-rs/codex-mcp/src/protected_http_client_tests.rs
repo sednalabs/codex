@@ -90,12 +90,22 @@ fn run_protected_child() -> anyhow::Result<()> {
     };
 
     let first = futures::executor::block_on(http.http_request(request()));
-    anyhow::ensure!(first.is_err(), "recording transport should return its fixture error");
+    anyhow::ensure!(
+        first.is_err(),
+        "recording transport should return its fixture error"
+    );
     let first_count = recorder.requests.lock().unwrap().len();
-    anyhow::ensure!(first_count == 1, "first protected send did not reach transport");
+    anyhow::ensure!(
+        first_count == 1,
+        "first protected send did not reach transport"
+    );
     let sent = recorder.requests.lock().unwrap()[0].clone();
     anyhow::ensure!(
-        sent == ("POST".to_string(), RECIPIENT.to_string(), format!("Bearer {MCP_BEARER}")),
+        sent == (
+            "POST".to_string(),
+            RECIPIENT.to_string(),
+            format!("Bearer {MCP_BEARER}")
+        ),
         "first protected send did not use the imported selected credential"
     );
 
@@ -105,7 +115,10 @@ fn run_protected_child() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(expiry - now + 1));
     }
     let second = futures::executor::block_on(http.http_request(request()));
-    anyhow::ensure!(second.is_err(), "expired protected client send must fail closed");
+    anyhow::ensure!(
+        second.is_err(),
+        "expired protected client send must fail closed"
+    );
     anyhow::ensure!(
         recorder.requests.lock().unwrap().len() == 1,
         "expired retained client reached its underlying network delegate"
@@ -242,7 +255,10 @@ fn launch_protected_child() -> anyhow::Result<()> {
     let deadline = std::time::Instant::now() + Duration::from_secs(40);
     loop {
         if let Some(status) = child.try_wait()? {
-            anyhow::ensure!(status.success(), "protected direct-send fixture child failed: {status}");
+            anyhow::ensure!(
+                status.success(),
+                "protected direct-send fixture child failed: {status}"
+            );
             break;
         }
         if std::time::Instant::now() >= deadline {
@@ -285,7 +301,10 @@ fn send_packet(socket: &UnixStream, bytes: &[u8]) -> anyhow::Result<()> {
             MSG_NOSIGNAL,
         )
     };
-    anyhow::ensure!(sent >= 0 && sent as usize == bytes.len(), "send bootstrap fixture packet");
+    anyhow::ensure!(
+        sent >= 0 && sent as usize == bytes.len(),
+        "send bootstrap fixture packet"
+    );
     Ok(())
 }
 

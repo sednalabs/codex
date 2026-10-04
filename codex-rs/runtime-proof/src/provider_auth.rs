@@ -63,12 +63,20 @@ pub(crate) fn ensure_protected_cloud_config_ineligible(plan_type: Option<&str>) 
     };
     let plan_type = plan_type.to_ascii_lowercase();
     match plan_type.as_str() {
-        "business" | "ent26" | "enterprise_cbp_usage_based" | "enterprise" | "hc" | "edu"
+        "business"
+        | "ent26"
+        | "enterprise_cbp_usage_based"
+        | "enterprise"
+        | "hc"
+        | "edu"
         | "education" => {
-            bail!("protected runtime account requires an unadmitted cloud-config credential consumer")
+            bail!(
+                "protected runtime account requires an unadmitted cloud-config credential consumer"
+            )
         }
-        "free" | "go" | "plus" | "pro" | "prolite" | "team"
-        | "self_serve_business_usage_based" => Ok(()),
+        "free" | "go" | "plus" | "pro" | "prolite" | "team" | "self_serve_business_usage_based" => {
+            Ok(())
+        }
         _ => bail!("protected runtime cannot classify cloud-config credential eligibility"),
     }
 }
