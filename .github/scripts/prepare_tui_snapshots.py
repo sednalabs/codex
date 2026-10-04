@@ -516,7 +516,7 @@ def _diagnostic_inventory(root: Path, attributed: set[str] | None) -> tuple[dict
                 observed.add(relative)
                 if (attributed is None or relative not in attributed
                         or len(relative) > 1024 or not SAFE_PENDING_PATH.fullmatch(relative)
-                        or re.search(r"(?:gh[pousr]_|sk-)[A-Za-z0-9_]{20,}", relative)):
+                        or re.search(r"(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_]{20,}", relative)):
                     continue
                 try:
                     info = _relative_path(root, relative).lstat()

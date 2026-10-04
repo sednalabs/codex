@@ -822,6 +822,20 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertEqual((inventory["observed_count"], inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (1, 0, 1, False))
         self.assertNotIn(b"ghp_", data)
 
+    def test_fine_grained_token_tracked_name_persists_exact_omitted_incomplete_bytes(self):
+        token_shape = "github_pat_" + "x" * 20
+        pending = self._additional_snapshot(f"codex-rs/tui/src/chatwidget/snapshots/codex_tui__{token_shape}.snap")
+        expected = self._expected([], code="output_outside_allowlist")
+        expected["inventory"].update(status="partial", observed_count=1, observed_entry_count=1,
+                                     omitted_count=1, complete=False)
+        expected["metadata_status"] = "incomplete"
+        body = b"PRIVATE_FINE_GRAINED_BODY https://private.invalid /home/runner/private\n"
+        data, stderr = self._invoke(lambda: self._pending(pending, contents=body))
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_outside_allowlist; artifact_state=diagnostic-only\n")
+        for omitted in (token_shape.encode(), pending.encode(), body, hashlib.sha256(body).hexdigest().encode()):
+            self.assertNotIn(omitted, data)
+
     def test_symlink_pending_and_hidden_symlink_directory_are_partial_unknown(self):
         def action():
             destination = self.product_root / (prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new")
