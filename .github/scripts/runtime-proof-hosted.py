@@ -84,6 +84,18 @@ EXPECTED_LOCAL_HELPERS = {
 TEST_SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;"
 )
+SAFE_TEST_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*$")
+FAILED_TEST = re.compile(r"^\s*test ([A-Za-z_][A-Za-z0-9_:]*) \.\.\. FAILED\s*$")
+PANIC_LOCATION = re.compile(
+    r"^thread '([A-Za-z_][A-Za-z0-9_:]*)' panicked at (.+):(\d+):(\d+):"
+)
+PACKAGE_SOURCE_DIRS = {
+    "codex-runtime-proof": "runtime-proof",
+    "codex-mcp": "codex-mcp",
+    "codex-rmcp-client": "rmcp-client",
+    "codex-core": "core",
+    "codex-exec": "exec",
+}
 
 
 def refuse(message: str) -> None:
@@ -379,8 +391,139 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
     ]
 
 
+def package_source_location(package: str, file_name: str, line: int) -> str | None:
+    source_dir = PACKAGE_SOURCE_DIRS[package]
+    path = Path(file_name)
+    if path.is_absolute():
+        try:
+            path = path.resolve(strict=False).relative_to(CODEX_RS.resolve())
+        except ValueError:
+            return None
+    parts = path.parts
+    if parts[:1] == ("src",):
+        parts = (source_dir, *parts)
+    if (
+        not parts
+        or parts[0] != source_dir
+        or ".." in parts
+        or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts)
+        or path.suffix != ".rs"
+    ):
+        return None
+    location = f"{Path(*parts).as_posix()}:{line}"
+    return location if len(location) <= 240 else None
+
+
+def bounded_library_failure_summary(
+    package: str, output: str, exit_code: int
+) -> dict[str, Any]:
+    summaries = parse_test_summaries(output)
+    compiler_errors = 0
+    compiler_codes: list[str] = []
+    source_locations: list[str] = []
+    failed_tests: list[str] = []
+    panic_locations: list[dict[str, str]] = []
+
+    for raw_line in output.splitlines():
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            event = None
+        if isinstance(event, dict) and event.get("reason") == "compiler-message":
+            message = event.get("message")
+            if not isinstance(message, dict) or message.get("level") != "error":
+                continue
+            compiler_errors += 1
+            code = message.get("code")
+            code_value = code.get("code") if isinstance(code, dict) else None
+            if isinstance(code_value, str) and re.fullmatch(r"E[0-9]{4}", code_value):
+                if code_value not in compiler_codes and len(compiler_codes) < 8:
+                    compiler_codes.append(code_value)
+            spans = message.get("spans")
+            if not isinstance(spans, list):
+                spans = []
+            for span in spans:
+                if not isinstance(span, dict) or span.get("is_primary") is not True:
+                    continue
+                file_name = span.get("file_name")
+                line = span.get("line_start")
+                if (
+                    not isinstance(file_name, str)
+                    or not isinstance(line, int)
+                    or isinstance(line, bool)
+                    or line < 1
+                ):
+                    continue
+                location = package_source_location(package, file_name, line)
+                if (
+                    location
+                    and location not in source_locations
+                    and len(source_locations) < 8
+                ):
+                    source_locations.append(location)
+            continue
+
+        failed_match = FAILED_TEST.fullmatch(raw_line)
+        if (
+            failed_match
+            and len(failed_match.group(1)) <= 160
+            and SAFE_TEST_NAME.fullmatch(failed_match.group(1))
+        ):
+            if failed_match.group(1) not in failed_tests and len(failed_tests) < 20:
+                failed_tests.append(failed_match.group(1))
+            continue
+
+        panic_match = PANIC_LOCATION.match(raw_line)
+        if (
+            panic_match
+            and len(panic_match.group(1)) <= 160
+            and SAFE_TEST_NAME.fullmatch(panic_match.group(1))
+        ):
+            location = package_source_location(
+                package, panic_match.group(2), int(panic_match.group(3))
+            )
+            item = {"test": panic_match.group(1), "source_location": location}
+            if location and item not in panic_locations and len(panic_locations) < 20:
+                panic_locations.append(item)
+
+    failed = sum(int(item["failed"]) for item in summaries)
+    passed = sum(int(item["passed"]) for item in summaries)
+    ignored = sum(int(item["ignored"]) for item in summaries)
+    if compiler_errors:
+        classification = "compiler_error"
+    elif failed or failed_tests:
+        classification = "test_failure"
+    elif exit_code:
+        classification = "command_failure_unclassified"
+    elif not summaries:
+        classification = "missing_test_summary"
+    else:
+        classification = "test_summary_failure"
+    return {
+        "classification": classification,
+        "cargo_exit_code": exit_code,
+        "compiler_error_count": compiler_errors,
+        "compiler_error_codes": compiler_codes,
+        "primary_source_locations": source_locations,
+        "test_summary_count": len(summaries),
+        "passed": passed,
+        "failed": failed,
+        "ignored": ignored,
+        "failed_source_test_names": failed_tests,
+        "panic_source_locations": panic_locations,
+    }
+
+
 def run_library_suite(package: str) -> dict[str, Any]:
-    command = ["cargo", "test", "--locked", "-p", package, "--lib"]
+    command = [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        package,
+        "--lib",
+        "--message-format=json",
+    ]
     result = subprocess.run(
         command,
         cwd=CODEX_RS,
@@ -394,7 +537,14 @@ def run_library_suite(package: str) -> dict[str, Any]:
         item["status"] != "ok" or item["passed"] == 0 or item["failed"]
         for item in summaries
     ):
-        refuse(f"required library suite failed: {package}; output_sha256={sha256_bytes(result.stdout.encode())}")
+        failure = bounded_library_failure_summary(
+            package, result.stdout, result.returncode
+        )
+        refuse(
+            "required library suite failed: "
+            f"{package}; output_sha256={sha256_bytes(result.stdout.encode())}; "
+            f"diagnostic_summary={json.dumps(failure, sort_keys=True, separators=(',', ':'))}"
+        )
     return {
         "package": package,
         "command": command,
