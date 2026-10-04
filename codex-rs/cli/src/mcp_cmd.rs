@@ -34,12 +34,14 @@ use codex_mcp::oauth_login_support;
 use codex_mcp::resolve_oauth_callback;
 use codex_mcp::resolve_oauth_scopes;
 use codex_protocol::protocol::McpAuthStatus;
+use codex_rmcp_client::DeviceAuthorizationPrompt;
 use codex_rmcp_client::McpOAuthCallbackMode;
 use codex_rmcp_client::McpOAuthClientRegistration;
 use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::delete_enterprise_oauth_tokens;
 use codex_rmcp_client::delete_oauth_tokens;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::resolve_mcp_oauth_callback_url;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
@@ -217,6 +219,10 @@ pub struct LoginArgs {
     /// Print the authorization URL and accept the callback URL without opening a browser.
     #[arg(long)]
     pub no_browser: bool,
+
+    /// Use OAuth device authorization for headless login.
+    #[arg(long = "device-auth", conflicts_with = "no_browser")]
+    pub device_auth: bool,
 
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
@@ -554,6 +560,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let LoginArgs {
         name,
         no_browser,
+        device_auth,
         scopes,
         oauth_client_registration,
     } = login_args;
@@ -589,6 +596,88 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let http_client = apply_http_headers_helper(http_client, server, config.cwd.to_path_buf())
         .map_err(anyhow::Error::msg)?;
     let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
+
+    if device_auth {
+        let oauth_config = match oauth_login_support(
+            &server.transport,
+            Arc::clone(&http_client),
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        {
+            McpOAuthLoginSupport::Supported(oauth_config) => oauth_config,
+            McpOAuthLoginSupport::Unsupported => {
+                bail!("No authorization support detected for MCP server '{name}'.")
+            }
+            McpOAuthLoginSupport::Unknown(error) => {
+                return Err(error).context(format!(
+                    "failed to discover OAuth support for MCP server '{name}'"
+                ));
+            }
+        };
+        let device_authorization_endpoint = oauth_config
+            .device_authorization_endpoint
+            .as_deref()
+            .filter(|endpoint| !endpoint.trim().is_empty())
+            .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing device_authorization_endpoint."))?;
+        let has_device_grant =
+            oauth_config
+                .grant_types_supported
+                .as_ref()
+                .is_some_and(|grant_types| {
+                    grant_types
+                        .iter()
+                        .any(|grant| grant == "urn:ietf:params:oauth:grant-type:device_code")
+                });
+        if !has_device_grant {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing device_code grant type."
+            );
+        }
+        let issuer = oauth_config
+            .issuer
+            .as_deref()
+            .filter(|issuer| !issuer.trim().is_empty())
+            .ok_or_else(|| anyhow!("OAuth device login is not advertised by MCP server '{name}'. Missing authorization server issuer."))?;
+        if oauth_config.token_endpoint.trim().is_empty() {
+            bail!(
+                "OAuth device login is not advertised by MCP server '{name}'. Missing token_endpoint."
+            );
+        }
+        let resolved_scopes = resolve_oauth_scopes(
+            explicit_scopes,
+            server.scopes.clone(),
+            oauth_config.discovered_scopes.clone(),
+        );
+        let credential_name = server.oauth_credential_name(&name);
+        let supports_refresh_token = oauth_config
+            .grant_types_supported
+            .as_ref()
+            .is_some_and(|grant_types| grant_types.iter().any(|grant| grant == "refresh_token"));
+        perform_oauth_device_login(
+            credential_name.as_ref(),
+            &url,
+            issuer,
+            http_client,
+            config.mcp_oauth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            http_headers,
+            env_http_headers,
+            &resolved_scopes.scopes,
+            server.oauth_client_id(),
+            server.oauth_resource.as_deref(),
+            device_authorization_endpoint,
+            &oauth_config.token_endpoint,
+            oauth_config.registration_endpoint.as_deref(),
+            supports_refresh_token,
+            oauth_config.callback_mode == McpOAuthCallbackMode::IssuerBound,
+            print_device_authorization_prompt,
+        )
+        .await?;
+        println!("Successfully logged in to MCP server '{name}'.");
+        return Ok(());
+    }
     let discovered_scopes = if explicit_scopes.is_none() && server.scopes.is_none() {
         discover_supported_scopes(
             &server.transport,
@@ -630,6 +719,15 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     .await?;
     println!("Successfully logged in to MCP server '{name}'.");
     Ok(())
+}
+
+fn print_device_authorization_prompt(prompt: DeviceAuthorizationPrompt) {
+    println!(
+        "Authorize `{}` by opening this URL in your browser:\n{}\n\nEnter code: {}\n",
+        prompt.server_name(),
+        prompt.verification_uri(),
+        prompt.user_code()
+    );
 }
 
 async fn run_logout(config: &Config, logout_args: LogoutArgs) -> Result<()> {

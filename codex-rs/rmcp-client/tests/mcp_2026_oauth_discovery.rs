@@ -232,6 +232,16 @@ async fn assert_legacy_oauth_without_starting_an_mcp_session(
                     Some(StreamableHttpOAuthDiscovery {
                         scopes_supported: Some(vec!["mcp:read".to_string()]),
                         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+                        issuer: match metadata_issuer {
+                            AuthorizationMetadataIssuer::Matching =>
+                                Some(authorization_server.uri()),
+                            AuthorizationMetadataIssuer::Missing => None,
+                            AuthorizationMetadataIssuer::Mismatched => unreachable!(),
+                        },
+                        device_authorization_endpoint: None,
+                        token_endpoint: format!("{}/token", authorization_server.uri()),
+                        registration_endpoint: None,
+                        grant_types_supported: None,
                     }),
                 );
             }
