@@ -84,10 +84,8 @@ EXPECTED_LOCAL_HELPERS = {
 TEST_SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;"
 )
-SAFE_TEST_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_:]*$")
-FAILED_TEST = re.compile(r"^\s*test ([A-Za-z_][A-Za-z0-9_:]*) \.\.\. FAILED\s*$")
 PANIC_LOCATION = re.compile(
-    r"^thread '([A-Za-z_][A-Za-z0-9_:]*)' panicked at (.+):(\d+):(\d+):"
+    r"^thread '[^']*' panicked at (.+):(\d+):(\d+):"
 )
 PACKAGE_SOURCE_DIRS = {
     "codex-runtime-proof": "runtime-proof",
@@ -391,14 +389,22 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
     ]
 
 
-def package_source_location(package: str, file_name: str, line: int) -> str | None:
+def package_source_location(
+    package: str, file_name: str, line: int, admitted_paths: set[str]
+) -> str | None:
     source_dir = PACKAGE_SOURCE_DIRS[package]
+    if not file_name or len(file_name) > 512 or line < 1:
+        return None
     path = Path(file_name)
     if path.is_absolute():
+        if ".." in path.parts:
+            return None
         try:
-            path = path.resolve(strict=False).relative_to(CODEX_RS.resolve())
+            path = path.relative_to(CODEX_RS.resolve())
         except ValueError:
             return None
+    elif ".." in path.parts:
+        return None
     parts = path.parts
     if parts[:1] == ("src",):
         parts = (source_dir, *parts)
@@ -410,30 +416,55 @@ def package_source_location(package: str, file_name: str, line: int) -> str | No
         or path.suffix != ".rs"
     ):
         return None
+    relative_path = f"codex-rs/{Path(*parts).as_posix()}"
+    if relative_path not in admitted_paths:
+        return None
+
+    entry = run_git("ls-tree", "-z", "HEAD", "--", relative_path)
+    entry = entry[:-1] if entry.endswith("\0") else entry
+    metadata, separator, tracked_path = entry.partition("\t")
+    fields = metadata.split()
+    if (
+        not separator
+        or tracked_path != relative_path
+        or len(fields) != 3
+        or fields[0] not in {"100644", "100755"}
+        or fields[1] != "blob"
+    ):
+        return None
+    source = run_git("show", f"HEAD:{relative_path}")
+    if line > len(source.splitlines()):
+        return None
     location = f"{Path(*parts).as_posix()}:{line}"
     return location if len(location) <= 240 else None
 
 
 def bounded_library_failure_summary(
-    package: str, output: str, exit_code: int
+    package: str, output: str, exit_code: int, admitted_paths: set[str]
 ) -> dict[str, Any]:
     summaries = parse_test_summaries(output)
-    compiler_errors = 0
+    build_events: list[bool | None] = []
+    prebuild_compiler_errors = 0
     compiler_codes: list[str] = []
     source_locations: list[str] = []
-    failed_tests: list[str] = []
-    panic_locations: list[dict[str, str]] = []
+    panic_locations: list[str] = []
 
     for raw_line in output.splitlines():
         try:
             event = json.loads(raw_line)
         except json.JSONDecodeError:
             event = None
+        if isinstance(event, dict) and event.get("reason") == "build-finished":
+            success = event.get("success")
+            build_events.append(success if type(success) is bool else None)
+            continue
         if isinstance(event, dict) and event.get("reason") == "compiler-message":
+            if build_events:
+                continue
             message = event.get("message")
             if not isinstance(message, dict) or message.get("level") != "error":
                 continue
-            compiler_errors += 1
+            prebuild_compiler_errors += 1
             code = message.get("code")
             code_value = code.get("code") if isinstance(code, dict) else None
             if isinstance(code_value, str) and re.fullmatch(r"E[0-9]{4}", code_value):
@@ -454,7 +485,9 @@ def bounded_library_failure_summary(
                     or line < 1
                 ):
                     continue
-                location = package_source_location(package, file_name, line)
+                location = package_source_location(
+                    package, file_name, line, admitted_paths
+                )
                 if (
                     location
                     and location not in source_locations
@@ -463,38 +496,33 @@ def bounded_library_failure_summary(
                     source_locations.append(location)
             continue
 
-        failed_match = FAILED_TEST.fullmatch(raw_line)
-        if (
-            failed_match
-            and len(failed_match.group(1)) <= 160
-            and SAFE_TEST_NAME.fullmatch(failed_match.group(1))
-        ):
-            if failed_match.group(1) not in failed_tests and len(failed_tests) < 20:
-                failed_tests.append(failed_match.group(1))
-            continue
-
         panic_match = PANIC_LOCATION.match(raw_line)
-        if (
-            panic_match
-            and len(panic_match.group(1)) <= 160
-            and SAFE_TEST_NAME.fullmatch(panic_match.group(1))
-        ):
+        if panic_match:
             location = package_source_location(
-                package, panic_match.group(2), int(panic_match.group(3))
+                package, panic_match.group(1), int(panic_match.group(2)), admitted_paths
             )
-            item = {"test": panic_match.group(1), "source_location": location}
-            if location and item not in panic_locations and len(panic_locations) < 20:
-                panic_locations.append(item)
+            if location and location not in panic_locations and len(panic_locations) < 20:
+                panic_locations.append(location)
 
     failed = sum(int(item["failed"]) for item in summaries)
     passed = sum(int(item["passed"]) for item in summaries)
     ignored = sum(int(item["ignored"]) for item in summaries)
-    if compiler_errors:
+    valid_build_event = len(build_events) == 1 and build_events[0] is not None
+    build_succeeded = build_events[0] if valid_build_event else None
+    compiler_errors = prebuild_compiler_errors if valid_build_event else 0
+    if not valid_build_event:
+        classification = "build_phase_unknown"
+        compiler_codes = []
+        source_locations = []
+        panic_locations = []
+    elif build_succeeded is False and compiler_errors:
         classification = "compiler_error"
-    elif failed or failed_tests:
+    elif build_succeeded is False:
+        classification = "build_failure_unclassified"
+    elif failed:
         classification = "test_failure"
     elif exit_code:
-        classification = "command_failure_unclassified"
+        classification = "post_build_failure_unclassified"
     elif not summaries:
         classification = "missing_test_summary"
     else:
@@ -502,6 +530,8 @@ def bounded_library_failure_summary(
     return {
         "classification": classification,
         "cargo_exit_code": exit_code,
+        "build_finished_count": len(build_events),
+        "build_succeeded": build_succeeded,
         "compiler_error_count": compiler_errors,
         "compiler_error_codes": compiler_codes,
         "primary_source_locations": source_locations,
@@ -509,12 +539,11 @@ def bounded_library_failure_summary(
         "passed": passed,
         "failed": failed,
         "ignored": ignored,
-        "failed_source_test_names": failed_tests,
         "panic_source_locations": panic_locations,
     }
 
 
-def run_library_suite(package: str) -> dict[str, Any]:
+def run_library_suite(package: str, admitted_paths: set[str]) -> dict[str, Any]:
     command = [
         "cargo",
         "test",
@@ -538,7 +567,7 @@ def run_library_suite(package: str) -> dict[str, Any]:
         for item in summaries
     ):
         failure = bounded_library_failure_summary(
-            package, result.stdout, result.returncode
+            package, result.stdout, result.returncode, admitted_paths
         )
         refuse(
             "required library suite failed: "
@@ -778,7 +807,11 @@ def validate_linux(manifest: dict[str, Any]) -> None:
         refuse("Linux validation runner identity is unavailable")
 
     metadata = cargo_metadata_index()
-    library_results = [run_library_suite(package) for package in manifest["linux_library_test_packages"]]
+    admitted_paths = set(manifest["product_inputs"])
+    library_results = [
+        run_library_suite(package, admitted_paths)
+        for package in manifest["linux_library_test_packages"]
+    ]
     cli_relative = cargo_artifact(
         ["cargo", "build", "--locked", "-p", "codex-cli", "--bin", "codex", "--message-format=json"],
         metadata,
