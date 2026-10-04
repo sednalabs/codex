@@ -164,6 +164,8 @@ struct RawOutput {
     #[serde(default)]
     target_status: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
+    status: Option<BTreeMap<String, serde_json::Value>>,
+    #[serde(default)]
     agents: Option<Vec<RawStatusActor>>,
 }
 
@@ -394,15 +396,24 @@ fn parse_output(output: String, coverage: &mut EnvelopeCoverage) -> Option<Parse
         coverage.malformed_records += 1;
         return None;
     }
-    let (target_statuses, target_status_complete) = project_target_status(raw.target_status.as_ref());
-    let unsupported_reason = raw.reason.as_deref().is_some_and(|value| !matches!(value, "target_terminal" | "timeout"));
-    let unsupported_wake = raw.wake_cause.as_deref().is_some_and(|value| value != "target_status");
+    let target_status_observed = raw.status.is_some() || raw.target_status.is_some();
+    let (target_statuses, target_status_complete) = match (&raw.status, &raw.target_status) {
+        (Some(_), Some(_)) => (Vec::new(), false),
+        (Some(status), None) => project_target_status(Some(status)),
+        (None, status) => project_target_status(status.as_ref()),
+    };
+    let unsupported_reason = raw.reason.as_deref().is_some_and(|value| {
+        !matches!(value, "target_terminal" | "timeout" | "timed_out")
+    });
+    let unsupported_wake = raw.wake_cause.as_deref().is_some_and(|value| {
+        !matches!(value, "target_status" | "timeout")
+    });
     let wait = recognized_wait_output(&raw).then(|| WaitReturn {
         timed_out: raw.timed_out,
         reason: host_reason(raw.reason.as_deref()),
         wake_cause: host_wake_cause(raw.wake_cause.as_deref()),
         queued_update_count: raw.queued_update_count,
-        target_status_observed: raw.target_status.is_some(),
+        target_status_observed,
         observed: ObservedHostWaitReturn {
             timed_out: raw.timed_out,
             reason: observed_host_reason(raw.reason.as_deref()),
@@ -410,11 +421,13 @@ fn parse_output(output: String, coverage: &mut EnvelopeCoverage) -> Option<Parse
             queued_update_count: raw.queued_update_count,
             target_statuses,
             target_status_complete,
-            complete: target_status_complete && raw.target_status.is_some()
+            complete: target_status_complete && target_status_observed
                 && raw.timed_out.is_some() && raw.reason.is_some() && raw.wake_cause.is_some()
                 && !unsupported_reason && !unsupported_wake
                 && !matches!((raw.timed_out, raw.reason.as_deref()),
-                    (Some(true), Some("target_terminal")) | (Some(false), Some("timeout"))),
+                    (Some(true), Some("target_terminal"))
+                        | (Some(false), Some("timeout"))
+                        | (Some(false), Some("timed_out"))),
         },
     });
     let status = raw.agents.map(|agents| {
@@ -441,12 +454,13 @@ fn recognized_wait_output(output: &RawOutput) -> bool {
         || output.wake_cause.is_some()
         || output.queued_update_count.is_some()
         || output.target_status.is_some()
+        || output.status.is_some()
 }
 
 fn host_reason(value: Option<&str>) -> HostReason {
     match value {
         Some("target_terminal") => HostReason::TargetTerminal,
-        Some("timeout") => HostReason::Timeout,
+        Some("timeout" | "timed_out") => HostReason::Timeout,
         Some(_) => HostReason::Other,
         None => HostReason::Missing,
     }
@@ -455,6 +469,7 @@ fn host_reason(value: Option<&str>) -> HostReason {
 fn host_wake_cause(value: Option<&str>) -> HostWakeCause {
     match value {
         Some("target_status") => HostWakeCause::TargetStatus,
+        Some("timeout") => HostWakeCause::Timeout,
         Some(_) => HostWakeCause::Other,
         None => HostWakeCause::Missing,
     }
@@ -549,7 +564,7 @@ fn project_target_status(
 fn observed_host_reason(value: Option<&str>) -> ObservedHostWaitReason {
     match value {
         Some("target_terminal") => ObservedHostWaitReason::TargetTerminal,
-        Some("timeout") => ObservedHostWaitReason::Timeout,
+        Some("timeout" | "timed_out") => ObservedHostWaitReason::Timeout,
         Some(_) => ObservedHostWaitReason::Other,
         None => ObservedHostWaitReason::Unknown,
     }
@@ -558,6 +573,7 @@ fn observed_host_reason(value: Option<&str>) -> ObservedHostWaitReason {
 fn observed_host_wake(value: Option<&str>) -> ObservedHostWakeCause {
     match value {
         Some("target_status") => ObservedHostWakeCause::TargetStatus,
+        Some("timeout") => ObservedHostWakeCause::Timeout,
         Some(_) => ObservedHostWakeCause::Other,
         None => ObservedHostWakeCause::Unknown,
     }

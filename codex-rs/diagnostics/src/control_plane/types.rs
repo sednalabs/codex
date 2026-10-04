@@ -89,7 +89,7 @@ pub struct ReadinessObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ObservedHostWaitReason { TargetTerminal, Timeout, Other, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ObservedHostWakeCause { TargetStatus, Other, Unknown }
+pub enum ObservedHostWakeCause { TargetStatus, Timeout, Other, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum ObservedHostStatusTag { Running, Completed }
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]

@@ -110,6 +110,291 @@ fn recognized_external_wait_flows_through_recorder_shared_reducer_and_cli_projec
     assert!(rendered["data"]["waitTimelines"][0]["observedHostReturn"].is_object());
 }
 
+fn timed_wait_pair(call_id: &str, started_at: &str, returned_at: &str, reason: &str) -> String {
+    timed_wait_pair_with_metadata(call_id, started_at, returned_at, Some(true), Some(reason), Some("timeout"), true)
+}
+
+fn timed_wait_pair_with_metadata(
+    call_id: &str,
+    started_at: &str,
+    returned_at: &str,
+    timed_out: Option<bool>,
+    reason: Option<&str>,
+    wake_cause: Option<&str>,
+    include_status: bool,
+) -> String {
+    let request = serde_json::json!({
+        "timestamp": started_at,
+        "type": "response_item",
+        "payload": {
+            "type": "function_call",
+            "name": "wait_agent",
+            "call_id": call_id,
+            "arguments": serde_json::json!({
+                "targets": ["agent/path"],
+                "return_when": "any",
+                "timeout_ms": 1_800_000
+            }).to_string()
+        }
+    });
+    let mut metadata = serde_json::json!({"queued_update_count": 2});
+    if let Some(timed_out) = timed_out { metadata["timed_out"] = timed_out.into(); }
+    if let Some(reason) = reason { metadata["reason"] = reason.into(); }
+    if let Some(wake_cause) = wake_cause { metadata["wake_cause"] = wake_cause.into(); }
+    if include_status { metadata["status"] = serde_json::json!({"agent/path": "running"}); }
+    let output = serde_json::json!({
+        "timestamp": returned_at,
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": metadata.to_string()
+        }
+    });
+    format!("{request}\n{output}")
+}
+
+fn expected_timeout_wait(call_id: &str, sequence: usize, returned_at: &str) -> serde_json::Value {
+    let returned = chrono::DateTime::parse_from_rfc3339(returned_at).unwrap();
+    serde_json::json!({
+        "sourceEvents": [expected_identity(sequence)],
+        "captureInstanceId": "external-host-envelope",
+        "sourcePlane": "ExternalHostEnvelope",
+        "threadId": null,
+        "turnId": null,
+        "rootThreadId": null,
+        "parentThreadId": null,
+        "forkParentThreadId": null,
+        "windowId": null,
+        "windowNumber": null,
+        "previousWindowId": null,
+        "wallCorrelation": {"secondsSinceEpoch": returned.timestamp(), "subsecondNanos": returned.timestamp_subsec_nanos()},
+        "operationId": call_id,
+        "waitId": call_id,
+        "phase": "Completed",
+        "primitive": "Unknown",
+        "helperId": "wait_agent",
+        "helperVersion": null,
+        "requestedTimeoutMs": 1_800_000,
+        "effectiveTimeoutMs": null,
+        "returnWhen": "Any",
+        "targetMode": "Targeted",
+        "anyTargets": null,
+        "requestedTargetReferences": ["agent/path"],
+        "requestedTargetKind": "ExposedAgentPath",
+        "requestedTargetSetComplete": true,
+        "resolvedTargetIds": [],
+        "resolvedTargetKind": "Unknown",
+        "resolvedTargetSetComplete": false,
+        "blockedStartOffsetNs": null,
+        "blockedEndOffsetNs": null,
+        "operationDurationNs": 1_800_000_000_000u64,
+        "blockedDurationNs": null,
+        "selectedOutcome": "Unknown",
+        "selectedProducer": null,
+        "selectedTargetId": null,
+        "selectedTargetTurnId": null,
+        "continuationOfWaitId": null,
+        "subscribedReadiness": [],
+        "subscribedReadinessComplete": false,
+        "selectedReadiness": [],
+        "selectedReadinessComplete": false,
+        "observedHostReturn": {
+            "timedOut": true,
+            "reason": "Timeout",
+            "wakeCause": "Timeout",
+            "queuedUpdateCount": 2,
+            "targetStatuses": [{
+                "targetReference": {"id": "agent/path", "kind": "ExposedAgentPath"},
+                "statusTag": "Running"
+            }],
+            "targetStatusComplete": true,
+            "complete": true
+        },
+        "coverage": [
+            {"field": "ThreadId", "unknown": "NotExposed"},
+            {"field": "RootThreadId", "unknown": "NotExposed"},
+            {"field": "TurnId", "unknown": "NotExposed"},
+            {"field": "EffectiveTimeout", "unknown": "NotExposed"},
+            {"field": "SelectedProducer", "unknown": "UnsupportedProducer"},
+            {"field": "QueueState", "unknown": "NotExposed"},
+            {"field": "SemanticAcknowledgement", "unknown": "NotExposed"},
+            {"field": "ProviderObservedIdentity", "unknown": "NotExposed"}
+        ],
+        "complete": false,
+        "conflicting": false
+    })
+}
+
+fn expected_timeout_event(call_id: &str, started_at: &str, returned_at: &str) -> serde_json::Value {
+    let start = chrono::DateTime::parse_from_rfc3339(started_at).unwrap();
+    let end = chrono::DateTime::parse_from_rfc3339(returned_at).unwrap();
+    serde_json::json!({
+        "operation": "wait_agent",
+        "callId": call_id,
+        "requestObservedAt": start.to_rfc3339(),
+        "returnObservedAt": end.to_rfc3339(),
+        "observedRequestReturnDurationNs": 1_800_000_000_000u64,
+        "wait": {
+            "targetMode": "targeted",
+            "requestedTargetReferences": ["agent/path"],
+            "requestedTargetKind": "exposedAgentPath",
+            "requestedTargetSetComplete": true,
+            "requestedTimeoutMs": 1_800_000,
+            "returnWhen": "any",
+            "resolvedTargetIds": [],
+            "resolvedTargetSet": "unknown"
+        },
+        "hostReturn": {
+            "timedOut": true,
+            "timeoutReasonObserved": true,
+            "targetTerminalReasonObserved": false,
+            "targetStatusWakeCauseObserved": false,
+            "queuedUpdateCount": 2,
+            "targetStatusPresent": true,
+            "winner": "unknown",
+            "blockedDuration": "unknown",
+            "enqueuePendingAcknowledgement": "unknown"
+        },
+        "statusQuery": null
+    })
+}
+
+fn expected_timeout_export(length: usize, rows: &[(&str, &str, &str)]) -> serde_json::Value {
+    let mut expected = expected_empty_export(length);
+    expected["recorder"]["highWater"] = (rows.len() as u64).into();
+    expected["data"]["eventCount"] = (rows.len() as u64).into();
+    expected["data"]["unknownRootEvents"] = (rows.len() as u64).into();
+    expected["coverage"]["parsedEvents"] = (rows.len() as u64).into();
+    expected["data"]["waitsByOutcome"] = serde_json::json!({"Unknown": rows.len()});
+    expected["data"]["repeatedWaitGroups"] = usize::from(rows.len() > 1).into();
+    expected["data"]["waitTimelines"] = rows.iter().enumerate()
+        .map(|(index, (call, _, returned))| expected_timeout_wait(call, index + 1, returned))
+        .collect::<Vec<_>>().into();
+    expected["data"]["queueTimelines"] = rows.iter().enumerate()
+        .map(|(index, (call, _, _))| expected_external_rows(call, index + 1).0)
+        .collect::<Vec<_>>().into();
+    expected["data"]["externalDurations"] = rows.iter().enumerate()
+        .map(|(index, (call, _, _))| {
+            let mut duration = expected_external_rows(call, index + 1).1;
+            duration["observedRequestReturnNs"] = 1_800_000_000_000u64.into();
+            duration
+        })
+        .collect::<Vec<_>>().into();
+    expected["events"] = rows.iter()
+        .map(|(call, started, returned)| expected_timeout_event(call, started, returned))
+        .collect::<Vec<_>>().into();
+    expected
+}
+
+fn expect_unsupported_timeout_metadata(expected: &mut serde_json::Value) {
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["reason"] = "Other".into();
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["wakeCause"] = "Other".into();
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["complete"] = false.into();
+    expected["events"][0]["hostReturn"]["timeoutReasonObserved"] = false.into();
+    expected["events"][0]["hostReturn"]["targetStatusWakeCauseObserved"] = false.into();
+}
+
+fn expect_missing_timeout_status(expected: &mut serde_json::Value) {
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["targetStatuses"] =
+        serde_json::json!([]);
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["complete"] = false.into();
+    expected["events"][0]["hostReturn"]["targetStatusPresent"] = false.into();
+}
+
+fn expect_false_timeout_inconsistency(expected: &mut serde_json::Value) {
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["timedOut"] = false.into();
+    expected["data"]["waitTimelines"][0]["observedHostReturn"]["complete"] = false.into();
+    expected["events"][0]["hostReturn"]["timedOut"] = false.into();
+}
+
+#[tokio::test]
+async fn actual_timeout_envelopes_export_full_observed_metadata_and_repeat_without_native_causality() {
+    let old_alias = timed_wait_pair(
+        "selected-call", "2026-10-05T01:00:00Z", "2026-10-05T01:30:00Z", "timeout");
+    let timed_out_alias = timed_wait_pair(
+        "selected-call", "2026-10-05T01:00:00Z", "2026-10-05T01:30:00Z", "timed_out");
+    for input in [&old_alias, &timed_out_alias] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.jsonl");
+        std::fs::write(&path, input).unwrap();
+        let actual = super::execute(command_for(&path, input.len(), None)).await.unwrap();
+        let expected = expected_timeout_export(input.len(), &[(
+            "selected-call", "2026-10-05T01:00:00Z", "2026-10-05T01:30:00Z")]);
+        assert_eq!(actual, expected);
+        assert_eq!(actual["data"]["repeatedWaitGroups"], 0);
+        assert_eq!(actual["data"]["waitTimelines"][0]["complete"], false);
+        assert_eq!(actual["data"]["waitTimelines"][0]["selectedOutcome"], "Unknown");
+        assert_eq!(actual["data"]["waitTimelines"][0]["selectedProducer"], serde_json::Value::Null);
+        assert_eq!(actual["data"]["waitTimelines"][0]["blockedDurationNs"], serde_json::Value::Null);
+    }
+
+    let first = timed_wait_pair(
+        "a-call", "2026-10-05T01:00:00Z", "2026-10-05T01:30:00Z", "timed_out");
+    let second = timed_wait_pair(
+        "b-call", "2026-10-05T02:00:00Z", "2026-10-05T02:30:00Z", "timed_out");
+    let input = format!("{first}\n{second}");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("selected.jsonl");
+    std::fs::write(&path, &input).unwrap();
+    let actual = super::execute(command_for(&path, input.len(), None)).await.unwrap();
+    let expected = expected_timeout_export(input.len(), &[
+        ("a-call", "2026-10-05T01:00:00Z", "2026-10-05T01:30:00Z"),
+        ("b-call", "2026-10-05T02:00:00Z", "2026-10-05T02:30:00Z"),
+    ]);
+    assert_eq!(actual, expected);
+    assert_eq!(actual["data"]["repeatedWaitGroups"], 1);
+    for row in actual["data"]["waitTimelines"].as_array().unwrap() {
+        assert_eq!(row["observedHostReturn"]["complete"], true);
+        assert_eq!(row["observedHostReturn"]["reason"], "Timeout");
+        assert_eq!(row["observedHostReturn"]["wakeCause"], "Timeout");
+        assert_eq!(row["complete"], false);
+        assert_eq!(row["selectedOutcome"], "Unknown");
+        assert_eq!(row["selectedProducer"], serde_json::Value::Null);
+        assert_eq!(row["blockedDurationNs"], serde_json::Value::Null);
+    }
+    assert!(!actual.to_string().contains("prohibited"));
+    assert!(!actual.to_string().contains("redundant"));
+}
+
+#[tokio::test]
+async fn actual_timeout_controls_preserve_unsupported_missing_and_contradictory_reports() {
+    let started_at = "2026-10-05T01:00:00Z";
+    let returned_at = "2026-10-05T01:30:00Z";
+    type ExpectedAdjustment = fn(&mut serde_json::Value);
+    let cases = [
+        (
+            timed_wait_pair_with_metadata("selected-call", started_at, returned_at,
+                Some(true), Some("unsupported"), Some("unsupported"), true),
+            expect_unsupported_timeout_metadata as ExpectedAdjustment,
+        ),
+        (
+            timed_wait_pair_with_metadata("selected-call", started_at, returned_at,
+                Some(true), Some("timed_out"), Some("timeout"), false),
+            expect_missing_timeout_status as ExpectedAdjustment,
+        ),
+        (
+            timed_wait_pair_with_metadata("selected-call", started_at, returned_at,
+                Some(false), Some("timed_out"), Some("timeout"), true),
+            expect_false_timeout_inconsistency as ExpectedAdjustment,
+        ),
+    ];
+    for (input, adjust_expected) in cases {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("selected.jsonl");
+        std::fs::write(&path, &input).unwrap();
+        let actual = super::execute(command_for(&path, input.len(), None)).await.unwrap();
+        let mut expected = expected_timeout_export(input.len(), &[("selected-call", started_at, returned_at)]);
+        adjust_expected(&mut expected);
+        assert_eq!(actual, expected);
+        assert_eq!(actual["data"]["repeatedWaitGroups"], 0);
+        assert_eq!(actual["data"]["waitTimelines"][0]["complete"], false);
+        assert_eq!(actual["data"]["waitTimelines"][0]["selectedOutcome"], "Unknown");
+        assert_eq!(actual["data"]["waitTimelines"][0]["selectedProducer"], serde_json::Value::Null);
+        assert_eq!(actual["data"]["waitTimelines"][0]["blockedDurationNs"], serde_json::Value::Null);
+    }
+}
+
 #[test]
 fn identical_replay_is_deduplicated_conflict_is_quarantined_and_open_call_counted() {
     let pair = rollout_pair(
@@ -411,6 +696,27 @@ fn partial_contradictory_or_uncovered_host_returns_never_become_complete_native_
             queued_update_count: None, target_statuses: vec![HostTargetStatusObservation {
                 target_reference: TargetReference { id: "uncovered/path".into(), kind: TargetReferenceKind::ExposedAgentPath },
                 status_tag: ObservedHostStatusTag::Completed }], target_status_complete: true, complete: false }),
+        (serde_json::json!({"timed_out": true, "reason": "not-a-supported-reason", "wake_cause": "not-a-supported-wake",
+            "status": {"agent/path": "running"}}), ObservedHostWaitReturn {
+            timed_out: Some(true), reason: ObservedHostWaitReason::Other, wake_cause: ObservedHostWakeCause::Other,
+            queued_update_count: None, target_statuses: vec![HostTargetStatusObservation {
+                target_reference: TargetReference { id: "agent/path".into(), kind: TargetReferenceKind::ExposedAgentPath },
+                status_tag: ObservedHostStatusTag::Running }], target_status_complete: true, complete: false }),
+        (serde_json::json!({"timed_out": true, "reason": "timed_out", "wake_cause": "timeout"}), ObservedHostWaitReturn {
+            timed_out: Some(true), reason: ObservedHostWaitReason::Timeout, wake_cause: ObservedHostWakeCause::Timeout,
+            queued_update_count: None, target_statuses: vec![], target_status_complete: true, complete: false }),
+        (serde_json::json!({"timed_out": false, "reason": "timed_out", "wake_cause": "timeout",
+            "status": {"agent/path": "running"}}), ObservedHostWaitReturn {
+            timed_out: Some(false), reason: ObservedHostWaitReason::Timeout, wake_cause: ObservedHostWakeCause::Timeout,
+            queued_update_count: None, target_statuses: vec![HostTargetStatusObservation {
+                target_reference: TargetReference { id: "agent/path".into(), kind: TargetReferenceKind::ExposedAgentPath },
+                status_tag: ObservedHostStatusTag::Running }], target_status_complete: true, complete: false }),
+        (serde_json::json!({"timed_out": false, "reason": "timeout", "wake_cause": "timeout",
+            "status": {"agent/path": "running"}}), ObservedHostWaitReturn {
+            timed_out: Some(false), reason: ObservedHostWaitReason::Timeout, wake_cause: ObservedHostWakeCause::Timeout,
+            queued_update_count: None, target_statuses: vec![HostTargetStatusObservation {
+                target_reference: TargetReference { id: "agent/path".into(), kind: TargetReferenceKind::ExposedAgentPath },
+                status_tag: ObservedHostStatusTag::Running }], target_status_complete: true, complete: false }),
     ];
     for (output, expected) in cases {
         let pair = rollout_pair("wait_agent", serde_json::json!({"targets": ["agent/path"], "return_when": "any"}), output);
