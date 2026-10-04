@@ -2,7 +2,7 @@ name: sedna-branch-build
 
 run-name: >-
   sedna-branch-build
-  [mode=${{ inputs.mode }} target=${{ inputs.target_sha }} base=${{ inputs.base_sha }}]
+  [mode=${{ inputs.mode }} preparation=${{ inputs.preparation_profile }} target=${{ inputs.target_sha }} base=${{ inputs.base_sha }}]
 
 on:
   workflow_dispatch:
@@ -58,6 +58,14 @@ on:
           - focused
           - full
         default: full
+      preparation_profile:
+        description: Closed source-preparation profile for prepare-only mode.
+        required: false
+        type: choice
+        options:
+          - cargo-schema
+          - config-schema
+        default: cargo-schema
 
 concurrency:
   group: sedna-branch-build/${{ inputs.mode }}/${{ inputs.target_sha }}/${{ inputs.base_sha }}
@@ -93,12 +101,21 @@ jobs:
           FIXTURE_SHA: ${{ inputs.fixture_sha }}
           SDK_SHA: ${{ inputs.sdk_sha }}
           CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
         run: |
           set -euo pipefail
           case "${MODE}" in
             build|prepare-only|consume-existing) ;;
             *) echo "unsupported workflow mode" >&2; exit 1 ;;
           esac
+          case "${PREPARATION_PROFILE}" in
+            cargo-schema|config-schema) ;;
+            *) echo "unsupported preparation profile" >&2; exit 1 ;;
+          esac
+          if [[ "${MODE}" != "prepare-only" && "${PREPARATION_PROFILE}" != "cargo-schema" ]]; then
+            echo "config-schema preparation profile is restricted to prepare-only mode" >&2
+            exit 1
+          fi
           [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || {
             echo "workflow host SHA must be a full lowercase commit SHA" >&2
             exit 1
@@ -153,6 +170,16 @@ jobs:
           if [[ "${MODE}" == "consume-existing" ]]; then
             python3 .github/scripts/verify_existing_first_binary_producer.py --validate-accepted-inputs
           fi
+      - name: Validate the closed source-preparation profile
+        working-directory: .workflow-src
+        env:
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
+        run: python3 .github/scripts/prepare_config_schema.py --validate-profile
+      - name: Test config-schema preparation controls
+        if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'config-schema' }}
+        working-directory: .workflow-src
+        run: python3 .github/scripts/test_prepare_config_schema.py -v
       - name: Test static consumer contract regression controls
         if: ${{ inputs.mode != 'prepare-only' }}
         working-directory: .workflow-src
@@ -223,7 +250,7 @@ jobs:
             .github/workflows/validation-named-tests.yml
 
   prepare-only:
-    name: Prepare exact Cargo lock and app-server schema diff
+    name: Prepare exact source schema diff
     if: ${{ inputs.mode == 'prepare-only' }}
     needs:
       - runner_policy
@@ -285,7 +312,19 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Prepare the canonical config schema only
+        if: ${{ inputs.preparation_profile == 'config-schema' }}
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
+        run: python3 .github/scripts/prepare_config_schema.py
       - name: Install the repository-pinned schema generator runtime
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -293,20 +332,24 @@ jobs:
           "${RUNNER_TEMP}/schema-tools/bin/python" -m pip install "uv==0.11.3"
           echo "${RUNNER_TEMP}/schema-tools/bin" >> "${GITHUB_PATH}"
       - name: Snapshot the input lockfile
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
         run: |
           set -euo pipefail
           cp "${PRODUCT_ROOT}/codex-rs/Cargo.lock" "${LOCK_BEFORE}"
           sha256sum "${LOCK_BEFORE}" > "${RUNNER_TEMP}/Cargo.lock.before.sha256"
       - name: Refresh only workspace package records
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         working-directory: product/codex-rs
         shell: bash
         run: cargo update --workspace
       - name: Generate the canonical app-server schema and SDK fixtures
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         working-directory: product
         shell: bash
         run: python3 codex-rs/app-server-protocol/scripts/write_schema_fixtures.py
       - name: Validate the lock delta and generated-path allowlist
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
         env:
           WORKFLOW_HOST_SHA: ${{ github.sha }}
@@ -442,10 +485,12 @@ jobs:
           )
           PY
       - name: Require the generated lockfile to be accepted as-is
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         working-directory: product/codex-rs
         shell: bash
         run: cargo metadata --locked --format-version 1 > /dev/null
       - name: Upload exact lock, schema, and identity diff
+        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: sedna-cargo-schema-prep-${{ inputs.target_sha }}-${{ github.run_id }}
@@ -456,6 +501,19 @@ jobs:
             ${{ runner.temp }}/Cargo.lock.before
             ${{ runner.temp }}/Cargo.lock.before.sha256
             ${{ runner.temp }}/Cargo.lock.after
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exact config-schema source diff
+        if: ${{ inputs.preparation_profile == 'config-schema' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-config-schema-prep-${{ inputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/schema.before.json
+            ${{ runner.temp }}/schema.after.json
+            ${{ runner.temp }}/source-delta.patch
+            ${{ runner.temp }}/changed-paths.txt
+            ${{ runner.temp }}/identity.json
           if-no-files-found: error
           retention-days: 30
 
