@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "divergences": [
+    {
+      "id": "codex-native-computer-use-adapters",
+      "title": "Namespaced native Android and Desktop computer-use adapters",
+      "status": "live",
+      "category": "core-protocol",
+      "surface_type": "agent-facing",
+      "surface": [
+        "per-session Android and Desktop DynamicTool namespaces",
+        "exact namespace/tool app-server request routing",
+        "native InputImage completion in the active turn"
+      ],
+      "files": [
+        "codex-rs/Cargo.toml",
+        "codex-rs/android-computer-use/Cargo.toml",
+        "codex-rs/android-computer-use/BUILD.bazel",
+        "codex-rs/android-computer-use/src/lib.rs",
+        "codex-rs/tui/Cargo.toml",
+        "codex-rs/tui/src/lib.rs",
+        "codex-rs/tui/src/android_computer_use_provider.rs",
+        "codex-rs/tui/src/desktop_computer_use_provider.rs",
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/app/app_server_events.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        ".github/validation-named-tests.json",
+        "docs/native-computer-use.md",
+        "docs/downstream-tool-surface-matrix.md",
+        "docs/downstream-regression-matrix.md",
+        "justfile"
+      ],
+      "behavior": "Configured Android MCP and Desktop command providers are advertised as isolated codex_android and codex_desktop DynamicTool namespaces. Exact routes preserve request correlation and typed native images for the active turn; duplicate IDs and abandoned threads fail closed before provider start. Android ordered action batches stop on first failure and never replay uncertain actions. Desktop command I/O is explicitly bounded and never automatically replayed after uncertain outcomes.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex-android-computer-use/lib; tui-native-computer-use-targeted; standard GitHub-hosted Rust validation",
+      "tests": [
+        "Android configured tools and ordered action provider tests",
+        "Android and Desktop abandoned-thread routing fixtures",
+        "Android native-image and post-failure observation fixtures",
+        "Desktop bounded full-duplex, timeout, cancellation, and image fixtures"
+      ],
+      "owner": "downstream",
+      "notes": "Runtime provider authority remains external. No real device, service, executable, credential, profile, install, or release action is implied. Cargo.lock and MODULE.bazel.lock must be generated and verified from complete hosted candidate inputs, not guessed or locally generated.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "computer-use-provider-adapter",
+      "hotspot_files": [
+        "codex-rs/tui/src/dynamic_tools_mcp.rs",
+        "codex-rs/tui/src/app/app_server_events.rs"
+      ],
+      "extraction_target": "upstream native dynamic-tool provider adapters"
+    },
+    {
+      "id": "codex-local-control-plane-diagnostics",
+      "title": "Bounded local wait, mailbox, wake and usage diagnostics",
+      "status": "planned",
+      "category": "diagnostics",
+      "surface_type": "operator-facing",
+      "surface": [
+        "typed in-memory control-plane recorder and shared reducer",
+        "explicit finite debug control-plane input and output",
+        "bounded read-only usage snapshot projection"
+      ],
+      "files": [
+        "codex-rs/diagnostics/src/lib.rs",
+        "codex-rs/diagnostics/src/control_plane.rs",
+        "codex-rs/diagnostics/src/control_plane/types.rs",
+        "codex-rs/diagnostics/src/control_plane/recorder.rs",
+        "codex-rs/diagnostics/src/control_plane/summary.rs",
+        "codex-rs/diagnostics/src/control_plane/lifecycle_timelines.rs",
+        "codex-rs/diagnostics/src/control_plane/usage.rs",
+        "codex-rs/cli/Cargo.toml",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/src/control_plane.rs",
+        "codex-rs/cli/src/control_plane/envelopes.rs",
+        "codex-rs/cli/src/control_plane/summary.rs",
+        "codex-rs/cli/src/control_plane/usage.rs",
+        "codex-rs/state/src/lib.rs",
+        "codex-rs/state/src/control_plane_usage.rs",
+        "codex-rs/state/src/control_plane_usage_reader.rs"
+      ],
+      "behavior": "The source preparation provides bounded typed observations and shared exact-identity reduction. An explicitly selected local input can distinguish host-observed request/return durations from actual owned blocked time, requested target references from resolved identities, and observed status repetition from logical readiness. Optional usage queries use only an explicitly supplied custodian-attested frozen snapshot, preserving actual-model, lineage and pricing unknowns. Owned runtime producer wiring, experimental query integration and exact hosted qualification remain separate acceptance milestones; this entry does not assert them.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "standard GitHub-hosted diagnostics library, CLI binary target and state projection qualification; exact emitted-output consumer controls",
+      "tests": [
+        "bounded recorder, full identity, duplicate/conflict and loss controls",
+        "complete wait/message/recovery timelines and scheduler order controls",
+        "actual envelope pairing, repeated status projection and unknown producer controls",
+        "frozen snapshot no-write and exact usage/credit partition conservation controls"
+      ],
+      "owner": "downstream",
+      "notes": "Source-only preparation, not installation, activation or billing evidence. Diagnostic capture is default off and adds no provider/model calls, remote telemetry, persistent retention, message bodies, hidden reasoning or reader grants. A host tool envelope is not proof that its queue is implemented by the Rust runtime. Short justified waits and existing timeout/quiet-goal semantics remain unchanged. Custodian claims are distinct from observed read-only transaction operations.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "local-control-plane-observation",
+      "hotspot_files": [
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/state/src/lib.rs"
+      ],
+      "extraction_target": "typed local runtime observation and exact diagnostic consumers"
+    }
+  ]
+}
