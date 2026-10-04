@@ -62,6 +62,11 @@ H2_PRODUCER_WORKFLOW_HOST_SHA = "76a4538cd791f681a94db103da5940cb02d34165"
 H2_PRODUCER_JOB_NAMES = PRODUCER_JOB_NAMES | {
     "Verify exact SDK runtime-version parser selectors",
 }
+H9E58_PRODUCER_WORKFLOW_HOST_SHA = "9e58d011bde9609eb28b3e047bdc0bce4784cd0a"
+H9E58_PRODUCER_RUN_ID = 37182140778
+H9E58_PRODUCER_JOB_NAMES = PRODUCER_JOB_NAMES | {
+    "Verify exact SDK runtime-version parser selectors",
+}
 Q2_FIXTURE_SHA = "c6b1888354315575e1b22abbe240b482e65b4f46"
 Q3_FIXTURE_SHA = "b5d2ffd3dcdf4486297d8380cbe562a0b30bcc30"
 Q4_FIXTURE_SHA = "c61cc2b4943079d924a3c645512eb2b6600bdd57"
@@ -447,11 +452,12 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
         "accepted-input producer terminal state is invalid",
     )
 
-    expected_job_names = (
-        H2_PRODUCER_JOB_NAMES
-        if producer["workflow_host_sha"] == H2_PRODUCER_WORKFLOW_HOST_SHA
-        else PRODUCER_JOB_NAMES
-    )
+    expected_job_names = PRODUCER_JOB_NAMES
+    if producer["workflow_host_sha"] == H2_PRODUCER_WORKFLOW_HOST_SHA:
+        expected_job_names = H2_PRODUCER_JOB_NAMES
+    elif producer["workflow_host_sha"] == H9E58_PRODUCER_WORKFLOW_HOST_SHA:
+        expected_job_names = H9E58_PRODUCER_JOB_NAMES
+        _require(producer["run_id"] == H9E58_PRODUCER_RUN_ID, "H9e58 producer run ID differs from the exact admitted run")
     jobs_value = record.get("jobs")
     _require(isinstance(jobs_value, list) and len(jobs_value) == len(expected_job_names), "accepted-input producer job contract is incomplete")
     jobs: dict[str, Mapping[str, Any]] = {}
@@ -480,6 +486,16 @@ def _validate_manifest_record(value: object) -> Mapping[str, Any]:
             jobs["Consume native Linux ARM64 package"]["conclusion"] == "failure"
             and jobs["Consume native Linux x86_64 package"]["conclusion"] == "failure",
             "H2 producer bundled consumer jobs differ from the exact admitted run",
+        )
+    elif producer["workflow_host_sha"] == H9E58_PRODUCER_WORKFLOW_HOST_SHA:
+        _require(
+            jobs["Verify exact SDK runtime-version parser selectors"]["conclusion"] == "skipped",
+            "H9e58 producer SDK parser job must be skipped",
+        )
+        _require(
+            jobs["Consume native Linux ARM64 package"]["conclusion"] == "failure"
+            and jobs["Consume native Linux x86_64 package"]["conclusion"] == "failure",
+            "H9e58 producer bundled consumer jobs differ from the exact admitted run",
         )
     expected_run_conclusion = "failure" if any(job["conclusion"] == "failure" for job in jobs.values()) else "success"
     _require(producer["conclusion"] == expected_run_conclusion, "producer run conclusion does not match its closed job inventory")

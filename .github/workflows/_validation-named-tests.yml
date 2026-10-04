@@ -136,6 +136,12 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Test named-test result parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .workflow-src/.github/scripts -p 'test_run_named_rust_tests.py'
+
       - name: Inventory and run exact named tests
         id: named_tests
         continue-on-error: true

@@ -30,6 +30,8 @@ MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
 MAX_DIAGNOSTIC_CHARS = 4096
+MAX_MATCHED_TEST_LINES = 4
+MAX_MATCHED_TEST_LINE_CHARS = 512
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -294,6 +296,31 @@ def test_outcomes(output: str) -> dict[str, list[str]]:
     return outcomes
 
 
+def test_outcome_lines(output: str) -> dict[str, list[str]]:
+    """Retain exact, bounded-selector evidence lines from Cargo's test output."""
+
+    lines: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        value = line.strip()
+        match = TEST_OUTCOME_RE.match(value)
+        if match:
+            lines.setdefault(match.group("name"), []).append(value)
+    return lines
+
+
+def matched_test_evidence(lines: list[str]) -> dict[str, Any]:
+    """Bound selector evidence while retaining the total exact line count."""
+
+    excerpts = lines[:MAX_MATCHED_TEST_LINES]
+    bounded_lines = [line[:MAX_MATCHED_TEST_LINE_CHARS] for line in excerpts]
+    return {
+        "matched_line_count": len(lines),
+        "matched_lines": bounded_lines,
+        "matched_lines_truncated": len(lines) > MAX_MATCHED_TEST_LINES
+        or any(len(line) > MAX_MATCHED_TEST_LINE_CHARS for line in excerpts),
+    }
+
+
 def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     manifest_root = repo_root / "codex-rs"
     try:
@@ -376,8 +403,10 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     )
     counts = test_result_counts(output)
     outcomes = test_outcomes(output)
+    outcome_lines = test_outcome_lines(output)
     for name in request["tests"]:
         observed = outcomes.get(name, [])
+        matched_lines = outcome_lines.get(name, [])
         outcome = observed[0] if len(observed) == 1 else ""
         execution_reconciled = (
             completed.returncode == 0
@@ -402,6 +431,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "exit_code": completed.returncode,
                 "execution_reconciled": execution_reconciled,
                 "observed_outcomes": observed,
+                **matched_test_evidence(matched_lines),
                 "result_counts": counts,
                 "diagnostics": command_diagnostics(completed),
             }
