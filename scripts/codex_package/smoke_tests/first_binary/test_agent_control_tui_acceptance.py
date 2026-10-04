@@ -280,8 +280,13 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             tui.until("Ask Codex to do anything")
             picker = _open_subagents(tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
+            picker_rows = tui.until_screen(
+                "2. • /root/worker",
+                required_markers=("1. • Main [default] (current)",),
+            )
+            assert "PRIVATE_PROMPT_SENTINEL" not in picker_rows, picker_rows
             tui.send("\x1b[B")
-            narrow_picker = tui.until_screen("/root/worker")
+            narrow_picker = tui.until_screen("› 2. • /root/worker")
             selected_child_rows = [
                 line.strip().strip("│").strip()
                 for line in narrow_picker.splitlines()
@@ -301,8 +306,13 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             details_tui.until("Ask Codex to do anything")
             picker = _open_subagents(details_tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
+            picker_rows = details_tui.until_screen(
+                "2. • /root/worker",
+                required_markers=("1. • Main [default] (current)",),
+            )
+            assert "PRIVATE_PROMPT_SENTINEL" not in picker_rows, picker_rows
             details_tui.send("\x1b[B")
-            child_details = details_tui.until_screen(child_id)
+            child_details = details_tui.until_screen(f"Thread ID: {child_id}")
             child_details_text = _normalized_screen(child_details)
             assert f"Thread ID: {child_id}" in child_details_text, child_details
             assert "Path: /root/worker" in child_details_text, child_details
@@ -321,8 +331,13 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             details_tui.until("Ask Codex to do anything")
             replay_picker = _open_subagents(details_tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker, replay_picker
+            replay_picker_rows = details_tui.until_screen(
+                "2. • /root/worker",
+                required_markers=("1. • Main [default] (current)",),
+            )
+            assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker_rows, replay_picker_rows
             details_tui.send("\x1b[B")
-            replay_details = details_tui.until_screen(child_id)
+            replay_details = details_tui.until_screen(f"Thread ID: {child_id}")
             replay_details_text = _normalized_screen(replay_details)
             assert f"Thread ID: {child_id}" in replay_details_text, replay_details
             assert f"Parent: {root_id}" in replay_details_text, replay_details
