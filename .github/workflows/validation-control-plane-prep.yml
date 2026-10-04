@@ -1,0 +1,202 @@
+name: validation-control-plane-prep
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact 40-character candidate SHA to prepare in a disposable checkout
+        required: true
+        type: string
+      base_ref:
+        description: Safe comparison ref recorded with the requested base SHA
+        required: true
+        type: string
+      base_sha:
+        description: Exact 40-character comparison-base SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare exact candidate on standard hosted runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - name: Validate requested identities
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          set -euo pipefail
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "target_sha is invalid" >&2; exit 2; }
+          [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "base_sha is invalid" >&2; exit 2; }
+          [[ "${BASE_REF}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "base_ref is invalid" >&2; exit 2; }
+
+      - name: Check out trusted preparation helper
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact comparison base
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.base_sha }}
+          path: base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out exact candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          path: product
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create isolated hosted home
+        shell: bash
+        env:
+          ISOLATED_HOME: ${{ runner.temp }}/control-plane-home
+        run: mkdir -p "${ISOLATED_HOME}"
+
+      - name: Materialize comparison commit in candidate object database
+        shell: bash
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          if ! git -C product fetch --no-tags --depth=1 origin "${BASE_SHA}" \
+            >"${RUNNER_TEMP}/control-plane-fetch.log" 2>&1; then
+            echo "comparison fetch failed" >&2
+            exit 2
+          fi
+          fetched_base="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
+          target="$(git -C product rev-parse 'HEAD^{commit}')"
+          [[ "${fetched_base}" == "${BASE_SHA}" ]] || { echo "comparison checkout mismatch" >&2; exit 2; }
+          [[ "${target}" == "${TARGET_SHA}" ]] || { echo "candidate checkout mismatch" >&2; exit 2; }
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Bind the installed Rust toolchain home
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup_home="$(rustup show home)"
+          printf 'RUSTUP_HOME=%s\n' "${rustup_home}" >> "${GITHUB_ENV}"
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        env:
+          HOME: ${{ runner.temp }}/control-plane-home
+        with:
+          version: "0.11.3"
+
+      - name: Set up pinned Bazelisk
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        env:
+          HOME: ${{ runner.temp }}/control-plane-bazel-setup-home
+        with:
+          bazelisk-version: 1.28.1
+
+      - name: Configure isolated DotSlash curl retry file
+        shell: bash
+        env:
+          CURL_HOME: ${{ runner.temp }}/dotslash-curl
+        run: |
+          mkdir -p "${CURL_HOME}"
+          printf 'retry-all-errors\n' > "${CURL_HOME}/.curlrc"
+
+      - name: Install pinned DotSlash
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+        env:
+          CURL_HOME: ${{ runner.temp }}/dotslash-curl
+
+      - name: Install pinned just
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/control-plane-home
+          RUSTUP_HOME: ${{ env.RUSTUP_HOME }}
+          CARGO_HOME: ${{ runner.temp }}/control-plane-just-home
+          CARGO_TARGET_DIR: ${{ runner.temp }}/control-plane-tool-install-target
+          CARGO_INCREMENTAL: "0"
+          RUST_MIN_STACK: "8388608"
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          mkdir -p "${HOME}" "${CARGO_HOME}"
+          if ! env -i \
+            PATH="${PATH}" \
+            HOME="${HOME}" \
+            RUSTUP_HOME="${RUSTUP_HOME}" \
+            CARGO_HOME="${CARGO_HOME}" \
+            CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" \
+            CARGO_INCREMENTAL="${CARGO_INCREMENTAL}" \
+            RUST_MIN_STACK="${RUST_MIN_STACK}" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            cargo install --locked just --version 1.51.0 \
+            >"${RUNNER_TEMP}/control-plane-just-install.log" 2>&1; then
+            echo "pinned just installation failed" >&2
+            exit 2
+          fi
+          echo "${CARGO_HOME}/bin" >> "${GITHUB_PATH}"
+
+      - name: Prepare exact candidate
+        id: prepare
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          HELPER_SHA: ${{ github.sha }}
+          PATCH_PATH: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.patch
+          RECEIPT_PATH: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: |
+          set -euo pipefail
+          CARGO_TARGET_DIR="${RUNNER_TEMP}/control-plane-cargo-target" \
+            python3 .workflow-src/.github/scripts/prepare_control_plane.py \
+              --product "${GITHUB_WORKSPACE}/product" \
+              --base "${GITHUB_WORKSPACE}/base" \
+              --helper "${GITHUB_WORKSPACE}/.workflow-src" \
+              --target-sha "${TARGET_SHA}" \
+              --base-sha "${BASE_SHA}" \
+              --helper-sha "${HELPER_SHA}" \
+              --base-ref "${BASE_REF}" \
+              --patch "${PATCH_PATH}" \
+              --receipt "${RECEIPT_PATH}"
+
+      - name: Upload bounded preparation receipt
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: control-plane-preparation-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload complete preparation patch
+        if: ${{ steps.prepare.outcome == 'success' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: control-plane-preparation-patch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.patch
+          if-no-files-found: error
+          retention-days: 3
