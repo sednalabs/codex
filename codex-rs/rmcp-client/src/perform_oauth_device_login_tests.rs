@@ -19,7 +19,6 @@ use tokio::net::TcpListener;
 struct PollState {
     polls: Arc<AtomicUsize>,
     terminal_error: Option<&'static str>,
-    slow_down_first: bool,
 }
 
 async fn spawn_server(state: PollState) -> String {
@@ -48,12 +47,6 @@ async fn spawn_server(state: PollState) -> String {
             Some("synthetic-device-code")
         );
         let poll = state.polls.fetch_add(1, Ordering::SeqCst);
-        if state.slow_down_first && poll == 0 {
-            return (
-                AxumStatusCode::BAD_REQUEST,
-                Json(json!({"error": "slow_down"})),
-            );
-        }
         if let Some(error) = state.terminal_error {
             return (AxumStatusCode::BAD_REQUEST, Json(json!({"error": error})));
         }
@@ -158,13 +151,24 @@ fn device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins() {
     .expect("matching secure endpoints");
 }
 
+#[test]
+fn extreme_provider_interval_and_slow_down_are_bounded_by_expiry() {
+    let remaining = Duration::from_secs(10);
+    let interval = bounded_poll_interval(u64::MAX, remaining);
+    assert_eq!(interval, remaining);
+    assert_eq!(interval_after_slow_down(interval, remaining), remaining);
+    assert_eq!(
+        interval_after_slow_down(Duration::from_secs(u64::MAX), Duration::from_secs(1)),
+        Duration::from_secs(1)
+    );
+}
+
 #[tokio::test]
 async fn device_login_polls_pending_then_saves_issuer_bound_tokens() -> Result<()> {
     let _home = crate::oauth::test_support::TempCodexHome::new();
     let server = spawn_server(PollState {
         polls: Arc::new(AtomicUsize::new(0)),
         terminal_error: None,
-        slow_down_first: false,
     })
     .await;
     perform_oauth_device_login(
@@ -209,7 +213,6 @@ async fn device_login_fails_closed_on_denial_and_expiry() {
         let server = spawn_server(PollState {
             polls: Arc::new(AtomicUsize::new(0)),
             terminal_error: Some(provider_error),
-            slow_down_first: false,
         })
         .await;
         let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
@@ -246,11 +249,11 @@ async fn device_login_fails_closed_on_denial_and_expiry() {
 }
 
 #[tokio::test]
-async fn device_login_stops_polling_when_the_local_code_expires() {
+async fn device_login_does_not_poll_before_an_extreme_provider_interval() {
+    let polls = Arc::new(AtomicUsize::new(0));
     let server = spawn_server(PollState {
-        polls: Arc::new(AtomicUsize::new(0)),
+        polls: polls.clone(),
         terminal_error: None,
-        slow_down_first: true,
     })
     .await;
     let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
@@ -268,7 +271,7 @@ async fn device_login_stops_polling_when_the_local_code_expires() {
         verification_uri: "https://login.example.test/device".to_string(),
         verification_uri_complete: None,
         expires_in: Some(1),
-        interval: Some(5),
+        interval: Some(u64::MAX),
     };
     let error = poll_device_token(
         &adapter,
@@ -280,13 +283,61 @@ async fn device_login_stops_polling_when_the_local_code_expires() {
     .await
     .expect_err("polling cannot continue past local expiry");
     assert!(error.to_string().contains("expired"));
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unknown_provider_error_is_not_echoed_to_terminal() {
+    let provider_error = "\u{1b}[2JPWNED";
+    let server = spawn_server(PollState {
+        polls: Arc::new(AtomicUsize::new(0)),
+        terminal_error: Some(provider_error),
+    })
+    .await;
+    let adapter = OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+        http_client(),
+        build_default_headers(None, None).expect("empty headers"),
+        "https://resource.example.test/mcp",
+        DEVICE_HTTP_REQUEST_TIMEOUT,
+        false,
+        StreamableHttpRedirectMode::Legacy,
+    )
+    .expect("synthetic OAuth client");
+    let details = DeviceAuthorizationResponse {
+        device_code: "synthetic-device-code".to_string(),
+        user_code: "SYNTHETIC-CODE".to_string(),
+        verification_uri: "https://login.example.test/device".to_string(),
+        verification_uri_complete: None,
+        expires_in: Some(30),
+        interval: Some(1),
+    };
+    let error = poll_device_token(
+        &adapter,
+        &format!("{server}/token"),
+        "synthetic-client",
+        None,
+        &details,
+    )
+    .await
+    .expect_err("unknown synthetic provider error must fail");
+    let rendered = error.to_string();
+    assert!(rendered.contains("unrecognized provider error"));
+    assert!(!rendered.contains("PWNED"));
+    assert!(!rendered.contains('\u{1b}'));
+    let debug = format!("{error:?}");
+    assert!(!debug.contains("PWNED"));
+    assert!(!debug.contains('\u{1b}'));
 }
 
 #[test]
 fn malformed_device_response_is_rejected_without_echoing_payload() {
-    let error = serde_json::from_slice::<DeviceAuthorizationResponse>(
+    let error = parse_device_authorization_response(
         br#"{"device_code":"synthetic-only","user_code":7,"verification_uri":"not a URL"}"#,
     )
     .expect_err("malformed response is rejected");
-    assert!(!error.to_string().contains("synthetic-only"));
+    assert_eq!(
+        error.to_string(),
+        "failed to parse OAuth device authorization response"
+    );
+    assert!(!format!("{error:?}").contains("synthetic-only"));
 }

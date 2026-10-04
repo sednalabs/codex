@@ -245,7 +245,7 @@ async fn register_device_client(
         );
     }
     let response = serde_json::from_slice::<DeviceClientRegistrationResponse>(response.body())
-        .context("failed to parse OAuth dynamic client registration response")?;
+        .map_err(|_| anyhow!("failed to parse OAuth dynamic client registration response"))?;
     if response.client_id.trim().is_empty() {
         bail!("OAuth dynamic client registration response did not include a client_id");
     }
@@ -282,8 +282,7 @@ async fn request_device_authorization(
             "device authorization",
         ));
     }
-    let details = serde_json::from_slice::<DeviceAuthorizationResponse>(response.body())
-        .context("failed to parse OAuth device authorization response")?;
+    let details = parse_device_authorization_response(response.body())?;
     if details.device_code.trim().is_empty()
         || details.user_code.trim().is_empty()
         || details.verification_uri.trim().is_empty()
@@ -301,6 +300,11 @@ async fn request_device_authorization(
     Ok(details)
 }
 
+fn parse_device_authorization_response(body: &[u8]) -> Result<DeviceAuthorizationResponse> {
+    serde_json::from_slice::<DeviceAuthorizationResponse>(body)
+        .map_err(|_| anyhow!("failed to parse OAuth device authorization response"))
+}
+
 async fn poll_device_token(
     http_client: &OAuthHttpClientAdapter,
     endpoint: &str,
@@ -314,12 +318,14 @@ async fn poll_device_token(
     }
     let expires_in = expires_in.min(86_400);
     let deadline = Instant::now() + Duration::from_secs(expires_in);
-    let mut interval = Duration::from_secs(
+    let grant_lifetime = Duration::from_secs(expires_in);
+    let mut interval = bounded_poll_interval(
         details
             .interval
-            .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS)
-            .max(1),
+            .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS),
+        grant_lifetime,
     );
+    sleep_until_next_poll(interval, deadline).await?;
     loop {
         if Instant::now() >= deadline {
             bail!("OAuth device code expired before authorization completed");
@@ -345,13 +351,14 @@ async fn poll_device_token(
         .context("failed to poll OAuth device token")?;
         if response.status().is_success() {
             return serde_json::from_slice::<OAuthTokenResponse>(response.body())
-                .context("failed to parse OAuth device token response");
+                .map_err(|_| anyhow!("failed to parse OAuth device token response"));
         }
         let error = parse_provider_error(response.status(), response.body(), "device token")?;
         match error.error.as_str() {
             "authorization_pending" => sleep_until_next_poll(interval, deadline).await?,
             "slow_down" => {
-                interval += Duration::from_secs(5);
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                interval = interval_after_slow_down(interval, remaining);
                 sleep_until_next_poll(interval, deadline).await?;
             }
             "expired_token" => bail!("OAuth device code expired before authorization completed"),
@@ -365,6 +372,14 @@ async fn poll_device_token(
             }
         }
     }
+}
+
+fn bounded_poll_interval(provider_seconds: u64, remaining: Duration) -> Duration {
+    Duration::from_secs(provider_seconds.max(1)).min(remaining)
+}
+
+fn interval_after_slow_down(interval: Duration, remaining: Duration) -> Duration {
+    interval.saturating_add(Duration::from_secs(5)).min(remaining)
 }
 
 async fn execute_oauth_request(
@@ -411,8 +426,8 @@ fn provider_error_from_body(status: StatusCode, body: &[u8], context: &str) -> a
 }
 
 fn parse_provider_error(status: StatusCode, body: &[u8], context: &str) -> Result<DeviceError> {
-    serde_json::from_slice::<DeviceError>(body).with_context(|| {
-        format!("OAuth {context} failed with HTTP {status} and an invalid error response")
+    serde_json::from_slice::<DeviceError>(body).map_err(|_| {
+        anyhow!("OAuth {context} failed with HTTP {status} and an invalid error response")
     })
 }
 
@@ -429,7 +444,7 @@ struct DeviceAuthorizationResponse {
     interval: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DeviceError {
     error: String,
 }
@@ -438,7 +453,7 @@ struct DeviceError {
 struct DeviceProviderError {
     status: StatusCode,
     context: String,
-    error: DeviceError,
+    error_code: &'static str,
 }
 
 impl DeviceProviderError {
@@ -446,8 +461,22 @@ impl DeviceProviderError {
         Self {
             status,
             context: context.to_string(),
-            error,
+            error_code: safe_provider_error_code(&error.error),
         }
+    }
+}
+
+fn safe_provider_error_code(error: &str) -> &'static str {
+    match error {
+        "invalid_request" => "invalid_request",
+        "invalid_client" => "invalid_client",
+        "invalid_grant" => "invalid_grant",
+        "unauthorized_client" => "unauthorized_client",
+        "unsupported_grant_type" => "unsupported_grant_type",
+        "invalid_scope" => "invalid_scope",
+        "server_error" => "server_error",
+        "temporarily_unavailable" => "temporarily_unavailable",
+        _ => "unrecognized provider error",
     }
 }
 
@@ -456,7 +485,7 @@ impl fmt::Display for DeviceProviderError {
         write!(
             formatter,
             "OAuth {} failed with HTTP {}: {}",
-            self.context, self.status, self.error.error
+            self.context, self.status, self.error_code
         )
     }
 }
