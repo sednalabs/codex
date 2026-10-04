@@ -123,7 +123,7 @@ fn rendering_preferences_default_individually_and_ignore_animation_switch() {
 }
 
 #[test]
-fn weekly_limit_pacing_style_defaults_to_qualitative_and_deserializes_ratio() {
+fn weekly_limit_pacing_style_defaults_and_deserializes_ratio() {
     let default: Tui = toml::from_str("").expect("deserialize default TUI config");
     assert_eq!(default.weekly_limit_pacing_style, WeeklyLimitPacingStyle::Qualitative);
 

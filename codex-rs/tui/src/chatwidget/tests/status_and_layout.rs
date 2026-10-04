@@ -990,6 +990,28 @@ async fn status_line_weekly_limit_renders_qualitative_default_ratio_and_threshol
         Some("weekly 60%/56%".to_string())
     );
 
+    // Anchor the exactly-15-minute fixture to the next whole clock second so
+    // the renderer's own clock read cannot make it fractionally stale.
+    let boundary_capture = chrono::DateTime::<chrono::Utc>::from_timestamp(
+        chrono::Local::now().timestamp() + 1 - 15 * 60,
+        0,
+    )
+    .expect("valid boundary capture timestamp")
+    .with_timezone(&chrono::Local);
+    chat.config.tui_weekly_limit_pacing_style =
+        codex_config::types::WeeklyLimitPacingStyle::Qualitative;
+    set_weekly_status_window(
+        &mut chat,
+        boundary_capture,
+        /*used_percent*/ 40.0,
+        /*time*/ 60.0,
+    );
+    assert_eq!(
+        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
+        Some("weekly 60% left (on pace)".to_string()),
+        "a capture at the 15-minute freshness boundary remains eligible for pacing"
+    );
+
     set_weekly_status_window(
         &mut chat,
         captured_at - chrono::Duration::minutes(15) - chrono::Duration::seconds(1),

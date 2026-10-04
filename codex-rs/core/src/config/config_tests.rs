@@ -1357,7 +1357,7 @@ fn test_tui_vim_mode_default_true() {
 }
 
 #[tokio::test]
-async fn runtime_config_uses_tui_weekly_limit_pacing_style() {
+async fn tui_weekly_limit_pacing_style_reaches_effective_config() {
     for (value, expected) in [
         ("", WeeklyLimitPacingStyle::Qualitative),
         (r#"weekly_limit_pacing_style = "ratio""#, WeeklyLimitPacingStyle::Ratio),
