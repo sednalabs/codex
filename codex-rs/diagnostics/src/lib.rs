@@ -3,6 +3,7 @@ use std::sync::Once;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+/// Bounded, content-free control-plane observations and shared reductions.
 pub mod control_plane;
 
 static GAUGES: Mutex<Vec<&'static Gauge>> = Mutex::new(Vec::new());
