@@ -2304,7 +2304,7 @@
       "identity": {
         "product_sha": "2391be99dae78eab289324a2ba35660cbdcd328f",
         "comparison_base_ref": "main",
-        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb8c6735da18ee7",
+        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
         "fixture_sha": "5ae0963d9719bfdce7ab90dadaee0ed5ee910306",
         "sdk_sha": "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a",
         "profile": "focused"
@@ -2395,7 +2395,7 @@
       "identity": {
         "product_sha": "2391be99dae78eab289324a2ba35660cbdcd328f",
         "comparison_base_ref": "main",
-        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb8c6735da18ee7",
+        "comparison_base_sha": "4a1ecb1e26fa0c6e8933bb73188bc6735da18ee7",
         "fixture_sha": "5ae0963d9719bfdce7ab90dadaee0ed5ee910306",
         "sdk_sha": "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a",
         "profile": "full"
