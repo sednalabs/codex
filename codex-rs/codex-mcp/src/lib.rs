@@ -96,6 +96,7 @@ pub(crate) mod elicitation;
 pub(crate) mod mcp;
 mod openai_docs_source_attribution;
 mod plugin_config;
+mod protected_http_client;
 mod resource_client;
 pub(crate) mod rmcp_client;
 pub(crate) mod runtime;

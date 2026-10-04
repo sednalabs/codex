@@ -129,8 +129,12 @@ impl McpServerConnectionIdentity {
                 McpServerTransportConfig::Stdio { cwd: None, .. }
             ))
         .then(|| runtime_context.local_stdio_fallback_cwd());
-        let referenced_environment_variables = referenced_environment_variables(config);
-        let runtime_auth = if protected_target_selected {
+        let referenced_environment_variables = if protected_target_guarded {
+            Vec::new()
+        } else {
+            referenced_environment_variables(config)
+        };
+        let runtime_auth = if protected_target_guarded {
             None
         } else {
             runtime_auth_provider.and(auth).cloned()

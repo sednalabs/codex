@@ -48,6 +48,7 @@ use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_connectors::ConnectorRuntimeFetchTicket;
 use codex_exec_server::Environment;
+use codex_exec_server::HttpClient;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -1284,7 +1285,7 @@ async fn make_rmcp_client(
             env_http_headers,
             bearer_token_env_var,
         } => {
-            let protected_bearer = if protected_target {
+            if protected_target {
                 if http_headers.is_some()
                     || env_http_headers.is_some()
                     || bearer_token_env_var.is_some()
@@ -1294,38 +1295,55 @@ async fn make_rmcp_client(
                     )
                     .into());
                 }
-                codex_runtime_proof::bearer_for_mcp(server_name, &url)
-                    .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?
-                    .map(|bearer| bearer.as_str().to_owned())
-            } else {
-                None
-            };
+                if !is_local_environment || resolved_environment.is_some() {
+                    return Err(anyhow!(
+                        "protected MCP target requires the process-local HTTP transport"
+                    )
+                    .into());
+                }
+            }
             let http_client = resolved_environment.as_ref().map_or_else(
                 || runtime_context.local_http_client(),
                 |environment| environment.get_http_client(),
             );
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-            let resolved_bearer_token = if protected_target {
-                protected_bearer
+            let http_client = if protected_target {
+                Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
+                    http_client,
+                    server_name,
+                    &url,
+                )) as Arc<dyn HttpClient>
             } else {
-                match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
-                    Ok(token) => token,
-                    Err(error) => return Err(error.into()),
-                }
+                http_client
             };
-            RmcpClient::new_streamable_http_client(
-                server_name,
-                &url,
-                resolved_bearer_token,
-                http_headers,
-                env_http_headers,
-                store_mode,
-                keyring_backend_kind,
-                http_client,
-                runtime_auth_provider,
-            )
-            .await
-            .map_err(StartupOutcomeError::from)
+            if protected_target {
+                RmcpClient::new_protected_streamable_http_client(
+                    server_name,
+                    &url,
+                    store_mode,
+                    keyring_backend_kind,
+                    http_client,
+                )
+                .await
+                .map_err(StartupOutcomeError::from)
+            } else {
+                RmcpClient::new_streamable_http_client(
+                    server_name,
+                    &url,
+                    match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
+                        Ok(token) => token,
+                        Err(error) => return Err(error.into()),
+                    },
+                    http_headers,
+                    env_http_headers,
+                    store_mode,
+                    keyring_backend_kind,
+                    http_client,
+                    runtime_auth_provider,
+                )
+                .await
+                .map_err(StartupOutcomeError::from)
+            }
         }
     }
 }
