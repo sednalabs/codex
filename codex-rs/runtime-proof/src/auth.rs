@@ -277,7 +277,7 @@ fn verify_root_seqpacket_peer(file: &std::fs::File) -> Result<()> {
             fd,
             libc::SOL_SOCKET,
             libc::SO_TYPE,
-            (&mut socket_type as *mut _).cast(),
+            (&mut socket_type as *mut libc::c_int).cast::<libc::c_void>(),
             &mut size,
         )
     } != 0
@@ -293,7 +293,7 @@ fn verify_root_seqpacket_peer(file: &std::fs::File) -> Result<()> {
             fd,
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
-            (&mut peer as *mut _).cast(),
+            (&mut peer as *mut libc::ucred).cast::<libc::c_void>(),
             &mut peer_size,
         )
     } != 0
