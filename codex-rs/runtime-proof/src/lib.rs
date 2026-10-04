@@ -1,8 +1,8 @@
 //! Host-held, per-execution MCP proof for the protected claim cohort.
 
-mod signer;
 mod auth;
 mod provider_auth;
+mod signer;
 pub mod startup;
 mod wire;
 

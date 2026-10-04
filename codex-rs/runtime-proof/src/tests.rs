@@ -34,7 +34,8 @@ fn canonical_claim_digest_uses_the_ops_jcs_contract() {
 fn canonical_claim_digest_distinguishes_omission_null_and_note_changes() {
     let omitted = serde_json::json!({ "work_item_ref": "example-work-item" });
     let null_note = serde_json::json!({ "work_item_ref": "example-work-item", "note": null });
-    let changed_note = serde_json::json!({ "work_item_ref": "example-work-item", "note": "changed" });
+    let changed_note =
+        serde_json::json!({ "work_item_ref": "example-work-item", "note": "changed" });
     let omitted = wire::canonical_operation("work_item_claim", &omitted).unwrap();
     let null_note = wire::canonical_operation("work_item_claim", &null_note).unwrap();
     let changed_note = wire::canonical_operation("work_item_claim", &changed_note).unwrap();

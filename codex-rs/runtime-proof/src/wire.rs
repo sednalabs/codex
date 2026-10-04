@@ -74,7 +74,9 @@ pub(crate) struct ProofEnvelope<'a> {
     pub proof: &'a str,
 }
 
-pub(crate) fn parse_certificate(certificate: &str) -> Result<(CertificateHeader, CertificateClaims)> {
+pub(crate) fn parse_certificate(
+    certificate: &str,
+) -> Result<(CertificateHeader, CertificateClaims)> {
     if certificate.len() > MAX_CERTIFICATE_BYTES {
         bail!("runtime proof certificate exceeds its size limit");
     }

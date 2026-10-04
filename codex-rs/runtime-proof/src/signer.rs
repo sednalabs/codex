@@ -201,7 +201,10 @@ impl RuntimeProofSigner {
         let key = SigningKey::from_bytes(&self.seed);
         let signature = key.sign(signing_input.as_bytes());
         drop(key);
-        let proof = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        let proof = format!(
+            "{signing_input}.{}",
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
         let envelope = wire::ProofEnvelope {
             certificate: &self.certificate,
             proof: &proof,
@@ -237,10 +240,7 @@ fn validate_claim_precondition(parameters: &Value) -> Result<()> {
     Ok(())
 }
 
-fn erase_on_protection_failure(
-    state: &mut SignerState,
-    protection: Result<()>,
-) -> Result<()> {
+fn erase_on_protection_failure(state: &mut SignerState, protection: Result<()>) -> Result<()> {
     if let Err(error) = protection {
         *state = SignerState::Unconfigured;
         bail!("runtime proof protection changed; signer authority erased: {error}");

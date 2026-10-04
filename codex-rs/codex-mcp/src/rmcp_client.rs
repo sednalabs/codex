@@ -39,6 +39,7 @@ use async_channel::Sender;
 use codex_api::SharedAuthProvider;
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
+use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
 use codex_config::types::AuthKeyringBackendKind;
@@ -48,7 +49,6 @@ use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_connectors::ConnectorRuntimeFetchTicket;
 use codex_exec_server::Environment;
 use codex_protocol::mcp::McpServerInfo;
-use codex_config::McpServerAuth;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupStatus;
@@ -1230,7 +1230,10 @@ async fn make_rmcp_client(
             || config.auth != McpServerAuth::OAuth
             || runtime_auth_provider.is_some())
     {
-        return Err(anyhow!("protected MCP target rejects OAuth configuration and ambient auth providers").into());
+        return Err(anyhow!(
+            "protected MCP target rejects OAuth configuration and ambient auth providers"
+        )
+        .into());
     }
     let resolved_environment =
         resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
@@ -1286,7 +1289,10 @@ async fn make_rmcp_client(
                     || env_http_headers.is_some()
                     || bearer_token_env_var.is_some()
                 {
-                    return Err(anyhow!("protected MCP target rejects configured header and environment credentials").into());
+                    return Err(anyhow!(
+                        "protected MCP target rejects configured header and environment credentials"
+                    )
+                    .into());
                 }
                 codex_runtime_proof::bearer_for_mcp(server_name, &url)
                     .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?

@@ -43,54 +43,61 @@ fn certificate_validation_binds_key_artifact_and_fixed_execution_lease() {
         kid: "issuer-key-1".to_string(),
     };
     let now = unix_seconds().unwrap();
-    assert!(validate_certificate(
-        &header,
-        &signer.claims,
-        &signer.seed,
-        &signer.claims.artifact_sha256,
-        now,
-    )
-    .is_ok());
+    assert!(
+        validate_certificate(
+            &header,
+            &signer.claims,
+            &signer.seed,
+            &signer.claims.artifact_sha256,
+            now,
+        )
+        .is_ok()
+    );
 
     let mut unbounded_lease = signer.claims.clone();
     unbounded_lease.execution_lease_seconds = 1801;
-    assert!(validate_certificate(
-        &header,
-        &unbounded_lease,
-        &signer.seed,
-        &unbounded_lease.artifact_sha256,
-        now,
-    )
-    .is_err());
+    assert!(
+        validate_certificate(
+            &header,
+            &unbounded_lease,
+            &signer.seed,
+            &unbounded_lease.artifact_sha256,
+            now,
+        )
+        .is_err()
+    );
 
     let mut mismatched_key = signer.claims.clone();
     mismatched_key.runtime_public_key = "different-key".to_string();
-    assert!(validate_certificate(
-        &header,
-        &mismatched_key,
-        &signer.seed,
-        &mismatched_key.artifact_sha256,
-        now,
-    )
-    .is_err());
-    assert!(validate_certificate(
-        &header,
-        &signer.claims,
-        &signer.seed,
-        "different-artifact",
-        now,
-    )
-    .is_err());
+    assert!(
+        validate_certificate(
+            &header,
+            &mismatched_key,
+            &signer.seed,
+            &mismatched_key.artifact_sha256,
+            now,
+        )
+        .is_err()
+    );
+    assert!(
+        validate_certificate(
+            &header,
+            &signer.claims,
+            &signer.seed,
+            "different-artifact",
+            now,
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn protection_drift_erases_the_process_signing_capability() {
     let mut state = SignerState::Ready(signer());
-    assert!(erase_on_protection_failure(
-        &mut state,
-        Err(anyhow::anyhow!("protection changed")),
-    )
-    .is_err());
+    assert!(
+        erase_on_protection_failure(&mut state, Err(anyhow::anyhow!("protection changed")),)
+            .is_err()
+    );
     assert!(matches!(state, SignerState::Unconfigured));
 }
 
@@ -161,54 +168,75 @@ fn signs_each_final_claim_request_with_native_context_and_fresh_nonce() {
             &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
         )
         .unwrap();
-    assert!(!first.to_string().contains(&URL_SAFE_NO_PAD.encode(key_bytes)));
+    assert!(
+        !first
+            .to_string()
+            .contains(&URL_SAFE_NO_PAD.encode(key_bytes))
+    );
 }
 
 #[test]
 fn refuses_foreign_scope_incomplete_precondition_and_expired_certificate() {
     let signer = signer();
-    assert!(signer
-        .create_claim_proof(&Uuid::new_v4(), "thread", &serde_json::json!({"work_item_ref":"w1"}))
-        .is_err());
+    assert!(
+        signer
+            .create_claim_proof(
+                &Uuid::new_v4(),
+                "thread",
+                &serde_json::json!({"work_item_ref":"w1"})
+            )
+            .is_err()
+    );
     let mut missing = parameters("claim");
-    missing.as_object_mut().unwrap().remove("claim_precondition");
-    assert!(signer
-        .create_claim_proof(&Uuid::new_v4(), "thread", &missing)
-        .is_err());
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("claim_precondition");
+    assert!(
+        signer
+            .create_claim_proof(&Uuid::new_v4(), "thread", &missing)
+            .is_err()
+    );
     let mut expired = signer;
     expired.claims.exp = unix_seconds().unwrap() - 1;
-    assert!(expired
-        .create_claim_proof(&Uuid::new_v4(), "thread", &parameters("claim"))
-        .is_err());
+    assert!(
+        expired
+            .create_claim_proof(&Uuid::new_v4(), "thread", &parameters("claim"))
+            .is_err()
+    );
 }
 
 #[test]
 fn selected_claim_rejects_a_mismatched_server_or_recipient() {
     let signer = signer();
-    assert!(signer
-        .matches_target(
-            "ops",
-            Some("https://ops.example/mcp"),
-            "work_item_claim",
-        )
-        .unwrap());
-    assert!(signer
-        .matches_target(
-            "ops",
-            Some("https://foreign.example/mcp"),
-            "work_item_claim",
-        )
-        .is_err());
-    assert!(signer
-        .matches_target(
-            "foreign",
-            Some("https://ops.example/mcp"),
-            "work_item_claim",
-        )
-        .is_err());
-    assert!(!signer
-        .matches_target("unrelated", Some("https://other.example/mcp"), "some_tool")
-        .unwrap());
+    assert!(
+        signer
+            .matches_target("ops", Some("https://ops.example/mcp"), "work_item_claim",)
+            .unwrap()
+    );
+    assert!(
+        signer
+            .matches_target(
+                "ops",
+                Some("https://foreign.example/mcp"),
+                "work_item_claim",
+            )
+            .is_err()
+    );
+    assert!(
+        signer
+            .matches_target(
+                "foreign",
+                Some("https://ops.example/mcp"),
+                "work_item_claim",
+            )
+            .is_err()
+    );
+    assert!(
+        !signer
+            .matches_target("unrelated", Some("https://other.example/mcp"), "some_tool")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -224,7 +252,10 @@ fn changed_note_changes_signed_operation_digest() {
         .unwrap();
     let (_, first_claims, _) = decode_proof(first["proof"].as_str().unwrap());
     let (_, second_claims, _) = decode_proof(second["proof"].as_str().unwrap());
-    assert_ne!(first_claims.operation_sha256, second_claims.operation_sha256);
+    assert_ne!(
+        first_claims.operation_sha256,
+        second_claims.operation_sha256
+    );
 }
 
 #[test]
@@ -319,10 +350,13 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
         claims: parsed_claims,
         seed: runtime_seed,
     };
-    let execution_nonce =
-        Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+    let execution_nonce = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
     let proof = signer
-        .create_claim_proof(&execution_nonce, "codex-session-thread", &parameters("claim"))
+        .create_claim_proof(
+            &execution_nonce,
+            "codex-session-thread",
+            &parameters("claim"),
+        )
         .unwrap()
         .unwrap();
     let (request_header, request_claims, signature) =
@@ -330,7 +364,10 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
     assert_eq!(request_header.alg, "EdDSA");
     assert_eq!(request_header.typ, "runtime-invocation+jwt");
     assert_eq!(request_header.kid, runtime_incarnation.to_string());
-    assert_eq!(request_claims.certificate_sha256, wire::digest(certificate.as_bytes()));
+    assert_eq!(
+        request_claims.certificate_sha256,
+        wire::digest(certificate.as_bytes())
+    );
     assert_eq!(request_claims.runtime_incarnation, runtime_incarnation);
     assert_eq!(request_claims.execution_nonce, execution_nonce);
     assert_eq!(request_claims.provider_thread_id, "codex-session-thread");
@@ -343,7 +380,13 @@ fn issuer_certificate_and_native_invocation_use_one_positive_wire_vector() {
     runtime_key
         .verifying_key()
         .verify(
-            proof["proof"].as_str().unwrap().rsplit_once('.').unwrap().0.as_bytes(),
+            proof["proof"]
+                .as_str()
+                .unwrap()
+                .rsplit_once('.')
+                .unwrap()
+                .0
+                .as_bytes(),
             &ed25519_dalek::Signature::from_slice(&signature).unwrap(),
         )
         .unwrap();

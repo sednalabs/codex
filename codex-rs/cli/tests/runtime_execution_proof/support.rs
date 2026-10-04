@@ -89,21 +89,40 @@ impl Respond for ModelResponder {
                     .map(str::to_string),
             );
         }
-        let (namespace, name, arguments, call_id) = if request_has_user_text(&body, "delegate-claim") {
-            let mut calls = self.delegate_calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (namespace, name, arguments, call_id) = if request_has_user_text(
+            &body,
+            "delegate-claim",
+        ) {
+            let mut calls = self
+                .delegate_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if *calls == 0 {
                 *calls += 1;
-                ("mcp__ops", "work_item_claim", ARGUMENTS.to_string(), "delegate-claim-call")
+                (
+                    "mcp__ops",
+                    "work_item_claim",
+                    ARGUMENTS.to_string(),
+                    "delegate-claim-call",
+                )
             } else {
                 ("", "", String::new(), "delegate-final")
             }
         } else if request_has_user_text(&body, "root-claim")
             || request_has_user_text(&body, "role-provider-control")
         {
-            let mut calls = self.root_calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut calls = self
+                .root_calls
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let response = if *calls == 0 {
                 *calls += 1;
-                ("mcp__ops", "work_item_claim", ARGUMENTS.to_string(), "root-claim-call")
+                (
+                    "mcp__ops",
+                    "work_item_claim",
+                    ARGUMENTS.to_string(),
+                    "root-claim-call",
+                )
             } else if *calls == 1 {
                 *calls += 1;
                 (
@@ -124,7 +143,8 @@ impl Respond for ModelResponder {
             ("", "", String::new(), "final")
         };
         let response_id = format!("response-{}", call_id);
-        let mut events = vec![serde_json::json!({"type":"response.created","response":{"id":response_id}})];
+        let mut events =
+            vec![serde_json::json!({"type":"response.created","response":{"id":response_id}})];
         if namespace.is_empty() {
             events.push(serde_json::json!({
                 "type":"response.output_item.done",
@@ -139,7 +159,18 @@ impl Respond for ModelResponder {
         events.push(serde_json::json!({"type":"response.completed","response":{"id":response_id,"usage":{"input_tokens":0,"input_tokens_details":null,"output_tokens":0,"output_tokens_details":null,"total_tokens":0}}}));
         ResponseTemplate::new(200)
             .insert_header("content-type", "text/event-stream")
-            .set_body_string(events.into_iter().map(|event| format!("event: {}\ndata: {}\n\n", event["type"].as_str().unwrap_or(""), event)).collect::<String>())
+            .set_body_string(
+                events
+                    .into_iter()
+                    .map(|event| {
+                        format!(
+                            "event: {}\ndata: {}\n\n",
+                            event["type"].as_str().unwrap_or(""),
+                            event
+                        )
+                    })
+                    .collect::<String>(),
+            )
     }
 }
 
@@ -184,7 +215,10 @@ impl Respond for McpResponder {
             );
         }
         let id = body.get("id").cloned().unwrap_or(Value::Null);
-        let method = body.get("method").and_then(Value::as_str).unwrap_or_default();
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let response = match method {
             "initialize" => serde_json::json!({
                 "jsonrpc":"2.0","id":id,"result":{
@@ -208,7 +242,10 @@ impl Respond for McpResponder {
                 if let Ok(mut calls) = self.calls.lock() {
                     calls.push(body.clone());
                 }
-                let proof = body.pointer("/params/_meta/runtime~1execution-proof").cloned().unwrap_or(Value::Null);
+                let proof = body
+                    .pointer("/params/_meta/runtime~1execution-proof")
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let echo = format!("{} {OPS_BEARER_TOKEN}", proof);
                 serde_json::json!({
                     "jsonrpc":"2.0","id":id,"result":{
@@ -218,7 +255,9 @@ impl Respond for McpResponder {
                 })
             }
             _ if method.starts_with("notifications/") => return ResponseTemplate::new(202),
-            _ => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"fixture method not found"}}),
+            _ => {
+                serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"fixture method not found"}})
+            }
         };
         ResponseTemplate::new(200).set_body_json(response)
     }
@@ -305,11 +344,15 @@ impl ProtectedRuntimeFixture {
         let recipient = format!("{}/mcp", mcp.uri());
         let provider_recipient = format!("{}/v1", model.uri());
         let overridden_provider = format!("{}/off-path", model.uri());
-        let provider_expires_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 + 800;
+        let provider_expires_at =
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 + 800;
         let provider_token = synthetic_access_token(provider_expires_at)?;
         fs::write(
             home.join("agents/proof-child.toml"),
-            format!("model_provider = \"openai\"\nopenai_base_url = {:?}\n", overridden_provider),
+            format!(
+                "model_provider = \"openai\"\nopenai_base_url = {:?}\n",
+                overridden_provider
+            ),
         )?;
         fs::write(
             home.join("config.toml"),
@@ -357,11 +400,13 @@ impl ProtectedRuntimeFixture {
     }
 
     pub async fn run_cli(&self) -> Result<Output> {
-        self.run_cli_with_prompt_and_auth_fault("root-claim", None).await
+        self.run_cli_with_prompt_and_auth_fault("root-claim", None)
+            .await
     }
 
     pub async fn run_cli_with_auth_fault(&self, fault: Option<AuthFault>) -> Result<Output> {
-        self.run_cli_with_prompt_and_auth_fault("root-claim", fault).await
+        self.run_cli_with_prompt_and_auth_fault("root-claim", fault)
+            .await
     }
 
     pub async fn run_cli_with_prompt(&self, prompt: &str) -> Result<Output> {
@@ -369,7 +414,10 @@ impl ProtectedRuntimeFixture {
     }
 
     pub fn model_request_paths(&self) -> Vec<String> {
-        self.model_request_paths.lock().map(|paths| paths.clone()).unwrap_or_default()
+        self.model_request_paths
+            .lock()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
     }
 
     async fn run_cli_with_prompt_and_auth_fault(
@@ -456,18 +504,37 @@ impl ProtectedRuntimeFixture {
             "mcp_bearer": OPS_BEARER_TOKEN
         });
         match fault {
-            Some(AuthFault::WrongContext) => auth_packet["principal"] = serde_json::json!("33333333-3333-4333-8333-333333333333"),
-            Some(AuthFault::ConfigDigest) => auth_packet["config_sha256"] = serde_json::json!("00".repeat(32)),
-            Some(AuthFault::Expired) => auth_packet["expires_at"] = serde_json::json!(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 - 1),
-            Some(AuthFault::ProviderRecipient) => auth_packet["provider_recipient"] = serde_json::json!("http://127.0.0.1:1/v1"),
-            Some(AuthFault::CredentialClass) => auth_packet["provider"]["credential_class"] = serde_json::json!("live"),
+            Some(AuthFault::WrongContext) => {
+                auth_packet["principal"] = serde_json::json!("33333333-3333-4333-8333-333333333333")
+            }
+            Some(AuthFault::ConfigDigest) => {
+                auth_packet["config_sha256"] = serde_json::json!("00".repeat(32))
+            }
+            Some(AuthFault::Expired) => {
+                auth_packet["expires_at"] = serde_json::json!(
+                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 - 1
+                )
+            }
+            Some(AuthFault::ProviderRecipient) => {
+                auth_packet["provider_recipient"] = serde_json::json!("http://127.0.0.1:1/v1")
+            }
+            Some(AuthFault::CredentialClass) => {
+                auth_packet["provider"]["credential_class"] = serde_json::json!("live")
+            }
             Some(AuthFault::MutatedToken) => {
-                let token = auth_packet["provider"]["access_token"].as_str().unwrap_or_default().to_string();
+                let token = auth_packet["provider"]["access_token"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 auth_packet["provider"]["access_token"] = serde_json::json!(format!("{token}x"));
             }
             Some(AuthFault::ExtraTokenSegment) => {
-                let token = auth_packet["provider"]["access_token"].as_str().unwrap_or_default().to_string();
-                auth_packet["provider"]["access_token"] = serde_json::json!(format!("{token}.extra"));
+                let token = auth_packet["provider"]["access_token"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                auth_packet["provider"]["access_token"] =
+                    serde_json::json!(format!("{token}.extra"));
             }
             None => {}
         }
@@ -508,11 +575,17 @@ impl ProtectedRuntimeFixture {
     }
 
     pub fn claim_calls(&self) -> Vec<Value> {
-        self.claim_calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.claim_calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn model_requests(&self) -> Vec<Value> {
-        self.model_requests.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.model_requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn model_authorization_headers(&self) -> Vec<Option<String>> {
@@ -574,7 +647,11 @@ fn send_packet(socket: &std::os::unix::net::UnixStream, bytes: &[u8]) -> Result<
             libc::MSG_NOSIGNAL,
         )
     };
-    anyhow::ensure!(sent == bytes.len() as isize, "send bootstrap packet: {}", std::io::Error::last_os_error());
+    anyhow::ensure!(
+        sent == bytes.len() as isize,
+        "send bootstrap packet: {}",
+        std::io::Error::last_os_error()
+    );
     Ok(())
 }
 
@@ -670,7 +747,10 @@ fn create_certificate(
     Ok(format!("{signing_input}.{signature}"))
 }
 
-fn seqpacket_pair() -> Result<(std::os::unix::net::UnixStream, std::os::unix::net::UnixStream)> {
+fn seqpacket_pair() -> Result<(
+    std::os::unix::net::UnixStream,
+    std::os::unix::net::UnixStream,
+)> {
     let mut sockets = [-1; 2];
     let status = unsafe {
         libc::socketpair(
@@ -680,7 +760,11 @@ fn seqpacket_pair() -> Result<(std::os::unix::net::UnixStream, std::os::unix::ne
             sockets.as_mut_ptr(),
         )
     };
-    anyhow::ensure!(status == 0, "create bootstrap socketpair: {}", std::io::Error::last_os_error());
+    anyhow::ensure!(
+        status == 0,
+        "create bootstrap socketpair: {}",
+        std::io::Error::last_os_error()
+    );
     unsafe {
         Ok((
             std::os::unix::net::UnixStream::from_raw_fd(sockets[0]),
@@ -703,7 +787,11 @@ fn set_read_timeout(socket: &std::os::unix::net::UnixStream, timeout: Duration) 
             std::mem::size_of_val(&value) as libc::socklen_t,
         )
     };
-    anyhow::ensure!(status == 0, "set bootstrap acknowledgement timeout: {}", std::io::Error::last_os_error());
+    anyhow::ensure!(
+        status == 0,
+        "set bootstrap acknowledgement timeout: {}",
+        std::io::Error::last_os_error()
+    );
     Ok(())
 }
 

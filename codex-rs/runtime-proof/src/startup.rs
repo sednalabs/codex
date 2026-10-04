@@ -95,12 +95,8 @@ fn verify_inherited_protection() -> Result<()> {
         let mut real_gid = 0;
         let mut effective_gid = 0;
         let mut saved_gid = 0;
-        if unsafe {
-            libc::getresuid(&mut real_uid, &mut effective_uid, &mut saved_uid)
-        } != 0
-            || unsafe {
-                libc::getresgid(&mut real_gid, &mut effective_gid, &mut saved_gid)
-            } != 0
+        if unsafe { libc::getresuid(&mut real_uid, &mut effective_uid, &mut saved_uid) } != 0
+            || unsafe { libc::getresgid(&mut real_gid, &mut effective_gid, &mut saved_gid) } != 0
         {
             bail!("cannot verify inherited runtime identity");
         }
@@ -158,9 +154,10 @@ fn verify_capabilities() -> Result<()> {
     {
         bail!("cannot verify runtime capability sets");
     }
-    if data.iter().any(|set| {
-        set.effective != 0 || set.permitted != 0 || set.inheritable != 0
-    }) {
+    if data
+        .iter()
+        .any(|set| set.effective != 0 || set.permitted != 0 || set.inheritable != 0)
+    {
         bail!("runtime capability sets must be empty");
     }
     let last_capability = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
@@ -273,13 +270,7 @@ fn read_bootstrap_frame(file: &File) -> Result<(String, Zeroizing<[u8; SEED_BYTE
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = &mut vector;
     message.msg_iovlen = 1;
-    let received = unsafe {
-        libc::recvmsg(
-            file.as_raw_fd(),
-            &mut message,
-            libc::MSG_CMSG_CLOEXEC,
-        )
-    };
+    let received = unsafe { libc::recvmsg(file.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
     if received < 0 {
         return Err(std::io::Error::last_os_error())
             .context("cannot receive runtime proof bootstrap frame");
@@ -357,7 +348,8 @@ fn complete_bootstrap_ack(_file: &File) -> Result<()> {
 
 pub(crate) fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
-    let mut file = File::open(PathBuf::from(executable)).context("cannot open runtime executable")?;
+    let mut file =
+        File::open(PathBuf::from(executable)).context("cannot open runtime executable")?;
     let mut hash = sha2::Sha256::new();
     let mut buffer = [0u8; 16 * 1024];
     loop {

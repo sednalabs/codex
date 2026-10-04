@@ -1,9 +1,9 @@
-use crate::signer;
-use crate::wire;
 use crate::provider_auth::ProviderAuth;
 use crate::provider_auth::SecretString;
 use crate::provider_auth::valid_provider_recipient;
 use crate::provider_auth::validate_provider_credential;
+use crate::signer;
+use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -81,8 +81,8 @@ pub(crate) fn initialize_from_environment(
     let socket = unsafe { std::fs::File::from_raw_fd(fd) };
     verify_root_seqpacket_peer(&socket)?;
     let mut frame_bytes = receive_auth_frame(&socket)?;
-    let frame: AuthFrame = serde_json::from_slice(&frame_bytes)
-        .context("decode protected runtime auth frame")?;
+    let frame: AuthFrame =
+        serde_json::from_slice(&frame_bytes).context("decode protected runtime auth frame")?;
     validate_and_import(frame, claims, certificate_sha256)
 }
 
@@ -182,15 +182,25 @@ fn validate_and_import(
 }
 
 fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<()> {
-    let config: toml::Value = toml::from_str(std::str::from_utf8(config)?)
-        .context("parse immutable runtime config")?;
-    let table = config.as_table().context("runtime config must be a TOML table")?;
-    if table.get("model_provider").and_then(toml::Value::as_str).is_some_and(|value| value != "openai")
-        || table.get("cli_auth_credentials_store").and_then(toml::Value::as_str) != Some("ephemeral")
+    let config: toml::Value =
+        toml::from_str(std::str::from_utf8(config)?).context("parse immutable runtime config")?;
+    let table = config
+        .as_table()
+        .context("runtime config must be a TOML table")?;
+    if table
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| value != "openai")
+        || table
+            .get("cli_auth_credentials_store")
+            .and_then(toml::Value::as_str)
+            != Some("ephemeral")
         || table.get("model_providers").is_some()
         || table.get("chatgpt_base_url").is_some()
     {
-        bail!("protected runtime config must select the OpenAI provider and ephemeral auth storage");
+        bail!(
+            "protected runtime config must select the OpenAI provider and ephemeral auth storage"
+        );
     }
     let mcp_servers = table
         .get("mcp_servers")
@@ -223,15 +233,34 @@ fn verify_root_seqpacket_peer(file: &std::fs::File) -> Result<()> {
     let mut socket_type: libc::c_int = 0;
     let mut size = std::mem::size_of_val(&socket_type) as libc::socklen_t;
     if unsafe {
-        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut socket_type as *mut _).cast(), &mut size)
-    } != 0 || size as usize != std::mem::size_of_val(&socket_type) || socket_type != libc::SOCK_SEQPACKET {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut socket_type as *mut _).cast(),
+            &mut size,
+        )
+    } != 0
+        || size as usize != std::mem::size_of_val(&socket_type)
+        || socket_type != libc::SOCK_SEQPACKET
+    {
         bail!("runtime auth descriptor must be a sequenced-packet socket");
     }
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut peer_size = std::mem::size_of_val(&peer) as libc::socklen_t;
     if unsafe {
-        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut peer as *mut _).cast(), &mut peer_size)
-    } != 0 || peer_size as usize != std::mem::size_of_val(&peer) || peer.uid != 0 || peer.pid <= 0 {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut peer as *mut _).cast(),
+            &mut peer_size,
+        )
+    } != 0
+        || peer_size as usize != std::mem::size_of_val(&peer)
+        || peer.uid != 0
+        || peer.pid <= 0
+    {
         bail!("runtime auth peer must be the root launcher");
     }
     Ok(())
@@ -241,7 +270,10 @@ fn verify_root_seqpacket_peer(file: &std::fs::File) -> Result<()> {
 fn receive_auth_frame(file: &std::fs::File) -> Result<Zeroizing<Vec<u8>>> {
     let mut frame = Zeroizing::new(vec![0_u8; MAX_AUTH_FRAME_BYTES + 1]);
     let mut control = [0_u8; 256];
-    let mut vector = libc::iovec { iov_base: frame.as_mut_ptr().cast(), iov_len: frame.len() };
+    let mut vector = libc::iovec {
+        iov_base: frame.as_mut_ptr().cast(),
+        iov_len: frame.len(),
+    };
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
     message.msg_iov = &mut vector;
     message.msg_iovlen = 1;
@@ -249,9 +281,11 @@ fn receive_auth_frame(file: &std::fs::File) -> Result<Zeroizing<Vec<u8>>> {
     message.msg_controllen = control.len();
     let received = unsafe { libc::recvmsg(file.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
     if received < 0 {
-        return Err(std::io::Error::last_os_error()).context("receive protected runtime auth frame");
+        return Err(std::io::Error::last_os_error())
+            .context("receive protected runtime auth frame");
     }
-    if message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 || message.msg_controllen != 0 {
+    if message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 || message.msg_controllen != 0
+    {
         bail!("runtime auth frame was truncated or carried ancillary data");
     }
     let received = received as usize;
@@ -263,12 +297,16 @@ fn receive_auth_frame(file: &std::fs::File) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 pub fn bearer_for_mcp(server: &str, recipient: &str) -> Result<Option<Zeroizing<String>>> {
-    let Some(store) = BOOTSTRAP_AUTH.get() else { return Ok(None) };
+    let Some(store) = BOOTSTRAP_AUTH.get() else {
+        return Ok(None);
+    };
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
     ensure_auth_active(&mut stored)?;
-    let Some(auth) = stored.as_ref() else { return Ok(None) };
+    let Some(auth) = stored.as_ref() else {
+        return Ok(None);
+    };
     if server == auth.server && recipient == auth.recipient {
         return Ok(Some(Zeroizing::new(auth.bearer.to_string())));
     }
@@ -290,12 +328,16 @@ pub(crate) fn erase_auth_authority() -> Result<()> {
 }
 
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
-    let Some(store) = BOOTSTRAP_AUTH.get() else { return Ok(false) };
+    let Some(store) = BOOTSTRAP_AUTH.get() else {
+        return Ok(false);
+    };
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
     ensure_auth_active(&mut stored)?;
-    let Some(auth) = stored.as_ref() else { return Ok(false) };
+    let Some(auth) = stored.as_ref() else {
+        return Ok(false);
+    };
     if server == auth.server && recipient == auth.recipient {
         Ok(true)
     } else if server == auth.server || recipient == auth.recipient {
@@ -306,12 +348,16 @@ pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
 }
 
 pub fn protected_mcp_target() -> Result<Option<(String, String)>> {
-    let Some(store) = BOOTSTRAP_AUTH.get() else { return Ok(None) };
+    let Some(store) = BOOTSTRAP_AUTH.get() else {
+        return Ok(None);
+    };
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
     ensure_auth_active(&mut stored)?;
-    let Some(auth) = stored.as_ref() else { return Ok(None) };
+    let Some(auth) = stored.as_ref() else {
+        return Ok(None);
+    };
     Ok(Some((auth.server.clone(), auth.recipient.clone())))
 }
 
@@ -326,13 +372,21 @@ pub fn protected_provider_recipient() -> Result<Option<String>> {
     Ok(stored.as_ref().map(|auth| auth.provider_recipient.clone()))
 }
 
-pub fn redact_mcp_bearer(server: &str, recipient: &str, value: &mut serde_json::Value) -> Result<()> {
-    let Some(store) = BOOTSTRAP_AUTH.get() else { return Ok(()) };
+pub fn redact_mcp_bearer(
+    server: &str,
+    recipient: &str,
+    value: &mut serde_json::Value,
+) -> Result<()> {
+    let Some(store) = BOOTSTRAP_AUTH.get() else {
+        return Ok(());
+    };
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
     ensure_auth_active(&mut stored)?;
-    let Some(auth) = stored.as_ref() else { return Ok(()) };
+    let Some(auth) = stored.as_ref() else {
+        return Ok(());
+    };
     if server != auth.server || recipient != auth.recipient {
         if server == auth.server || recipient == auth.recipient {
             bail!("protected MCP redaction target differs from its pinned server and URL");

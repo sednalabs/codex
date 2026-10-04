@@ -5,7 +5,10 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn descriptor_environment_accepts_only_an_index() {
-    assert_eq!(parse_descriptor_index(std::ffi::OsStr::new("12")).unwrap(), 12);
+    assert_eq!(
+        parse_descriptor_index(std::ffi::OsStr::new("12")).unwrap(),
+        12
+    );
     assert!(parse_descriptor_index(std::ffi::OsStr::new("2")).is_err());
     assert!(parse_descriptor_index(std::ffi::OsStr::new("12x")).is_err());
     assert!(parse_descriptor_index(std::ffi::OsStr::new("-1")).is_err());
@@ -109,14 +112,7 @@ fn bootstrap_ack_is_one_exact_packet() {
     let (runtime, launcher) = seqpacket_pair();
     complete_bootstrap_ack(&runtime).unwrap();
     let mut ack = [0_u8; 8];
-    let read = unsafe {
-        libc::recv(
-            launcher.as_raw_fd(),
-            ack.as_mut_ptr().cast(),
-            ack.len(),
-            0,
-        )
-    };
+    let read = unsafe { libc::recv(launcher.as_raw_fd(), ack.as_mut_ptr().cast(), ack.len(), 0) };
     assert_eq!(read, BOOTSTRAP_ACK.len() as isize);
     assert_eq!(&ack[..read as usize], BOOTSTRAP_ACK);
 }

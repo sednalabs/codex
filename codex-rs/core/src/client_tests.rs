@@ -150,8 +150,7 @@ fn protected_api_route_uses_only_the_pinned_recipient_and_endpoint() {
         .to_api_provider(Some(AuthMode::ChatgptAuthTokens))
         .expect("API provider");
     assert_eq!(
-        super::validate_api_route(&provider, "/responses", Some(recipient))
-            .expect("pinned route"),
+        super::validate_api_route(&provider, "/responses", Some(recipient)).expect("pinned route"),
         "https://chatgpt.com/backend-api/codex/responses"
     );
     let mut query_provider = provider;

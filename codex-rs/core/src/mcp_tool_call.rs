@@ -24,9 +24,9 @@ use codex_analytics::AppInvocation;
 use codex_analytics::InvocationType;
 use codex_analytics::build_track_events_context;
 use codex_config::ConfigLayerSource;
+use codex_config::McpServerTransportConfig;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
-use codex_config::McpServerTransportConfig;
 use codex_connectors::AppToolPolicy;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
@@ -466,9 +466,7 @@ async fn handle_approved_mcp_tool_call(
                             .map_err(anyhow::Error::msg)?;
                     }
                     let empty_arguments = JsonValue::Null;
-                    let proof_parameters = rewritten_arguments
-                        .as_ref()
-                        .unwrap_or(&empty_arguments);
+                    let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
                     let proof = codex_runtime_proof::sign_claim_proof(
                         &sess.execution_nonce,
                         &sess.thread_id.to_string(),
@@ -479,10 +477,7 @@ async fn handle_approved_mcp_tool_call(
                     )?;
                     runtime_proof_for_redaction = proof.clone();
                     let request_meta = add_runtime_proof_meta(request_meta, proof)?;
-                    Ok((
-                        rewritten_arguments,
-                        request_meta,
-                    ))
+                    Ok((rewritten_arguments, request_meta))
                 })
                 .await
                 .map_err(|error| {
@@ -643,10 +638,7 @@ fn redact_runtime_mcp_bearer_from_result(
     match result {
         Ok(result) => {
             let valid = result.content.iter_mut().all(&redact)
-                && result
-                    .structured_content
-                    .as_mut()
-                    .is_none_or(&redact)
+                && result.structured_content.as_mut().is_none_or(&redact)
                 && result.meta.as_mut().is_none_or(&redact);
             if !valid {
                 *result = CallToolResult {
@@ -660,7 +652,10 @@ fn redact_runtime_mcp_bearer_from_result(
         Err(error) => {
             let mut value = JsonValue::String(error.clone());
             if redact(&mut value) {
-                *error = value.as_str().unwrap_or("protected runtime MCP call failed").to_string();
+                *error = value
+                    .as_str()
+                    .unwrap_or("protected runtime MCP call failed")
+                    .to_string();
             } else {
                 *error = "protected runtime MCP call failed".to_string();
             }

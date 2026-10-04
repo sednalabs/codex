@@ -470,10 +470,7 @@ fn hash_headers<H: Hasher>(headers: &ApiHeaderMap, state: &mut H) {
     values.hash(state);
 }
 
-fn validate_protected_api_provider(
-    api_provider: &ApiProvider,
-    recipient: &str,
-) -> Result<()> {
+fn validate_protected_api_provider(api_provider: &ApiProvider, recipient: &str) -> Result<()> {
     let expected = codex_model_provider_info::built_in_model_providers(Some(recipient.to_string()))
         .remove("openai")
         .ok_or_else(|| {
@@ -1406,9 +1403,8 @@ impl ModelClient {
         request_route_telemetry: RequestRouteTelemetry,
         request_initiation: RequestInitiation,
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
-        validate_protected_api_route(&api_provider, RESPONSES_ENDPOINT).map_err(|error| {
-            ApiError::Transport(TransportError::Build(error.to_string()))
-        })?;
+        validate_protected_api_route(&api_provider, RESPONSES_ENDPOINT)
+            .map_err(|error| ApiError::Transport(TransportError::Build(error.to_string())))?;
         let headers = self.build_websocket_headers(responses_metadata).await;
         let websocket_telemetry = ModelClientSession::build_websocket_telemetry(
             session_telemetry,

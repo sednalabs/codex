@@ -60,16 +60,16 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
-use codex_config::ConfigLoadError;
-use codex_config::ConfigLoadOptions;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStackOrdering;
+use codex_config::ConfigLoadError;
+use codex_config::ConfigLoadOptions;
 use codex_config::LoaderOverrides;
 use codex_config::McpServerAuth;
 use codex_config::McpServerConfig;
 use codex_config::McpServerTransportConfig;
-use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::format_config_error_with_source;
+use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::StateDbHandle;
@@ -309,7 +309,10 @@ fn validate_protected_runtime_config(
         } if url == &recipient
             && http_headers.is_none()
             && env_http_headers.is_none()
-            && bearer_token_env_var.is_none() => Ok(()),
+            && bearer_token_env_var.is_none() =>
+        {
+            Ok(())
+        }
         McpServerTransportConfig::StreamableHttp { .. } => {
             anyhow::bail!("protected MCP server config must contain only its pinned URL")
         }
@@ -435,7 +438,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .context("built-in OpenAI provider is unavailable")?
         .to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
         validate_protected_runtime_config(
-            bootstrap_config_toml.model_provider.as_deref().unwrap_or("openai"),
+            bootstrap_config_toml
+                .model_provider
+                .as_deref()
+                .unwrap_or("openai"),
             bootstrap_config_toml.cli_auth_credentials_store,
             &bootstrap_config_toml.mcp_servers,
             &bootstrap_config_toml.model_providers,
