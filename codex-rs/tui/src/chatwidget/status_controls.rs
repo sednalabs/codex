@@ -454,10 +454,11 @@ impl ChatWidget {
         Some(format!("{label} {remaining:.0}% left"))
     }
 
-    pub(super) fn status_line_weekly_limit_display(
+    pub(super) fn status_line_weekly_limit_display_at(
         &self,
         window: Option<&RateLimitWindowDisplay>,
         label: &str,
+        now: chrono::DateTime<Local>,
     ) -> Option<String> {
         let base = self.status_line_limit_display(window, label)?;
         let Some(window) = window else {
@@ -472,7 +473,7 @@ impl ChatWidget {
             return Some(base);
         }
 
-        let age = Local::now().signed_duration_since(window.captured_at);
+        let age = now.signed_duration_since(window.captured_at);
         if age > ChronoDuration::minutes(15) {
             return Some(format!("{base} (stale)"));
         }
