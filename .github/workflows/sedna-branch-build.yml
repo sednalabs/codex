@@ -65,6 +65,7 @@ on:
         options:
           - cargo-schema
           - config-schema
+          - tui-snapshots
         default: cargo-schema
 
 concurrency:
@@ -109,11 +110,11 @@ jobs:
             *) echo "unsupported workflow mode" >&2; exit 1 ;;
           esac
           case "${PREPARATION_PROFILE}" in
-            cargo-schema|config-schema) ;;
+            cargo-schema|config-schema|tui-snapshots) ;;
             *) echo "unsupported preparation profile" >&2; exit 1 ;;
           esac
           if [[ "${MODE}" != "prepare-only" && "${PREPARATION_PROFILE}" != "cargo-schema" ]]; then
-            echo "config-schema preparation profile is restricted to prepare-only mode" >&2
+            echo "nondefault preparation profiles are restricted to prepare-only mode" >&2
             exit 1
           fi
           [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || {
@@ -175,11 +176,26 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
-        run: python3 .github/scripts/prepare_config_schema.py --validate-profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${PREPARATION_PROFILE}" in
+            cargo-schema|config-schema)
+              python3 .github/scripts/prepare_config_schema.py --validate-profile
+              ;;
+            tui-snapshots)
+              python3 .github/scripts/prepare_tui_snapshots.py --validate-profile
+              ;;
+            *) echo "unsupported preparation profile" >&2; exit 1 ;;
+          esac
       - name: Test config-schema preparation controls
         if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'config-schema' }}
         working-directory: .workflow-src
         run: python3 .github/scripts/test_prepare_config_schema.py -v
+      - name: Test TUI snapshot preparation controls
+        if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'tui-snapshots' }}
+        working-directory: .workflow-src
+        run: python3 .github/scripts/test_prepare_tui_snapshots.py -v
       - name: Test static consumer contract regression controls
         if: ${{ inputs.mode != 'prepare-only' }}
         working-directory: .workflow-src
@@ -312,6 +328,17 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+      - name: Install pinned just for the TUI snapshot preparation profile
+        if: ${{ inputs.preparation_profile == 'tui-snapshots' }}
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: just@1.51.0
+      - name: Install pinned cargo-nextest for the TUI snapshot preparation profile
+        if: ${{ inputs.preparation_profile == 'tui-snapshots' }}
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
       - name: Prepare the canonical config schema only
         if: ${{ inputs.preparation_profile == 'config-schema' }}
         working-directory: .workflow-src
@@ -323,6 +350,19 @@ jobs:
           MODE: ${{ inputs.mode }}
           PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
         run: python3 .github/scripts/prepare_config_schema.py
+      - name: Prepare review-pending TUI snapshots only
+        if: ${{ inputs.preparation_profile == 'tui-snapshots' }}
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          EXPECTED_H: ${{ github.sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/w16072-tui-snapshot-target
+          INSTA_UPDATE: new
+        run: python3 .github/scripts/prepare_tui_snapshots.py
       - name: Install the repository-pinned schema generator runtime
         if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
@@ -514,6 +554,14 @@ jobs:
             ${{ runner.temp }}/source-delta.patch
             ${{ runner.temp }}/changed-paths.txt
             ${{ runner.temp }}/identity.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exact pending TUI snapshot outputs and identity
+        if: ${{ always() && inputs.preparation_profile == 'tui-snapshots' }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: sedna-tui-snapshots-prep-${{ inputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w16072-tui-snapshot-artifact
           if-no-files-found: error
           retention-days: 30
 
