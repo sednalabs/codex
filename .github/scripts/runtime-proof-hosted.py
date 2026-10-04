@@ -144,6 +144,9 @@ STANDARD_RUST_CRATES = {
 INCOMPATIBLE_RUSTC_METADATA_MESSAGE = re.compile(
     r"found crate [`']([A-Za-z0-9_-]+)[`'] compiled by an incompatible version of rustc"
 )
+INCOMPATIBLE_RUSTC_METADATA_DEPENDENCY_MESSAGE = re.compile(
+    r"found crate [`']([A-Za-z0-9_-]+)[`'] compiled by an incompatible version of rustc which [`']([A-Za-z0-9_-]+)[`'] depends on"
+)
 
 
 def refuse(message: str) -> None:
@@ -1281,6 +1284,7 @@ def verify_test_summary_parser_contract() -> None:
         "compiler_error_codes": ["E0001"],
         "compiler_metadata_cause": None,
         "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
@@ -1312,10 +1316,108 @@ def verify_test_summary_parser_contract() -> None:
         "compiler_error_codes": ["E0514"],
         "compiler_metadata_cause": "incompatible_rustc_metadata",
         "incompatible_crates": ["serde"],
+        "incompatible_dependency_roots": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
         refuse("Cargo incompatible metadata diagnostic contract failed")
+    dependency_metadata_error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "code": {"code": "E0514"},
+                "message": (
+                    "found crate `private_transitive` compiled by an incompatible version "
+                    "of rustc which `serde` depends on"
+                ),
+            },
+        }
+    )
+    dependency_metadata_failure = bounded_library_failure_summary(
+        "codex-core", f"{dependency_metadata_error}\n{build_failed}", 101, set(), {"serde"}
+    )
+    if dependency_metadata_failure != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": "incompatible_rustc_metadata",
+        "incompatible_crates": [],
+        "incompatible_dependency_roots": ["serde"],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo incompatible dependency root contract failed")
+
+    unknown_dependency_root_failure = bounded_library_failure_summary(
+        "codex-core", f"{dependency_metadata_error}\n{build_failed}", 101, set(), {"unrelated"}
+    )
+    if unknown_dependency_root_failure != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo unknown dependency root withholding contract failed")
+
+    malformed_dependency_error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {
+                "level": "error",
+                "code": {"code": "E0514"},
+                "message": (
+                    "found crate `private_transitive` compiled by an incompatible version "
+                    "of rustc which `serde` depends on extra"
+                ),
+            },
+        }
+    )
+    malformed_dependency_failure = bounded_library_failure_summary(
+        "codex-core", f"{malformed_dependency_error}\n{build_failed}", 101, set(), {"serde"}
+    )
+    if malformed_dependency_failure != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo malformed dependency metadata withholding contract failed")
+
+    preterminal_dependency_metadata_success = bounded_library_failure_summary(
+        "codex-core", f"{dependency_metadata_error}\n{build_succeeded}", 0, set(), {"serde"}
+    )
+    if preterminal_dependency_metadata_success != {
+        "classification": "build_failure_unclassified",
+        "cargo_exit_code": 0,
+        "build_finished_count": 1,
+        "build_succeeded": True,
+        "compiler_error_count": 0,
+        "compiler_error_codes": ["E0514"],
+        "compiler_metadata_cause": None,
+        "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo successful dependency metadata withholding contract failed")
     unknown_metadata_failure = bounded_library_failure_summary(
         "codex-core",
         f"{incompatible_metadata_error.replace('serde', 'not-a-direct-dependency')}\n{build_failed}",
@@ -1332,6 +1434,7 @@ def verify_test_summary_parser_contract() -> None:
         "compiler_error_codes": ["E0514"],
         "compiler_metadata_cause": None,
         "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
@@ -1353,6 +1456,7 @@ def verify_test_summary_parser_contract() -> None:
         "compiler_error_codes": ["E0514"],
         "compiler_metadata_cause": None,
         "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
@@ -1384,6 +1488,7 @@ def verify_test_summary_parser_contract() -> None:
         "compiler_error_codes": [],
         "compiler_metadata_cause": None,
         "incompatible_crates": [],
+        "incompatible_dependency_roots": [],
         "primary_source_locations": [],
         **no_run_tests,
     }:
@@ -1505,6 +1610,7 @@ def bounded_library_failure_summary(
     compiler_codes: list[str] = []
     source_locations: list[str] = []
     incompatible_crates: list[str] = []
+    incompatible_dependency_roots: list[str] = []
 
     for raw_line in output.splitlines():
         try:
@@ -1529,18 +1635,34 @@ def bounded_library_failure_summary(
                     compiler_codes.append(code_value)
                 if code_value == "E0514" and allowed_crates is not None:
                     diagnostic = message.get("message")
-                    match = (
+                    direct_match = (
                         INCOMPATIBLE_RUSTC_METADATA_MESSAGE.fullmatch(diagnostic)
                         if isinstance(diagnostic, str)
                         else None
                     )
-                    crate = match.group(1).replace("-", "_") if match else None
-                    if (
-                        crate in allowed_crates
-                        and crate not in incompatible_crates
-                        and len(incompatible_crates) < 8
-                    ):
-                        incompatible_crates.append(crate)
+                    dependency_match = (
+                        INCOMPATIBLE_RUSTC_METADATA_DEPENDENCY_MESSAGE.fullmatch(
+                            diagnostic
+                        )
+                        if isinstance(diagnostic, str)
+                        else None
+                    )
+                    if direct_match:
+                        crate = direct_match.group(1).replace("-", "_")
+                        if (
+                            crate in allowed_crates
+                            and crate not in incompatible_crates
+                            and len(incompatible_crates) < 8
+                        ):
+                            incompatible_crates.append(crate)
+                    elif dependency_match:
+                        root = dependency_match.group(2).replace("-", "_")
+                        if (
+                            root in allowed_crates
+                            and root not in incompatible_dependency_roots
+                            and len(incompatible_dependency_roots) < 8
+                        ):
+                            incompatible_dependency_roots.append(root)
             spans = message.get("spans")
             if not isinstance(spans, list):
                 spans = []
@@ -1579,6 +1701,7 @@ def bounded_library_failure_summary(
         compiler_codes = []
         source_locations = []
         incompatible_crates = []
+        incompatible_dependency_roots = []
     elif build_succeeded is False and compiler_errors:
         classification = "compiler_error"
     elif build_succeeded is False:
@@ -1589,11 +1712,12 @@ def bounded_library_failure_summary(
         classification = "build_failure_unclassified"
     if not valid_build_event or build_succeeded is not False:
         incompatible_crates = []
+        incompatible_dependency_roots = []
     metadata_cause = (
         "incompatible_rustc_metadata"
         if valid_build_event
         and build_succeeded is False
-        and incompatible_crates
+        and (incompatible_crates or incompatible_dependency_roots)
         else None
     )
     return {
@@ -1605,6 +1729,7 @@ def bounded_library_failure_summary(
         "compiler_error_codes": compiler_codes,
         "compiler_metadata_cause": metadata_cause,
         "incompatible_crates": incompatible_crates,
+        "incompatible_dependency_roots": incompatible_dependency_roots,
         "primary_source_locations": source_locations,
         "test_summary_count": 0,
         "passed": 0,
