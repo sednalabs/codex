@@ -114,7 +114,7 @@
     "codex-rs/rmcp-client/src/rmcp_client.rs": "f3afd3eeb45ef7e6d2f4fe687075e1c607e083d20e7397689392b006476a3c8d",
     "codex-rs/runtime-proof/BUILD.bazel": "a8aa3021d543117a8e3a27cfac1f5d6cfdddcca6c286a6dc94eb38b8ca12ab2e",
     "codex-rs/runtime-proof/Cargo.toml": "b995a0afe2a5d0d27c86d129812d3c6247ec920142c37f98be91deb8a0f73a40",
-    "codex-rs/runtime-proof/src/auth.rs": "e0a92c459df8e3ae797c9c515c32608289a2c5595f00669b9b5162e80aa81467",
+    "codex-rs/runtime-proof/src/auth.rs": "a377a1698505fa8b43291a32d9d080fdbd86579c09060c0e4603cb174d917f42",
     "codex-rs/runtime-proof/src/auth_tests.rs": "3e46f1adce7596ea3d36c630d43956eba63ecc6266f53a93dd6669e51ad62f26",
     "codex-rs/runtime-proof/src/lib.rs": "c2dac0631fba505730e7c43e100c8892e08ce1ce7f18b5d72e2d07b25ae76c0e",
     "codex-rs/runtime-proof/src/provider_auth.rs": "2ca858819252fc8e62b71178e18ee00cb3418a07630b892f2c01648906a22bd4",
@@ -128,7 +128,7 @@
     "docs/divergences/index.yaml": "93c8e174e5d89262d558efe601869b21d4cd91940b47af06a605512eaf96b049",
     "docs/downstream-regression-matrix.md": "8669997a20a309b5e07e661fc5d8ad47a55c340b2c75cf642af4e748e78ac6da"
   },
-  "product_source_commit": "e6599585474a46b322d8e9a1a70d958724c4bc6e",
+  "product_source_commit": "64b2e4deae90182d39b7f56b4670eb91f1f9064e",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
