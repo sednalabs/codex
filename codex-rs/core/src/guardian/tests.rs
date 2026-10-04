@@ -3134,9 +3134,14 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
         &server,
         vec![
             sse_failed(
-                "resp-session-failure",
-                "server_is_overloaded",
-                "temporary reviewer overload",
+                "resp-session-failure-1",
+                "rate_limit_exceeded",
+                "temporary reviewer rate limit",
+            ),
+            sse_failed(
+                "resp-session-failure-2",
+                "rate_limit_exceeded",
+                "temporary reviewer rate limit",
             ),
             sse(vec![
                 ev_response_created("resp-approved"),
@@ -3146,7 +3151,24 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
         ],
     )
     .await;
-    let (session, turn) = guardian_test_session_and_turn(&server).await;
+    let (mut session, mut turn) = crate::session::tests::make_session_and_context().await;
+    session.thread_id = fixed_guardian_parent_session_id();
+    let mut config = (*turn.config).clone();
+    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // Guardian permits one inner stream retry; keep the exhausted error on HTTP so it
+    // reaches the outer review-attempt retry instead of switching transport.
+    config.model_provider.supports_websockets = false;
+    let config = Arc::new(config);
+    let models_manager = test_support::models_manager_with_provider(
+        config.codex_home.to_path_buf(),
+        Arc::clone(&session.services.auth_manager),
+        config.model_provider.clone(),
+    );
+    session.services.models_manager = models_manager;
+    crate::guardian::test_host::install(&session, &config);
+    turn.config = Arc::clone(&config);
+    turn.provider = create_model_provider(config.model_provider.clone(), turn.auth_manager.clone());
+    let (session, turn) = (Arc::new(session), Arc::new(turn));
     seed_guardian_parent_history(&session, &turn).await;
 
     let (outcome, metadata) = run_guardian_review_session_for_test(
@@ -3169,7 +3191,7 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
         metadata.guardian_session_kind,
         Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
     ));
-    assert_eq!(request_log.requests().len(), 2);
+    assert_eq!(request_log.requests().len(), 3);
     Ok(())
 }
 
