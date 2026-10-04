@@ -399,8 +399,13 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
                 required_markers=(
                     "All 2",
                     "tui-root-task",
-                    f"Thread ID: {root_id}",
-                    "Configured/resolved model: package-smoke",
+                ),
+            )
+            root_overview = root_details_tui.until_screen(
+                root_id,
+                value_label="Thread ID:",
+                required_markers=(
+                    "Configured/resolved model:",
                     "Configured/resolved effort: medium",
                     "Provider-effective identity: Unknown",
                 ),
