@@ -3,6 +3,8 @@ use std::sync::Once;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
+pub mod control_plane;
+
 static GAUGES: Mutex<Vec<&'static Gauge>> = Mutex::new(Vec::new());
 
 /// A process-wide gauge that registers itself the first time it is used.
@@ -208,3 +210,7 @@ fn empty_process_snapshot() -> ProcessSnapshot {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "control_plane_tests.rs"]
+mod control_plane_tests;
