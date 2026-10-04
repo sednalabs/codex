@@ -107,10 +107,13 @@ pub async fn handle_android_computer_use_for_codex_home(
     let request_timeout = request_timeout_for_tool(&params.tool);
     let response = match timeout(request_timeout, handle_with_config(params, config)).await {
         Ok(Ok(response)) => response,
-        Ok(Err(err)) => failed_response(err),
-        Err(_) => failed_response(format!(
-            "Android computer-use provider timed out after {} seconds.",
-            request_timeout.as_secs()
+        Ok(Err(err)) => failed_response(tool_failure_message(&params.tool, &err)),
+        Err(_) => failed_response(tool_failure_message(
+            &params.tool,
+            &format!(
+                "Android computer-use provider timed out after {} seconds.",
+                request_timeout.as_secs()
+            ),
         )),
     };
     AndroidComputerUseOutcome::Handled(response)
@@ -1408,34 +1411,24 @@ fn parse_event_stream_json(text: &str) -> Result<Value, String> {
 }
 
 fn failed_response(error: String) -> DynamicToolCallResponse {
-    let retryability = provider_unavailable_retryability(&error);
-    let text = match retryability {
-        Some(retryability) => {
-            format!("Android provider unavailable\nretryability: {retryability}\nreason: {error}")
-        }
-        None => error.clone(),
-    };
     DynamicToolCallResponse {
-        content_items: vec![DynamicToolCallOutputContentItem::InputText { text }],
+        content_items: vec![DynamicToolCallOutputContentItem::InputText { text: error }],
         success: false,
     }
 }
 
-fn provider_unavailable_retryability(error: &str) -> Option<&'static str> {
-    let normalized = error.to_ascii_lowercase();
-    if normalized.contains("android provider http 530")
-        || normalized.contains("error code: 1033")
-        || normalized.contains("cloudflare tunnel")
-        || normalized.contains("tunnel error")
-        || normalized.contains("failed to reach android provider")
-        || normalized.contains("connection refused")
-        || normalized.contains("connection reset")
-        || normalized.contains("timed out")
-        || normalized.contains("temporary failure")
-    {
-        Some("retry_same_request")
-    } else {
-        None
+fn tool_failure_message(tool: &str, error: &str) -> String {
+    match tool {
+        ANDROID_OBSERVE_TOOL_NAME => format!(
+            "{error}\nThe failed operation was read-only; a fresh android_observe may be requested."
+        ),
+        ANDROID_STEP_TOOL_NAME => format!(
+            "{error}\nExecution state is uncertain. Do not replay android_step solely because of this failure; recover current state with android_observe before choosing a new action."
+        ),
+        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME => format!(
+            "{error}\nInstall execution state is uncertain. Do not replay android_install_build_from_run solely because of this failure; recover current state with android_observe before choosing a new action."
+        ),
+        _ => error.to_string(),
     }
 }
 
@@ -1840,12 +1833,25 @@ mod tests {
 
         let tools = configured_android_dynamic_tools_for_codex_home(codex_home.path());
 
+        assert_eq!(tools.len(), 1);
+        let DynamicToolSpec::Namespace(namespace) = &tools[0] else {
+            panic!("configured Android tools should use one namespace spec");
+        };
+        assert_eq!(namespace.name, NAMESPACE);
+        assert_eq!(namespace.tools.len(), 3);
+        let tool_names = namespace
+            .tools
+            .iter()
+            .map(|tool| match tool {
+                DynamicToolNamespaceTool::Function(function) => function.name.as_str(),
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
+            tool_names,
             vec![
-                ANDROID_OBSERVE_TOOL_NAME.to_string(),
-                ANDROID_STEP_TOOL_NAME.to_string(),
-                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME.to_string(),
+                ANDROID_OBSERVE_TOOL_NAME,
+                ANDROID_STEP_TOOL_NAME,
+                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
             ]
         );
     }
@@ -2226,16 +2232,47 @@ mod tests {
     }
 
     #[test]
-    fn failed_response_classifies_transient_provider_unavailability() {
-        let response = failed_response("Android provider HTTP 530: error code: 1033".to_string());
+    fn mutation_transport_failures_never_recommend_replaying_uncertain_requests() {
+        for (tool, expected) in [
+            (ANDROID_STEP_TOOL_NAME, "Do not replay android_step"),
+            (
+                ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
+                "Do not replay android_install_build_from_run",
+            ),
+        ] {
+            let response = failed_response(tool_failure_message(
+                tool,
+                "Android provider connection reset",
+            ));
 
-        assert!(!response.success);
+            assert!(!response.success);
+            let DynamicToolCallOutputContentItem::InputText { text } = &response.content_items[0]
+            else {
+                panic!("expected text response");
+            };
+            assert!(
+                text.contains("Execution state is uncertain")
+                    || text.contains("Install execution state is uncertain")
+            );
+            assert!(text.contains(expected));
+            assert!(!text.contains("retry_same_request"));
+        }
+    }
+
+    #[test]
+    fn observation_transport_failure_is_explicitly_read_only() {
+        let response = failed_response(tool_failure_message(
+            ANDROID_OBSERVE_TOOL_NAME,
+            "Android provider connection reset",
+        ));
+
         let DynamicToolCallOutputContentItem::InputText { text } = &response.content_items[0]
         else {
             panic!("expected text response");
         };
-        assert!(text.contains("Android provider unavailable"));
-        assert!(text.contains("retryability: retry_same_request"));
+        assert!(text.contains("read-only"));
+        assert!(text.contains("fresh android_observe"));
+        assert!(!text.contains("retry_same_request"));
     }
 
     #[test]
