@@ -178,7 +178,7 @@ async fn bridge_locked(
     validate_receipts(connection, migrator, &identities).await?;
     let deployed_thread_source = column_exists(connection, "threads", "thread_source").await?;
     validate_prefixes(&identities, deployed_thread_source)?;
-    validate_schema(connection, &identities).await?;
+    validate_schema(connection, &identities, migrator).await?;
 
     // All ledger and schema checks above are read-only. Mutations below are
     // one SQLite transaction; SQLx sees only canonical checksums on return.
@@ -414,49 +414,51 @@ async fn index_exists(connection: &mut SqliteConnection, name: &str) -> anyhow::
     .await?)
 }
 
-async fn index_matches(
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.chars()
+        .filter(|character| {
+            !character.is_whitespace()
+                && *character != '"'
+                && *character != '`'
+                && *character != ';'
+        })
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+async fn migration_schema_object_matches(
     connection: &mut SqliteConnection,
-    name: &str,
-    table: &str,
-    columns: &[&str],
-    sql_fragment: &str,
+    migration_sql: &str,
+    object_type: &str,
+    object_name: &str,
 ) -> anyhow::Result<bool> {
-    let Some(row) =
-        sqlx::query("SELECT tbl_name, sql FROM sqlite_schema WHERE type = 'index' AND name = ?")
-            .bind(name)
-            .fetch_optional(&mut *connection)
-            .await?
-    else {
+    let expected = migration_sql
+        .split(';')
+        .map(str::trim)
+        .find(|statement| {
+            let normalized = normalize_schema_sql(statement);
+            normalized.starts_with(&format!("create{object_type}{object_name}"))
+        });
+    let Some(expected) = expected else {
         return Ok(false);
     };
-    let index_table: String = row.try_get("tbl_name")?;
-    let definition: Option<String> = row.try_get("sql")?;
-    if index_table != table {
-        return Ok(false);
-    }
-    let index_columns: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
-            .bind(name)
-            .fetch_all(&mut *connection)
-            .await?;
-    let expected_columns = columns
-        .iter()
-        .map(|column| (*column).to_string())
-        .collect::<Vec<_>>();
-    let Some(definition) = definition else {
+    let actual = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sql FROM sqlite_schema WHERE type = ? AND name = ?",
+    )
+    .bind(object_type)
+    .bind(object_name)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some(Some(actual)) = actual else {
         return Ok(false);
     };
-    let normalized = definition
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    Ok(index_columns == expected_columns && normalized.contains(sql_fragment))
+    Ok(normalize_schema_sql(&actual) == normalize_schema_sql(expected))
 }
 
 async fn validate_schema(
     connection: &mut SqliteConnection,
     rows: &[RowIdentity],
+    migrator: &Migrator,
 ) -> anyhow::Result<()> {
     let applied = rows.iter().map(|row| row.target).collect::<BTreeSet<_>>();
     if applied == BTreeSet::from([FORK_9001, FORK_9002])
@@ -477,25 +479,20 @@ async fn validate_schema(
         table_exists(connection, "agent_mailbox").await?,
         table_exists(connection, "agent_mailbox_supersessions").await?,
     ];
+    let mailbox_migration_sql = &embedded(migrator, FORK_9004)?.sql;
     let mailbox_index_presence = [
-        index_matches(
+        migration_schema_object_matches(
             connection,
+            mailbox_migration_sql,
+            "index",
             "idx_agent_mailbox_recipient_pending_sequence",
-            "agent_mailbox",
-            &[
-                "recipient_instance_id",
-                "recipient_task_generation",
-                "enqueue_sequence",
-            ],
-            "where context_committed_at_ms is null and delivered_at_ms is null",
         )
         .await?,
-        index_matches(
+        migration_schema_object_matches(
             connection,
+            mailbox_migration_sql,
+            "index",
             "idx_agent_mailbox_reply_to",
-            "agent_mailbox",
-            &["reply_to"],
-            "where reply_to is not null",
         )
         .await?,
     ];
@@ -540,6 +537,23 @@ async fn validate_schema(
             if !column_exists(connection, "agent_mailbox_supersessions", column).await? {
                 anyhow::bail!("mailbox supersession table is missing required column {column}");
             }
+        }
+        let mailbox_constraints = migration_schema_object_matches(
+            connection,
+            mailbox_migration_sql,
+            "table",
+            "agent_mailbox",
+        )
+        .await?;
+        let supersession_constraints = migration_schema_object_matches(
+            connection,
+            mailbox_migration_sql,
+            "table",
+            "agent_mailbox_supersessions",
+        )
+        .await?;
+        if !mailbox_constraints || !supersession_constraints {
+            anyhow::bail!("mailbox table constraints disagree with the mailbox migration");
         }
     }
     let configured_provenance =

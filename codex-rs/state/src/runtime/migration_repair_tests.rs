@@ -131,6 +131,94 @@ async fn schema(pool: &SqlitePool) -> Vec<(String, String, Option<String>)> {
         .collect()
 }
 
+async fn install_same_column_mailbox_schema_with_constraint_defect(
+    pool: &SqlitePool,
+    defect: &str,
+) {
+    let definitions = sqlx::query(
+        "SELECT type, name, sql FROM sqlite_schema
+         WHERE name IN (
+             'agent_mailbox', 'agent_mailbox_supersessions',
+             'idx_agent_mailbox_recipient_pending_sequence', 'idx_agent_mailbox_reply_to'
+         ) ORDER BY type, name",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("mailbox schema definitions");
+    let mut tables = Vec::new();
+    let mut indexes = Vec::new();
+    for row in definitions {
+        let kind: String = row.get("type");
+        let name: String = row.get("name");
+        let sql: String = row.get("sql");
+        match kind.as_str() {
+            "table" => tables.push((name, sql)),
+            "index" => indexes.push(sql),
+            _ => unreachable!("only mailbox tables and indexes were selected"),
+        }
+    }
+    let tables = tables
+        .into_iter()
+        .map(|(name, mut sql)| {
+            match (defect, name.as_str()) {
+                ("missing_message_primary_key", "agent_mailbox") => {
+                    sql = sql.replace(
+                        "message_id TEXT PRIMARY KEY NOT NULL",
+                        "message_id TEXT NOT NULL",
+                    );
+                }
+                ("missing_intent_check", "agent_mailbox") => {
+                    sql = sql.replace(
+                        "CHECK (intent IN ('progress', 'action_required', 'result_ready', 'acknowledgement'))",
+                        "CHECK (intent <> '')",
+                    );
+                }
+                ("missing_idempotency_unique", "agent_mailbox") => {
+                    sql = sql.replace(
+                        "UNIQUE (sender_instance_id, sender_task_generation, recipient_instance_id, recipient_task_generation, idempotency_key),",
+                        "",
+                    );
+                }
+                ("missing_acknowledgement_check", "agent_mailbox") => {
+                    sql = sql.replace(
+                        "CHECK ((acknowledged_at_ms IS NULL) = (acknowledgement_message_id IS NULL))",
+                        "CHECK (acknowledged_at_ms IS NULL OR acknowledgement_message_id IS NOT NULL)",
+                    );
+                }
+                ("missing_supersession_foreign_keys", "agent_mailbox_supersessions") => {
+                    sql = sql.replace(" REFERENCES agent_mailbox(message_id)", "");
+                }
+                ("missing_supersession_no_self_check", "agent_mailbox_supersessions") => {
+                    sql = sql.replace(
+                        "CHECK (covered_message_id <> covering_message_id)",
+                        "CHECK (created_at_ms >= 0)",
+                    );
+                }
+                _ => {}
+            }
+            (name, sql)
+        })
+        .collect::<Vec<_>>();
+    for (name, _) in &tables {
+        sqlx::query(&format!("DROP TABLE {name}"))
+            .execute(pool)
+            .await
+            .expect("drop original mailbox table");
+    }
+    for (_, sql) in tables {
+        sqlx::raw_sql(&sql)
+            .execute(pool)
+            .await
+            .expect("install altered same-column mailbox table");
+    }
+    for sql in indexes {
+        sqlx::raw_sql(&sql)
+            .execute(pool)
+            .await
+            .expect("restore mailbox indexes");
+    }
+}
+
 async fn assert_all_applied(pool: &SqlitePool) {
     for migration in STATE_MIGRATOR.iter() {
         let row = sqlx::query(
@@ -339,6 +427,33 @@ async fn recorded_mailbox_migration_with_missing_index_rejects_without_bridge_wr
     assert_eq!(before_ledger, ledger(&pool).await);
     assert_eq!(before_schema, schema(&pool).await);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn recorded_mailbox_migration_with_same_column_wrong_constraints_rejects() {
+    for defect in [
+        "missing_message_primary_key",
+        "missing_intent_check",
+        "missing_idempotency_unique",
+        "missing_acknowledgement_check",
+        "missing_supersession_foreign_keys",
+        "missing_supersession_no_self_check",
+    ] {
+        let (_sqlite, pool) = fixture().await;
+        STATE_MIGRATOR
+            .run(&pool)
+            .await
+            .expect("complete synthetic state migrations");
+        install_same_column_mailbox_schema_with_constraint_defect(&pool, defect).await;
+        let before_ledger = ledger(&pool).await;
+        let before_schema = schema(&pool).await;
+        bridge_state_migrations(&pool, &STATE_MIGRATOR)
+            .await
+            .expect_err("same-column schema with wrong constraints must reject");
+        assert_eq!(before_ledger, ledger(&pool).await, "{defect}");
+        assert_eq!(before_schema, schema(&pool).await, "{defect}");
+        pool.close().await;
+    }
 }
 
 #[tokio::test]
