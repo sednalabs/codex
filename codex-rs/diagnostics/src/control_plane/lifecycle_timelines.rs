@@ -252,6 +252,33 @@ fn project_waits(
             phase_readiness(&rows, /*selected*/ false, &wait);
         let (selected_readiness, selected_complete, selected_conflict) =
             phase_readiness(&rows, /*selected*/ true, &wait);
+        // The native target-status branch uses wakes_wait, not the raw status
+        // or the spelling of TargetTerminal: actionable readiness wakes too.
+        // Unknown/partial cohorts cannot establish a contradiction or a winner.
+        let native_target_selection = matches!(source, SourcePlane::RustCollab | SourcePlane::AppServer)
+            && rows.iter().all(|row| row.input.quality == ObservationQuality::Owned)
+            && wait.primitive == WaitPrimitive::V2Wait
+            && matches!(selected_facts.selected_outcome,
+                SelectedOutcome::TargetTerminal | SelectedOutcome::TargetActionRequired);
+        let native_selection_complete = if native_target_selection {
+            let waking_targets = selected_readiness.iter().filter(|row|
+                matches!(row.state, Readiness::Terminal | Readiness::ActionRequired)).count();
+            let rule_satisfied = match wait.return_when {
+                ReturnWhen::Any => Some(waking_targets > 0),
+                ReturnWhen::All => Some(!selected_readiness.is_empty() && waking_targets == selected_readiness.len()),
+                ReturnWhen::Unknown => None,
+            };
+            let outcome_supported = selected_facts.selected_outcome != SelectedOutcome::TargetActionRequired
+                || selected_readiness.iter().any(|row| row.state == Readiness::ActionRequired);
+            let selected_target_consistent = selected_facts.selected_target_id.as_ref().is_none_or(|id|
+                selected_readiness.iter().find(|row| row.target.as_ref().is_some_and(|target| &target.id == id))
+                    .is_some_and(|row| matches!(row.state, Readiness::Terminal | Readiness::ActionRequired)
+                        && selected_facts.selected_target_turn_id.as_ref().is_none_or(|turn|
+                            row.target_turn_id.as_ref().is_none_or(|observed| observed == turn))));
+            conflicting |= selected_complete
+                && (rule_satisfied == Some(false) || !outcome_supported || !selected_target_consistent);
+            selected_complete && rule_satisfied == Some(true) && outcome_supported && selected_target_consistent
+        } else { true };
         let observed_host_return = selected_facts.observed_host_return.clone();
         let blocked_values = rows.iter().filter_map(|row| row.input.wait.as_ref())
             .filter_map(|observation| observation.blocked_duration_ns).collect::<BTreeSet<_>>();
@@ -295,7 +322,7 @@ fn project_waits(
         if targets_truncated {
             coverage.push(CoverageMark { field: CoverageField::TargetSet, unknown: Some(UnknownReason::Truncated) });
         }
-        let cohorts_complete = subscribed_complete && selected_complete
+        let cohorts_complete = subscribed_complete && selected_complete && native_selection_complete
             && observed_host_return.as_ref().is_none_or(|result| result.complete);
         let complete = !conflicting && !terminal.is_empty() && rows.iter().all(|row| !row.truncated)
             && outcome != SelectedOutcome::Unknown && producer_gap.is_none()

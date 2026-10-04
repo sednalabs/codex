@@ -427,3 +427,221 @@ fn partial_contradictory_or_uncovered_host_returns_never_become_complete_native_
         }
     }
 }
+
+fn native_event(
+    kind: codex_diagnostics::control_plane::EventKind,
+    operation: &str,
+    turn: &str,
+) -> codex_diagnostics::control_plane::EventInput {
+    use codex_diagnostics::control_plane::{EventInput, ObservationQuality, SourcePlane};
+    EventInput {
+        source_plane: SourcePlane::RustCollab, producer_boundary: "synthetic-native-control".into(),
+        producer_version: None, kind, quality: ObservationQuality::Owned,
+        wall_correlation: std::time::SystemTime::UNIX_EPOCH, monotonic_offset_ns: Some(0),
+        operation_id: Some(operation.into()), thread_id: Some("thread".into()), turn_id: Some(turn.into()),
+        root_thread_id: None, parent_thread_id: None, fork_parent_thread_id: None,
+        window_id: None, window_number: None, previous_window_id: None,
+        wait: None, sleep: None, readiness: None, status_query: None, queue: None,
+        field_coverage: vec![], message: None, scheduler: None, external_operation: None, provider_call: None,
+    }
+}
+
+#[test]
+fn native_any_all_target_selection_exports_whole_consistent_or_quarantined_summary() {
+    use codex_diagnostics::control_plane::*;
+    // Synthetic typed emission through the real recorder/reducer and the exact
+    // summary projection used by the debug command; not actual Session hooks.
+    for (policy, outcome, states, supplied_complete, conflicting, complete, selection) in [
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::Terminal], true, false, true, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::ActionRequired], true, false, true, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetActionRequired, [Readiness::ActionRequired, Readiness::GoalContinuing], true, false, true, None),
+        (ReturnWhen::All, SelectedOutcome::TargetTerminal, [Readiness::Terminal, Readiness::ActionRequired], true, false, true, None),
+        (ReturnWhen::All, SelectedOutcome::TargetActionRequired, [Readiness::ActionRequired, Readiness::ActionRequired], true, false, true, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::GoalContinuing], true, true, false, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetActionRequired, [Readiness::Pending, Readiness::Pending], true, true, false, None),
+        (ReturnWhen::All, SelectedOutcome::TargetTerminal, [Readiness::Terminal, Readiness::Pending], true, true, false, None),
+        (ReturnWhen::All, SelectedOutcome::TargetActionRequired, [Readiness::ActionRequired, Readiness::GoalContinuing], true, true, false, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetActionRequired, [Readiness::Terminal, Readiness::Terminal], true, true, false, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Unknown, Readiness::Pending], true, false, false, None),
+        (ReturnWhen::All, SelectedOutcome::TargetTerminal, [Readiness::Terminal, Readiness::Pending], false, false, false, None),
+        (ReturnWhen::Unknown, SelectedOutcome::TargetTerminal, [Readiness::Terminal, Readiness::Pending], true, false, false, None),
+        (ReturnWhen::Any, SelectedOutcome::Timeout, [Readiness::Terminal, Readiness::ActionRequired], true, false, true, None),
+        (ReturnWhen::All, SelectedOutcome::Timeout, [Readiness::Pending, Readiness::GoalContinuing], true, false, true, None),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::ActionRequired], true, false, true, Some(("thread-b", "target-turn", "target-turn"))),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::Terminal], true, true, false, Some(("thread-a", "target-turn", "target-turn"))),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::Terminal], true, true, false, Some(("uncovered", "target-turn", "target-turn"))),
+        (ReturnWhen::Any, SelectedOutcome::TargetTerminal, [Readiness::Pending, Readiness::ActionRequired], true, true, false, Some(("thread-b", "target-turn", "other-turn"))),
+    ] {
+        let recorder = ControlPlaneRecorder::new(CaptureMode::Session, "native-control").unwrap();
+        let readiness = |states: [Readiness; 2]| ["thread-a", "thread-b"].into_iter().zip(states)
+            .map(|(id, state)| ReadinessObservation {
+                target: Some(TargetReference { id: id.into(), kind: TargetReferenceKind::ThreadId }),
+                state, target_turn_id: None,
+            }).collect::<Vec<_>>();
+        for operation in ["wait-a", "wait-b"] {
+            let mut input = native_event(EventKind::WaitCompleted, operation, "turn");
+            let mut selected_readiness = readiness(states);
+            for row in &mut selected_readiness { row.target_turn_id = selection.map(|(_, turn, _)| turn.into()); }
+            input.wait = Some(WaitObservation {
+                wait_id: operation.into(), phase: WaitPhase::Completed, primitive: WaitPrimitive::V2Wait,
+                return_when: policy, helper_id: Some("wait_agent".into()), helper_version: None,
+                requested_timeout_ms: None, effective_timeout_ms: Some(30_000),
+                target_mode: TargetMode::Targeted, any_targets: None,
+                target_ids: vec!["thread-a".into(), "thread-b".into()], target_set_complete: true,
+                resolved_target_kind: TargetReferenceKind::ThreadId,
+                requested_target_ids: vec!["agent/a".into(), "agent/b".into()],
+                requested_target_kind: TargetReferenceKind::ExposedAgentPath,
+                requested_target_set_complete: true, resolved_target_set_complete: Some(true),
+                subscribed_readiness: readiness([Readiness::Pending, Readiness::Pending]),
+                subscribed_readiness_complete: true, selected_readiness,
+                selected_readiness_complete: supplied_complete,
+                blocked_start_offset_ns: Some(10), blocked_end_offset_ns: Some(20),
+                operation_duration_ns: Some(12), blocked_duration_ns: Some(10),
+                selected_outcome: outcome, selected_producer: None, selected_target_id: selection.map(|(id, _, _)| id.into()),
+                selected_target_turn_id: selection.map(|(_, _, turn)| turn.into()), continuation_of_wait_id: None,
+                request_fingerprint: None, result_fingerprint: None, observed_host_return: None,
+            });
+            recorder.record(input).unwrap();
+        }
+        let reduced = Summary::reduce_snapshot(&recorder.snapshot().unwrap());
+        let actual = summary::project(&reduced);
+        let mut expected = expected_empty_export(0)["data"].clone();
+        expected["eventCount"] = 2.into(); expected["unknownRootEvents"] = 2.into();
+        expected["conflictingWaitCount"] = if conflicting { 2.into() } else { 0.into() };
+        expected["repeatedWaitGroups"] = if complete && policy != ReturnWhen::Unknown { 1.into() } else { 0.into() };
+        let outcome_label = if conflicting { "Unknown".into() } else { format!("{outcome:?}") };
+        expected["waitsByOutcome"][outcome_label.as_str()] = 2.into();
+        let mut expected_waits = Vec::new();
+        for (index, operation) in ["wait-a", "wait-b"].into_iter().enumerate() {
+            let selected_known = supplied_complete && !states.contains(&Readiness::Unknown);
+            let selected_rows = ["thread-a", "thread-b"].into_iter().zip(states).map(|(id, state)|
+                serde_json::json!({"target": {"id": id, "kind": "ThreadId"}, "state": format!("{state:?}"),
+                    "targetTurnId": selection.map(|(_, turn, _)| turn)}))
+                .collect::<Vec<_>>();
+            let mut row = serde_json::json!({
+                "sourceEvents": [{"captureInstanceId": "native-control", "sequence": index + 1}],
+                "captureInstanceId": "native-control", "sourcePlane": "RustCollab", "threadId": "thread", "turnId": "turn",
+                "rootThreadId": null, "parentThreadId": null, "forkParentThreadId": null,
+                "windowId": null, "windowNumber": null, "previousWindowId": null,
+                "wallCorrelation": {"secondsSinceEpoch": 0, "subsecondNanos": 0},
+                "operationId": operation, "waitId": operation, "phase": "Completed", "primitive": "V2Wait",
+                "helperId": "wait_agent", "helperVersion": null, "requestedTimeoutMs": null, "effectiveTimeoutMs": 30000,
+                "returnWhen": format!("{policy:?}"), "targetMode": "Targeted", "anyTargets": null,
+                "requestedTargetReferences": ["agent/a", "agent/b"], "requestedTargetKind": "ExposedAgentPath",
+                "requestedTargetSetComplete": true, "resolvedTargetIds": ["thread-a", "thread-b"],
+                "resolvedTargetKind": "ThreadId", "resolvedTargetSetComplete": true,
+                "blockedStartOffsetNs": 10, "blockedEndOffsetNs": 20, "operationDurationNs": 12, "blockedDurationNs": 10,
+                "selectedOutcome": outcome_label, "selectedProducer": null, "selectedTargetId": selection.map(|(id, _, _)| id),
+                "selectedTargetTurnId": selection.map(|(_, _, turn)| turn), "continuationOfWaitId": null,
+                "subscribedReadiness": [
+                    {"target": {"id": "thread-a", "kind": "ThreadId"}, "state": "Pending", "targetTurnId": null},
+                    {"target": {"id": "thread-b", "kind": "ThreadId"}, "state": "Pending", "targetTurnId": null}],
+                "subscribedReadinessComplete": true, "selectedReadiness": selected_rows,
+                "selectedReadinessComplete": selected_known, "observedHostReturn": null,
+                "coverage": [{"field": "SelectedProducer", "unknown": "NotExposed"}],
+                "complete": complete, "conflicting": conflicting,
+            });
+            if conflicting {
+                for field in ["operationId", "helperId", "effectiveTimeoutMs", "resolvedTargetSetComplete",
+                    "blockedStartOffsetNs", "blockedEndOffsetNs", "operationDurationNs", "blockedDurationNs",
+                    "selectedTargetId", "selectedTargetTurnId"] {
+                    row[field] = serde_json::Value::Null;
+                }
+                for field in ["phase", "primitive", "returnWhen", "targetMode", "requestedTargetKind", "resolvedTargetKind"] {
+                    row[field] = "Unknown".into();
+                }
+                for field in ["requestedTargetReferences", "resolvedTargetIds", "subscribedReadiness", "selectedReadiness"] {
+                    row[field] = serde_json::json!([]);
+                }
+                for field in ["requestedTargetSetComplete", "subscribedReadinessComplete", "selectedReadinessComplete"] {
+                    row[field] = false.into();
+                }
+                row["coverage"] = serde_json::json!([{"field": "SelectedProducer", "unknown": "Ambiguous"}]);
+            }
+            expected_waits.push(row);
+        }
+        expected["waitTimelines"] = expected_waits.into();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn status_call_reconciliation_exports_whole_conflict_replay_incomplete_and_cross_turn_summary() {
+    use codex_diagnostics::control_plane::*;
+    for (rows, replay_identity, repeated) in [
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-1", "agent", "completed", true), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-1", "other", "running", true), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-1", "agent", "running", false), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "running", false), ("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "missing-result", false), ("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "missing-request", "running", true), ("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true)], false, 1),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true)], true, 1),
+        (vec![("turn-a", "same-operation-text", "agent", "running", true), ("turn-b", "same-operation-text", "agent", "running", true)], false, 1),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-1", "agent", "running", true)], false, 0),
+        (vec![("turn", "op-1", "agent", "running", true), ("turn", "op-2", "agent", "running", true), ("turn", "op-3", "agent", "running", false)], false, 1),
+    ] {
+        let recorder = ControlPlaneRecorder::new(CaptureMode::Session, "native-control").unwrap();
+        let count = rows.len();
+        for (turn, operation, prefix, status, complete) in rows {
+            let mut input = native_event(EventKind::StatusQueryObserved, operation, turn);
+            input.status_query = Some(StatusQueryObservation {
+                request_fingerprint: None, result_fingerprint: None, readiness: None,
+                request_projection: Some(StatusRequestProjection {
+                    path_prefix: Some(prefix.into()), requested_agent_ids: vec![], complete: true }),
+                result_projection: Some(StatusResultProjection {
+                    observed_actor_count: Some(1), actors: vec![StatusActorProjection {
+                        agent_id: "actor".into(), canonical_path: "agent/path".into(), configured_model: None,
+                        configured_reasoning_effort: None, raw_status_tag: Some(status.into()),
+                    }], complete,
+                }),
+            });
+            if prefix == "missing-request" { input.status_query.as_mut().unwrap().request_projection = None; }
+            if status == "missing-result" { input.status_query.as_mut().unwrap().result_projection = None; }
+            recorder.record(input).unwrap();
+        }
+        let mut snapshot = recorder.snapshot().unwrap();
+        if replay_identity { snapshot.events.push(snapshot.events[0].clone()); }
+        let actual = summary::project(&Summary::reduce_snapshot(&snapshot));
+        let mut expected = expected_empty_export(0)["data"].clone();
+        expected["eventCount"] = count.into(); expected["unknownRootEvents"] = count.into();
+        expected["duplicateCount"] = usize::from(replay_identity).into();
+        expected["repeatedStatusQueryGroups"] = repeated.into();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[tokio::test]
+async fn actual_debug_status_command_exports_whole_replay_and_conflicting_call_controls() {
+    let pair = rollout_pair("list_agents", serde_json::json!({"path_prefix": "agent"}),
+        serde_json::json!({"agents": [{"agent_id": "actor", "canonical_path": "agent/path", "agent_status": "completed"}]}));
+    let second = pair.replace("selected-call", "z-second-call");
+    let directory = tempfile::tempdir().unwrap(); let path = directory.path().join("selected.jsonl");
+    for mode in 0..3 {
+        let input = match mode {
+            0 => format!("{pair}\n{second}"),
+            1 => format!("{pair}\n{pair}\n{second}"),
+            2 => format!("{pair}\n{}\n{second}", pair.lines().nth(1).unwrap().replace("completed", "running")),
+            _ => unreachable!(),
+        };
+        std::fs::write(&path, &input).unwrap();
+        let actual = super::execute(command_for(&path, input.len(), /*usage*/ None)).await.unwrap();
+        let mut expected = expected_empty_export(input.len());
+        let calls = if mode == 2 { vec!["z-second-call"] } else { vec!["selected-call", "z-second-call"] };
+        expected["recorder"]["highWater"] = calls.len().into();
+        expected["data"]["eventCount"] = calls.len().into(); expected["data"]["unknownRootEvents"] = calls.len().into();
+        expected["data"]["repeatedStatusQueryGroups"] = if mode == 2 { 0.into() } else { 1.into() };
+        expected["coverage"]["parsedEvents"] = calls.len().into();
+        expected["coverage"]["duplicateRecords"] = match mode { 0 => 0.into(), 1 => 2.into(), 2 => 1.into(), _ => unreachable!() };
+        expected["coverage"]["conflictingPairs"] = if mode == 2 { 1.into() } else { 0.into() };
+        let mut events = Vec::new(); let mut queues = Vec::new(); let mut durations = Vec::new();
+        for (index, call) in calls.into_iter().enumerate() {
+            let mut event = expected_status_export(input.len())["events"][0].clone();
+            event["callId"] = call.into(); events.push(event);
+            let (queue, duration) = expected_external_rows(call, index + 1); queues.push(queue); durations.push(duration);
+        }
+        expected["events"] = events.into(); expected["data"]["queueTimelines"] = queues.into();
+        expected["data"]["externalDurations"] = durations.into();
+        assert_eq!(actual, expected);
+    }
+}

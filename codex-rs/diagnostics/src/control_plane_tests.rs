@@ -60,7 +60,11 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         subscribed_readiness_complete: true,
         selected_readiness: vec![ReadinessObservation {
             target: Some(TargetReference { id: "resolved-thread".into(), kind: TargetReferenceKind::ThreadId }),
-            state: Readiness::Pending, target_turn_id: None,
+            state: match outcome {
+                SelectedOutcome::TargetTerminal => Readiness::Terminal,
+                SelectedOutcome::TargetActionRequired => Readiness::ActionRequired,
+                _ => Readiness::Pending,
+            }, target_turn_id: None,
         }],
         selected_readiness_complete: true,
         blocked_start_offset_ns: Some(10),

@@ -354,8 +354,10 @@ impl Summary {
         type WaitResult = (SelectedOutcome, Vec<ReadinessObservation>, Option<String>, Option<String>,
             Vec<ReadinessObservation>, Vec<String>, TargetReferenceKind, Option<bool>, Option<ObservedHostWaitReturn>);
         type CallIdentity = (Option<String>, String);
+        type QueryCallIdentity = (String, SourcePlane, Option<String>, Option<String>, String);
         let mut waits = BTreeMap::<(String, SourcePlane, Option<String>, WaitRequest, WaitResult), BTreeSet<CallIdentity>>::new();
         let mut queries = BTreeMap::<(String, SourcePlane, Option<String>, StatusRequestProjection, StatusResultProjection), BTreeSet<CallIdentity>>::new();
+        let mut query_calls = BTreeMap::<QueryCallIdentity, Option<(StatusRequestProjection, StatusResultProjection)>>::new();
         if out.capture_loss_observed || out.omitted_input_events > 0 || out.truncated_events > 0 { return; }
         for wait in &out.wait_timelines {
             let Some(operation) = &wait.operation_id else { continue };
@@ -381,13 +383,24 @@ impl Summary {
         for event in events {
             let Some(operation) = event.input.operation_id.as_ref() else { continue };
             if let Some(query) = &event.input.status_query {
-                if let (Some(request), Some(result)) = (&query.request_projection, &query.result_projection) {
-                    if request.complete && result.complete && !event.truncated {
-                        queries.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                            event.input.thread_id.clone(), request.clone(), result.clone())).or_default()
-                            .insert((event.input.turn_id.clone(), operation.clone()));
-                    }
-                }
+                let projection = match (&query.request_projection, &query.result_projection) {
+                    (Some(request), Some(result)) if request.complete && result.complete && !event.truncated =>
+                        Some((request.clone(), result.clone())),
+                    _ => None,
+                };
+                // Exact projection replay is one call. A conflicting or
+                // incomplete observation quarantines that call permanently;
+                // result grouping must never hide it in another group.
+                query_calls.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
+                    event.input.thread_id.clone(), event.input.turn_id.clone(), operation.clone()))
+                    .and_modify(|known| { if *known != projection { *known = None; } })
+                    .or_insert(projection);
+            }
+        }
+        for ((capture, source, thread, turn, operation), projection) in query_calls {
+            if let Some((request, result)) = projection {
+                queries.entry((capture, source, thread, request, result)).or_default()
+                    .insert((turn, operation));
             }
         }
         out.repeated_wait_groups = waits.values().filter(|ops| ops.len() > 1).count();
