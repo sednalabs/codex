@@ -188,6 +188,7 @@ enum HostReason {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HostWakeCause {
     TargetStatus,
+    Timeout,
     Other,
     Missing,
 }
@@ -512,7 +513,7 @@ fn wait_observation(
         },
         host_target_status_wake: match output.wake_cause {
             HostWakeCause::TargetStatus => Some(true),
-            HostWakeCause::Other => Some(false),
+            HostWakeCause::Timeout | HostWakeCause::Other => Some(false),
             HostWakeCause::Missing => None,
         },
         queued_update_count: output.queued_update_count,
