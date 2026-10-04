@@ -34,12 +34,14 @@ fn invalidation_between_getter_precheck_and_lock_still_fails_closed() {
     let (continue_tx, continue_rx) = mpsc::channel();
 
     thread::scope(|scope| {
-        let getter = scope.spawn(|| {
-            assert!(!failed.load(Ordering::Acquire));
+        let getter_store = &store;
+        let getter_failed = &failed;
+        let getter = scope.spawn(move || {
+            assert!(!getter_failed.load(Ordering::Acquire));
             prechecked_tx.send(()).unwrap();
             continue_rx.recv().unwrap();
 
-            protected_mcp_target_from_store(&store, &failed)
+            protected_mcp_target_from_store(getter_store, getter_failed)
         });
 
         prechecked_rx.recv().unwrap();

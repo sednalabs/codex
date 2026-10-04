@@ -170,7 +170,7 @@ impl Respond for ModelResponder {
                                 .and_then(Value::as_str)
                                 .is_some_and(|error| {
                                     error.contains(
-                                        "effective provider URL differs from its root-bound recipient",
+                                        "protected model provider differs from pinned built-in configuration",
                                     )
                                 })
                         } else {
