@@ -889,6 +889,13 @@ pub struct Tui {
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
 
+    /// Controls how fresh weekly status-line pacing details are rendered.
+    ///
+    /// - `qualitative` (default): Show `(on pace)`, `(over N%)`, or `(under N%)`.
+    /// - `ratio`: Show `{usage_remaining}%/{week_remaining}%`.
+    #[serde(default)]
+    pub weekly_limit_pacing_style: WeeklyLimitPacingStyle,
+
     /// Color status line items with colors derived from the active syntax theme.
     /// Defaults to `true`.
     #[serde(default = "default_true")]
@@ -948,6 +955,15 @@ pub struct Tui {
     #[serde(default)]
     #[schemars(range(min = 0))]
     pub terminal_resize_reflow_max_rows: Option<usize>,
+}
+
+/// Presentation style for the weekly usage-versus-time status-line detail.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeeklyLimitPacingStyle {
+    #[default]
+    Qualitative,
+    Ratio,
 }
 
 const fn default_true() -> bool {

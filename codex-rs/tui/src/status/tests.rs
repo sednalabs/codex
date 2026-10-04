@@ -71,6 +71,8 @@ fn stale_monthly_limit_marks_fresh_rolling_snapshot_stale() {
             used_percent: 20.0,
             resets_at: Some("soon".to_string()),
             window_minutes: Some(300),
+            resets_at_unix_seconds: Some(now.timestamp() + 300),
+            captured_at: now,
         }),
         secondary: None,
         credits: None,
@@ -317,6 +319,7 @@ async fn status_snapshot_includes_reasoning_details() {
         "codex".to_string(),
         captured_at,
         ClockFormat::TwelveHour,
+        None,
     );
 
     let model_slug = get_model_offline_for_tests(config.model.as_deref());
@@ -1935,11 +1938,15 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
                 used_percent: 45.0,
                 resets_at: Some("soon".to_string()),
                 window_minutes: Some(300),
+                resets_at_unix_seconds: Some(now.timestamp() + 300),
+                captured_at: now,
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 30.0,
                 resets_at: Some("later".to_string()),
                 window_minutes: Some(10_080),
+                resets_at_unix_seconds: Some(now.timestamp() + 10_080 * 60),
+                captured_at: now,
             }),
             credits: None,
             individual_limit: None,

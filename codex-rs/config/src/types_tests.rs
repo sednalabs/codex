@@ -121,3 +121,14 @@ fn rendering_preferences_default_individually_and_ignore_animation_switch() {
         );
     }
 }
+
+#[test]
+fn weekly_limit_pacing_style_defaults_to_qualitative_and_deserializes_ratio() {
+    let default: Tui = toml::from_str("").expect("deserialize default TUI config");
+    assert_eq!(default.weekly_limit_pacing_style, WeeklyLimitPacingStyle::Qualitative);
+
+    let ratio: Tui = toml::from_str("weekly_limit_pacing_style = \"ratio\"")
+        .expect("deserialize ratio pacing style");
+    assert_eq!(ratio.weekly_limit_pacing_style, WeeklyLimitPacingStyle::Ratio);
+    assert!(toml::from_str::<Tui>("weekly_limit_pacing_style = \"unknown\"").is_err());
+}
