@@ -301,7 +301,7 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
                         "wait-worker",
                         MULTI_AGENT_V2_NAMESPACE,
                         "wait_agent",
-                        "{}",
+                        r#"{"targets":["/root/worker"]}"#,
                     ),
                     ev_completed("parent-wait"),
                 ]),
