@@ -538,30 +538,83 @@ class PrepareExecutionTests(IdentityFixture):
         relative = f"{prepare_tui_snapshots.SNAPSHOT_PATHS[0]}.new"
         contents = b"review-pending generated snapshot\n"
         pending_path = self.product_root / relative
+        generator_kwargs = {
+            "cwd": self.product_root,
+            "env": self.environment,
+            "check": False,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        base_commit = self.base_sha
+        workflow_root = self.workflow_root
+        product_root = self.product_root
+        allowed_git_commands = {
+            ("git", "-C", str(workflow_root), "rev-parse", "HEAD"),
+            ("git", "-C", str(workflow_root), "rev-parse", "HEAD^{tree}"),
+            (
+                "git", "-C", str(workflow_root), "status", "--porcelain=v1", "-z",
+                "--untracked-files=all",
+            ),
+            ("git", "-C", str(product_root), "rev-parse", "HEAD"),
+            ("git", "-C", str(product_root), "rev-parse", "FETCH_HEAD^{commit}"),
+            (
+                "git", "-C", str(product_root), "cat-file", "-e",
+                f"{base_commit}^{{commit}}",
+            ),
+            ("git", "-C", str(product_root), "rev-parse", "HEAD^{tree}"),
+            (
+                "git", "-C", str(product_root), "rev-parse",
+                f"{base_commit}^{{tree}}",
+            ),
+            (
+                "git", "-C", str(product_root), "status", "--porcelain=v1", "-z",
+                "--untracked-files=all",
+            ),
+            ("git", "-C", str(product_root), "ls-files", "-z"),
+            (
+                "git", "-C", str(product_root), "ls-files", "--others",
+                "--exclude-standard", "-z",
+            ),
+        }
+        allowed_git_commands.update(
+            (
+                "git", "-C", str(product_root), "ls-files", "--error-unmatch", "--",
+                path,
+            )
+            for path in (
+                *prepare_tui_snapshots.SNAPSHOT_PATHS,
+                *prepare_tui_snapshots.LOCK_PATHS,
+            )
+        )
+        original_run = prepare_tui_snapshots.subprocess.run
+        generator_calls = []
+        git_calls = []
 
-        def run_command(command, **kwargs):
-            self.assertEqual(command, prepare_tui_snapshots.COMMAND)
-            self.assertEqual(kwargs["cwd"], self.product_root)
-            self.assertFalse(kwargs["check"])
-            self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
-            self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
-            self.assertEqual(kwargs["env"], self.environment)
-            pending_path.write_bytes(contents)
-            return mock.Mock(returncode=exit_code)
+        def run_command(command, *args, **kwargs):
+            argv = tuple(command)
+            if argv == tuple(prepare_tui_snapshots.COMMAND):
+                self.assertFalse(args)
+                self.assertEqual(kwargs, generator_kwargs)
+                generator_calls.append((argv, kwargs.copy()))
+                pending_path.write_bytes(contents)
+                return mock.Mock(returncode=exit_code)
+            if argv in allowed_git_commands:
+                self.assertFalse(args)
+                git_calls.append(argv)
+                return original_run(command, *args, **kwargs)
+            self.fail(f"unexpected subprocess command: {command!r}")
 
         with mock.patch.object(
             prepare_tui_snapshots.subprocess, "run", side_effect=run_command
         ) as run:
             result = prepare_tui_snapshots.prepare(self.environment)
 
-        run.assert_called_once_with(
-            prepare_tui_snapshots.COMMAND,
-            cwd=self.product_root,
-            env=mock.ANY,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        self.assertEqual(len(generator_calls), 1)
+        self.assertEqual(generator_calls[0][0], tuple(prepare_tui_snapshots.COMMAND))
+        self.assertEqual(generator_calls[0][1], generator_kwargs)
+        self.assertTrue(git_calls)
+        self.assertTrue(set(git_calls).issubset(allowed_git_commands))
+        self.assertEqual(run.call_count, len(generator_calls) + len(git_calls))
         self.assertEqual(result, exit_code)
 
         runner_temp = Path(self.environment["RUNNER_TEMP"])
