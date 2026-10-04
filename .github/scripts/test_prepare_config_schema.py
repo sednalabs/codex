@@ -56,11 +56,11 @@ class ProfileTests(unittest.TestCase):
         self.assertIn("default: cargo-schema", workflow)
         self.assertIn("cargo-schema|config-schema", workflow)
         self.assertIn(
-            "config-schema preparation profile is restricted to prepare-only mode",
+            "nondefault preparation profiles are restricted to prepare-only mode",
             workflow,
         )
         self.assertIn(
-            "run: python3 .github/scripts/prepare_config_schema.py --validate-profile",
+            "python3 .github/scripts/prepare_config_schema.py --validate-profile",
             workflow,
         )
         for legacy_step in (

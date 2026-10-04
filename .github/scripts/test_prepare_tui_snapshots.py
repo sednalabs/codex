@@ -43,7 +43,7 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             hashlib.sha256(schema_tests.read_bytes()).hexdigest(),
-            "9184298cc614eefbac7c01c48343efeb269f092749df036e332a91e5e90d737c",
+            "e9e711be0335927979b9a08b2d92cb7c55a0a4a2e4aaf80fc696cb630d4c2d07",
         )
         self.assertIn("preparation_profile:", workflow)
         self.assertIn("default: cargo-schema", workflow)
