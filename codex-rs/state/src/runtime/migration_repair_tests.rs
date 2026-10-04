@@ -173,6 +173,12 @@ async fn install_same_column_mailbox_schema_with_constraint_defect(
                         "CHECK (intent <> '')",
                     );
                 }
+                ("case_changed_intent_literal", "agent_mailbox") => {
+                    sql = sql.replace("'progress'", "'PROGRESS'");
+                }
+                ("whitespace_changed_intent_literal", "agent_mailbox") => {
+                    sql = sql.replace("'progress'", "'progress '");
+                }
                 ("missing_idempotency_unique", "agent_mailbox") => {
                     sql = sql.replace(
                         "UNIQUE (sender_instance_id, sender_task_generation, recipient_instance_id, recipient_task_generation, idempotency_key),",
@@ -434,6 +440,8 @@ async fn recorded_mailbox_migration_with_same_column_wrong_constraints_rejects()
     for defect in [
         "missing_message_primary_key",
         "missing_intent_check",
+        "case_changed_intent_literal",
+        "whitespace_changed_intent_literal",
         "missing_idempotency_unique",
         "missing_acknowledgement_check",
         "missing_supersession_foreign_keys",

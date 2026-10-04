@@ -414,16 +414,9 @@ async fn index_exists(connection: &mut SqliteConnection, name: &str) -> anyhow::
     .await?)
 }
 
-fn normalize_schema_sql(sql: &str) -> String {
-    sql.chars()
-        .filter(|character| {
-            !character.is_whitespace()
-                && *character != '"'
-                && *character != '`'
-                && *character != ';'
-        })
-        .collect::<String>()
-        .to_ascii_lowercase()
+fn trim_schema_statement(sql: &str) -> &str {
+    let sql = sql.trim();
+    sql.strip_suffix(';').unwrap_or(sql).trim_end()
 }
 
 async fn migration_schema_object_matches(
@@ -436,8 +429,9 @@ async fn migration_schema_object_matches(
         .split(';')
         .map(str::trim)
         .find(|statement| {
-            let normalized = normalize_schema_sql(statement);
-            normalized.starts_with(&format!("create{object_type}{object_name}"))
+            statement
+                .to_ascii_lowercase()
+                .starts_with(&format!("create {object_type} {object_name}"))
         });
     let Some(expected) = expected else {
         return Ok(false);
@@ -452,7 +446,7 @@ async fn migration_schema_object_matches(
     let Some(Some(actual)) = actual else {
         return Ok(false);
     };
-    Ok(normalize_schema_sql(&actual) == normalize_schema_sql(expected))
+    Ok(trim_schema_statement(&actual) == trim_schema_statement(expected))
 }
 
 async fn validate_schema(
