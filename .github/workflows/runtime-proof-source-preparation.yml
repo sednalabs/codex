@@ -1,0 +1,97 @@
+name: Runtime proof source preparation
+
+on:
+  push:
+    branches: [feature/runtime-proof-source-prep-20261004]
+    paths: [.github/workflows/runtime-proof-source-preparation.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind exact preparation input
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d # 1.96.0
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Resolve Cargo and Bazel locks
+        run: |
+          cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1 --no-deps > /dev/null
+          bazel mod deps --lockfile_mode=update
+      - name: Format the five affected packages
+        run: |
+          rustup toolchain install nightly-2025-09-18 --profile minimal --component rustfmt
+          cd codex-rs
+          cargo +nightly-2025-09-18 fmt -p codex-runtime-proof -p codex-core -p codex-cli -p codex-mcp -p codex-exec -- --config imports_granularity=Item
+      - name: Export bounded changes and provenance
+        env:
+          INPUT_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          allowed = {
+              "codex-rs/Cargo.lock", "MODULE.bazel.lock",
+              "codex-rs/cli/src/main.rs",
+              "codex-rs/cli/tests/runtime_execution_proof.rs",
+              "codex-rs/cli/tests/runtime_execution_proof/support.rs",
+              "codex-rs/core/src/mcp_tool_call.rs",
+              "codex-rs/core/src/mcp_tool_call_tests.rs",
+              "codex-rs/core/src/session/session.rs",
+              "codex-rs/core/src/session/tests.rs",
+              "codex-rs/core/src/client.rs",
+              "codex-rs/core/src/client_tests.rs",
+              "codex-rs/codex-mcp/src/rmcp_client.rs",
+              "codex-rs/codex-mcp/src/server.rs",
+              "codex-rs/exec/src/lib.rs",
+          }
+          changed = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
+          def permitted(path):
+              return path in allowed or (path.startswith("codex-rs/runtime-proof/src/") and path.endswith(".rs"))
+          unexpected = [path for path in changed if not permitted(path)]
+          if unexpected:
+              raise SystemExit("Preparation changed paths outside its finite source scope")
+          untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], text=True)
+          if untracked:
+              raise SystemExit("Preparation created an untracked source artifact")
+          output = Path(os.environ["RUNNER_TEMP"]) / "runtime-proof-preparation"
+          output.mkdir()
+          patch = subprocess.check_output(["git", "diff", "--binary", "--", *changed]) if changed else b""
+          (output / "preparation.patch").write_bytes(patch)
+          provenance = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "input_sha": os.environ["INPUT_SHA"],
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "changed_paths": changed,
+              "patch_sha256": hashlib.sha256(patch).hexdigest(),
+              "outputs": {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in changed},
+              "acceptance": "generated preparation only; fresh final-target validation required",
+          }
+          (output / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-proof-preparation-${{ github.sha }}
+          path: ${{ runner.temp }}/runtime-proof-preparation/
+          if-no-files-found: error
+          retention-days: 7

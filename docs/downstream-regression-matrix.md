@@ -1098,3 +1098,31 @@ and untrusted/`NONE` authors when identity is blank. The observer remains
 read-only and does not mint, print, persist, or activate credentials. Its
 permission contract is documented in
 `.codex/skills/babysit-pr/references/github-app-installation-broker.md`.
+
+## Native per-execution MCP proof
+
+The focused native proof suite must cover a fixed JCS operation/digest vector,
+safe integer rejection, omitted-versus-null and changed-parameter binding,
+certificate/key/artifact and fixed lease validation, per-request signature
+verification, mismatched server/recipient rejection, distinct root/delegate
+session nonces with a shared MCP manager, protection-drift key erasure,
+bootstrap frame bounds and descriptor closure, and reserved metadata collision
+and result redaction. The CLI seam
+must show protected bootstrap initialization occurs before argument dispatch,
+environment handling, or asynchronous startup. Run the crate/core focused
+unit suites, CLI startup-order check, `codex.mcp-safety-targeted`,
+`core-runtime-surface-smoke`, and the downstream-doc integration guard on the
+hosted validation surface. The ignored Linux root fixture must be invoked
+explicitly and prove real ChatGPT ephemeral import, provider Authorization and
+account headers, selected MCP bearer, root/delegate signatures, and echo
+redaction. Its negative cases cover mismatched context/config, expired auth,
+wrong effective provider endpoint or credential class, a delegate role that
+changes the provider URL, and altered or over-segmented synthetic JWTs; every
+invalid bootstrap must have zero provider and MCP credential egress; the
+delegate override case must have zero off-path provider and child MCP egress
+while the valid root request still succeeds. A skip is not proof. A source-level
+test or successful build alone does not establish launcher FD provenance,
+protected Linux process
+state, issuer validation by the service, or an end-to-end lease; those require
+the separately authorized protected-host and service-consumer validation
+paths. Dependency and Bazel lock generation is hosted-only.

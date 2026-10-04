@@ -26,6 +26,7 @@ use codex_analytics::build_track_events_context;
 use codex_config::ConfigLayerSource;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
+use codex_config::McpServerTransportConfig;
 use codex_connectors::AppToolPolicy;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
@@ -382,6 +383,7 @@ async fn handle_approved_mcp_tool_call(
     let server_origin = prepared_call.server_origin().map(str::to_string);
 
     let start = Instant::now();
+    let mut runtime_proof_for_redaction = None;
     let mut tool_input = arguments_value
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
@@ -448,13 +450,55 @@ async fn handle_approved_mcp_tool_call(
                         .services
                         .rollout_thread_trace
                         .start_mcp_call_trace(call_id);
+                    let request_meta = mcp_call_trace.add_request_meta(request_meta);
+                    let transport_url = prepared_call
+                        .config()
+                        .mcp_server_catalog
+                        .server(&server)
+                        .and_then(|registration| match &registration.config().transport {
+                            McpServerTransportConfig::StreamableHttp { url, .. } => {
+                                Some(url.as_str())
+                            }
+                            McpServerTransportConfig::Stdio { .. } => None,
+                        });
+                    if let Some(recipient) = transport_url {
+                        codex_runtime_proof::is_protected_mcp_target(&server, recipient)
+                            .map_err(anyhow::Error::msg)?;
+                    }
+                    let empty_arguments = JsonValue::Null;
+                    let proof_parameters = rewritten_arguments
+                        .as_ref()
+                        .unwrap_or(&empty_arguments);
+                    let proof = codex_runtime_proof::sign_claim_proof(
+                        &sess.execution_nonce,
+                        &sess.thread_id.to_string(),
+                        &server,
+                        transport_url,
+                        &tool_name,
+                        proof_parameters,
+                    )?;
+                    runtime_proof_for_redaction = proof.clone();
+                    let request_meta = add_runtime_proof_meta(request_meta, proof)?;
                     Ok((
                         rewritten_arguments,
-                        mcp_call_trace.add_request_meta(request_meta),
+                        request_meta,
                     ))
                 })
                 .await
-                .map_err(|error| format!("tool call error: {error:?}"))?;
+                .map_err(|error| {
+                    if runtime_proof_for_redaction.is_some() {
+                        "protected runtime proof MCP call failed".to_string()
+                    } else {
+                        format!("tool call error: {error:?}")
+                    }
+                })?;
+            let mut result = result;
+            if let Some(proof) = runtime_proof_for_redaction.as_ref() {
+                redact_runtime_proof_from_result(&mut result, proof);
+            }
+            if let Some(recipient) = transport_url {
+                redact_runtime_mcp_bearer_from_result(&server, recipient, &mut result);
+            }
             let result = sanitize_mcp_tool_result_for_model(
                 &turn_context.model_info.input_modalities,
                 Ok(result),
@@ -517,6 +561,110 @@ async fn handle_approved_mcp_tool_call(
     HandledMcpToolCall {
         result: CallToolResult::from_result(result),
         tool_input,
+    }
+}
+
+fn add_runtime_proof_meta(
+    meta: Option<JsonValue>,
+    proof: Option<JsonValue>,
+) -> anyhow::Result<Option<JsonValue>> {
+    let Some(proof) = proof else {
+        if meta
+            .as_ref()
+            .and_then(JsonValue::as_object)
+            .is_some_and(|map| map.contains_key(codex_runtime_proof::RESERVED_META_KEY))
+        {
+            anyhow::bail!("reserved runtime proof request metadata was already set");
+        }
+        return Ok(meta);
+    };
+    let mut map = match meta {
+        Some(JsonValue::Object(map)) => map,
+        None => serde_json::Map::new(),
+        Some(_) => anyhow::bail!("runtime proof request metadata must be an object"),
+    };
+    if map.contains_key(codex_runtime_proof::RESERVED_META_KEY) {
+        anyhow::bail!("reserved runtime proof request metadata was already set");
+    }
+    map.insert(codex_runtime_proof::RESERVED_META_KEY.to_string(), proof);
+    Ok(Some(JsonValue::Object(map)))
+}
+
+fn redact_runtime_proof_from_result(result: &mut CallToolResult, envelope: &JsonValue) {
+    let Some(envelope) = envelope.as_object() else {
+        return;
+    };
+    let secrets = ["certificate", "proof"]
+        .into_iter()
+        .filter_map(|key| envelope.get(key).and_then(JsonValue::as_str))
+        .collect::<Vec<_>>();
+    for content in &mut result.content {
+        redact_runtime_proof_value(content, &secrets);
+    }
+    if let Some(structured_content) = &mut result.structured_content {
+        redact_runtime_proof_value(structured_content, &secrets);
+    }
+    if let Some(meta) = &mut result.meta {
+        redact_runtime_proof_value(meta, &secrets);
+    }
+}
+
+fn redact_runtime_proof_value(value: &mut JsonValue, secrets: &[&str]) {
+    match value {
+        JsonValue::String(text) => {
+            for secret in secrets {
+                if !secret.is_empty() {
+                    *text = text.replace(secret, "[runtime proof redacted]");
+                }
+            }
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                redact_runtime_proof_value(value, secrets);
+            }
+        }
+        JsonValue::Object(values) => {
+            for value in values.values_mut() {
+                redact_runtime_proof_value(value, secrets);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+    }
+}
+
+fn redact_runtime_mcp_bearer_from_result(
+    server: &str,
+    recipient: &str,
+    result: &mut Result<CallToolResult, String>,
+) {
+    let redact = |value: &mut JsonValue| {
+        codex_runtime_proof::redact_mcp_bearer(server, recipient, value).is_ok()
+    };
+    match result {
+        Ok(result) => {
+            let valid = result.content.iter_mut().all(&redact)
+                && result
+                    .structured_content
+                    .as_mut()
+                    .is_none_or(&redact)
+                && result.meta.as_mut().is_none_or(&redact);
+            if !valid {
+                *result = CallToolResult {
+                    content: Vec::new(),
+                    structured_content: None,
+                    is_error: Some(true),
+                    meta: None,
+                };
+            }
+        }
+        Err(error) => {
+            let mut value = JsonValue::String(error.clone());
+            if redact(&mut value) {
+                *error = value.as_str().unwrap_or("protected runtime MCP call failed").to_string();
+            } else {
+                *error = "protected runtime MCP call failed".to_string();
+            }
+        }
     }
 }
 
