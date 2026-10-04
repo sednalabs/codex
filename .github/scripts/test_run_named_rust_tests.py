@@ -697,6 +697,69 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
                 self.assertEqual(result["status"], "failure")
                 self.assertEqual(result["failure_code"], first_failure)
 
+    def test_multiple_summaries_with_overlong_count_remain_structured_failure(self) -> None:
+        first, second = "suite::first", "suite::second"
+        request = {
+            "schema_version": named_tests.SCHEMA_VERSION,
+            "profile": "rust_minimal",
+            "package": "codex-test",
+            "target_kind": "lib",
+            "target": "",
+            "tests": [first, second],
+        }
+        inventory = subprocess.CompletedProcess(
+            ["cargo", "test", "--list"],
+            0,
+            stdout=f"{first}: test\n{second}: test\n",
+            stderr="",
+        )
+        summary = (
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out"
+        )
+        overlong = (
+            "test result: ok. "
+            + "9" * 5000
+            + " passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+        )
+        execution = subprocess.CompletedProcess(
+            ["cargo", "test"],
+            0,
+            stdout=(
+                f"test {first} ... ok\n"
+                f"test {second} ... ignored\n"
+                f"{overlong}\n{summary}\n"
+            ),
+            stderr="",
+        )
+        manifest = CoreIntegrationRuntimePreparationTests._fixture_manifest(request)
+        with (
+            patch.object(named_tests, "load_manifest", return_value=manifest),
+            patch.object(named_tests, "git_sha", return_value="a" * 40),
+            patch.object(
+                named_tests.subprocess,
+                "run",
+                side_effect=[inventory, execution],
+            ),
+        ):
+            result = named_tests.run_request(request, Path("."))
+
+        channel = result["failure_evidence"]["cargo_summary_channels"]["stdout"]
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
+        self.assertEqual([test["name"] for test in result["tests"]], [first, second])
+        self.assertEqual(
+            [test["observed_outcomes"] for test in result["tests"]],
+            [["ok"], ["ignored"]],
+        )
+        self.assertEqual(channel["match_count"], 2)
+        self.assertEqual(channel["omitted_count"], 1)
+        self.assertTrue(channel["truncated"])
+        self.assertEqual(
+            channel["summaries"],
+            [{"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}],
+        )
+
     def test_non_core_target_does_not_prebuild_runtime_binaries(self) -> None:
         request = {
             **CoreIntegrationRuntimePreparationTests.request,

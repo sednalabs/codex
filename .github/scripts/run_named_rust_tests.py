@@ -39,6 +39,7 @@ MAX_FAILURE_EVIDENCE_BYTES = 350 * 1024
 MAX_FAILURE_BLOCK_EVIDENCE_CHARS = 2048
 MAX_FAILURE_MARKERS_PER_BLOCK = 16
 MAX_CARGO_SUMMARIES_PER_CHANNEL = 4
+MAX_CARGO_SUMMARY_COUNT_DIGITS = 12
 CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
 CORE_RUNTIME_BUILDS = (
     (
@@ -151,19 +152,27 @@ def test_result_counts(output: str) -> dict[str, int] | None:
 def cargo_summary_channel_evidence(output: str) -> dict[str, Any]:
     """Expose bounded numeric Cargo summary counts without retaining log text."""
 
-    matches = list(TEST_RESULT_RE.finditer(output))
-    emitted = matches[:MAX_CARGO_SUMMARIES_PER_CHANNEL]
+    match_count = 0
+    summaries = []
+    for match in TEST_RESULT_RE.finditer(output):
+        match_count += 1
+        if len(summaries) >= MAX_CARGO_SUMMARIES_PER_CHANNEL:
+            continue
+        raw_counts = {
+            name: match.group(name)
+            for name in ("passed", "failed", "ignored", "measured", "filtered")
+        }
+        if any(
+            len(value) > MAX_CARGO_SUMMARY_COUNT_DIGITS
+            for value in raw_counts.values()
+        ):
+            continue
+        summaries.append({name: int(value) for name, value in raw_counts.items()})
     return {
-        "match_count": len(matches),
-        "summaries": [
-            {
-                name: int(match.group(name))
-                for name in ("passed", "failed", "ignored", "measured", "filtered")
-            }
-            for match in emitted
-        ],
-        "omitted_count": len(matches) - len(emitted),
-        "truncated": len(matches) > len(emitted),
+        "match_count": match_count,
+        "summaries": summaries,
+        "omitted_count": match_count - len(summaries),
+        "truncated": match_count > len(summaries),
     }
 
 
