@@ -79,6 +79,7 @@ FAILURE_MARKER_PATTERNS = (
     ("panicked", re.compile(r"\bpanicked\b|\bthread .* panicked\b", re.IGNORECASE)),
 )
 OS_ERROR_CODE_RE = re.compile(r"\bOs\s*\{\s*code:\s*(\d{1,5})\b")
+OS_ERROR_TEXT_CODE_RE = re.compile(r"\(os error (\d{1,5})\)")
 HTTP_STATUS_CODE_RE = re.compile(
     r"\b(?:HTTP(?:/\d(?:\.\d)?)?\s+|status(?: code)?[:= ]+)([1-5]\d{2})\b",
     re.IGNORECASE,
@@ -371,6 +372,7 @@ def _failure_markers_for_line(line: str) -> tuple[set[str], set[tuple[str, int]]
     numeric_captures: set[tuple[str, int]] = set()
     for kind, pattern in (
         ("os-error-code", OS_ERROR_CODE_RE),
+        ("os-error-code", OS_ERROR_TEXT_CODE_RE),
         ("http-status-code", HTTP_STATUS_CODE_RE),
         ("process-exit-code", PROCESS_EXIT_CODE_RE),
     ):
@@ -438,7 +440,9 @@ def parse_failure_blocks(
             line = raw_line.rstrip("\r\n")
             if line == "failures:":
                 finish_active()
-                break
+                if stream_block_count:
+                    break
+                continue
             if _is_header_candidate(line):
                 finish_active()
                 candidate_count += 1

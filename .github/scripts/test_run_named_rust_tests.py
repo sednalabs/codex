@@ -163,10 +163,18 @@ class NamedFailureObserverTests(unittest.TestCase):
 
     def test_stream_provenance_is_deterministic_and_not_claimed_chronology(self) -> None:
         name = "suite::same"
-        stdout = f"---- {name} stdout ----\npermission denied\n"
+        stdout = (
+            f"test {name} ... FAILED\n"
+            "failures:\n"
+            f"    {name}\n\n"
+            f"---- {name} stdout ----\npermission denied\n"
+            "failures:\n"
+            f"    {name}\n"
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        )
         stderr = f"---- {name} stderr ----\nconnection refused\n"
 
-        evidence = self._evidence(stdout, stderr, known={name})
+        evidence = self._evidence(stdout, stderr, requested=(name,), known={name})
 
         self.assertEqual(
             [
@@ -178,8 +186,12 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertEqual(evidence["streams"]["stdout"]["source_char_count"], len(stdout))
         self.assertEqual(evidence["streams"]["stderr"]["source_char_count"], len(stderr))
         self.assertEqual(evidence["source_status"], "parsed")
+        self.assertEqual(evidence["blocks"][0]["name"], name)
+        self.assertTrue(evidence["blocks"][0]["requested_failed_selector"])
+        self.assertIn("permission-denied", evidence["blocks"][0]["markers"])
         self.assertFalse(evidence["capture_truncated"])
         self.assertEqual(evidence["upstream_output_truncation"], "unknown")
+        self.assertEqual(evidence["cargo_summary_failed_count"], 1)
 
     def test_header_status_and_sensitive_body_handling(self) -> None:
         missing = self._evidence("ordinary output with no block")
@@ -209,7 +221,7 @@ class NamedFailureObserverTests(unittest.TestCase):
         output = (
             f"---- {name} stdout ----\n"
             f"permission denied {private}\n"
-            f"Os {{ code: 13, kind: PermissionDenied }} HTTP status 503 {private}\n"
+            f"Os {{ code: 13, kind: PermissionDenied }} (os error 2) HTTP status 503 {private}\n"
             f"exit code: 7 {private}\n"
         )
 
@@ -221,6 +233,9 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertIn("http-error", block["markers"])
         self.assertIn(
             {"kind": "os-error-code", "value": 13}, block["numeric_captures"]
+        )
+        self.assertIn(
+            {"kind": "os-error-code", "value": 2}, block["numeric_captures"]
         )
         self.assertIn(
             {"kind": "http-status-code", "value": 503}, block["numeric_captures"]
