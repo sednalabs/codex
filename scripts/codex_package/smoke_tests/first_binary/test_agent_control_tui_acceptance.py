@@ -138,6 +138,23 @@ def _normalized_screen(frame: str) -> str:
     return " ".join(line.strip().strip("│").strip() for line in frame.splitlines())
 
 
+def _rendered_field_matches(frame: str, label: str, expected: str) -> bool:
+    lines = [line.strip().strip("│").strip() for line in frame.splitlines()]
+    for index, line in enumerate(lines):
+        if not line.startswith(label):
+            continue
+        value = line[len(label) :].strip()
+        if value == expected:
+            return True
+        if (
+            value.endswith("-")
+            and index + 1 < len(lines)
+            and value + lines[index + 1].strip() == expected
+        ):
+            return True
+    return False
+
+
 def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity(
     package: SmokePackage,
 ) -> None:
@@ -412,7 +429,9 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             root_details_text = _normalized_screen(root_overview)
             assert f"Thread ID: {root_id}" in root_details_text, root_overview
-            assert "Configured/resolved model: package-smoke" in root_details_text
+            assert _rendered_field_matches(
+                root_overview, "Configured/resolved model:", "package-smoke"
+            ), root_overview
             assert "Configured/resolved effort: medium" in root_details_text
             assert "Provider-effective identity: Unknown" in root_details_text
             assert child_id not in root_overview and "/root/worker" not in root_overview
