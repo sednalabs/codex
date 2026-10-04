@@ -18,6 +18,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-cli",
+      "target_kind": "bin",
+      "target": "codex",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-cli", "--bin", "codex", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-config",
       "target_kind": "lib",
       "target": "",
@@ -64,6 +72,14 @@
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core-api", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-diagnostics",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-diagnostics", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-diagnostics", "--lib", "--", "--test-threads=1"]
     },
     {
       "package": "codex-exec",

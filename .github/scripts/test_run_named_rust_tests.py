@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -1199,6 +1200,308 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
         self.assertEqual(result["failure_code"], "target_selector_unknown")
         run.assert_not_called()
+
+
+class PublicArtifactBoundaryTests(unittest.TestCase):
+    root = Path(named_tests.__file__).resolve().parents[2]
+    identity = {"harness_sha": "b" * 40, "base_sha": "c" * 40,
+                "target_sha": "a" * 40, "base_ref": "validation/base",
+                "run_id": "123", "run_attempt": "2"}
+    request = {"schema_version": named_tests.SCHEMA_VERSION, "profile": "rust_minimal",
+               "package": "codex-cli", "target_kind": "bin", "target": "codex",
+               "tests": ["suite::selected"]}
+
+    def _minimal(self) -> dict[str, object]:
+        return {"schema_version": named_tests.SCHEMA_VERSION, "status": "success",
+                "identity": dict(self.identity), "candidate_sha": "a" * 40,
+                "request": dict(self.request), "request_fingerprint": hashlib.sha256(
+                    json.dumps(self.request, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                "inventory": {"status": "success", "test_count": 1, "tests": ["suite::selected"]},
+                "tests": [{"name": "suite::selected", "status": "success", "exit_code": 0,
+                           "execution_reconciled": True, "observed_outcomes": ["ok"],
+                           "matched_line_count": 1, "matched_lines": ["test suite::selected ... ok"],
+                           "matched_lines_truncated": False,
+                           "result_counts": {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}}]}
+
+    def _expected(self) -> dict[str, object]:
+        diagnostic = {"original_char_count": None, "captured_char_count": 0,
+                      "markers": {"values": [], "original_count": 0, "omitted_count": 0, "truncated": False},
+                      "numeric_captures": {"values": [], "original_count": 0, "omitted_count": 0, "truncated": False},
+                      "captured_text_omitted": True, "truncated": True}
+        expected = self._minimal()
+        expected.update(failure_code="", result_kind="named_tests", omitted_field_count=0)
+        expected["identity"]["omitted_field_count"] = 0
+        expected["request"].update(catalog_validated=True, omitted_field_count=0,
+                                   request_fingerprint=expected["request_fingerprint"],
+                                   selectors={"original_count": 1, "omitted_count": 0, "truncated": False})
+        expected["inventory"].update(omitted_field_count=0, original_count=1, omitted_count=0, truncated=False)
+        expected["tests"][0].update(omitted_field_count=0, outcome_original_count=1, outcome_omitted_count=0,
+                                     diagnostics={"exit_code": None, "stdout": copy.deepcopy(diagnostic),
+                                                  "stderr": copy.deepcopy(diagnostic), "omitted_field_count": 0})
+        expected["test_projection"] = {"original_count": 1, "omitted_count": 0, "truncated": False}
+        return expected
+
+    def _bytes(self, value: dict[str, object]) -> bytes:
+        return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    def _run(self, request: dict[str, object], inventory_text: str, output: str, exit_code: int = 0, inventory_exit: int = 0) -> dict[str, object]:
+        record = named_tests.select_target(request, named_tests.load_manifest(self.root))
+        expected_calls = [list(record["inventory_argv"]), ["git", "rev-parse", "HEAD"], list(record["execution_argv"])]
+        calls = []
+
+        def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(argv)
+            if argv == ["git", "rev-parse", "HEAD"]:
+                self.assertEqual(kwargs["cwd"], self.root)
+                return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+            self.assertEqual(kwargs["cwd"], self.root / "codex-rs")
+            self.assertEqual({key: kwargs[key] for key in ("text", "capture_output", "check", "shell")},
+                             {"text": True, "capture_output": True, "check": False, "shell": False})
+            self.assertEqual(kwargs["env"], {"RUST_MIN_STACK": "8388608"})
+            if argv == expected_calls[0]:
+                return subprocess.CompletedProcess(argv, inventory_exit, inventory_text, "")
+            self.assertEqual(argv, expected_calls[2])
+            return subprocess.CompletedProcess(argv, exit_code, output, "")
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(named_tests.subprocess, "run", side_effect=fake_run):
+            result = named_tests.run_request(request, self.root)
+        expected_count = 1 if inventory_exit else 2 if result.get("failure_code") == "inventory_reconciliation_failed" else 3
+        self.assertEqual(calls, expected_calls[:expected_count])
+        self.assertTrue(all("suite::selected" not in argv for argv in calls))
+        result["identity"] = dict(self.identity)
+        return result
+
+    def test_complete_positive_and_critical_failure_bytes(self) -> None:
+        self.assertEqual(named_tests.public_artifact_bytes(self._minimal()), self._bytes(self._expected()))
+        for code in ("named_test_failed", "named_test_ignored", "execution_reconciliation_failed"):
+            with self.subTest(code=code):
+                source, expected = self._minimal(), self._expected()
+                source.update(status="failure", failure_code=code, message="PRIVATE_MESSAGE")
+                expected.update(status="failure", failure_code=code, omitted_field_count=1)
+                self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
+
+    def test_actual_new_and_existing_targets_keep_closed_argv(self) -> None:
+        for package, kind, target in (("codex-cli", "bin", "codex"), ("codex-diagnostics", "lib", ""), ("codex-state", "lib", "")):
+            request = {**self.request, "package": package, "target_kind": kind, "target": target}
+            parsed, error = named_tests.parse_request(json.dumps(request), "rust_minimal")
+            self.assertIsNone(error)
+            result = self._run(parsed, "suite::selected: test\n", "test suite::selected ... ok\n"
+                               "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n")
+            public = json.loads(named_tests.public_artifact_bytes(result))
+            self.assertEqual(public["status"], "success")
+            self.assertFalse(named_tests.request_requires_core_runtime(json.dumps(request), "rust_minimal", named_tests.load_manifest(self.root)))
+            self.assertNotIn("runtime_preparation", result)
+
+    def test_bin_request_and_manifest_fail_closed(self) -> None:
+        for target in ("", None, "../codex", "codex --all", "x;echo", ["codex"]):
+            request, error = named_tests.parse_request(json.dumps({**self.request, "target": target}), "rust_minimal")
+            self.assertIsNone(request)
+            self.assertEqual(error["failure_code"], "target_invalid")
+        payload = json.loads((self.root / ".github" / named_tests.MANIFEST_NAME).read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".github" / named_tests.MANIFEST_NAME
+            path.parent.mkdir()
+            for target in ("", "../codex"):
+                altered = copy.deepcopy(payload)
+                row = next(row for row in altered["targets"] if row["target_kind"] == "bin")
+                row["target"] = target
+                path.write_text(json.dumps(altered))
+                with self.assertRaises(ValueError):
+                    named_tests.load_manifest(Path(directory))
+        with self.assertRaises(ValueError):
+            named_tests.cargo_args(self.request, list_only=False, test_name="suite::selected")
+
+    def test_only_lib_normalizes_target_and_old_commands_are_unchanged(self) -> None:
+        for kind in ("bin", "integration"):
+            request, error = named_tests.parse_request(json.dumps({**self.request, "target_kind": kind, "target": "lib"}), "rust_minimal")
+            self.assertIsNone(error)
+            self.assertEqual(request["target"], "lib")
+        for target in ("", None, "lib"):
+            request, error = named_tests.parse_request(json.dumps({**self.request, "target_kind": "lib", "target": target}), "rust_minimal")
+            self.assertIsNone(error)
+            self.assertEqual(request["target"], "")
+        for kind, target, flag in (("lib", "", "--lib"), ("integration", "all", "--test"), ("bin", "codex", "--bin")):
+            prefix = ["cargo", "test", "--locked", "-p", "codex-cli", flag]
+            if kind != "lib":
+                prefix.append(target)
+            self.assertEqual(named_tests.expected_commands("codex-cli", kind, target),
+                             ([*prefix, "--", "--list"], [*prefix, "--", "--test-threads=1"]))
+
+    def test_actual_full_target_red_and_reconciliation_controls(self) -> None:
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        cases = [
+            ("suite::selected: test\nsuite::other: test\n", "test suite::selected ... ok\ntest suite::other ... FAILED\n"
+             "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n", 101, "named_test_failed"),
+            ("suite::other: test\n", "", 0, "inventory_reconciliation_failed"),
+            ("suite::selected: test\nsuite::selected: test\n", "", 0, "inventory_reconciliation_failed"),
+            ("suite::selected: test\n", "test suite::selected ... ignored\n" + summary, 0, "named_test_ignored"),
+            ("suite::selected: test\n", "test suite::selected ... ok\ntest suite::selected ... FAILED\n" + summary, 0, "execution_reconciliation_failed"),
+            ("suite::selected: test\n", "test suite::selected ... ok\nmalformed summary\n", 0, "execution_reconciliation_failed"),
+            ("suite::selected: test\n", "test suite::selected ... ok\n" + summary * 2, 0, "execution_reconciliation_failed"),
+            ("suite::selected: test\n", "test suite::selected ... ok\n" + summary, 101, "named_test_failed"),
+        ]
+        for inventory, output, exit_code, code in cases:
+            with self.subTest(code=code, output=output):
+                public = json.loads(named_tests.public_artifact_bytes(self._run(self.request, inventory, output, exit_code)))
+                self.assertEqual((public["status"], public["failure_code"]), ("failure", code))
+                if code == "inventory_reconciliation_failed":
+                    facts = public["inventory_reconciliation"]
+                    self.assertEqual(facts["ambiguous_tests"]["original_count"], 1)
+                    self.assertEqual(facts["missing_tests"]["omitted_count"], int("selected" not in inventory))
+                else:
+                    self.assertFalse(public["tests"][0]["execution_reconciled"])
+                if "suite::other ... FAILED" in output:
+                    self.assertEqual(public["failure_evidence"]["failed_names"]["names"], ["suite::other"])
+
+    def test_whole_bytes_omit_canaries_on_every_nested_surface(self) -> None:
+        private = "PRIVATE_BODY credential-token /home/private/file https://private.invalid/secret"
+        text = "permission denied (os error 13) HTTP status 503 exit code: 7 " + private
+        diagnostic = named_tests.command_diagnostics(subprocess.CompletedProcess([], 101, text, text * 100))
+        result = self._minimal()
+        result.update(status="failure", failure_code="named_test_failed", message=private, unknown={"body": private})
+        result["identity"]["url"] = private
+        result["request"]["body"] = private
+        result["inventory"]["diagnostics"] = diagnostic
+        result["tests"][0].update(diagnostics=diagnostic, matched_lines=[private], body=private)
+        result["runtime_preparation"] = {"status": "failure", "failure_reason": "binary_build_failed",
+            "source_sha": "a" * 40, "expected_target_sha": "a" * 40, "source_identity_matches": True,
+            "target_dir_context": "workspace_default", "path": private,
+            "builds": [{"name": "codex", "status": "failure", "exit_code": 101, "diagnostics": diagnostic, "body": private}],
+            "binaries": [{"name": "codex", "env_key_set": {"CARGO_BIN_EXE_codex": False, private: private}, "path": private}]}
+        result["failure_evidence"] = named_tests.failure_evidence(self.request, {"suite::selected"},
+            "test suite::selected ... FAILED\n---- suite::selected stdout ----\n" + text,
+            "", None, "")
+        result["failure_evidence"]["blocks"][0].update(body=private, markers=["permission-denied", private],
+            numeric_captures=[{"kind": "os-error-code", "value": 13}, {"kind": private, "value": 7}, {"kind": "http-status-code", "value": True}])
+        data = named_tests.public_artifact_bytes(result)
+        for canary in private.split():
+            self.assertNotIn(canary.encode(), data)
+        self.assertNotIn(b"stdout_tail", data)
+        self.assertNotIn(hashlib.sha256(private.encode()).hexdigest().encode(), data)
+        public = json.loads(data)
+        stdout = public["tests"][0]["diagnostics"]["stdout"]
+        self.assertEqual(stdout["original_char_count"], len(text))
+        self.assertEqual(stdout["markers"]["values"], ["http-error", "permission-denied"])
+        self.assertEqual(stdout["numeric_captures"]["values"], [{"kind": "http-status-code", "value": 503}, {"kind": "os-error-code", "value": 13}, {"kind": "process-exit-code", "value": 7}])
+        self.assertTrue(public["runtime_preparation"]["builds"][0]["diagnostics"]["stderr"]["truncated"])
+        self.assertEqual(public["failure_evidence"]["blocks"][0]["numeric_captures"]["omitted_count"], 2)
+
+    def test_actual_inventory_failure_has_only_safe_structured_diagnostics(self) -> None:
+        result = self._run(self.request, "permission denied (os error 13) PRIVATE_INVENTORY /private\n", "", inventory_exit=101)
+        data = named_tests.public_artifact_bytes(result)
+        public = json.loads(data)
+        self.assertEqual((public["status"], public["failure_code"], public["tests"]), ("failure", "inventory_failed", []))
+        self.assertEqual(public["inventory"]["diagnostics"]["stdout"]["numeric_captures"]["values"], [{"kind": "os-error-code", "value": 13}])
+        self.assertNotIn(b"PRIVATE_INVENTORY", data)
+        self.assertNotIn(b"/private", data)
+
+    def test_malformed_material_fields_cannot_serialize_success(self) -> None:
+        for field, value in (("candidate_sha", "bad /private"), ("request_fingerprint", "f" * 64), ("identity", {}), ("result_kind", "unknown")):
+            source = self._minimal()
+            source[field] = value
+            public = json.loads(named_tests.public_artifact_bytes(source))
+            self.assertEqual((public["status"], public["failure_code"]), ("failure", "public_projection_incomplete"))
+        source, expected = self._minimal(), self._expected()
+        source["identity"].pop("target_sha")
+        expected["identity"].pop("target_sha")
+        expected.update(status="failure", failure_code="public_projection_incomplete", incomplete=True)
+        self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
+        for source_field in ("status", "exit_code", "execution_reconciled", "observed_outcomes", "result_counts", "matched_line_count"):
+            source = self._minimal()
+            source["tests"][0][source_field] = {"private": "PRIVATE_BODY"}
+            self.assertEqual(json.loads(named_tests.public_artifact_bytes(source))["status"], "failure")
+
+    def test_source_mismatch_runtime_projection_remains_red(self) -> None:
+        result = self._minimal()
+        result.update(status="failure", failure_code="runtime_preparation_failed")
+        result["runtime_preparation"] = named_tests.prepare_core_integration_runtime(
+            CoreIntegrationRuntimePreparationTests.request, self.root / "codex-rs", {"VALIDATION_TARGET_SHA": "a" * 40}, "d" * 40)
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual(public["status"], "failure")
+        self.assertEqual(public["runtime_preparation"]["source_sha"], "d" * 40)
+        self.assertFalse(public["runtime_preparation"]["source_identity_matches"])
+
+    def test_actual_preflight_projection_and_missing_join_are_not_named_success(self) -> None:
+        fixture = CoreIntegrationRuntimePreparationTests()
+        builds = [subprocess.CompletedProcess(list(command), 0, "", "") for _, command in named_tests.CORE_RUNTIME_BUILDS]
+        result, run, states = fixture._run_with_builds(builds, [(False, False), (False, False), (True, True), (True, True)],
+                                                     extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"})
+        self.assertEqual([call.args[0] for call in run.call_args_list], [list(command) for _, command in named_tests.CORE_RUNTIME_BUILDS])
+        self.assertEqual(states.call_count, 4)
+        result["identity"] = dict(self.identity)
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual((public["status"], public["result_kind"], public["tests"]), ("success", "runtime_preflight", []))
+        self.assertEqual(public["request"]["selectors"]["omitted_count"], 1)
+        for key in ("runtime_preparation", "candidate_sha"):
+            damaged = copy.deepcopy(result)
+            damaged.pop(key)
+            self.assertEqual(json.loads(named_tests.public_artifact_bytes(damaged))["failure_code"], "public_projection_incomplete")
+        damaged = copy.deepcopy(result)
+        damaged["runtime_preparation"]["builds"].append(dict(damaged["runtime_preparation"]["builds"][0]))
+        self.assertEqual(json.loads(named_tests.public_artifact_bytes(damaged))["failure_code"], "public_projection_incomplete")
+
+    def test_size_cap_checks_final_bytes_and_constant_fallback(self) -> None:
+        source = self._minimal()
+        names = [f"suite::{index:04}_{'x' * 238}" for index in range(named_tests.MAX_PUBLIC_INVENTORY_NAMES)]
+        source["inventory"].update(tests=names, test_count=len(names))
+        data = named_tests.public_artifact_bytes(source)
+        public = json.loads(data)
+        self.assertEqual(public["failure_code"], "public_result_overflow")
+        self.assertTrue(public["truncated"])
+        self.assertGreater(public["original_serialized_bytes"], named_tests.MAX_PUBLIC_RESULT_BYTES)
+        self.assertLessEqual(len(data), named_tests.MAX_PUBLIC_RESULT_BYTES)
+        self.assertNotIn(names[-1].encode(), data)
+        with patch.object(named_tests, "MAX_PUBLIC_RESULT_BYTES", 200):
+            with self.assertRaises(named_tests.PublicResultError):
+                named_tests.public_artifact_bytes(self._minimal())
+            fallback = named_tests._fixed_tiny_overflow_failure_bytes()
+            self.assertEqual(fallback, b'{"schema_version":"rust-tests-v1","status":"failure","failure_code":"public_result_overflow","omitted":"full_result_not_emitted","truncated":true}\n')
+            self.assertLessEqual(len(fallback), 200)
+        with patch.object(named_tests, "MAX_PUBLIC_RESULT_BYTES", 1):
+            with self.assertRaises(named_tests.PublicResultError):
+                named_tests._fixed_tiny_overflow_failure_bytes()
+
+    def test_main_exception_and_only_persistent_write_are_public_bytes(self) -> None:
+        env = {"VALIDATION_HARNESS_SHA": "b" * 40, "VALIDATION_BASE_REF": "validation/base",
+               "VALIDATION_BASE_SHA": "c" * 40, "VALIDATION_TARGET_SHA": "a" * 40,
+               "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        expected = {"schema_version": named_tests.SCHEMA_VERSION, "status": "failure",
+            "failure_code": "runner_unexpected_exception", "result_kind": "named_tests", "omitted_field_count": 1,
+            "request_fingerprint": "", "candidate_sha": "", "identity": {**self.identity, "omitted_field_count": 0},
+            "request": {"tests": [], "selectors": {"original_count": 0, "omitted_count": 0, "truncated": False}, "catalog_validated": False, "request_fingerprint": "", "omitted_field_count": 0},
+            "inventory": {"status": "not-run", "tests": [], "omitted_field_count": 0, "original_count": 0, "omitted_count": 0, "truncated": False},
+            "tests": [], "test_projection": {"original_count": 0, "omitted_count": 0, "truncated": False}}
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "run_request", side_effect=RuntimeError("PRIVATE_EXCEPTION /private credential-token")) as run, \
+                patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+            self.assertEqual(named_tests.main(), 1)
+        run.assert_called_once_with(self.request, Path.cwd().resolve())
+        write.assert_called_once_with(self._bytes(expected))
+        output.assert_called_once_with('{"failure_code": "runner_unexpected_exception", "status": "failure"}')
+
+    def test_main_uses_projected_status_and_never_writes_over_cap(self) -> None:
+        env = {"VALIDATION_HARNESS_SHA": "b" * 40, "VALIDATION_BASE_REF": "validation/base",
+               "VALIDATION_BASE_SHA": "c" * 40, "VALIDATION_TARGET_SHA": "a" * 40,
+               "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        for cap, exit_code in ((named_tests.MAX_PUBLIC_RESULT_BYTES, 0), (200, 1), (1, None)):
+            with self.subTest(cap=cap), patch.dict(os.environ, env, clear=True), \
+                    patch.object(sys, "argv", ["runner"]), patch.object(named_tests, "MAX_PUBLIC_RESULT_BYTES", cap), \
+                    patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                    patch.object(named_tests, "run_request", return_value=self._minimal()), \
+                    patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+                if exit_code is None:
+                    with self.assertRaises(named_tests.PublicResultError):
+                        named_tests.main()
+                    write.assert_not_called()
+                    output.assert_not_called()
+                else:
+                    self.assertEqual(named_tests.main(), exit_code)
+                    expected = self._bytes(self._expected()) if exit_code == 0 else named_tests._fixed_tiny_overflow_failure_bytes()
+                    write.assert_called_once_with(expected)
+                    public = json.loads(expected)
+                    output.assert_called_once_with(json.dumps({"status": public["status"], "failure_code": public["failure_code"]}, sort_keys=True))
+                    self.assertLessEqual(len(expected), cap)
 
 
 if __name__ == "__main__":

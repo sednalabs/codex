@@ -26,7 +26,7 @@ PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
-ALLOWED_TARGET_KINDS = {"lib", "integration"}
+ALLOWED_TARGET_KINDS = {"lib", "integration", "bin"}
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -41,6 +41,21 @@ MAX_FAILURE_BLOCK_EVIDENCE_CHARS = 2048
 MAX_FAILURE_MARKERS_PER_BLOCK = 16
 MAX_CARGO_SUMMARIES_PER_CHANNEL = 4
 MAX_CARGO_SUMMARY_COUNT_DIGITS = 12
+MAX_PUBLIC_RESULT_BYTES = 1024 * 1024
+MAX_PUBLIC_INVENTORY_NAMES = 8192
+GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+PUBLIC_FAILURE_CODES = {
+    "request_too_large", "request_invalid_json", "request_not_object",
+    "request_schema_unsupported", "package_invalid", "target_kind_invalid",
+    "target_invalid", "profile_invalid", "profile_mismatch", "tests_invalid",
+    "test_name_invalid", "test_names_duplicate", "target_selector_unknown",
+    "runtime_preparation_mode_invalid", "runtime_preparation_only_unsupported_target",
+    "runtime_preparation_failed", "inventory_failed", "inventory_reconciliation_failed",
+    "execution_reconciliation_failed", "named_test_ignored", "named_test_failed",
+    "runner_unexpected_exception", "public_projection_incomplete", "public_result_overflow",
+}
 CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
 CORE_RUNTIME_BUILDS = (
     (
@@ -119,6 +134,7 @@ PROCESS_EXIT_CODE_RE = re.compile(
     r"\b(?:exit(?:ed)? (?:with )?status|exit code)[:= ]+(-?\d{1,5})\b",
     re.IGNORECASE,
 )
+PUBLIC_MARKERS = {name for name, _ in FAILURE_MARKER_PATTERNS} | {"http-error"}
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -137,6 +153,8 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str
         "exit_code": completed.returncode,
         "stdout_tail": bounded_diagnostic(completed.stdout),
         "stderr_tail": bounded_diagnostic(completed.stderr),
+        "stdout_char_count": len(completed.stdout or ""),
+        "stderr_char_count": len(completed.stderr or ""),
     }
 
 
@@ -212,8 +230,12 @@ def expected_commands(
     command = ["cargo", "test", "--locked", "-p", package]
     if target_kind == "lib":
         command.append("--lib")
-    else:
+    elif target_kind == "integration":
         command.extend(["--test", target])
+    elif target_kind == "bin":
+        command.extend(["--bin", target])
+    else:
+        raise ValueError("manifest target kind is not supported")
     inventory = [*command, "--", "--list"]
     execution = [*command, "--", "--test-threads=1"]
     return inventory, execution
@@ -243,11 +265,11 @@ def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]
         execution_argv = row.get("execution_argv")
         if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
             raise ValueError("manifest package is not a safe Cargo package name")
-        if target_kind not in ALLOWED_TARGET_KINDS:
+        if not isinstance(target_kind, str) or target_kind not in ALLOWED_TARGET_KINDS:
             raise ValueError("manifest target kind is not supported")
-        if target_kind == "integration":
+        if target_kind in {"integration", "bin"}:
             if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-                raise ValueError("manifest integration target is not safe")
+                raise ValueError("manifest target is not a safe nonempty Cargo target name")
         elif target != "":
             raise ValueError("manifest lib targets must use an empty target")
         if (
@@ -325,14 +347,14 @@ def parse_request(
     tests = payload.get("tests")
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
         return None, fail("package_invalid", "package must be a safe Cargo package name")
-    if target_kind not in ALLOWED_TARGET_KINDS:
-        return None, fail("target_kind_invalid", "target_kind must be lib or integration")
-    if target_kind == "integration":
+    if not isinstance(target_kind, str) or target_kind not in ALLOWED_TARGET_KINDS:
+        return None, fail("target_kind_invalid", "target_kind must be lib, integration or bin")
+    if target_kind in {"integration", "bin"}:
         if not isinstance(target, str) or not TARGET_RE.fullmatch(target):
-            return None, fail("target_invalid", "integration target must be a safe Cargo target name")
+            return None, fail("target_invalid", "target must be a safe nonempty Cargo target name")
     elif target not in ("", None, "lib"):
         return None, fail("target_invalid", "lib requests must not name an integration target")
-    if profile not in ALLOWED_PROFILES:
+    if not isinstance(profile, str) or profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
     if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
@@ -347,7 +369,7 @@ def parse_request(
         "profile": profile,
         "package": package,
         "target_kind": target_kind,
-        "target": "" if target in (None, "lib") else target,
+        "target": "" if target_kind == "lib" else target,
         "tests": tests,
     }
     return normalized, None
@@ -1183,6 +1205,319 @@ def git_sha(repo_root: Path) -> str:
     return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
+class PublicResultError(ValueError):
+    """A coded failure at the complete public artifact boundary."""
+
+
+def _safe_count(value: Any) -> int | None:
+    return value if type(value) is int and 0 <= value < 10**12 else None
+
+
+def _safe_exit(value: Any) -> int | None:
+    return value if type(value) is int and -99999 <= value <= 99999 else None
+
+
+def _safe_token(value: Any, pattern: re.Pattern[str]) -> str:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else ""
+
+
+def _safe_fields(
+    value: Any, *, counts: tuple[str, ...] = (), booleans: tuple[str, ...] = (),
+    enums: dict[str, set[str]] | None = None, handled: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Copy only explicitly typed scalar fields, never nested data or free text."""
+    source = value if isinstance(value, dict) else {}
+    safe = {key: source[key] for key in counts if _safe_count(source.get(key)) is not None}
+    safe.update({key: source[key] for key in booleans if type(source.get(key)) is bool})
+    for key, choices in (enums or {}).items():
+        if isinstance(source.get(key), str) and source[key] in choices:
+            safe[key] = source[key]
+    safe["omitted_field_count"] = len(set(source) - set(safe) - set(handled))
+    return safe
+
+
+def _safe_names(value: Any, known: set[str] | None, limit: int) -> dict[str, Any]:
+    values = value if isinstance(value, list) else []
+    names = [name for name in values if isinstance(name, str) and TEST_RE.fullmatch(name)
+             and (known is None or name in known)][:limit]
+    return {"names": names, "original_count": len(values),
+            "omitted_count": len(values) - len(names), "truncated": len(values) > len(names)}
+
+
+def _safe_identity(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe = {key: token for key in ("harness_sha", "base_sha", "target_sha")
+            if (token := _safe_token(source.get(key), GIT_SHA_RE))}
+    ref = _safe_token(source.get("base_ref"), REF_RE)
+    if ref and not any(part in ref for part in ("..", "//", "/.", "@{")) and not ref.endswith(("/", ".", ".lock")):
+        safe["base_ref"] = ref
+    for key in ("run_id", "run_attempt"):
+        raw = source.get(key)
+        if isinstance(raw, str) and re.fullmatch(r"[1-9][0-9]{0,19}", raw):
+            safe[key] = raw
+    repository = source.get("repository")
+    if isinstance(repository, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}/[A-Za-z0-9_.-]{1,100}", repository):
+        safe["repository"] = repository
+    safe["omitted_field_count"] = len(source) - len(safe)
+    return safe
+
+
+def _safe_request(value: Any, known: set[str]) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    # Revalidate the typed request and the trusted closed catalog, not arbitrary
+    # output text. The existing canonical normalized-request digest is retained.
+    try:
+        raw = json.dumps(source, sort_keys=True, separators=(",", ":"))
+        normalized, error = parse_request(raw, "")
+        if error or normalized is None:
+            raise ValueError("invalid request")
+        select_target(normalized, load_manifest(Path(__file__).resolve().parents[2]))
+    except (ValueError, TypeError, OSError):
+        normalized = None
+    safe = {key: normalized[key] for key in ("schema_version", "profile", "package", "target_kind", "target")} if normalized else {}
+    selectors = _safe_names(source.get("tests"), known, MAX_TESTS)
+    safe.update({"tests": selectors.pop("names"), "selectors": selectors})
+    safe["catalog_validated"] = normalized is not None
+    safe["request_fingerprint"] = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest() if normalized else ""
+    safe["omitted_field_count"] = len(set(source) - set(safe) - {"tests"})
+    return safe
+
+
+def _safe_numeric_captures(value: Any) -> dict[str, Any]:
+    values = value if isinstance(value, list) else []
+    captures = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        kind, number = item.get("kind"), item.get("value")
+        if type(number) is not int:
+            continue
+        if ((kind == "os-error-code" and 0 <= number <= 99999)
+                or (kind == "http-status-code" and 100 <= number <= 599)
+                or (kind == "process-exit-code" and -99999 <= number <= 99999)):
+            entry = {"kind": kind, "value": number}
+            if entry not in captures and len(captures) < MAX_FAILURE_MARKERS_PER_BLOCK:
+                captures.append(entry)
+    return {"values": captures, "original_count": len(values),
+            "omitted_count": len(values) - len(captures), "truncated": len(values) > len(captures)}
+
+
+def _safe_markers(value: Any) -> dict[str, Any]:
+    values = value if isinstance(value, list) else []
+    markers = sorted({item for item in values if isinstance(item, str) and item in PUBLIC_MARKERS})[:MAX_FAILURE_MARKERS_PER_BLOCK]
+    return {"values": markers, "original_count": len(values),
+            "omitted_count": len(values) - len(markers), "truncated": len(values) > len(markers)}
+
+
+def _safe_diagnostics(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe: dict[str, Any] = {"exit_code": _safe_exit(source.get("exit_code"))}
+    for stream in ("stdout", "stderr"):
+        raw = source.get(f"{stream}_tail")
+        text = raw if isinstance(raw, str) else ""
+        markers: set[str] = set()
+        captures: set[tuple[str, int]] = set()
+        for line in text.splitlines():
+            found_markers, found_captures = _failure_markers_for_line(line)
+            markers.update(found_markers)
+            captures.update(found_captures)
+        original = _safe_count(source.get(f"{stream}_char_count"))
+        safe[stream] = {
+            "original_char_count": original, "captured_char_count": len(text),
+            "markers": _safe_markers(sorted(markers)),
+            "numeric_captures": _safe_numeric_captures([{"kind": kind, "value": number} for kind, number in sorted(captures)]),
+            "captured_text_omitted": True,
+            "truncated": original is None or original > MAX_DIAGNOSTIC_CHARS,
+        }
+    safe["omitted_field_count"] = len(set(source) - {"exit_code", "stdout_tail", "stderr_tail", "stdout_char_count", "stderr_char_count"})
+    return safe
+
+
+def _safe_counts(value: Any) -> dict[str, int] | None:
+    keys = ("passed", "failed", "ignored", "measured", "filtered")
+    if not isinstance(value, dict) or any(_safe_count(value.get(key)) is None for key in keys):
+        return None
+    return {key: value[key] for key in keys}
+
+
+def _safe_inventory(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe = _safe_fields(source, counts=("test_count",), enums={"status": {"success", "failure", "not-run"}}, handled=("tests", "diagnostics"))
+    names = _safe_names(source.get("tests"), None, MAX_PUBLIC_INVENTORY_NAMES)
+    safe.update({"tests": names.pop("names"), **names})
+    if "diagnostics" in source:
+        safe["diagnostics"] = _safe_diagnostics(source["diagnostics"])
+    return safe
+
+
+def _safe_test_results(value: Any, known: set[str]) -> dict[str, Any]:
+    values = value if isinstance(value, list) else []
+    tests = []
+    for item in values:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or item["name"] not in known:
+            continue
+        safe = _safe_fields(item, counts=("matched_line_count",), booleans=("execution_reconciled", "matched_lines_truncated"), enums={"status": {"success", "failure"}}, handled=("name", "exit_code", "result_counts", "observed_outcomes", "matched_lines", "diagnostics"))
+        safe.update({"name": item["name"], "exit_code": _safe_exit(item.get("exit_code")),
+                     "result_counts": _safe_counts(item.get("result_counts"))})
+        outcomes = item.get("observed_outcomes")
+        outcomes = outcomes if isinstance(outcomes, list) else []
+        accepted = [outcome for outcome in outcomes if isinstance(outcome, str) and outcome in {"ok", "FAILED", "ignored"}][:MAX_MATCHED_TEST_LINES]
+        safe.update({"observed_outcomes": accepted, "outcome_original_count": len(outcomes),
+                     "outcome_omitted_count": len(outcomes) - len(accepted),
+                     "matched_lines": [f"test {item['name']} ... {outcome}" for outcome in accepted],
+                     "diagnostics": _safe_diagnostics(item.get("diagnostics"))})
+        safe["matched_lines_truncated"] = safe.get("matched_lines_truncated", True) or len(outcomes) > len(accepted) or (safe.get("matched_line_count", 0) > len(accepted))
+        tests.append(safe)
+        if len(tests) == MAX_TESTS:
+            break
+    return {"records": tests, "original_count": len(values), "omitted_count": len(values) - len(tests), "truncated": len(values) > len(tests)}
+
+
+def _safe_failure_evidence(value: Any, known: set[str]) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe = _safe_fields(source, counts=(
+        "parsed_block_count", "emitted_block_count", "omitted_block_count", "unrecognized_block_count",
+        "failed_name_occurrence_count", "failed_name_distinct_count", "safe_failed_name_count",
+        "unsafe_or_unknown_failed_name_count", "failed_names_omitted_count", "structured_evidence_bytes",
+    ), booleans=("blocks_truncated", "failed_names_truncated", "capture_truncated"), enums={
+        "source_status": {"parsed", "unrecognized", "none"}, "cargo_summary_status": {"parsed", "unrecognized", "none"},
+        "upstream_output_truncation": {"unknown"},
+    }, handled=("cargo_summary_failed_count", "failed_name_ordering", "block_ordering", "failed_names", "requested_failed_selectors", "requested_failed_selectors_without_blocks", "streams", "cargo_summary_channels", "blocks"))
+    safe["cargo_summary_failed_count"] = _safe_count(source.get("cargo_summary_failed_count"))
+    safe["ordering"] = "requested_then_stream_ordinal_not_chronology"
+    safe["size_scope"] = "pre_projection_structured_source"
+    for key in ("failed_names", "requested_failed_selectors", "requested_failed_selectors_without_blocks"):
+        safe[key] = _safe_names(source.get(key), known, MAX_FAILURE_NAMES if key == "failed_names" else MAX_TESTS)
+    streams = source.get("streams") if isinstance(source.get("streams"), dict) else {}
+    safe["streams"] = {key: _safe_fields(streams.get(key), counts=("source_char_count", "header_candidate_count", "parsed_header_count", "unrecognized_header_count"), booleans=("capture_truncated",), enums={"status": {"parsed", "unrecognized", "none"}}) for key in ("stdout", "stderr")}
+    channels = source.get("cargo_summary_channels") if isinstance(source.get("cargo_summary_channels"), dict) else {}
+    safe["cargo_summary_channels"] = {}
+    for key in ("stdout", "stderr"):
+        channel = channels.get(key) if isinstance(channels.get(key), dict) else {}
+        projected = _safe_fields(channel, counts=("match_count", "omitted_count"), booleans=("truncated",), handled=("summaries",))
+        summaries = channel.get("summaries") if isinstance(channel.get("summaries"), list) else []
+        projected["summaries"] = [counts for item in summaries if (counts := _safe_counts(item)) is not None][:MAX_CARGO_SUMMARIES_PER_CHANNEL]
+        projected["projection_omitted_count"] = len(summaries) - len(projected["summaries"])
+        safe["cargo_summary_channels"][key] = projected
+    values = source.get("blocks") if isinstance(source.get("blocks"), list) else []
+    safe["blocks"] = []
+    for block in values:
+        if not isinstance(block, dict) or not isinstance(block.get("name"), str) or block["name"] not in known:
+            continue
+        projected = _safe_fields(block, counts=("stream_ordinal", "original_char_count", "evidence_char_count"), booleans=("requested_failed_selector", "markers_truncated", "numeric_captures_truncated", "evidence_truncated"), enums={"source_stream": {"stdout", "stderr"}, "channel": {"stdout", "stderr"}}, handled=("name", "markers", "numeric_captures"))
+        projected.update({"name": block["name"], "markers": _safe_markers(block.get("markers")), "numeric_captures": _safe_numeric_captures(block.get("numeric_captures"))})
+        projected["size_scope"] = "pre_projection_structured_source"
+        safe["blocks"].append(projected)
+        if len(safe["blocks"]) == MAX_FAILURE_BLOCKS:
+            break
+    safe["projection_omitted_block_count"] = len(values) - len(safe["blocks"])
+    return safe
+
+
+def _safe_runtime_preparation(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    safe = _safe_fields(source, booleans=("source_identity_matches",), enums={
+        "status": {"success", "failure"}, "target_dir_context": {"unsupported", "absolute_override", "workspace_default"},
+        "failure_reason": {"source_identity_mismatch", "unsupported_target_dir_context", "unexpected_binary_environment_override", "binary_present_before_build", "binary_build_failed", "binary_missing_or_not_executable"},
+    }, handled=("source_sha", "expected_target_sha", "builds", "binaries"))
+    safe.update({key: _safe_token(source.get(key), GIT_SHA_RE) for key in ("source_sha", "expected_target_sha")})
+    for key in ("builds", "binaries"):
+        values = source.get(key) if isinstance(source.get(key), list) else []
+        safe[key] = []
+        for item in values[:len(CORE_RUNTIME_BUILDS)]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or item["name"] not in CORE_RUNTIME_ENV_KEYS:
+                continue
+            projected = {"name": item["name"]}
+            if key == "builds":
+                projected.update(_safe_fields(item, enums={"status": {"success", "failure", "launch_failed"}}, handled=("name", "exit_code", "diagnostics")))
+                projected["exit_code"] = _safe_exit(item.get("exit_code"))
+                if "diagnostics" in item:
+                    projected["diagnostics"] = _safe_diagnostics(item["diagnostics"])
+            else:
+                for field in ("regular_file_before", "executable_before", "regular_file_after", "executable_after"):
+                    projected[field] = item.get(field) if type(item.get(field)) is bool else None
+                env = item.get("env_key_set") if isinstance(item.get("env_key_set"), dict) else {}
+                projected["env_key_set"] = {field: env.get(field) if type(env.get(field)) is bool else None for field in CORE_RUNTIME_ENV_KEYS[item["name"]]}
+                projected["omitted_field_count"] = len(set(item) - set(projected) - {"env_key_set"})
+                projected["env_omitted_field_count"] = len(set(env) - set(CORE_RUNTIME_ENV_KEYS[item["name"]]))
+            safe[key].append(projected)
+        safe[f"{key}_omitted_count"] = len(values) - len(safe[key])
+    return safe
+
+
+def _safe_reconciliation(result: dict[str, Any], known: set[str]) -> dict[str, Any]:
+    return {key: _safe_names(result.get(key), known, MAX_TESTS) for key in ("missing_tests", "ambiguous_tests")}
+
+
+def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Project every public field afresh; omitted raw content is never hashed."""
+    inventory = _safe_inventory(result.get("inventory"))
+    known = set(inventory["tests"])
+    identity = _safe_identity(result.get("identity"))
+    request = _safe_request(result.get("request"), known)
+    tests = _safe_test_results(result.get("tests"), known)
+    safe: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION, "status": "success" if result.get("status") == "success" else "failure",
+        "failure_code": result.get("failure_code") if isinstance(result.get("failure_code"), str) and result["failure_code"] in PUBLIC_FAILURE_CODES else "",
+        "result_kind": "runtime_preflight" if result.get("result_kind") == "runtime_preflight" else "named_tests",
+        "request_fingerprint": _safe_token(result.get("request_fingerprint"), SHA256_RE),
+        "candidate_sha": _safe_token(result.get("candidate_sha"), GIT_SHA_RE),
+        "identity": identity, "request": request, "inventory": inventory,
+        "tests": tests.pop("records"), "test_projection": tests,
+        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests"}),
+    }
+    if "runtime_preparation" in result:
+        safe["runtime_preparation"] = _safe_runtime_preparation(result["runtime_preparation"])
+    if "failure_evidence" in result:
+        safe["failure_evidence"] = _safe_failure_evidence(result["failure_evidence"], known)
+    if result.get("missing_tests") or result.get("ambiguous_tests"):
+        safe["inventory_reconciliation"] = _safe_reconciliation(result, known)
+    if safe["status"] == "success":
+        complete = (result.get("schema_version") == SCHEMA_VERSION and ("result_kind" not in result or result["result_kind"] in ("named_tests", "runtime_preflight")) and request["catalog_validated"]
+                    and all(identity.get(key) for key in ("harness_sha", "base_ref", "base_sha", "target_sha", "run_id", "run_attempt"))
+                    and safe["candidate_sha"] == identity.get("target_sha") and bool(safe["request_fingerprint"]))
+        complete = complete and request["request_fingerprint"] == safe["request_fingerprint"]
+        if safe["result_kind"] == "named_tests":
+            complete = complete and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"] and not inventory["omitted_count"] and not request["selectors"]["omitted_count"] and not tests["omitted_count"]
+            complete = complete and [item["name"] for item in safe["tests"]] == request["tests"] and bool(safe["tests"])
+            complete = complete and all(inventory["tests"].count(item["name"]) == 1 and item.get("status") == "success" and item["exit_code"] == 0 and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1 and item.get("matched_line_count") == 1 and item["result_counts"] is not None for item in safe["tests"])
+        else:
+            complete = complete and tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET and inventory.get("status") == "not-run" and not safe["tests"] and tests["original_count"] == 0
+        runtime = safe.get("runtime_preparation")
+        if runtime is not None or safe["result_kind"] == "runtime_preflight" or tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET:
+            runtime = runtime or {}
+            complete = complete and runtime.get("status") == "success" and runtime.get("source_identity_matches") is True and runtime.get("source_sha") == safe["candidate_sha"] == runtime.get("expected_target_sha")
+            complete = complete and runtime.get("target_dir_context") in ("workspace_default", "absolute_override") and runtime.get("builds_omitted_count") == 0 and runtime.get("binaries_omitted_count") == 0 and "failure_reason" not in runtime
+            complete = complete and [item["name"] for item in runtime.get("builds", [])] == [name for name, _ in CORE_RUNTIME_BUILDS] and all(item.get("status") == "success" and item.get("exit_code") == 0 for item in runtime.get("builds", []))
+            complete = complete and [item["name"] for item in runtime.get("binaries", [])] == [name for name, _ in CORE_RUNTIME_BUILDS] and all(item.get("regular_file_before") is False and item.get("executable_before") is False and item.get("regular_file_after") is True and item.get("executable_after") is True and all(flag is False for flag in item["env_key_set"].values()) for item in runtime.get("binaries", []))
+        if not complete:
+            safe.update(status="failure", failure_code="public_projection_incomplete", incomplete=True)
+    if safe["status"] == "failure" and not safe["failure_code"]:
+        safe["failure_code"] = "public_projection_incomplete"
+    return safe
+
+
+def public_artifact_bytes(result: dict[str, Any]) -> bytes:
+    safe = public_safe_result(result)
+    encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
+        safe = {"schema_version": SCHEMA_VERSION, "status": "failure", "failure_code": "public_result_overflow",
+                "result_kind": safe["result_kind"], "original_serialized_bytes": len(encoded),
+                "omitted": "full_result_not_emitted", "truncated": True,
+                "identity": safe["identity"], "request_fingerprint": safe["request_fingerprint"]}
+        encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
+        raise PublicResultError("public_result_overflow")
+    return encoded
+
+
+def _fixed_tiny_overflow_failure_bytes() -> bytes:
+    data = b'{"schema_version":"rust-tests-v1","status":"failure","failure_code":"public_result_overflow","omitted":"full_result_not_emitted","truncated":true}\n'
+    if len(data) > MAX_PUBLIC_RESULT_BYTES:
+        raise PublicResultError("public_result_overflow")
+    return data
+
+
 def main() -> int:
     if sys.argv[1:] == ["--requires-core-runtime"]:
         try:
@@ -1199,8 +1534,11 @@ def main() -> int:
             ).lower()
         )
         return 0
-    request, error = load_request()
-    result = error or run_request(request or {}, Path.cwd().resolve())
+    try:
+        request, error = load_request()
+        result = error or run_request(request or {}, Path.cwd().resolve())
+    except Exception:
+        result = fail("runner_unexpected_exception", "runner execution failed")
     result.setdefault("identity", {})
     result["identity"].update(
         {
@@ -1209,18 +1547,22 @@ def main() -> int:
             "base_sha": os.environ.get("VALIDATION_BASE_SHA", ""),
             "target_sha": os.environ.get("VALIDATION_TARGET_SHA", ""),
             "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+            "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
         }
     )
-    Path("rust-tests-v1-results.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    try:
+        data = public_artifact_bytes(result)
+    except PublicResultError:
+        data = _fixed_tiny_overflow_failure_bytes()
+    Path("rust-tests-v1-results.json").write_bytes(data)
+    public = json.loads(data)
     print(
         json.dumps(
-            {"status": result.get("status"), "failure_code": result.get("failure_code", "")},
+            {"status": public["status"], "failure_code": public.get("failure_code", "")},
             sort_keys=True,
         )
     )
-    return 0 if result.get("status") == "success" else 1
+    return 0 if public["status"] == "success" else 1
 
 
 if __name__ == "__main__":
