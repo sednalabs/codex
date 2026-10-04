@@ -588,6 +588,72 @@ def runner_process_is_consistent(process: dict[str, Any]) -> bool:
     return {**expected, "summaries": summaries} == process
 
 
+def cargo_runner_command(
+    cargo: str, package: str, runner_args: list[str]
+) -> list[str]:
+    runner_config = (
+        f"target.'{LINUX_HOST_TARGET}'.runner="
+        f"{json.dumps(runner_args, separators=(',', ':'))}"
+    )
+    return [
+        cargo,
+        "--config",
+        runner_config,
+        "test",
+        "--locked",
+        "-p",
+        package,
+        "--lib",
+        "--message-format=json",
+    ]
+
+
+def library_runner_decision(
+    cargo_exit_code: int,
+    captured_output_sha256: str,
+    result_state: str,
+    runner_value: Any,
+    binding: dict[str, Any],
+    cargo_summaries: list[dict[str, int | str]] | None,
+    expected_binary_sha256: str,
+    actual_binary_sha256: str,
+) -> dict[str, Any]:
+    child_status = "unknown"
+    runner_output_sha256 = None
+    reason = "accepted"
+    if result_state == "missing":
+        reason = "runner_result_missing"
+    elif result_state == "refused":
+        reason = "runner_result_refused"
+    elif cargo_summaries is None:
+        reason = "cargo_summary_unsupported"
+    elif result_state != "present" or not valid_runner_result(runner_value, binding):
+        reason = "runner_result_invalid"
+    else:
+        process = runner_value["process"]
+        if not runner_process_is_consistent(process):
+            reason = "runner_process_invalid"
+        else:
+            child_status = process["classification"]
+            runner_output_sha256 = process["output_sha256"]
+            if cargo_summaries != process["summaries"]:
+                reason = "cargo_runner_summaries_disagree"
+            elif expected_binary_sha256 != actual_binary_sha256:
+                reason = "bound_binary_changed"
+            elif cargo_exit_code != 0:
+                reason = "cargo_exit_nonzero"
+            elif child_status != "passed":
+                reason = "child_not_passed"
+    return {
+        "accepted": reason == "accepted",
+        "reason": reason,
+        "cargo_exit_code": cargo_exit_code,
+        "captured_output_sha256": captured_output_sha256,
+        "child_status": child_status,
+        "runner_output_sha256": runner_output_sha256,
+    }
+
+
 def runner_binding_bytes(binding: dict[str, Any]) -> bytes:
     return (json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
@@ -976,6 +1042,147 @@ def verify_test_summary_parser_contract() -> None:
     if not runner_process_is_consistent(spawn_failed_runner_process):
         refuse("Cargo runner result contract failed")
 
+    runner_args = [
+        "/usr/bin/python3",
+        "/repo/.github/scripts/runtime-proof-hosted.py",
+        RUNNER_MODE,
+        "/tmp/private/binding.json",
+    ]
+    if cargo_runner_command("/toolchain/bin/cargo", "codex-core", runner_args) != [
+        "/toolchain/bin/cargo",
+        "--config",
+        "target.'x86_64-unknown-linux-gnu'.runner="
+        '["/usr/bin/python3","/repo/.github/scripts/runtime-proof-hosted.py",'
+        '"--cargo-runtime-proof-runner","/tmp/private/binding.json"]',
+        "test",
+        "--locked",
+        "-p",
+        "codex-core",
+        "--lib",
+        "--message-format=json",
+    ]:
+        refuse("Cargo runner command contract failed")
+
+    expected_decision = {
+        "accepted": False,
+        "reason": "runner_result_missing",
+        "cargo_exit_code": 17,
+        "captured_output_sha256": "9" * 64,
+        "child_status": "unknown",
+        "runner_output_sha256": None,
+    }
+    if library_runner_decision(
+        17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, "3" * 64
+    ) != expected_decision:
+        refuse("Cargo runner decision contract failed")
+    refused_decision = {
+        **expected_decision,
+        "reason": "runner_result_refused",
+    }
+    if library_runner_decision(
+        17, "9" * 64, "refused", None, binding, runner_summaries, "3" * 64, "3" * 64
+    ) != refused_decision:
+        refuse("Cargo runner decision contract failed")
+    unsupported_decision = {
+        **expected_decision,
+        "reason": "cargo_summary_unsupported",
+    }
+    if library_runner_decision(
+        17, "9" * 64, "present", runner_result, binding, None, "3" * 64, "3" * 64
+    ) != unsupported_decision:
+        refuse("Cargo runner decision contract failed")
+    wrong_invocation_result = make_runner_result(
+        {**binding, "invocation_id": "f" * 32}, runner_process
+    )
+    wrong_digest_result = make_runner_result(
+        {**binding, "artifact_sha256": "a" * 64}, runner_process
+    )
+    invalid_result_decision = {
+        **expected_decision,
+        "reason": "runner_result_invalid",
+        "cargo_exit_code": 0,
+    }
+    for invalid_result in (wrong_invocation_result, wrong_digest_result):
+        if library_runner_decision(
+            0,
+            "9" * 64,
+            "present",
+            invalid_result,
+            binding,
+            runner_summaries,
+            "3" * 64,
+            "3" * 64,
+        ) != invalid_result_decision:
+            refuse("Cargo runner decision contract failed")
+    nonzero_cargo_decision = {
+        "accepted": False,
+        "reason": "cargo_exit_nonzero",
+        "cargo_exit_code": 1,
+        "captured_output_sha256": "9" * 64,
+        "child_status": "passed",
+        "runner_output_sha256": "5" * 64,
+    }
+    if library_runner_decision(
+        1,
+        "9" * 64,
+        "present",
+        runner_result,
+        binding,
+        runner_summaries,
+        "3" * 64,
+        "3" * 64,
+    ) != nonzero_cargo_decision:
+        refuse("Cargo runner decision contract failed")
+    successful_decision = {
+        **nonzero_cargo_decision,
+        "accepted": True,
+        "reason": "accepted",
+        "cargo_exit_code": 0,
+    }
+    if library_runner_decision(
+        0,
+        "9" * 64,
+        "present",
+        runner_result,
+        binding,
+        runner_summaries,
+        "3" * 64,
+        "3" * 64,
+    ) != successful_decision:
+        refuse("Cargo runner decision contract failed")
+    changed_binary_decision = {
+        **successful_decision,
+        "accepted": False,
+        "reason": "bound_binary_changed",
+    }
+    if library_runner_decision(
+        0,
+        "9" * 64,
+        "present",
+        runner_result,
+        binding,
+        runner_summaries,
+        "3" * 64,
+        "4" * 64,
+    ) != changed_binary_decision:
+        refuse("Cargo runner decision contract failed")
+    summary_mismatch_decision = {
+        **successful_decision,
+        "accepted": False,
+        "reason": "cargo_runner_summaries_disagree",
+    }
+    if library_runner_decision(
+        0,
+        "9" * 64,
+        "present",
+        runner_result,
+        binding,
+        [{"status": "ok", "passed": 2, "failed": 0, "ignored": 0}],
+        "3" * 64,
+        "3" * 64,
+    ) != summary_mismatch_decision:
+        refuse("Cargo runner decision contract failed")
+
     success = [{"status": "ok", "passed": 2, "failed": 0, "ignored": 1}]
     success_counts = {"test_summary_count": 1, "passed": 2, "failed": 0, "ignored": 1}
     if cargo_library_process_result(0, success, "a" * 64) != {
@@ -1267,21 +1474,9 @@ def run_library_suite(
             RUNNER_MODE,
             str(binding_path),
         ]
-        runner_config = (
-            f"target.'{LINUX_HOST_TARGET}'.runner="
-            f"{json.dumps(runner_args, separators=(',', ':'))}"
+        test_command = cargo_runner_command(
+            str(context["cargo"]), package_name, runner_args
         )
-        test_command = [
-            str(context["cargo"]),
-            "--config",
-            runner_config,
-            "test",
-            "--locked",
-            "-p",
-            package_name,
-            "--lib",
-            "--message-format=json",
-        ]
         cargo_result = subprocess.run(
             test_command,
             cwd=CODEX_RS,
@@ -1290,29 +1485,45 @@ def run_library_suite(
             stderr=subprocess.STDOUT,
             close_fds=False,
         )
+        captured_output_sha256 = sha256_bytes(cargo_result.stdout)
         output = cargo_result.stdout.decode("utf-8", errors="replace")
         try:
             cargo_summaries = parse_test_summaries(output)
         except SystemExit:
-            refuse(f"required library suite returned unsupported summaries: {package_name}")
-        runner_value = read_private_runner_record(result_path)
-        if not valid_runner_result(runner_value, binding):
-            refuse(f"required library suite has no valid current runner result: {package_name}")
-        if cargo_summaries != runner_value["process"]["summaries"]:
-            refuse(f"Cargo and runner test summaries disagree: {package_name}")
-        process_result = runner_value["process"]
-        if not runner_process_is_consistent(process_result):
-            refuse(f"library runner process result is internally inconsistent: {package_name}")
+            cargo_summaries = None
+        result_state = "present"
+        try:
+            runner_value = read_private_runner_record(result_path)
+        except SystemExit:
+            runner_value = None
+            result_state = "refused"
+        if runner_value is None and result_state == "present":
+            try:
+                result_path.lstat()
+            except FileNotFoundError:
+                result_state = "missing"
+            except OSError:
+                result_state = "refused"
+            else:
+                result_state = "refused"
         after_hash = sha256_file(binary)
-        if after_hash != before_hash:
-            refuse(f"bound library test executable changed during invocation: {package_name}")
-        if cargo_result.returncode != 0 or process_result["classification"] != "passed":
+        decision = library_runner_decision(
+            cargo_result.returncode,
+            captured_output_sha256,
+            result_state,
+            runner_value,
+            binding,
+            cargo_summaries,
+            before_hash,
+            after_hash,
+        )
+        if not decision["accepted"]:
             refuse(
-                "required library suite failed: "
-                f"{package_name}; cargo_exit_code={cargo_result.returncode}; "
-                "runner_result="
-                f"{json.dumps(process_result, sort_keys=True, separators=(',', ':'))}"
+                "required library suite did not pass: "
+                f"{package_name}; "
+                f"{json.dumps(decision, sort_keys=True, separators=(',', ':'))}"
             )
+        process_result = runner_value["process"]
         return {
             "package": package_name,
             "command": [
