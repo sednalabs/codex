@@ -144,6 +144,7 @@ fn exact_keys_associate_once_and_partition_distinct_calls() {
         })],
         unmatched: false,
         conflicting_usage_identity: false,
+        identity_quarantined: false,
         association_truncated: false,
         conflicting_identity_event_count: 0,
         unqualified_response_event_count: 0,
@@ -191,6 +192,7 @@ fn conflicting_duplicate_is_quarantined_into_unknown_partition() {
         diagnostic_events: Vec::new(),
         unmatched: true,
         conflicting_usage_identity: true,
+        identity_quarantined: false,
         association_truncated: false,
         conflicting_identity_event_count: 0,
         unqualified_response_event_count: 0,
@@ -255,8 +257,6 @@ fn unknown_actual_model_and_missing_usage_are_not_filled_or_zero_priced() {
 #[test]
 fn response_key_may_join_only_with_exact_thread_and_same_namespace() {
     let usage = call("call-1", "scope-1");
-    let mut usage = usage;
-    usage.key.call_id = None;
     let mut diagnostic = reference(&usage, 3);
     diagnostic.key.call_id = None;
     let summary = join_control_plane_usage(&scope(), &[usage.clone()], &[diagnostic.clone()]);
@@ -379,14 +379,15 @@ fn response_key_rejects_a_contradictory_provider_call_key() {
 #[test]
 fn response_key_requires_matching_provider_and_qualified_scope() {
     let mut usage = call("call-response", "scope-1");
-    usage.key.call_id = None;
     let mut wrong_provider = usage.key.clone();
+    wrong_provider.call_id = None;
     wrong_provider.provider = Some("other-provider".to_string());
     let summary = join_control_plane_usage(&scope(), &[usage.clone()], &[reference_with_key(wrong_provider, 3)]);
     assert_eq!(summary.associated_call_count, 0);
-    assert_eq!(summary.conflicting_identity_event_count, 1);
+    assert_eq!(summary.conflicting_identity_event_count, 0);
 
     let mut unknown_scope = usage.key.clone();
+    unknown_scope.call_id = None;
     unknown_scope.account_scope = UsageAccountScope::Unknown;
     let summary = join_control_plane_usage(&scope(), &[usage.clone()], &[reference_with_key(unknown_scope, 4)]);
     assert_eq!(summary.associated_call_count, 0);
@@ -395,12 +396,14 @@ fn response_key_requires_matching_provider_and_qualified_scope() {
 
     usage.key.account_scope = UsageAccountScope::WriterUnscoped;
     let mut omitted_scope = usage.key.clone();
+    omitted_scope.call_id = None;
     omitted_scope.account_scope = UsageAccountScope::Unknown;
-    let summary = join_control_plane_usage(&scope(), &[usage], &[reference_with_key(omitted_scope, 5)]);
+    let summary = join_control_plane_usage(&scope(), &[usage.clone()], &[reference_with_key(omitted_scope, 5)]);
     assert_eq!(summary.associated_call_count, 0);
     assert_eq!(summary.unqualified_response_event_count, 1);
 
     let mut known_scope = usage.key.clone();
+    known_scope.call_id = None;
     known_scope.account_scope = UsageAccountScope::KnownScope("account-1".to_string());
     let summary = join_control_plane_usage(&scope(), &[usage], &[reference_with_key(known_scope, 10)]);
     assert_eq!(summary.associated_call_count, 0);
@@ -410,10 +413,8 @@ fn response_key_requires_matching_provider_and_qualified_scope() {
 #[test]
 fn identical_response_ids_across_accounts_do_not_cross_associate() {
     let mut account_a = call("call-a", "scope-1");
-    account_a.key.call_id = None;
     account_a.key.response_id = Some("shared-response".to_string());
     let mut account_b = call("call-b", "scope-1");
-    account_b.key.call_id = None;
     account_b.key.response_id = Some("shared-response".to_string());
     account_b.key.account_scope = UsageAccountScope::KnownScope("account-2".to_string());
     let mut ref_a = account_a.key.clone();
@@ -426,7 +427,7 @@ fn identical_response_ids_across_accounts_do_not_cross_associate() {
         &[reference_with_key(ref_a, 6), reference_with_key(ref_b, 7)],
     );
     assert_eq!(summary.associated_call_count, 2);
-    assert_eq!(summary.conflicting_identity_event_count, 2);
+    assert_eq!(summary.conflicting_identity_event_count, 0);
     assert_eq!(summary.distinct_call_count, 2);
     assert_eq!(summary.partitions.values().map(|partition| partition.call_count).sum::<usize>(), 2);
 }
@@ -434,11 +435,12 @@ fn identical_response_ids_across_accounts_do_not_cross_associate() {
 #[test]
 fn full_response_tuple_replays_and_primary_legacy_key_keeps_unknown_optional_identity() {
     let mut response_only = call("call-response", "scope-1");
-    response_only.key.call_id = None;
+    let mut response_reference = response_only.key.clone();
+    response_reference.call_id = None;
     let summary = join_control_plane_usage(
         &scope(),
         &[response_only.clone()],
-        &[reference_with_key(response_only.key.clone(), 8)],
+        &[reference_with_key(response_reference, 8)],
     );
     assert_eq!(summary.associated_call_count, 1);
     assert_eq!(summary.unqualified_response_event_count, 0);
@@ -450,7 +452,7 @@ fn full_response_tuple_replays_and_primary_legacy_key_keeps_unknown_optional_ide
     legacy_ref.call_id = Some("call-response".to_string());
     response_only.key.call_id = Some("call-response".to_string());
     response_only.key.response_id = None;
-    response_only.identity_quarantined = true;
+    response_only.identity_quarantined = false;
     let summary = join_control_plane_usage(
         &scope(),
         &[response_only],

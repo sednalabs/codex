@@ -7,8 +7,6 @@ mod usage;
 
 pub use lifecycle_timelines::{BoundaryTimeline, MessageTimeline, ProviderCallTimeline, WaitTimeline};
 pub use recorder::ControlPlaneRecorder;
-pub use summary::{
-    ExternalDuration, QueueTimeline, SchedulerTimeline, SleepTimeline, Summary,
-};
+pub use summary::Summary;
 pub use types::*;
 pub use usage::*;

@@ -33,6 +33,8 @@ pub enum TargetMode { Targeted, Untargeted, Unknown }
 pub enum ReturnWhen { Any, All, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TargetReferenceKind { ExposedAgentPath, ThreadId, Unknown }
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TargetReference { pub id: String, pub kind: TargetReferenceKind }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SelectedOutcome {
     TargetTerminal, TargetActionRequired, MailboxTurnRequested, OperatorSteer, Timeout,
@@ -79,7 +81,32 @@ pub enum ProviderLedgerWriteOutcome { Inserted, Duplicate, FailedUnknown, NotCon
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct EventIdentity { pub capture_instance_id: String, pub sequence: u64 }
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ReadinessObservation { pub state: Readiness, pub target_turn_id: Option<String> }
+pub struct ReadinessObservation {
+    pub target: Option<TargetReference>,
+    pub state: Readiness,
+    pub target_turn_id: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ObservedHostWaitReason { TargetTerminal, Timeout, Other, Unknown }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ObservedHostWakeCause { TargetStatus, Other, Unknown }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ObservedHostStatusTag { Running, Completed }
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct HostTargetStatusObservation {
+    pub target_reference: TargetReference,
+    pub status_tag: ObservedHostStatusTag,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ObservedHostWaitReturn {
+    pub timed_out: Option<bool>,
+    pub reason: ObservedHostWaitReason,
+    pub wake_cause: ObservedHostWakeCause,
+    pub queued_update_count: Option<u64>,
+    pub target_statuses: Vec<HostTargetStatusObservation>,
+    pub target_status_complete: bool,
+    pub complete: bool,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusQueryObservation {
     /// Fingerprints contain only allowlisted metadata, never body content.
@@ -130,13 +157,16 @@ pub struct WaitObservation {
     pub requested_target_ids: Vec<String>, pub requested_target_kind: TargetReferenceKind,
     pub requested_target_set_complete: bool, pub resolved_target_set_complete: Option<bool>,
     pub subscribed_readiness: Vec<ReadinessObservation>,
+    pub subscribed_readiness_complete: bool,
     pub selected_readiness: Vec<ReadinessObservation>,
+    pub selected_readiness_complete: bool,
     pub blocked_start_offset_ns: Option<u64>, pub blocked_end_offset_ns: Option<u64>,
     pub operation_duration_ns: Option<u64>, pub blocked_duration_ns: Option<u64>,
     pub selected_outcome: SelectedOutcome, pub selected_producer: Option<EventIdentity>,
     pub selected_target_id: Option<String>, pub selected_target_turn_id: Option<String>,
     pub continuation_of_wait_id: Option<String>,
     pub request_fingerprint: Option<String>, pub result_fingerprint: Option<String>,
+    pub observed_host_return: Option<ObservedHostWaitReturn>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageObservation {
@@ -210,6 +240,7 @@ pub struct InvalidCaptureId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SleepTimeline {
+    pub identity: EventIdentity,
     pub capture_instance_id: String,
     pub source_plane: SourcePlane,
     pub thread_id: Option<String>,
@@ -223,6 +254,7 @@ pub struct SleepTimeline {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchedulerTimeline {
+    pub source_events: Vec<EventIdentity>,
     pub capture_instance_id: String,
     pub source_plane: SourcePlane,
     pub thread_id: Option<String>,
@@ -259,6 +291,7 @@ pub struct ExternalDuration {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueTimeline {
+    pub identity: EventIdentity,
     pub capture_instance_id: String,
     pub source_plane: SourcePlane,
     pub thread_id: Option<String>,

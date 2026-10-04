@@ -347,7 +347,7 @@ pub async fn read_control_plane_usage_snapshot(
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
         let turn_json = serde_json::to_string(&request.turn_ids)
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
-        let raw_rows = sqlx::query(query)
+        let raw_rows = sqlx::query(&query)
             .bind(started)
             .bind(ended)
             .bind(thread_json)

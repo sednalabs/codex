@@ -54,7 +54,9 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         requested_target_set_complete: true,
         resolved_target_set_complete: Some(true),
         subscribed_readiness: vec![],
+        subscribed_readiness_complete: true,
         selected_readiness: vec![],
+        selected_readiness_complete: true,
         blocked_start_offset_ns: Some(10),
         blocked_end_offset_ns: Some(20),
         operation_duration_ns: Some(12),
@@ -66,6 +68,7 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         continuation_of_wait_id: None,
         request_fingerprint: None,
         result_fingerprint: None,
+        observed_host_return: None,
     }
 }
 fn recorder(id: &str) -> ControlPlaneRecorder {
@@ -99,6 +102,33 @@ fn default_off_and_invalid_identity_never_create_truncated_joins() {
     invalid.operation_id = Some("q".repeat(257));
     assert_eq!(active.record(invalid), None);
     assert_eq!(active.losses().invalid_identity, 1);
+}
+
+#[test]
+fn every_retained_readiness_target_and_optional_reference_is_validated() {
+    let active = recorder("capture-a");
+    let mut invalid = event(EventKind::OutcomePublished);
+    invalid.readiness = Some(ReadinessObservation {
+        target: Some(TargetReference { id: "bad\0target".into(), kind: TargetReferenceKind::ThreadId }),
+        state: Readiness::Pending,
+        target_turn_id: None,
+    });
+    assert_eq!(active.record(invalid), None);
+
+    let mut invalid_query = event(EventKind::StatusQueryObserved);
+    invalid_query.status_query = Some(StatusQueryObservation {
+        request_fingerprint: None,
+        result_fingerprint: None,
+        readiness: Some(ReadinessObservation {
+            target: Some(TargetReference { id: "t".repeat(257), kind: TargetReferenceKind::ThreadId }),
+            state: Readiness::Pending,
+            target_turn_id: None,
+        }),
+        request_projection: None,
+        result_projection: None,
+    });
+    assert_eq!(active.record(invalid_query), None);
+    assert_eq!(active.losses().invalid_identity, 2);
 }
 
 #[test]
@@ -140,6 +170,20 @@ fn exact_duplicates_count_as_duplicates_and_conflicting_variants_once() {
 }
 
 #[test]
+fn invalid_event_identity_is_excluded_and_accounted_as_capture_loss() {
+    let invalid = RecordedEvent {
+        identity: EventIdentity { capture_instance_id: "capture-a".into(), sequence: 0 },
+        input: event(EventKind::OperationValidated),
+        truncated: false,
+    };
+    let summary = Summary::reduce(&[invalid]);
+    assert_eq!(summary.invalid_event_identity_count, 1);
+    assert_eq!(summary.event_count, 0);
+    assert!(summary.capture_loss_observed);
+    assert!(summary.partitions_conserve());
+}
+
+#[test]
 fn wait_metadata_conflicts_quarantine_same_outcome_with_different_duration() {
     let active = recorder("capture-a");
     let mut first = event(EventKind::WaitCompleted);
@@ -164,6 +208,37 @@ fn wait_metadata_conflicts_quarantine_same_outcome_with_different_duration() {
     assert_eq!(summary.wait_timelines[0].selected_target_id, None);
     assert_eq!(summary.wait_timelines[0].source_events.len(), 2);
     assert_eq!(summary.wait_timelines[0].phase, WaitPhase::Unknown);
+}
+
+#[test]
+fn wait_reduction_uses_turn_and_operation_namespaces_and_quarantines_cross_phase_outcomes() {
+    let active = recorder("capture-a");
+    for (turn, operation) in [("turn-a", "op-a"), ("turn-b", "op-b")] {
+        let mut input = event(EventKind::WaitCompleted);
+        input.turn_id = Some(turn.into());
+        input.operation_id = Some(operation.into());
+        input.wait = Some(wait("reused-wait", SelectedOutcome::Timeout));
+        active.record(input).unwrap();
+    }
+    let mut selected = event(EventKind::WaitSelected);
+    selected.operation_id = Some("op-conflict".into());
+    let mut selected_wait = wait("cross-phase", SelectedOutcome::Timeout);
+    selected_wait.phase = WaitPhase::Selected;
+    selected.wait = Some(selected_wait);
+    active.record(selected).unwrap();
+    let mut completed = event(EventKind::WaitCompleted);
+    completed.operation_id = Some("op-conflict".into());
+    completed.wait = Some(wait("cross-phase", SelectedOutcome::TargetTerminal));
+    active.record(completed).unwrap();
+
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    assert_eq!(summary.wait_timelines.len(), 3);
+    assert_eq!(summary.wait_timelines.iter().filter(|row| row.wait_id == "reused-wait").count(), 2);
+    let conflict = summary.wait_timelines.iter().find(|row| row.wait_id == "cross-phase").unwrap();
+    assert!(conflict.conflicting);
+    assert_eq!(conflict.selected_outcome, SelectedOutcome::Unknown);
+    assert_eq!(conflict.operation_id, None);
+    assert!(!conflict.complete);
 }
 
 #[test]
@@ -432,6 +507,7 @@ fn provider_completion_timelines_become_incomplete_when_capture_reports_loss() {
     assert_eq!(summary.provider_call_timelines.len(), 1);
     assert!(!summary.provider_call_timelines[0].complete);
     assert!(summary.capture_loss_observed);
+    assert_eq!(summary.recorder_losses.unwrap().contention, 1);
 }
 
 #[test]
@@ -465,10 +541,42 @@ fn scheduler_publication_before_registration_joins_by_exact_turn_and_correlation
     let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
     assert_eq!(summary.scheduler_timelines.len(), 1);
     let joined = &summary.scheduler_timelines[0];
+    assert_eq!(joined.source_events.iter().map(|identity| identity.sequence).collect::<Vec<_>>(), vec![1, 2]);
     assert_eq!(joined.task_registered, Some(true));
     assert_eq!(joined.turn_start_published, Some(true));
     assert_eq!(joined.eligible, None);
     assert!(!joined.complete);
+}
+
+#[test]
+fn scheduler_reservation_that_no_longer_matches_is_not_scheduled_completion() {
+    let active = recorder("capture-a");
+    let mut input = event(EventKind::SchedulerEligibilityObserved);
+    input.scheduler = Some(SchedulerObservation {
+        primitive: "pending-work".into(),
+        correlation_id: Some("schedule-lost".into()),
+        pending_mail_observed: Some(true),
+        trigger_turn_mail_observed: Some(false),
+        durable_sleep_observed: Some(true),
+        idle_reservation_accepted: Some(true),
+        reservation_still_matches: Some(false),
+        eligibility_basis: EligibilityBasis::QueueOnlyDurableSleep,
+        drained_message_cohort_ids: vec![],
+        drained_cohort_complete: false,
+        drained_cohort_contains_trigger_turn_mail: None,
+        phase: SchedulerPhase::ReservationAccepted,
+        task_registration_event: None,
+        scheduled_turn_id: Some("turn-lost".into()),
+        turn_start_publication_event: None,
+        outcome: SchedulerOutcome::ReservationLostObserved,
+    });
+    active.record(input).unwrap();
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    let row = &summary.scheduler_timelines[0];
+    assert_eq!(row.reservation_accepted, Some(true));
+    assert_eq!(row.reservation_still_matches, Some(false));
+    assert_eq!(row.reservation_lost, Some(true));
+    assert!(!row.complete);
 }
 
 #[test]
@@ -620,6 +728,7 @@ fn queued_only_pending_sleep_remains_its_own_primitive_outcome() {
     active.record(input).unwrap();
     let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
     assert_eq!(summary.sleep_timelines[0].selection, SleepSelection::AlreadyPending);
+    assert_eq!(summary.sleep_timelines[0].identity.sequence, 1);
     assert_eq!(summary.sleep_timelines[0].blocked_duration_ns, Some(0));
 }
 

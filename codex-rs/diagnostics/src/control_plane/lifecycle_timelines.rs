@@ -46,7 +46,10 @@ pub struct WaitTimeline {
     pub selected_target_turn_id: Option<String>,
     pub continuation_of_wait_id: Option<String>,
     pub subscribed_readiness: Vec<ReadinessObservation>,
+    pub subscribed_readiness_complete: bool,
     pub selected_readiness: Vec<ReadinessObservation>,
+    pub selected_readiness_complete: bool,
+    pub observed_host_return: Option<ObservedHostWaitReturn>,
     pub coverage: Vec<CoverageMark>,
     pub complete: bool,
     pub conflicting: bool,
@@ -173,14 +176,15 @@ fn project_provider_calls(projection: &mut LifecycleProjection, events: &[&Recor
 }
 
 fn project_waits(projection: &mut LifecycleProjection, events: &[&RecordedEvent]) {
-    let mut grouped = BTreeMap::<(String, SourcePlane, Option<String>, String, Option<u64>), Vec<&RecordedEvent>>::new();
+    let mut grouped = BTreeMap::<(String, SourcePlane, Option<String>, Option<String>, Option<String>, String), Vec<&RecordedEvent>>::new();
     for event in events {
         if let Some(wait) = &event.input.wait {
             grouped.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                event.input.thread_id.clone(), wait.wait_id.clone(), event.input.thread_id.is_none().then_some(event.identity.sequence))).or_default().push(event);
+                event.input.thread_id.clone(), event.input.turn_id.clone(), event.input.operation_id.clone(),
+                wait.wait_id.clone())).or_default().push(event);
         }
     }
-    for ((capture, source, thread, wait_id, _), mut rows) in grouped {
+    for ((capture, source, thread, turn_id, operation_id, wait_id), mut rows) in grouped {
         rows.sort_by_key(|event| event.identity.sequence);
         let terminal = rows.iter().filter_map(|event| event.input.wait.as_ref().filter(|wait|
             matches!(wait.phase, WaitPhase::Completed | WaitPhase::Abandoned)).map(|wait| (*event, wait))).collect::<Vec<_>>();
@@ -194,35 +198,67 @@ fn project_waits(projection: &mut LifecycleProjection, events: &[&RecordedEvent]
             .collect::<BTreeSet<_>>();
         let ends = rows.iter().filter_map(|row| row.input.wait.as_ref().and_then(|wait| wait.blocked_end_offset_ns))
             .collect::<BTreeSet<_>>();
-        let conflicting = terminal.iter().any(|(other_event, other)| *other != wait
-            || other_event.input.operation_id != event.input.operation_id)
+        let mut conflicting = terminal.iter().any(|(_, other)| selected_facts_conflict(wait, other))
             || rows.iter().filter_map(|row| row.input.wait.as_ref()).any(|other| !same_wait_request(wait, other))
+            || rows.iter().filter_map(|row| row.input.wait.as_ref())
+                .filter(|other| is_selected_phase(other.phase))
+                .any(|other| selected_facts_conflict(wait, other))
             || starts.len() > 1 || ends.len() > 1 || operations.len() > 1;
-        let (mut start, mut end) = if terminal.is_empty() { (None, None) }
-            else { (wait.blocked_start_offset_ns, wait.blocked_end_offset_ns) };
+        let (mut start, mut end) = (None, None);
         for row in &rows {
-            if !terminal.is_empty() && let Some(obs) = &row.input.wait {
+            if let Some(obs) = &row.input.wait {
                 start = start.or(obs.blocked_start_offset_ns);
                 end = end.or(obs.blocked_end_offset_ns);
             }
         }
         let phase = wait.phase;
-        let outcome = if conflicting || terminal.is_empty() && phase != WaitPhase::Selected {
+        let selected = rows.iter().rev().filter_map(|row| row.input.wait.as_ref())
+            .find(|observation| is_selected_phase(observation.phase)
+                && observation.selected_outcome != SelectedOutcome::Unknown)
+            .or_else(|| rows.iter().rev().filter_map(|row| row.input.wait.as_ref())
+                .find(|observation| is_selected_phase(observation.phase)))
+            .unwrap_or(wait);
+        let (subscribed_readiness, subscribed_complete, subscribed_conflict) =
+            phase_readiness(&rows, false, wait);
+        let (selected_readiness, selected_complete, selected_conflict) =
+            phase_readiness(&rows, true, selected);
+        let observed_host_return = selected.observed_host_return.clone();
+        let blocked_values = rows.iter().filter_map(|row| row.input.wait.as_ref())
+            .filter_map(|observation| observation.blocked_duration_ns).collect::<BTreeSet<_>>();
+        let operation_values = rows.iter().filter_map(|row| row.input.wait.as_ref())
+            .filter_map(|observation| observation.operation_duration_ns).collect::<BTreeSet<_>>();
+        let blocked_duration = unique_wait_value(blocked_values.iter().copied());
+        let operation_duration = unique_wait_value(operation_values.iter().copied());
+        let interval_consistent = match (start, end, blocked_duration) {
+            (Some(start), Some(end), Some(duration)) => start <= end && end - start == duration,
+            (None, None, Some(0)) => true,
+            _ => false,
+        };
+        let duration_consistent = operation_duration.zip(blocked_duration)
+            .is_some_and(|(operation, blocked)| operation >= blocked);
+        let timing_conflict = blocked_values.len() > 1 || operation_values.len() > 1
+            || matches!((start, end, blocked_duration), (Some(start), Some(end), Some(duration))
+                if start > end || end - start != duration)
+            || operation_duration.zip(blocked_duration).is_some_and(|(operation, blocked)| operation < blocked);
+        conflicting |= subscribed_conflict || selected_conflict || timing_conflict;
+        let outcome = if conflicting || selected.selected_outcome == SelectedOutcome::Unknown {
             SelectedOutcome::Unknown
-        } else { wait.selected_outcome };
-        let zero_block = !terminal.is_empty() && wait.blocked_duration_ns == Some(0);
+        } else { selected.selected_outcome };
+        let cohorts_complete = subscribed_complete && selected_complete
+            && observed_host_return.as_ref().is_none_or(|result| result.complete);
         let complete = !conflicting && !terminal.is_empty() && rows.iter().all(|row| !row.truncated)
-            && (zero_block || start.is_some() && end.is_some()) && wait.blocked_duration_ns.is_some();
+            && selected.selected_outcome != SelectedOutcome::Unknown
+            && cohorts_complete && interval_consistent && duration_consistent;
         if conflicting { projection.conflicting_wait_count += 1; }
         *projection.waits_by_outcome.entry(outcome).or_default() += 1;
         let source_events = rows.iter().map(|row| row.identity.clone()).collect::<Vec<_>>();
         projection.wait_timelines.push(WaitTimeline {
             source_events, capture_instance_id: capture, source_plane: source, thread_id: thread,
-            turn_id: event.input.turn_id.clone(), root_thread_id: event.input.root_thread_id.clone(),
+            turn_id, root_thread_id: event.input.root_thread_id.clone(),
             parent_thread_id: event.input.parent_thread_id.clone(), fork_parent_thread_id: event.input.fork_parent_thread_id.clone(),
             window_id: event.input.window_id.clone(), window_number: event.input.window_number,
             previous_window_id: event.input.previous_window_id.clone(), wall_correlation: Some(event.input.wall_correlation),
-            operation_id: if conflicting { None } else { event.input.operation_id.clone() },
+            operation_id: if conflicting { None } else { operation_id },
             wait_id, phase: if conflicting { WaitPhase::Unknown } else { phase },
             primitive: if conflicting { WaitPrimitive::Unknown } else { wait.primitive },
             return_when: if conflicting { ReturnWhen::Unknown } else { wait.return_when },
@@ -240,15 +276,18 @@ fn project_waits(projection: &mut LifecycleProjection, events: &[&RecordedEvent]
             resolved_target_set_complete: if conflicting { None } else { wait.resolved_target_set_complete },
             blocked_start_offset_ns: if conflicting { None } else { start },
             blocked_end_offset_ns: if conflicting { None } else { end },
-            operation_duration_ns: if conflicting || terminal.is_empty() { None } else { wait.operation_duration_ns },
-            blocked_duration_ns: if conflicting || terminal.is_empty() { None } else { wait.blocked_duration_ns },
+            operation_duration_ns: if conflicting { None } else { operation_duration },
+            blocked_duration_ns: if conflicting { None } else { blocked_duration },
             selected_outcome: outcome,
-            selected_producer: if conflicting || terminal.is_empty() { None } else { wait.selected_producer.clone() },
-            selected_target_id: if conflicting { None } else { wait.selected_target_id.clone() },
-            selected_target_turn_id: if conflicting { None } else { wait.selected_target_turn_id.clone() },
-            continuation_of_wait_id: if conflicting { None } else { wait.continuation_of_wait_id.clone() },
-            subscribed_readiness: if conflicting { Vec::new() } else { wait.subscribed_readiness.clone() },
-            selected_readiness: if conflicting { Vec::new() } else { wait.selected_readiness.clone() },
+            selected_producer: if conflicting { None } else { selected.selected_producer.clone() },
+            selected_target_id: if conflicting { None } else { selected.selected_target_id.clone() },
+            selected_target_turn_id: if conflicting { None } else { selected.selected_target_turn_id.clone() },
+            continuation_of_wait_id: if conflicting { None } else { selected.continuation_of_wait_id.clone() },
+            subscribed_readiness: if conflicting { Vec::new() } else { subscribed_readiness },
+            subscribed_readiness_complete: !conflicting && subscribed_complete,
+            selected_readiness: if conflicting { Vec::new() } else { selected_readiness },
+            selected_readiness_complete: !conflicting && selected_complete,
+            observed_host_return: if conflicting { None } else { observed_host_return },
             coverage: if conflicting { Vec::new() } else { event.input.field_coverage.clone() },
             complete, conflicting,
         });
@@ -307,4 +346,65 @@ fn same_wait_request(left: &WaitObservation, right: &WaitObservation) -> bool {
                 || left.resolved_target_kind != TargetReferenceKind::Unknown
                     && right.resolved_target_kind != TargetReferenceKind::Unknown
                     && left.resolved_target_kind != right.resolved_target_kind))
+}
+
+fn is_selected_phase(phase: WaitPhase) -> bool {
+    matches!(phase, WaitPhase::Selected | WaitPhase::Completed | WaitPhase::Abandoned)
+}
+
+fn selected_facts_conflict(left: &WaitObservation, right: &WaitObservation) -> bool {
+    let conflict_option = |a: &Option<String>, b: &Option<String>| {
+        matches!((a, b), (Some(a), Some(b)) if a != b)
+    };
+    (left.selected_outcome != SelectedOutcome::Unknown
+        && right.selected_outcome != SelectedOutcome::Unknown
+        && left.selected_outcome != right.selected_outcome)
+        || matches!((&left.selected_producer, &right.selected_producer), (Some(a), Some(b)) if a != b)
+        || conflict_option(&left.selected_target_id, &right.selected_target_id)
+        || conflict_option(&left.selected_target_turn_id, &right.selected_target_turn_id)
+        || (!left.selected_readiness.is_empty() && !right.selected_readiness.is_empty()
+            && left.selected_readiness != right.selected_readiness)
+        || matches!((&left.observed_host_return, &right.observed_host_return), (Some(a), Some(b)) if
+            (a.timed_out.is_some() && b.timed_out.is_some() && a.timed_out != b.timed_out)
+            || (a.reason != ObservedHostWaitReason::Unknown && b.reason != ObservedHostWaitReason::Unknown && a.reason != b.reason)
+            || (a.wake_cause != ObservedHostWakeCause::Unknown && b.wake_cause != ObservedHostWakeCause::Unknown && a.wake_cause != b.wake_cause)
+            || (a.queued_update_count.is_some() && b.queued_update_count.is_some()
+                && a.queued_update_count != b.queued_update_count)
+            || (a.target_status_complete && b.target_status_complete && a.target_statuses != b.target_statuses))
+}
+
+fn unique_wait_value(values: impl Iterator<Item = u64>) -> Option<u64> {
+    let mut values = values.collect::<BTreeSet<_>>();
+    (values.len() == 1).then(|| values.pop_first().expect("one wait timing value"))
+}
+
+fn phase_readiness(
+    rows: &[&RecordedEvent],
+    selected: bool,
+    fallback: &WaitObservation,
+) -> (Vec<ReadinessObservation>, bool, bool) {
+    let mut cohorts = rows.iter().filter_map(|event| event.input.wait.as_ref()).filter(|wait| {
+        if selected {
+            matches!(wait.phase, WaitPhase::Selected | WaitPhase::Completed | WaitPhase::Abandoned)
+        } else {
+            wait.phase == WaitPhase::Subscribed
+        }
+    }).map(|wait| {
+        if selected {
+            (&wait.selected_readiness, wait.selected_readiness_complete)
+        } else {
+            (&wait.subscribed_readiness, wait.subscribed_readiness_complete)
+        }
+    }).collect::<Vec<_>>();
+    if cohorts.is_empty() {
+        return if selected {
+            (fallback.selected_readiness.clone(), fallback.selected_readiness_complete, false)
+        } else {
+            (fallback.subscribed_readiness.clone(), fallback.subscribed_readiness_complete, false)
+        };
+    }
+    let (first, first_complete) = cohorts.remove(0);
+    let conflict = cohorts.iter().any(|(rows, _)| *rows != first);
+    let complete = first_complete && cohorts.iter().all(|(_, complete)| *complete) && !conflict;
+    (first.clone(), complete, conflict)
 }

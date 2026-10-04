@@ -100,10 +100,16 @@ impl ControlPlaneRecorder {
     }
 }
 
-fn valid_id(value: &str) -> bool { !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES }
+fn valid_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES && !value.chars().any(char::is_control)
+}
 fn check(value: &Option<String>) -> bool { value.as_deref().is_none_or(valid_id) }
 fn valid_event_identity(value: &Option<EventIdentity>) -> bool {
     value.as_ref().is_none_or(|id| valid_id(&id.capture_instance_id) && id.sequence > 0)
+}
+fn valid_readiness(value: &ReadinessObservation) -> bool {
+    value.target.as_ref().is_none_or(|target| valid_id(&target.id))
+        && check(&value.target_turn_id)
 }
 fn valid_input_ids(input: &EventInput) -> bool {
     [
@@ -116,11 +122,13 @@ fn valid_input_ids(input: &EventInput) -> bool {
                 && check(&wait.selected_target_id) && check(&wait.selected_target_turn_id)
                 && check(&wait.continuation_of_wait_id) && check(&wait.request_fingerprint)
                 && check(&wait.result_fingerprint)
-                && wait.target_ids.iter().chain(&wait.requested_target_ids).take(2 * MAX_TARGETS_PER_EVENT).all(|id| valid_id(id))
-                && wait.subscribed_readiness.iter().chain(&wait.selected_readiness).take(2 * MAX_TARGETS_PER_EVENT)
-                    .all(|r| check(&r.target_turn_id))
-                && wait.subscribed_readiness.iter().chain(&wait.selected_readiness)
-                    .all(|row| check(&row.target_turn_id))
+                && wait.target_ids.iter().take(MAX_TARGETS_PER_EVENT).all(|id| valid_id(id))
+                && wait.requested_target_ids.iter().take(MAX_TARGETS_PER_EVENT).all(|id| valid_id(id))
+                && wait.subscribed_readiness.iter().take(MAX_TARGETS_PER_EVENT).all(valid_readiness)
+                && wait.selected_readiness.iter().take(MAX_TARGETS_PER_EVENT).all(valid_readiness)
+                && wait.observed_host_return.as_ref().is_none_or(|result| {
+                    result.target_statuses.iter().take(MAX_TARGETS_PER_EVENT).all(|row| valid_id(&row.target_reference.id))
+                })
                 && valid_event_identity(&wait.selected_producer)
         })
         && input.message.as_ref().is_none_or(|message| {
@@ -144,7 +152,7 @@ fn valid_input_ids(input: &EventInput) -> bool {
         })
         && input.status_query.as_ref().is_none_or(|query| {
             check(&query.request_fingerprint) && check(&query.result_fingerprint)
-                && query.readiness.as_ref().is_none_or(|r| check(&r.target_turn_id))
+                && query.readiness.as_ref().is_none_or(valid_readiness)
                 && query.request_projection.as_ref().is_none_or(|request| {
                     check(&request.path_prefix) && request.requested_agent_ids.iter().all(|id| valid_id(id))
                 })
@@ -154,7 +162,7 @@ fn valid_input_ids(input: &EventInput) -> bool {
                         && check(&actor.raw_status_tag)
                 }))
         })
-        && input.readiness.as_ref().is_none_or(|r| check(&r.target_turn_id))
+        && input.readiness.as_ref().is_none_or(valid_readiness)
         && input.external_operation.as_ref().is_none_or(|op| valid_id(&op.call_id))
         && input.provider_call.as_ref().is_none_or(|provider| {
             let provider_id = |value: &str| valid_id(value) && !value.chars().any(char::is_control);
@@ -184,9 +192,12 @@ fn compact_vec<T>(values: &mut Vec<T>, limit: usize) -> bool {
 fn compact_option(value: &mut Option<String>) {
     if let Some(text) = value { *text = compact(std::mem::take(text)); }
 }
-fn compact_readiness(value: &mut ReadinessObservation) { compact_option(&mut value.target_turn_id); }
+fn compact_readiness(value: &mut ReadinessObservation) {
+    if let Some(target) = &mut value.target { target.id = compact(std::mem::take(&mut target.id)); }
+    compact_option(&mut value.target_turn_id);
+}
 fn bound_producer_version(input: &mut EventInput) -> bool {
-    if input.producer_version.as_ref().is_some_and(|value| value.len() > MAX_IDENTIFIER_BYTES) {
+    if input.producer_version.as_ref().is_some_and(|value| !valid_id(value)) {
         input.producer_version = None;
         if input.field_coverage.len() < MAX_COVERAGE_MARKS_PER_EVENT {
             input.field_coverage.push(CoverageMark {
@@ -282,8 +293,11 @@ fn bound_and_compact(input: &mut EventInput) -> bool {
         wait.resolved_target_set_complete = wait.resolved_target_set_complete.map(|complete| complete && !resolved_truncated);
         wait.requested_target_set_complete &= !requested_truncated;
         truncated |= resolved_truncated || requested_truncated;
-        truncated |= compact_vec(&mut wait.subscribed_readiness, MAX_TARGETS_PER_EVENT);
-        truncated |= compact_vec(&mut wait.selected_readiness, MAX_TARGETS_PER_EVENT);
+        let subscribed_truncated = compact_vec(&mut wait.subscribed_readiness, MAX_TARGETS_PER_EVENT);
+        let selected_truncated = compact_vec(&mut wait.selected_readiness, MAX_TARGETS_PER_EVENT);
+        wait.subscribed_readiness_complete &= !subscribed_truncated;
+        wait.selected_readiness_complete &= !selected_truncated;
+        truncated |= subscribed_truncated || selected_truncated;
         compact_option(&mut wait.request_fingerprint); compact_option(&mut wait.result_fingerprint);
         for r in wait.subscribed_readiness.iter_mut().chain(&mut wait.selected_readiness) {
             compact_readiness(r);
@@ -291,6 +305,15 @@ fn bound_and_compact(input: &mut EventInput) -> bool {
         for id in wait.target_ids.iter_mut().chain(&mut wait.requested_target_ids) { *id = compact(std::mem::take(id)); }
         for id in [&mut wait.wait_id] { *id = compact(std::mem::take(id)); }
         compact_event_identity(&mut wait.selected_producer);
+        if let Some(result) = &mut wait.observed_host_return {
+            let statuses_truncated = compact_vec(&mut result.target_statuses, MAX_TARGETS_PER_EVENT);
+            result.target_status_complete &= !statuses_truncated;
+            result.complete &= !statuses_truncated;
+            truncated |= statuses_truncated;
+            for row in &mut result.target_statuses {
+                row.target_reference.id = compact(std::mem::take(&mut row.target_reference.id));
+            }
+        }
     }
     if let Some(message) = &mut input.message {
         compact_option(&mut message.submission_id); compact_option(&mut message.sender_thread_id);
@@ -368,8 +391,12 @@ fn payload_capacity(input: &EventInput) -> usize {
         bytes += wait.target_ids.iter().map(String::capacity).sum::<usize>();
         bytes += wait.requested_target_ids.iter().map(String::capacity).sum::<usize>();
         for row in wait.subscribed_readiness.iter().chain(&wait.selected_readiness) {
+            bytes += row.target.as_ref().map_or(0, |target| String::capacity(&target.id));
             bytes += row.target_turn_id.as_ref().map_or(0, String::capacity);
         }
+        bytes += wait.observed_host_return.as_ref().map_or(0, |result| {
+            result.target_statuses.iter().map(|row| row.target_reference.id.capacity()).sum::<usize>()
+        });
         bytes += wait.request_fingerprint.as_ref().map_or(0, String::capacity)
             + wait.result_fingerprint.as_ref().map_or(0, String::capacity);
         bytes += identity_capacity(&wait.selected_producer);
@@ -430,6 +457,9 @@ fn structural_size(input: &EventInput) -> usize {
                 + w.requested_target_ids.capacity() * std::mem::size_of::<String>()
                 + w.subscribed_readiness.capacity() * std::mem::size_of::<ReadinessObservation>()
                 + w.selected_readiness.capacity() * std::mem::size_of::<ReadinessObservation>()
+                + w.observed_host_return.as_ref().map_or(0, |result| {
+                    result.target_statuses.capacity() * std::mem::size_of::<HostTargetStatusObservation>()
+                })
                 + std::mem::size_of::<WaitObservation>()
         })
         + input.message.as_ref().map_or(0, |m| {

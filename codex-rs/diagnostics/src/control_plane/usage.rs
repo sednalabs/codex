@@ -124,6 +124,7 @@ pub struct UsageCallAssociation {
     pub diagnostic_events: Vec<(SourcePlane, EventIdentity)>,
     pub unmatched: bool,
     pub conflicting_usage_identity: bool,
+    pub identity_quarantined: bool,
     pub association_truncated: bool,
     pub conflicting_identity_event_count: usize,
     pub unqualified_response_event_count: usize,
@@ -143,6 +144,8 @@ pub struct UsageJoinSummary {
     pub distinct_call_count: usize,
     pub duplicate_call_rows: usize,
     pub conflicting_call_ids: usize,
+    pub quarantined_call_count: usize,
+    pub association_truncated_count: usize,
     pub associated_call_count: usize,
     pub unmatched_call_count: usize,
     pub partitions: BTreeMap<UsagePartitionKey, UsagePartition>,
@@ -183,18 +186,30 @@ pub fn join_control_plane_usage(
             summary.invalid_usage_call_rows += 1;
         }
     }
-    let mut diagnostic_by_key = BTreeMap::<UsageJoinKey, BTreeSet<(SourcePlane, EventIdentity)>>::new();
+    let mut references_by_identity = BTreeMap::<EventIdentity, BTreeSet<(SourcePlane, UsageJoinKey)>>::new();
     for reference in diagnostics.iter().take(MAX_USAGE_CALLS) {
         if valid_join_key(&reference.key)
             && reference.key.source_namespace == scope.usage_source_namespace
             && reference.event.capture_instance_id == scope.diagnostic_capture_instance_id
+            && reference.event.sequence > 0
             && reference.event.sequence <= scope.diagnostic_high_water
         {
-            diagnostic_by_key.entry(reference.key.clone()).or_default()
-                .insert((reference.source_plane, reference.event.clone()));
+            references_by_identity.entry(reference.event.clone()).or_default()
+                .insert((reference.source_plane, reference.key.clone()));
         } else {
             summary.out_of_scope_diagnostic_references += 1;
         }
+    }
+    let mut diagnostic_by_key = BTreeMap::<UsageJoinKey, BTreeSet<(SourcePlane, EventIdentity)>>::new();
+    let mut conflicting_reference_ids = BTreeSet::new();
+    let mut unqualified_reference_ids = BTreeSet::new();
+    for (identity, variants) in references_by_identity {
+        if variants.len() != 1 {
+            conflicting_reference_ids.insert(identity);
+            continue;
+        }
+        let (source, key) = variants.into_iter().next().expect("one reference variant");
+        diagnostic_by_key.entry(key).or_default().insert((source, identity));
     }
     for (call_id, mut rows) in grouped {
         rows.sort_by_key(|row| row.key.clone());
@@ -228,11 +243,16 @@ pub fn join_control_plane_usage(
             add_call(partition, call);
         } else {
             partition.strict_unpriced_or_missing_call_count += 1;
+            if rows.iter().any(|row| row.standard_scenario_status.is_some()
+                || row.standard_scenario_credits.is_some()) {
+                partition.standard_scenario_unpriced_or_missing_call_count += 1;
+            }
         }
         let mut all_events = BTreeSet::new();
         let mut conflicting_identity_events = BTreeSet::new();
         let mut unqualified_response_events = BTreeSet::new();
-        if !conflict {
+        let identity_quarantined = !conflict && first.identity_quarantined;
+        if !conflict && !identity_quarantined {
             for (key, ids) in &diagnostic_by_key {
                 match association_decision(&first.key, key) {
                     AssociationDecision::Match => all_events.extend(ids.iter().cloned()),
@@ -246,10 +266,14 @@ pub fn join_control_plane_usage(
         }
         let conflicting_identity_event_count = conflicting_identity_events.len();
         let unqualified_response_event_count = unqualified_response_events.len();
-        summary.conflicting_identity_event_count += conflicting_identity_event_count;
-        summary.unqualified_response_event_count += unqualified_response_event_count;
+        conflicting_reference_ids.extend(conflicting_identity_events);
+        unqualified_reference_ids.extend(unqualified_response_events);
+        if identity_quarantined {
+            summary.quarantined_call_count += 1;
+        }
         let all_events = all_events.into_iter().collect::<Vec<_>>();
         let association_truncated = all_events.len() > 64;
+        if association_truncated { summary.association_truncated_count += 1; }
         let events = all_events.into_iter().take(64).collect::<Vec<_>>();
         let unmatched = events.is_empty();
         if unmatched { summary.unmatched_call_count += 1; }
@@ -259,6 +283,7 @@ pub fn join_control_plane_usage(
             diagnostic_events: events,
             unmatched,
             conflicting_usage_identity: conflict,
+            identity_quarantined,
             association_truncated,
             conflicting_identity_event_count,
             unqualified_response_event_count,
@@ -271,8 +296,13 @@ pub fn join_control_plane_usage(
         && !summary.diagnostic_references_truncated
         && summary.invalid_usage_call_rows == 0
         && summary.out_of_scope_diagnostic_references == 0
-        && summary.conflicting_identity_event_count == 0
-        && summary.unqualified_response_event_count == 0;
+        && summary.conflicting_call_ids == 0
+        && summary.quarantined_call_count == 0
+        && summary.association_truncated_count == 0
+        && conflicting_reference_ids.is_empty()
+        && unqualified_reference_ids.is_empty();
+    summary.conflicting_identity_event_count = conflicting_reference_ids.len();
+    summary.unqualified_response_event_count = unqualified_reference_ids.len();
     summary
 }
 
@@ -290,13 +320,18 @@ fn valid_join_key(key: &UsageJoinKey) -> bool {
             UsageAccountScope::KnownScope(value) => bounded(value),
             UsageAccountScope::WriterUnscoped | UsageAccountScope::Unknown => true,
         }
+        && key.call_id.as_deref().is_none_or(bounded)
+        && key.response_id.as_deref().is_none_or(bounded)
         && (key.call_id.as_deref().is_some_and(bounded)
             || key.response_id.as_deref().is_some_and(bounded))
-        && key.response_id.as_deref().is_none_or(bounded)
 }
 
 fn valid_usage_window(scope: &UsageJoinScope) -> bool {
-    let bounded = |value: &str| !value.is_empty() && value.len() <= MAX_USAGE_ID_BYTES;
+    let bounded = |value: &str| {
+        !value.is_empty()
+            && value.len() <= MAX_USAGE_ID_BYTES
+            && !value.chars().any(char::is_control)
+    };
     bounded(&scope.usage_snapshot_id)
         && bounded(&scope.usage_source_namespace)
         && bounded(&scope.usage_from_started_at)
@@ -336,26 +371,41 @@ fn association_decision(usage: &UsageJoinKey, diagnostic: &UsageJoinKey) -> Asso
     }
     let exact_call = usage.call_id.is_some() && usage.call_id == diagnostic.call_id;
     let exact_response = usage.response_id.is_some() && usage.response_id == diagnostic.response_id;
-    if !exact_call && !exact_response {
+    if exact_call {
+        return if known_identity_conflict(usage, diagnostic) {
+            AssociationDecision::Conflict
+        } else {
+            AssociationDecision::Match
+        };
+    }
+    // A supplied primary key is authoritative: never rescue a different PK
+    // with a coincidentally equal response string.
+    if usage.call_id.is_some() && diagnostic.call_id.is_some() {
         return AssociationDecision::NoMatch;
     }
-    if usage.thread_id != diagnostic.thread_id {
+    if !exact_response { return AssociationDecision::NoMatch; }
+    if usage.thread_id != diagnostic.thread_id { return AssociationDecision::NoMatch; }
+    if usage.provider.is_some() && diagnostic.provider.is_some()
+        && usage.provider != diagnostic.provider {
+        return AssociationDecision::NoMatch;
+    }
+    if usage.account_scope != UsageAccountScope::Unknown
+        && diagnostic.account_scope != UsageAccountScope::Unknown
+        && usage.account_scope != diagnostic.account_scope {
+        return AssociationDecision::NoMatch;
+    }
+    if usage.provider.is_none() || diagnostic.provider.is_none()
+        || usage.account_scope == UsageAccountScope::Unknown
+        || diagnostic.account_scope == UsageAccountScope::Unknown {
+        return AssociationDecision::UnqualifiedResponse;
+    }
+    if usage.turn_id.is_some() && diagnostic.turn_id.is_some() && usage.turn_id != diagnostic.turn_id {
         return AssociationDecision::Conflict;
     }
-    if known_identity_conflict(usage, diagnostic) {
-        return AssociationDecision::Conflict;
+    if diagnostic.call_id.is_some() && usage.call_id != diagnostic.call_id {
+        return AssociationDecision::NoMatch;
     }
-    if exact_call {
-        return AssociationDecision::Match;
-    }
-    let provider_qualified = usage.provider.is_some() && usage.provider == diagnostic.provider;
-    let account_scope_qualified = usage.account_scope != UsageAccountScope::Unknown
-        && usage.account_scope == diagnostic.account_scope;
-    if exact_response && provider_qualified && account_scope_qualified {
-        AssociationDecision::Match
-    } else {
-        AssociationDecision::UnqualifiedResponse
-    }
+    AssociationDecision::Match
 }
 
 fn known_identity_conflict(usage: &UsageJoinKey, diagnostic: &UsageJoinKey) -> bool {
