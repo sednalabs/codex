@@ -616,7 +616,7 @@ def library_runner_decision(
     binding: dict[str, Any],
     cargo_summaries: list[dict[str, int | str]] | None,
     expected_binary_sha256: str,
-    actual_binary_sha256: str,
+    actual_binary_sha256: str | None,
 ) -> dict[str, Any]:
     child_status = "unknown"
     runner_output_sha256 = None
@@ -638,6 +638,8 @@ def library_runner_decision(
             runner_output_sha256 = process["output_sha256"]
             if cargo_summaries != process["summaries"]:
                 reason = "cargo_runner_summaries_disagree"
+            elif actual_binary_sha256 is None:
+                reason = "bound_binary_unavailable"
             elif expected_binary_sha256 != actual_binary_sha256:
                 reason = "bound_binary_changed"
             elif cargo_exit_code != 0:
@@ -1075,6 +1077,10 @@ def verify_test_summary_parser_contract() -> None:
         17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, "3" * 64
     ) != expected_decision:
         refuse("Cargo runner decision contract failed")
+    if library_runner_decision(
+        17, "9" * 64, "missing", None, binding, runner_summaries, "3" * 64, None
+    ) != expected_decision:
+        refuse("Cargo runner decision contract failed")
     refused_decision = {
         **expected_decision,
         "reason": "runner_result_refused",
@@ -1165,6 +1171,22 @@ def verify_test_summary_parser_contract() -> None:
         "3" * 64,
         "4" * 64,
     ) != changed_binary_decision:
+        refuse("Cargo runner decision contract failed")
+    unavailable_binary_decision = {
+        **successful_decision,
+        "accepted": False,
+        "reason": "bound_binary_unavailable",
+    }
+    if library_runner_decision(
+        0,
+        "9" * 64,
+        "present",
+        runner_result,
+        binding,
+        runner_summaries,
+        "3" * 64,
+        None,
+    ) != unavailable_binary_decision:
         refuse("Cargo runner decision contract failed")
     summary_mismatch_decision = {
         **successful_decision,
@@ -1506,7 +1528,10 @@ def run_library_suite(
                 result_state = "refused"
             else:
                 result_state = "refused"
-        after_hash = sha256_file(binary)
+        try:
+            after_hash = sha256_file(binary)
+        except OSError:
+            after_hash = None
         decision = library_runner_decision(
             cargo_result.returncode,
             captured_output_sha256,
