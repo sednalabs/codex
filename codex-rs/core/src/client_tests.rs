@@ -118,7 +118,7 @@ fn protected_api_provider_is_pinned_to_the_canonical_builtin_configuration() {
 
     let mut changed_headers = expected;
     changed_headers.headers.insert(
-        "x-runtime-proof-test".parse().expect("header name"),
+        http::header::HeaderName::from_static("x-runtime-proof-test"),
         "unexpected".parse().expect("header value"),
     );
     assert!(super::validate_protected_api_provider(&changed_headers, recipient).is_err());
