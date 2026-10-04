@@ -386,6 +386,7 @@ async fn read_to_end_bounded<R: AsyncRead + Unpin>(
     }
 }
 
+#[derive(Debug)]
 enum BoundedReadError {
     Limit,
     Io(String),
@@ -671,26 +672,31 @@ mod tests {
             arguments: json!(""),
         };
         let baseline = serialize_request_bounded(&params).unwrap().len();
-        params.arguments = json!("x".repeat(MAX_REQUEST_BYTES - baseline + 2));
+        params.arguments = json!("x".repeat(MAX_REQUEST_BYTES - baseline));
         assert_eq!(
             serialize_request_bounded(&params).unwrap().len(),
             MAX_REQUEST_BYTES
         );
 
+        let expected = DynamicToolCallResponse {
+            content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                text: "ok".to_string(),
+            }],
+            success: true,
+        };
+        let response_json = serde_json::to_string(&expected).unwrap();
         let config = DesktopRuntimeConfig {
             argv: vec![
                 "python3".to_string(),
                 "-c".to_string(),
-                r#"import sys; sys.stdin.buffer.read(); sys.stdout.write('{"content_items":[{"type":"inputText","text":"ok"}],"success":true}')"#.to_string(),
+                "import sys; data = sys.stdin.buffer.read(); sys.exit(7) if len(data) != 65536 else None; sys.stdout.write(sys.argv[1])"
+                    .to_string(),
+                response_json,
             ],
             timeout: Duration::from_secs(3),
         };
         let response = run_provider(&params, config).await.unwrap();
-        assert!(response.success);
-        assert!(matches!(
-            response.content_items.as_slice(),
-            [DynamicToolCallOutputContentItem::InputText { text }] if text == "ok"
-        ));
+        assert_eq!(response, expected);
     }
 
     #[test]
