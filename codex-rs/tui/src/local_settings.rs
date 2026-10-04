@@ -93,6 +93,7 @@ impl LocalSettings {
                 alternate_screen: config.tui_alternate_screen,
                 status_line: config.tui_status_line.clone(),
                 status_line_use_colors: config.tui_status_line_use_colors,
+                weekly_limit_pacing_style: config.tui_weekly_limit_pacing_style,
                 terminal_title: config.tui_terminal_title.clone(),
                 theme: config.tui_theme.clone(),
                 pet: config.tui_pet.clone(),

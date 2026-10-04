@@ -8,6 +8,41 @@ use codex_terminal_detection::Multiplexer;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn weekly_pacing_style_survives_local_load_and_reload() -> anyhow::Result<()> {
+    use codex_config::types::WeeklyLimitPacingStyle;
+
+    let home = tempfile::tempdir()?;
+    let mut config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    let initial = LocalSettings::from(&config);
+    assert_eq!(
+        initial.tui.weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Qualitative,
+    );
+
+    config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Ratio;
+    let ratio = initial.reloaded(&config);
+    assert_eq!(
+        LocalSettings::from(&config).tui.weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Ratio,
+    );
+    assert_eq!(
+        ratio.tui.weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Ratio,
+    );
+
+    config.tui_weekly_limit_pacing_style = WeeklyLimitPacingStyle::Qualitative;
+    assert_eq!(
+        ratio.reloaded(&config).tui.weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Qualitative,
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn launch_screen_mode_survives_configuration_reload() -> anyhow::Result<()> {
     use crate::transcript_mode::TranscriptMode;
     use codex_config::types::AltScreenMode;
