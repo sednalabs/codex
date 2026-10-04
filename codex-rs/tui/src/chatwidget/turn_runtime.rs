@@ -75,6 +75,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     pub(super) fn on_task_started(&mut self) {
+        self.bottom_pane.begin_interrupt_epoch();
         self.bottom_pane.dismiss_composer_sparkle();
         self.clear_context_compaction();
         self.input_queue.user_turn_pending_start = false;
@@ -120,6 +121,7 @@ impl ChatWidget {
         completion: Option<history_cell::FinalMessageSeparator>,
         from_replay: bool,
     ) {
+        self.bottom_pane.end_interrupt_epoch();
         if self.status_state.reasoning_resume_turn_id.is_some() {
             self.on_agent_reasoning_final();
         }
@@ -313,6 +315,7 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.bottom_pane.end_interrupt_epoch();
         self.flush_answer_and_plan_streams();
         self.flush_interrupt_activity();
         self.finish_dynamic_activity();

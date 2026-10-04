@@ -995,6 +995,38 @@ async fn prompt_edit_stops_streaming_without_submitting_queued_input() {
 }
 
 #[tokio::test]
+async fn prompt_revert_clears_escape_confirmation_before_replayed_turn() {
+    let (mut chat, _events, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+
+    let retained_turn = app_server_turn(
+        "retained-turn",
+        AppServerTurnStatus::InProgress,
+        /*duration_ms*/ None,
+        /*error*/ None,
+    );
+    chat.reset_after_prompt_revert(/*rollout_path*/ None, &[retained_turn]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "stale Esc confirmation survived prompt revert");
+    }
+
+    // Replaying the retained active turn starts a new epoch; the first Esc is still only a hint.
+    chat.on_task_started();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "replayed turn's first Esc interrupted immediately");
+    }
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    next_interrupt_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn prompt_edit_thread_history_line_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

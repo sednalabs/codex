@@ -7,6 +7,7 @@ use crate::bottom_pane::RestrictedInputMode;
 
 impl ChatWidget {
     pub(crate) fn pause_for_disconnect(&mut self) {
+        self.bottom_pane.clear_interrupt_epoch();
         self.cancel_startup_submission();
         self.cancel_image_submission();
         // The app-server transport can fail while the separate WebRTC helper
@@ -102,6 +103,9 @@ impl ChatWidget {
         }
         self.turn_lifecycle.restore_running(running, Instant::now());
         self.update_task_running_state();
+        if running {
+            self.bottom_pane.begin_interrupt_epoch();
+        }
     }
 
     pub(super) fn reconcile_recovered_messages(&mut self, confirmed_message_ids: &[String]) {
@@ -122,6 +126,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn pause_unavailable_thread(&mut self) {
+        self.bottom_pane.clear_interrupt_epoch();
         if let Some(questions) = &mut self.bottom_pane.questions {
             questions.delivery_enabled = false;
         }

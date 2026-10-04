@@ -844,6 +844,12 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        if let TuiEvent::Key(key) = &event
+            && key.kind == KeyEventKind::Press
+            && !(key.code == KeyCode::Esc && key.modifiers.is_empty())
+        {
+            self.chat_widget.invalidate_esc_interrupt_confirmation(*key);
+        }
         tui.link_hover.observe(&event);
         self.refresh_link_hover(tui)?;
         self.invalidate_right_click_paste(&event);
@@ -855,6 +861,9 @@ impl App {
                 tui.copy_transcript_selection(text, crate::clipboard_copy::CopyFormat::PlainText)
             })
         {
+            if let TuiEvent::Key(key) = &event {
+                self.invalidate_consumed_esc_confirmation(*key);
+            }
             return Ok(AppRunControl::Continue);
         }
         // Resume arrives after suspension; retain the last painted phase across hidden owners.
@@ -908,6 +917,9 @@ impl App {
                 .handle_warning_event(&event, &self.transcript_cells)
         {
             self.cancel_primed_browsing_for_event(&event);
+            if let TuiEvent::Key(key) = &event {
+                self.invalidate_consumed_esc_confirmation(*key);
+            }
             return Ok(AppRunControl::Continue);
         }
 
@@ -925,6 +937,7 @@ impl App {
             }
 
             let Some(key_event) = self.route_key_chord_event(tui, key_event) else {
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return Ok(AppRunControl::Continue);
             };
             TuiEvent::Key(key_event)
@@ -948,6 +961,9 @@ impl App {
             if voice_toggle(self, *key) && !self.transcript_view.owns_interaction_key(*key))
             && self.handle_owned_transcript_event(tui, app_server, &event)?
         {
+            if let TuiEvent::Key(key) = &event {
+                self.invalidate_consumed_esc_confirmation(*key);
+            }
             return Ok(AppRunControl::Continue);
         }
         // Leave browsing before unhandled editing input reaches shortcuts or offline input.
@@ -967,6 +983,7 @@ impl App {
                 && !crate::keymap::is_dispatch_token_event(key)
             {
                 let Some(key) = self.route_key_chord_event(tui, key) else {
+                    self.invalidate_consumed_esc_confirmation(key);
                     return Ok(AppRunControl::Continue);
                 };
                 event = TuiEvent::Key(key);
@@ -975,6 +992,7 @@ impl App {
         if let TuiEvent::Key(key_event) = &event
             && voice_toggle(self, *key_event)
         {
+            self.invalidate_consumed_esc_confirmation(*key_event);
             self.cancel_transcript_browsing(tui);
             if !self.chat_widget.handle_startup_submission_key(*key_event) {
                 self.control_voice(crate::app_event::VoiceControl::Toggle);
@@ -988,6 +1006,7 @@ impl App {
                 .contains(crate::keymap::KeymapContext::Voice)
             && self.keymap.chat.toggle_voice_mute.is_pressed(*key_event)
         {
+            self.invalidate_consumed_esc_confirmation(*key_event);
             if !self.chat_widget.handle_startup_submission_key(*key_event) {
                 self.control_voice(crate::app_event::VoiceControl::Mute);
             }
@@ -1001,6 +1020,9 @@ impl App {
                 && self.chat_widget.no_modal_or_popup_active()
                 && self.keymap.app.open_warnings.is_pressed(*key))
         {
+            if let TuiEvent::Key(key) = &event {
+                self.invalidate_consumed_esc_confirmation(*key);
+            }
             if self.overlay.is_none()
                 && self.chat_widget.no_modal_or_popup_active()
                 && self.chat_widget.is_external_writer_view()
@@ -1045,6 +1067,9 @@ impl App {
         }
 
         if self.overlay.is_some() {
+            if let TuiEvent::Key(key) = &event {
+                self.invalidate_consumed_esc_confirmation(*key);
+            }
             let _ = self
                 .handle_backtrack_overlay_event(tui, app_server, event)
                 .await?;
@@ -1151,6 +1176,16 @@ impl App {
             tui.clipboard.advance(tui.frame_requester());
         }
         Ok(AppRunControl::Continue)
+    }
+
+    fn invalidate_consumed_esc_confirmation(&mut self, key_event: KeyEvent) {
+        if key_event.kind == KeyEventKind::Press
+            && key_event.code == KeyCode::Esc
+            && key_event.modifiers.is_empty()
+        {
+            self.chat_widget
+                .invalidate_esc_interrupt_confirmation(key_event);
+        }
     }
 
     pub(super) fn show_shutdown_feedback(&mut self, tui: &mut tui::Tui) -> Result<()> {

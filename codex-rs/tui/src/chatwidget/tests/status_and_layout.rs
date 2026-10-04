@@ -2441,12 +2441,56 @@ async fn ctrl_c_interrupt_pauses_active_goal_turn() {
 }
 
 #[tokio::test]
+async fn new_task_epoch_resets_esc_confirmation_when_aggregate_running_remains_true() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.on_task_started();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+
+    chat.review.is_review_mode = true;
+    chat.update_task_running_state();
+    assert!(chat.bottom_pane.is_task_running());
+    chat.on_task_complete(
+        /*last_agent_message*/ None,
+        /*completion*/ None,
+        /*from_replay*/ true,
+    );
+    assert!(
+        chat.bottom_pane.is_task_running(),
+        "review activity keeps the aggregate running across agent-task completion"
+    );
+
+    chat.on_task_started();
+    assert!(
+        chat.bottom_pane.is_task_running(),
+        "aggregate remains running across the next task epoch"
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "new epoch inherited an old confirmation");
+    }
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    next_interrupt_op(&mut op_rx);
+}
+
+#[tokio::test]
 async fn esc_interrupt_pauses_active_goal_turn() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.show_welcome_banner = false;
     let thread_id = start_active_goal_turn(&mut chat);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+    assert!(rx.try_recv().is_err());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    next_interrupt_op(&mut op_rx);
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt)));
     assert_goal_paused_event(&mut rx, thread_id);

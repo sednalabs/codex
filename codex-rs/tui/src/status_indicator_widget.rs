@@ -64,6 +64,8 @@ pub(crate) struct StatusIndicatorWidget {
     hook_status_message: Option<String>,
     show_interrupt_hint: bool,
     interrupt_binding: Option<ShortcutHint>,
+    show_double_escape_interrupt_hint: bool,
+    interrupt_confirmation_deadline: Option<Instant>,
 
     app_event_tx: AppEventSender,
     frame_requester: FrameRequester,
@@ -104,6 +106,8 @@ impl StatusIndicatorWidget {
             hook_status_message: None,
             show_interrupt_hint: true,
             interrupt_binding: Some(key_hint::plain(KeyCode::Esc).into()),
+            show_double_escape_interrupt_hint: false,
+            interrupt_confirmation_deadline: None,
             app_event_tx,
             frame_requester,
             animations_enabled,
@@ -172,6 +176,15 @@ impl StatusIndicatorWidget {
 
     pub(crate) fn set_interrupt_binding(&mut self, binding: Option<ShortcutHint>) {
         self.interrupt_binding = binding;
+    }
+
+    pub(crate) fn set_double_escape_interrupt_hint(
+        &mut self,
+        visible: bool,
+        confirmation_deadline: Option<Instant>,
+    ) {
+        self.show_double_escape_interrupt_hint = visible;
+        self.interrupt_confirmation_deadline = confirmation_deadline;
     }
 
     pub(crate) fn with_timer<'a>(&'a self, timer: &'a StatusTimer) -> impl Renderable + 'a {
@@ -249,7 +262,17 @@ impl StatusIndicator<'_> {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
-        if row.show_interrupt_hint
+        if row.show_interrupt_hint && row.show_double_escape_interrupt_hint {
+            let hint = if row
+                .interrupt_confirmation_deadline
+                .is_some_and(|deadline| now < deadline)
+            {
+                "esc again to interrupt"
+            } else {
+                "esc esc to interrupt"
+            };
+            spans.push(format!("({pretty_elapsed} • {hint})").dim());
+        } else if row.show_interrupt_hint
             && let Some(interrupt_binding) = row.interrupt_binding
         {
             spans.push(format!("({pretty_elapsed} • ").dim());
@@ -450,6 +473,57 @@ mod tests {
             .collect::<String>();
 
         assert!(line.starts_with("Working (0s • esc to interrupt)"));
+    }
+
+    #[test]
+    fn renders_truthful_double_escape_confirmation_hint() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut row = StatusIndicatorWidget::new(
+            tx,
+            crate::tui::FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+            Default::default(),
+        );
+        let mut timer = StatusTimer::default();
+        timer.pause_at(timer.last_resume_at);
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).expect("terminal");
+
+        row.set_double_escape_interrupt_hint(/*visible*/ true, /*confirmation_deadline*/ None);
+        terminal
+            .draw(|f| row.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw double-escape hint");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(line.starts_with("Working (0s • esc esc to interrupt)"));
+
+        row.set_double_escape_interrupt_hint(
+            /*visible*/ true,
+            Some(Instant::now() + Duration::from_secs(1)),
+        );
+        terminal
+            .draw(|f| row.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw armed confirmation hint");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(line.starts_with("Working (0s • esc again to interrupt)"));
+
+        row.set_double_escape_interrupt_hint(
+            /*visible*/ true,
+            Some(Instant::now() - Duration::from_secs(1)),
+        );
+        terminal
+            .draw(|f| row.with_timer(&timer).render(f.area(), f.buffer_mut()))
+            .expect("draw expired confirmation hint");
+        let line = terminal.backend().buffer().content()[..80]
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(line.starts_with("Working (0s • esc esc to interrupt)"));
     }
 
     #[test]

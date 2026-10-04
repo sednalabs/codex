@@ -1690,6 +1690,11 @@ async fn output_free_esc_interrupt_keeps_prompt_and_opens_blank_composer() {
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(chat.bottom_pane.should_interrupt_running_task(esc));
     chat.handle_key_event(esc);
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+    chat.handle_key_event(esc);
+    next_interrupt_op(&mut op_rx);
 
     let mut saw_prompt = false;
     loop {
@@ -1862,6 +1867,13 @@ async fn restore_thread_input_state_applies_running_state_policy() {
         chat.safety_buffering_prompt,
         Some(UserMessage::from("buffered prompt"))
     );
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "restored-turn Esc interrupted immediately");
+    }
+    assert!(chat.turn_lifecycle.agent_turn_running);
+    assert!(chat.input_queue.user_turn_pending_start);
 
     chat.pause_for_disconnect();
     chat.handle_restricted_key(
@@ -2782,11 +2794,22 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                     assert_eq!(chat.bottom_pane.composer_text(), "describe\nnew draft");
                 } else if scenario == "escape" || scenario == "ctrl_c" {
                     chat.on_task_started();
-                    chat.handle_key_event(if scenario == "escape" {
-                        KeyEvent::from(KeyCode::Esc)
+                    if scenario == "escape" {
+                        let esc = KeyEvent::from(KeyCode::Esc);
+                        chat.handle_key_event(esc);
+                        for op in std::iter::from_fn(|| ops.try_recv().ok()) {
+                            assert!(
+                                !matches!(op, Op::Interrupt),
+                                "first Esc interrupted the turn"
+                            );
+                        }
+                        chat.handle_key_event(esc);
                     } else {
-                        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
-                    });
+                        chat.handle_key_event(KeyEvent::new(
+                            KeyCode::Char('c'),
+                            KeyModifiers::CONTROL,
+                        ));
+                    }
                     next_interrupt_op(&mut ops);
                     if scenario == "escape" {
                         chat.on_interrupted_turn(TurnAbortReason::Interrupted);

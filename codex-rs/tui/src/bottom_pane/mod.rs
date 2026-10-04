@@ -297,6 +297,9 @@ pub(crate) struct BottomPane {
     disable_paste_burst: bool,
     is_task_running: bool,
     esc_backtrack_hint: bool,
+    active_interrupt_epoch: Option<u64>,
+    next_interrupt_epoch: u64,
+    esc_interrupt_confirmation: Option<(u64, Instant)>,
     animations_enabled: bool,
     effects: codex_config::types::TuiEffects,
 
@@ -381,6 +384,9 @@ impl BottomPane {
             enhanced_keys_supported,
             disable_paste_burst,
             is_task_running: false,
+            active_interrupt_epoch: None,
+            next_interrupt_epoch: 0,
+            esc_interrupt_confirmation: None,
             status: None,
             hook_status_message: None,
             inline_banner: None,
@@ -531,6 +537,7 @@ impl BottomPane {
     /// should not update the composer directly unless they deliberately want
     /// overlays and selection views to continue using the previous bindings.
     pub fn set_keymap_bindings(&mut self, keymap: &RuntimeKeymap) {
+        self.clear_esc_interrupt_confirmation();
         self.keymap = keymap.clone();
         if let Some(view) = &mut self.warnings_view {
             view.set_keymap(keymap);
@@ -548,6 +555,7 @@ impl BottomPane {
         if let Some(status) = self.status.as_mut() {
             status.set_interrupt_binding(interrupt_binding);
         }
+        self.sync_double_escape_interrupt_hint();
         self.request_redraw();
     }
 
@@ -703,6 +711,7 @@ impl BottomPane {
     }
 
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
+        self.clear_esc_interrupt_confirmation();
         self.view_stack.push(view);
         self.schedule_active_view_frame();
         self.request_redraw();
@@ -1329,6 +1338,7 @@ impl BottomPane {
                             .primary_hint(KeymapContext::Chat, "interrupt_turn"),
                     );
                 }
+                self.sync_double_escape_interrupt_hint();
                 self.sync_status_inline_message();
                 self.request_redraw();
             }
@@ -1365,6 +1375,7 @@ impl BottomPane {
                         .primary_hint(KeymapContext::Chat, "interrupt_turn"),
                 );
             }
+            self.sync_double_escape_interrupt_hint();
             self.sync_status_inline_message();
             self.request_redraw();
         }
@@ -1695,6 +1706,100 @@ impl BottomPane {
 
     pub(crate) fn is_task_running(&self) -> bool {
         self.is_task_running
+    }
+
+    pub(crate) fn begin_interrupt_epoch(&mut self) {
+        self.next_interrupt_epoch = self.next_interrupt_epoch.wrapping_add(1);
+        self.active_interrupt_epoch = Some(self.next_interrupt_epoch);
+        self.esc_interrupt_confirmation = None;
+        self.sync_double_escape_interrupt_hint();
+        self.request_redraw();
+    }
+
+    pub(crate) fn end_interrupt_epoch(&mut self) {
+        self.active_interrupt_epoch = None;
+        self.esc_interrupt_confirmation = None;
+        self.sync_double_escape_interrupt_hint();
+        self.request_redraw();
+    }
+
+    pub(crate) fn clear_interrupt_epoch(&mut self) {
+        self.end_interrupt_epoch();
+    }
+
+    fn clear_esc_interrupt_confirmation(&mut self) {
+        if self.esc_interrupt_confirmation.take().is_some() {
+            self.sync_double_escape_interrupt_hint();
+            self.request_redraw();
+        }
+    }
+
+    fn sync_double_escape_interrupt_hint(&mut self) {
+        let plain_escape_interrupt = self.active_interrupt_epoch.is_some()
+            && self.keymap.chat.interrupt_turn.is_pressed(KeyEvent::new(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+            ));
+        let confirmation_deadline = self.esc_interrupt_confirmation.and_then(|(epoch, deadline)| {
+            (Some(epoch) == self.active_interrupt_epoch).then_some(deadline)
+        });
+        if let Some(status) = self.status.as_mut() {
+            status.set_double_escape_interrupt_hint(
+                plain_escape_interrupt,
+                confirmation_deadline,
+            );
+        }
+    }
+
+    /// Arm or confirm deliberate Esc interruption for the current cancellable turn.
+    /// Returns true only when this key is consumed as the first press or a repeated/released Esc.
+    pub(crate) fn handle_esc_interrupt_confirmation(
+        &mut self,
+        key_event: KeyEvent,
+        now: Instant,
+        would_interrupt: bool,
+    ) -> bool {
+        let Some(epoch) = self.active_interrupt_epoch else {
+            if key_event.kind == KeyEventKind::Press {
+                self.clear_esc_interrupt_confirmation();
+            }
+            return false;
+        };
+
+        let bare_escape = key_event.code == KeyCode::Esc
+            && key_event.modifiers.is_empty()
+            && self.keymap.chat.interrupt_turn.is_pressed(KeyEvent::new(
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+            ));
+        if bare_escape && key_event.kind != KeyEventKind::Press {
+            return would_interrupt;
+        }
+        if !bare_escape || !would_interrupt {
+            if key_event.kind == KeyEventKind::Press {
+                self.clear_esc_interrupt_confirmation();
+            }
+            return false;
+        }
+
+        if self
+            .esc_interrupt_confirmation
+            .is_some_and(|(confirmed_epoch, deadline)| {
+                confirmed_epoch == epoch && now <= deadline
+            })
+        {
+            self.esc_interrupt_confirmation = None;
+            self.sync_double_escape_interrupt_hint();
+            self.request_redraw();
+            return false;
+        }
+
+        let deadline = now + Duration::from_secs(1);
+        self.esc_interrupt_confirmation = Some((epoch, deadline));
+        self.sync_double_escape_interrupt_hint();
+        self.request_redraw();
+        self.request_redraw_in(Duration::from_secs(1));
+        true
     }
 
     pub(crate) fn should_interrupt_running_task(&self, key_event: KeyEvent) -> bool {
@@ -3540,6 +3645,102 @@ mod tests {
             !pane.composer.popup_active(),
             "expected Esc to dismiss skill popup"
         );
+    }
+
+    #[test]
+    fn esc_confirmation_requires_second_unmodified_press_within_one_second() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let mut pane = test_pane(AppEventSender::new(tx_raw));
+        pane.set_task_running(/*running*/ true);
+        pane.begin_interrupt_epoch();
+
+        let now = Instant::now();
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let repeat = KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        );
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+
+        assert!(!pane.handle_esc_interrupt_confirmation(
+            esc,
+            now,
+            /*would_interrupt*/ false
+        ));
+        assert!(pane.esc_interrupt_confirmation.is_none());
+        assert!(pane.handle_esc_interrupt_confirmation(esc, now, /*would_interrupt*/ true));
+        assert!(pane
+            .handle_esc_interrupt_confirmation(
+                repeat,
+                now + Duration::from_millis(100),
+                /*would_interrupt*/ true
+            ));
+        assert!(pane
+            .handle_esc_interrupt_confirmation(
+                release,
+                now + Duration::from_millis(200),
+                /*would_interrupt*/ true
+            ));
+        assert!(pane.esc_interrupt_confirmation.is_some());
+        assert!(!pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_millis(999),
+            /*would_interrupt*/ true
+        ));
+        assert!(pane.esc_interrupt_confirmation.is_none());
+
+        assert!(pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_secs(2),
+            /*would_interrupt*/ true
+        ));
+        assert!(pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_millis(3_001),
+            /*would_interrupt*/ true
+        ));
+        assert!(pane.esc_interrupt_confirmation.is_some());
+
+        let modified_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT);
+        assert!(!pane.handle_esc_interrupt_confirmation(
+            modified_esc,
+            now + Duration::from_millis(3_100),
+            /*would_interrupt*/ false
+        ));
+        assert!(pane.esc_interrupt_confirmation.is_none());
+
+        assert!(pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_secs(4),
+            /*would_interrupt*/ true
+        ));
+        let other_press = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(!pane.handle_esc_interrupt_confirmation(
+            other_press,
+            now + Duration::from_millis(4_100),
+            /*would_interrupt*/ false
+        ));
+        assert!(pane.esc_interrupt_confirmation.is_none());
+
+        assert!(pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_secs(5),
+            /*would_interrupt*/ true
+        ));
+        pane.begin_interrupt_epoch();
+        assert!(pane.esc_interrupt_confirmation.is_none());
+        assert!(pane.handle_esc_interrupt_confirmation(
+            esc,
+            now + Duration::from_millis(5_100),
+            /*would_interrupt*/ true
+        ));
+        pane.end_interrupt_epoch();
+        assert!(pane.esc_interrupt_confirmation.is_none());
     }
 
     #[test]

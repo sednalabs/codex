@@ -58,6 +58,13 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) -> KeyEventAction {
+        let esc_would_interrupt = self.esc_interrupt_would_interrupt();
+        if self
+            .bottom_pane
+            .handle_esc_interrupt_confirmation(key_event, Instant::now(), esc_would_interrupt)
+        {
+            return KeyEventAction::None;
+        }
         if self.handle_startup_submission_key(key_event) {
             return KeyEventAction::None;
         }
@@ -255,6 +262,17 @@ impl ChatWidget {
             }
         }
         KeyEventAction::None
+    }
+
+    /// Clear a pending Esc confirmation when App consumes a press before this widget sees it.
+    pub(crate) fn invalidate_esc_interrupt_confirmation(&mut self, key_event: KeyEvent) {
+        if key_event.kind == KeyEventKind::Press {
+            self.bottom_pane.handle_esc_interrupt_confirmation(
+                key_event,
+                Instant::now(),
+                /*would_interrupt*/ false,
+            );
+        }
     }
 
     /// Attach a local image to the composer when the active model supports image inputs.
@@ -628,6 +646,38 @@ impl ChatWidget {
     // Review mode counts as cancellable work so Ctrl+C interrupts instead of quitting.
     fn is_cancellable_work_active(&self) -> bool {
         self.bottom_pane.is_task_running() || self.review.is_review_mode
+    }
+
+    fn esc_interrupt_would_interrupt(&self) -> bool {
+        let esc_press = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        if !self.chat_keymap.interrupt_turn.is_pressed(esc_press)
+            || !self.bottom_pane.no_modal_or_popup_active()
+            || self.bottom_pane.has_active_view()
+            || self.bottom_pane.shortcut_overlay_visible()
+            || self
+                .bottom_pane
+                .questions
+                .as_ref()
+                .is_some_and(|questions| questions.expanded)
+            || !self.bottom_pane.is_task_running()
+            || self.should_handle_vim_insert_escape(esc_press)
+        {
+            return false;
+        }
+
+        if self.pending_image_submission.is_some() && self.is_cancellable_work_active() {
+            return true;
+        }
+
+        let review_steer_warning = self.review.is_review_mode
+            && (!self.input_queue.pending_steers.is_empty()
+                || !self.input_queue.rejected_steers_queue.is_empty());
+        if review_steer_warning {
+            return false;
+        }
+
+        !self.input_queue.pending_steers.is_empty()
+            || self.bottom_pane.should_interrupt_running_task(esc_press)
     }
 
     pub(crate) fn is_agent_turn_running(&self) -> bool {

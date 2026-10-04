@@ -349,7 +349,14 @@ impl App {
         app_server: &mut AppServerSession,
         key_event: KeyEvent,
     ) {
+        if key_event.kind == KeyEventKind::Press
+            && !(key_event.code == KeyCode::Esc && key_event.modifiers.is_empty())
+        {
+            self.chat_widget
+                .invalidate_esc_interrupt_confirmation(key_event);
+        }
         if self.chat_widget.fork_in_progress {
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
         if self.chat_widget.is_external_writer_view()
@@ -363,6 +370,7 @@ impl App {
                 && !matches!(self.app_server_target, AppServerTarget::Embedded)
             {
                 self.open_agents_overview(app_server);
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return;
             }
             let quit = match key_event.code {
@@ -378,6 +386,7 @@ impl App {
             };
             if quit {
                 self.app_event_tx.send(AppEvent::Exit(ExitMode::Immediate));
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return;
             }
             if matches!(key_event.code, KeyCode::Char('f' | 'F'))
@@ -386,6 +395,7 @@ impl App {
                 self.chat_widget.fork_in_progress = true;
                 self.app_event_tx
                     .send(AppEvent::ForkCurrentSession { name: None });
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return;
             }
             if matches!(key_event.code, KeyCode::Char('r' | 'R'))
@@ -406,6 +416,7 @@ impl App {
                 {
                     self.app_event_tx.send(AppEvent::Exit(ExitMode::Immediate));
                 }
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return;
             }
         }
@@ -431,6 +442,7 @@ impl App {
                     .select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await;
             }
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
         if self.overlay.is_none()
@@ -448,6 +460,7 @@ impl App {
                     .select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await;
             }
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
         if matches!(self.app_server_target, AppServerTarget::LocalDaemon { .. })
@@ -524,6 +537,7 @@ impl App {
                     .collect(),
                     ..SelectionViewParams::picker()
                 });
+                self.invalidate_consumed_esc_confirmation(key_event);
                 return;
             }
         }
@@ -531,6 +545,7 @@ impl App {
         if side_return_shortcut_matches(key_event)
             && self.maybe_return_from_side(tui, app_server).await
         {
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
 
@@ -540,6 +555,7 @@ impl App {
                 .handle_shared_app_keymap_action(tui, app_server, key_event)
                 .await
         {
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
 
@@ -556,6 +572,7 @@ impl App {
                 overlay.set_keymap_bindings(&self.keymap);
                 overlay.begin_search();
             }
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
 
@@ -571,12 +588,14 @@ impl App {
             {
                 self.open_agents_overview(app_server);
             }
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
 
         if self.should_handle_unavailable_thread_key(key_event) {
             self.chat_widget
                 .handle_restricted_key(key_event, RestrictedInputMode::UnavailableThread);
+            self.invalidate_consumed_esc_confirmation(key_event);
             return;
         }
 
@@ -588,11 +607,13 @@ impl App {
             // Esc so the active UI (e.g. status indicator, modals, popups)
             // handles it.
             if self.should_handle_backtrack_esc(key_event) {
+                self.invalidate_consumed_esc_confirmation(key_event);
                 self.chat_widget.prepare_composer_sparkle_key(key_event);
                 if key_event.kind == KeyEventKind::Press {
                     self.handle_backtrack_esc_key(tui);
                 }
             } else if self.should_reject_side_backtrack_esc(key_event) {
+                self.invalidate_consumed_esc_confirmation(key_event);
                 self.reject_side_backtrack_esc();
             } else {
                 let action = self.chat_widget.handle_key_event(key_event);

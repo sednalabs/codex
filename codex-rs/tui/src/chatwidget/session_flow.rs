@@ -50,6 +50,7 @@ impl ChatWidget {
         display: SessionConfiguredDisplay,
         fork_parent_title: Option<String>,
     ) {
+        self.bottom_pane.clear_interrupt_epoch();
         self.windows_sandbox_host =
             if !self.windows_sandbox_local_server && self.remote_connection.is_some() {
                 crate::app::WindowsSandboxHost::Remote
@@ -307,6 +308,7 @@ impl ChatWidget {
         rollout_path: Option<PathBuf>,
         retained_turns: &[Turn],
     ) {
+        self.bottom_pane.clear_interrupt_epoch();
         self.current_rollout_path = rollout_path;
         self.input_queue.clear();
         self.reset_realtime_conversation();

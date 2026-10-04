@@ -867,6 +867,14 @@ async fn esc_interrupt_sends_all_pending_steers_immediately_and_keeps_existing_d
         .set_composer_text("still editing".to_string(), Vec::new(), Vec::new());
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+    assert_eq!(chat.input_queue.pending_steers.len(), 2);
+    assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    assert_eq!(chat.bottom_pane.composer_text(), "still editing");
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     next_interrupt_op(&mut op_rx);
 
     chat.on_interrupted_turn(TurnAbortReason::Interrupted);
@@ -919,6 +927,11 @@ async fn esc_with_pending_steers_overrides_agent_command_interrupt_behavior() {
 
     chat.bottom_pane
         .set_composer_text("/subagents ".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    for op in std::iter::from_fn(|| op_rx.try_recv().ok()) {
+        assert!(!matches!(op, Op::Interrupt), "first Esc interrupted the turn");
+    }
+
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     next_interrupt_op(&mut op_rx);

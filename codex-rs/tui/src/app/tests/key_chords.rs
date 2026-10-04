@@ -4,7 +4,10 @@ use super::Result;
 use super::RuntimeKeymap;
 use super::TuiEvent;
 use super::make_test_app;
+use super::make_test_app_with_channels;
 use super::start_config_write_test_app_server;
+use super::test_thread_session;
+use super::turn_started_notification;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
@@ -61,6 +64,39 @@ async fn press(
 
 fn ctrl(ch: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
+}
+
+async fn app_with_running_turn() -> Result<(
+    Box<App>,
+    Tui,
+    AppServerSession,
+    tokio::sync::mpsc::UnboundedReceiver<crate::app_command::AppCommand>,
+)> {
+    let (mut app, mut app_events, mut operations) = make_test_app_with_channels().await;
+    let thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(thread_id);
+    app.chat_widget.handle_thread_session(test_thread_session(
+        thread_id,
+        app.config.cwd.to_path_buf(),
+    ));
+    app.chat_widget.handle_server_notification(
+        turn_started_notification(thread_id, "esc-ingress-test"),
+        /*replay_kind*/ None,
+    );
+    while app_events.try_recv().is_ok() {}
+    while operations.try_recv().is_ok() {}
+    let app_server = start_config_write_test_app_server(&app).await?;
+    let tui = crate::tui::test_support::make_test_tui()?;
+    Ok((app, tui, app_server, operations))
+}
+
+fn interrupt_sent(
+    operations: &mut tokio::sync::mpsc::UnboundedReceiver<crate::app_command::AppCommand>,
+) -> bool {
+    matches!(
+        operations.try_recv(),
+        Ok(crate::app_command::AppCommand::Interrupt)
+    )
 }
 
 #[tokio::test]
@@ -120,6 +156,63 @@ async fn global_chord_keeps_hints_and_completes_before_deadline() -> Result<()> 
     press(&mut app, &mut tui, &mut app_server, ctrl('t')).await?;
     assert!(!app.key_chord_matcher.is_pending());
     assert!(app.overlay.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn esc_confirmation_clears_before_global_clear_terminal() -> Result<()> {
+    let (mut app, mut tui, mut app_server, mut operations) = app_with_running_turn().await?;
+    let esc = KeyCode::Esc.into();
+
+    let first_esc_at = std::time::Instant::now();
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(!interrupt_sent(&mut operations));
+    press(&mut app, &mut tui, &mut app_server, ctrl('l')).await?;
+    assert!(!interrupt_sent(&mut operations));
+    assert!(app.chat_widget.is_task_running_for_test());
+
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(
+        first_esc_at.elapsed() < std::time::Duration::from_secs(1),
+        "the negative Esc must be handled before the original confirmation expires"
+    );
+    assert!(!interrupt_sent(&mut operations));
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(interrupt_sent(&mut operations));
+    Ok(())
+}
+
+#[tokio::test]
+async fn esc_confirmation_clears_before_consumed_key_chord() -> Result<()> {
+    let (mut app, mut tui, mut app_server, mut operations) = app_with_running_turn().await?;
+    let mut config = TuiKeymap::default();
+    config.global.open_transcript = Some(KeybindingsSpec::One(KeybindingSpec(
+        "ctrl-x ctrl-t".to_string(),
+    )));
+    let runtime =
+        RuntimeKeymap::from_config(&config).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    app.chat_widget.apply_keymap_update(config, &runtime);
+    app.keymap = runtime;
+
+    let esc = KeyCode::Esc.into();
+    let first_esc_at = std::time::Instant::now();
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(!interrupt_sent(&mut operations));
+    press(&mut app, &mut tui, &mut app_server, ctrl('x')).await?;
+    assert!(app.key_chord_matcher.is_pending());
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(!app.key_chord_matcher.is_pending());
+    assert!(!interrupt_sent(&mut operations));
+    assert!(app.chat_widget.is_task_running_for_test());
+
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(
+        first_esc_at.elapsed() < std::time::Duration::from_secs(1),
+        "the negative Esc must be handled before the original confirmation expires"
+    );
+    assert!(!interrupt_sent(&mut operations));
+    press(&mut app, &mut tui, &mut app_server, esc).await?;
+    assert!(interrupt_sent(&mut operations));
     Ok(())
 }
 

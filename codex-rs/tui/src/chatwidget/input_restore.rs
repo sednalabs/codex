@@ -603,9 +603,14 @@ impl ChatWidget {
         input_state: Option<ThreadInputState>,
         restore_mode: ThreadInputStateRestoreMode,
     ) {
+        self.bottom_pane.clear_interrupt_epoch();
         let preserve_in_flight_turn = restore_mode.preserve_in_flight_turn;
         let restored_task_running =
             preserve_in_flight_turn && input_state.as_ref().is_some_and(|state| state.task_running);
+        let restored_agent_turn_running = preserve_in_flight_turn
+            && input_state
+                .as_ref()
+                .is_some_and(|state| state.agent_turn_running);
         if let Some(input_state) = input_state {
             self.bottom_pane.restore_questions(input_state.questions);
             self.input_queue.recovered_queue = input_state.recovered_queue;
@@ -683,6 +688,9 @@ impl ChatWidget {
         self.turn_lifecycle
             .restore_running(self.turn_lifecycle.agent_turn_running, Instant::now());
         self.update_task_running_state();
+        if restored_agent_turn_running {
+            self.bottom_pane.begin_interrupt_epoch();
+        }
         if restored_task_running && !self.bottom_pane.is_task_running() {
             self.bottom_pane.set_task_running(/*running*/ true);
             self.refresh_status_surfaces();
