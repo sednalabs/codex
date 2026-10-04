@@ -42,6 +42,7 @@ from verify_existing_first_binary_producer import (
     Q57_FIXTURE_SHA,
     Q59_FIXTURE_SHA,
     Q60_FIXTURE_SHA,
+    Q61_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
@@ -1540,6 +1541,50 @@ class AcceptedInputManifestTests(unittest.TestCase):
                 select_accepted_record(manifest, inputs)["record_id"],
             )
 
+    def test_q61_s4_rows_bind_exact_h2_seven_job_producer_contract(self) -> None:
+        manifest = json.loads(ACCEPTED_INPUTS_PATH.read_text(encoding="utf-8"))
+        rows = manifest["records"]
+        q60_rows_list = [
+            row
+            for row in rows
+            if row["identity"]["fixture_sha"] == Q60_FIXTURE_SHA
+            and row["identity"]["sdk_sha"] == S4_SDK_SHA
+        ]
+        q61_rows_list = [
+            row
+            for row in rows
+            if row["identity"]["fixture_sha"] == Q61_FIXTURE_SHA
+        ]
+        self.assertEqual(2, len(q60_rows_list))
+        self.assertEqual(2, len(q61_rows_list))
+        q60_rows = {row["identity"]["profile"]: row for row in q60_rows_list}
+        q61_rows = {row["identity"]["profile"]: row for row in q61_rows_list}
+        self.assertEqual({"focused", "full"}, set(q60_rows))
+        self.assertEqual({"focused", "full"}, set(q61_rows))
+
+        for profile in ("focused", "full"):
+            q60 = q60_rows[profile]
+            q61 = q61_rows[profile]
+            expected = {
+                **q60,
+                "record_id": f"accepted-producer-37126137319-{profile}-q61-s4",
+                "identity": {
+                    **q60["identity"],
+                    "fixture_sha": Q61_FIXTURE_SHA,
+                },
+            }
+            self.assertEqual(expected, q61)
+            _validate_manifest_record(q61)
+            inputs = {
+                **q61["identity"],
+                "producer_run_id": q61["producer"]["run_id"],
+                "producer_workflow_host_sha": q61["producer"]["workflow_host_sha"],
+            }
+            self.assertEqual(
+                q61["record_id"],
+                select_accepted_record(manifest, inputs)["record_id"],
+            )
+
     def test_fixture_sdk_generations_select_closed_package_and_sdk_inventories(self) -> None:
         q2_pair = consume_existing_test_plan(Q2_FIXTURE_SHA, S0_SDK_SHA, "pair")
         self.assertEqual(frozenset({"fresh", "bad_checksum"}), q2_pair["state"])
@@ -1652,6 +1697,14 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q60_full["state"])
         self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q60_full["plain"])
         self.assertEqual(17, len(q60_full["plain"]))
+        q61_focused = consume_existing_test_plan(Q61_FIXTURE_SHA, S4_SDK_SHA, "focused")
+        self.assertEqual(frozenset(), q61_focused["state"])
+        self.assertEqual(FOCUSED_REPAIR_PLAIN_TESTS, q61_focused["plain"])
+        self.assertEqual(6, len(q61_focused["plain"]))
+        q61_full = consume_existing_test_plan(Q61_FIXTURE_SHA, S4_SDK_SHA, "full")
+        self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q61_full["state"])
+        self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q61_full["plain"])
+        self.assertEqual(17, len(q61_full["plain"]))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
@@ -1702,6 +1755,8 @@ class AcceptedInputManifestTests(unittest.TestCase):
             (Q59_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             (Q60_FIXTURE_SHA, S3_SDK_SHA, "focused"),
             (Q60_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q61_FIXTURE_SHA, S3_SDK_SHA, "focused"),
+            (Q61_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
