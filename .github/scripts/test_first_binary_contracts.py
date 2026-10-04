@@ -130,8 +130,12 @@ class CheckerFixture(unittest.TestCase):
 
 class OptionContractTests(CheckerFixture):
     def test_build_source_without_context_registration_rejects_workflow_argument(self):
+        registration = "    group.addoption('--consumer-context-file', required=True, type=Path)\n"
+        self.assertEqual(OPTION_SOURCE.count(registration), 1)
+        source = OPTION_SOURCE.replace(registration, "")
+        self.assertNotIn("consumer-context-file", source)
         (self.test_dir / "conftest.py").write_text(
-            OPTION_SOURCE.replace("    group.addoption('--consumer-context-file', required=True)\n", ""), encoding="utf-8")
+            source, encoding="utf-8")
         result = self.run_checks(mode="build", profile="full")
         self.assertTrue(any("unknown pytest option --consumer-context-file" in error for error in result.errors))
 
