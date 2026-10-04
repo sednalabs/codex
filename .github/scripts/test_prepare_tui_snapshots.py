@@ -393,7 +393,9 @@ class IdentityFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.workspace = Path(temporary.name)
+        temporary_root = Path(temporary.name)
+        self.workspace = temporary_root / "workspace"
+        self.workspace.mkdir()
         self.workflow_root = self.workspace / ".workflow-src"
         self.product_root = self.workspace / "product"
         self._git_init(self.workflow_root)
@@ -402,20 +404,27 @@ class IdentityFixture(unittest.TestCase):
         self._git(self.workflow_root, "add", "host.txt")
         self._commit(self.workflow_root, "host")
         self.host_sha = self._git(self.workflow_root, "rev-parse", "HEAD").decode().strip()
+        for index, relative in enumerate(prepare_tui_snapshots.SNAPSHOT_PATHS):
+            path = self.product_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"accepted fixture snapshot {index}\n".encode())
         for relative in prepare_tui_snapshots.LOCK_PATHS:
             path = self.product_root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("lock\n", encoding="utf-8")
-        (self.product_root / "codex-rs/tui/src/base.txt").parent.mkdir(parents=True)
-        (self.product_root / "codex-rs/tui/src/base.txt").write_text("base\n", encoding="utf-8")
-        self._git(self.product_root, "add", "--", *prepare_tui_snapshots.LOCK_PATHS, "codex-rs/tui/src/base.txt")
+        self._git(
+            self.product_root,
+            "add",
+            "--",
+            *prepare_tui_snapshots.SNAPSHOT_PATHS,
+            *prepare_tui_snapshots.LOCK_PATHS,
+        )
         self._commit(self.product_root, "product")
         self.base_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
         self.target_sha = self.base_sha
         self._git(self.product_root, "fetch", "--no-tags", ".", self.base_sha)
-        runner_temp = self.workspace.parent / f"{self.workspace.name}-runner-temp"
+        runner_temp = temporary_root / "runner-temp"
         runner_temp.mkdir()
-        self.addCleanup(lambda: runner_temp.rmdir() if runner_temp.exists() else None)
         self.environment = {
             "EXPECTED_H": self.host_sha,
             "GITHUB_SHA": self.host_sha,
@@ -520,6 +529,113 @@ class InputIdentityTests(IdentityFixture):
             with self.subTest(path=suffix), self.assertRaisesRegex(ValueError, "already exists"):
                 prepare_tui_snapshots._fixed_runner_paths(self.environment, self.workspace)
             path.rmdir()
+
+
+class PrepareExecutionTests(IdentityFixture):
+    def _prepare_with_result(self, exit_code):
+        baseline = prepare_tui_snapshots._capture_baseline(self.product_root)
+        locks = prepare_tui_snapshots._capture_locks(self.product_root)
+        relative = f"{prepare_tui_snapshots.SNAPSHOT_PATHS[0]}.new"
+        contents = b"review-pending generated snapshot\n"
+        pending_path = self.product_root / relative
+
+        def run_command(command, **kwargs):
+            self.assertEqual(command, prepare_tui_snapshots.COMMAND)
+            self.assertEqual(kwargs["cwd"], self.product_root)
+            self.assertFalse(kwargs["check"])
+            self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+            self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(kwargs["env"], self.environment)
+            pending_path.write_bytes(contents)
+            return mock.Mock(returncode=exit_code)
+
+        with mock.patch.object(
+            prepare_tui_snapshots.subprocess, "run", side_effect=run_command
+        ) as run:
+            result = prepare_tui_snapshots.prepare(self.environment)
+
+        run.assert_called_once_with(
+            prepare_tui_snapshots.COMMAND,
+            cwd=self.product_root,
+            env=mock.ANY,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.assertEqual(result, exit_code)
+
+        runner_temp = Path(self.environment["RUNNER_TEMP"])
+        artifact_root = runner_temp / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
+        identity = json.loads(
+            (artifact_root / "identity.json").read_text(encoding="utf-8")
+        )
+        candidates = json.loads(
+            (artifact_root / "candidate-paths.json").read_text(encoding="utf-8")
+        )
+        generated = json.loads(
+            (artifact_root / "generated-paths.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(identity["workflow_host_sha"], self.host_sha)
+        self.assertEqual(
+            identity["workflow_host_tree"],
+            self._git(self.workflow_root, "rev-parse", "HEAD^{tree}").decode().strip(),
+        )
+        self.assertEqual(identity["product_sha"], self.target_sha)
+        self.assertEqual(
+            identity["product_tree"],
+            self._git(self.product_root, "rev-parse", "HEAD^{tree}").decode().strip(),
+        )
+        self.assertEqual(identity["comparison_base_sha"], self.base_sha)
+        self.assertEqual(
+            identity["comparison_base_tree"],
+            self._git(
+                self.product_root, "rev-parse", f"{self.base_sha}^{{tree}}"
+            ).decode().strip(),
+        )
+        self.assertEqual(identity["workflow_run_id"], "123")
+        self.assertEqual(identity["workflow_run_attempt"], "1")
+        self.assertEqual(identity["command"], prepare_tui_snapshots.COMMAND)
+        self.assertEqual(identity["command_environment"]["INSTA_UPDATE"], "new")
+        self.assertEqual(identity["test_exit_code"], exit_code)
+        self.assertEqual(
+            identity["test_status"], "passed" if exit_code == 0 else "failed"
+        )
+        self.assertEqual(
+            candidates,
+            {
+                "count": len(prepare_tui_snapshots.SNAPSHOT_PATHS),
+                "paths": list(prepare_tui_snapshots.SNAPSHOT_PATHS),
+            },
+        )
+        self.assertEqual(generated, {"count": 1, "paths": [relative]})
+        self.assertEqual(
+            identity["baseline_snapshot_sha256"],
+            {path: state["sha256"] for path, state in sorted(baseline.items())},
+        )
+        self.assertEqual(identity["lock_files"], locks)
+        self.assertEqual(
+            identity["generated_snapshot_sha256"][relative],
+            hashlib.sha256(contents).hexdigest(),
+        )
+        self.assertEqual(
+            (artifact_root / "snapshots" / relative).read_bytes(), contents
+        )
+        self.assertFalse(
+            (runner_temp / prepare_tui_snapshots.ARTIFACT_STAGING_DIRECTORY_NAME).exists()
+        )
+        self.assertEqual(
+            prepare_tui_snapshots.validate_outputs(
+                self.product_root, baseline, locks, self.environment
+            ),
+            {relative: contents},
+        )
+        return result
+
+    def test_prepare_invokes_exact_command_once_and_writes_success_artifact(self):
+        self.assertEqual(self._prepare_with_result(0), 0)
+
+    def test_red_suite_exit_writes_artifact_and_remains_a_failure(self):
+        self.assertEqual(self._prepare_with_result(17), 17)
 
 
 if __name__ == "__main__":
