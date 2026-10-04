@@ -48,6 +48,7 @@ use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_connectors::ConnectorRuntimeFetchTicket;
 use codex_exec_server::Environment;
 use codex_protocol::mcp::McpServerInfo;
+use codex_config::McpServerAuth;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupStatus;
@@ -1216,6 +1217,21 @@ async fn make_rmcp_client(
     runtime_auth_provider: Option<SharedAuthProvider>,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
+    let protected_target = match &config.transport {
+        McpServerTransportConfig::StreamableHttp { url, .. } => {
+            codex_runtime_proof::is_protected_mcp_target(server_name, url)
+                .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?
+        }
+        McpServerTransportConfig::Stdio { .. } => false,
+    };
+    if protected_target
+        && (config.oauth.is_some()
+            || config.scopes.is_some()
+            || config.auth != McpServerAuth::OAuth
+            || runtime_auth_provider.is_some())
+    {
+        return Err(anyhow!("protected MCP target rejects OAuth configuration and ambient auth providers").into());
+    }
     let resolved_environment =
         resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
     let is_local_environment = config.is_local_environment();
@@ -1265,16 +1281,32 @@ async fn make_rmcp_client(
             env_http_headers,
             bearer_token_env_var,
         } => {
+            let protected_bearer = if protected_target {
+                if http_headers.is_some()
+                    || env_http_headers.is_some()
+                    || bearer_token_env_var.is_some()
+                {
+                    return Err(anyhow!("protected MCP target rejects configured header and environment credentials").into());
+                }
+                codex_runtime_proof::bearer_for_mcp(server_name, &url)
+                    .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?
+                    .map(|bearer| bearer.as_str().to_owned())
+            } else {
+                None
+            };
             let http_client = resolved_environment.as_ref().map_or_else(
                 || runtime_context.local_http_client(),
                 |environment| environment.get_http_client(),
             );
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-            let resolved_bearer_token =
+            let resolved_bearer_token = if protected_target {
+                protected_bearer
+            } else {
                 match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {
                     Ok(token) => token,
                     Err(error) => return Err(error.into()),
-                };
+                }
+            };
             RmcpClient::new_streamable_http_client(
                 server_name,
                 &url,

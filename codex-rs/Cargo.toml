@@ -85,6 +85,7 @@ members = [
     "rmcp-client",
     "responses-api-proxy",
     "response-debug-context",
+    "runtime-proof",
     "sandboxing",
     "stdio-to-uds",
     "otel",
@@ -228,6 +229,7 @@ codex-realtime-webrtc = { path = "realtime-webrtc" }
 codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
+codex-runtime-proof = { path = "runtime-proof" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
@@ -318,7 +320,7 @@ divan = "0.1.21"
 dns-lookup = "3.0.1"
 dotenvy = "0.15.7"
 dunce = "1.0.4"
-ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
+ed25519-dalek = { version = "2.2.0", features = ["pkcs8", "zeroize"] }
 encoding_rs = "0.8.35"
 eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
@@ -400,6 +402,7 @@ sentry = "0.49.0"
 serde = { version = "1", features = ["rc"] }
 serde_ignored = "0.1.14"
 serde_json = "1"
+serde_json_canonicalizer = "=0.3.1"
 serde_path_to_error = "0.1.20"
 serde_with = "3.18"
 serde_yaml = "0.9"

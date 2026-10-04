@@ -5874,6 +5874,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     );
     let session = Session {
         thread_id,
+        execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,
@@ -8110,6 +8111,7 @@ where
     ));
     let session = Arc::new(Session {
         thread_id,
+        execution_nonce: Uuid::new_v4(),
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         tx_event,
         agent_status: agent_status_tx,

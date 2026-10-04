@@ -3681,6 +3681,63 @@
       "boundary_type": "preview-artifact-production",
       "hotspot_files": [".github/workflows/sedna-branch-build.yml"],
       "extraction_target": "upstream preview packaging for the code-mode host helper"
+    },
+    {
+      "id": "native-runtime-mcp-execution-proof",
+      "title": "Native per-execution proof for a protected MCP claim",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "runtime-credential-proof",
+      "surface": ["protected MCP claim request metadata"],
+      "files": [
+        "codex-rs/runtime-proof/**",
+        "codex-rs/cli/src/main.rs",
+        "codex-rs/cli/tests/runtime_execution_proof.rs",
+        "codex-rs/cli/tests/runtime_execution_proof/support.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/mcp_tool_call.rs",
+        "codex-rs/exec/src/lib.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/server.rs"
+      ],
+      "behavior": "A Linux CLI consumes bounded root-peer anonymous-FD proof and authentication bootstraps before other startup work, validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. Synthetic fixtures use only a fixed public fake credential and loopback recipient. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "core-runtime-surface-smoke; codex.mcp-safety-targeted; codex.downstream-docs-check",
+      "tests": [
+        "canonical_claim_digest_uses_the_ops_jcs_contract",
+        "canonical_claim_digest_distinguishes_omission_null_and_note_changes",
+        "canonical_claim_digest_uses_jcs_utf16_key_order",
+        "canonical_claim_digest_rejects_unsafe_integers_and_floats",
+        "certificate_validation_binds_key_artifact_and_fixed_execution_lease",
+        "protection_drift_erases_the_process_signing_capability",
+        "selected_claim_rejects_a_mismatched_server_or_recipient",
+        "signs_each_final_claim_request_with_native_context_and_fresh_nonce",
+        "bootstrap_frame_is_bounded_and_descriptor_closes",
+        "runtime_execution_nonce_is_per_session_even_with_a_shared_mcp_manager",
+        "runtime_proof_metadata_preserves_trace_fields_and_rejects_collision",
+        "echoed_runtime_proof_is_removed_from_all_tool_result_surfaces",
+        "protected_cli_root_and_delegate_calls_are_signed_and_redacted",
+        "invalid_auth_bootstraps_are_rejected_before_credential_egress",
+        "protected_model_provider_is_checked_before_auth_resolution",
+        "protected_api_provider_is_pinned_to_the_canonical_builtin_configuration",
+        "protected_api_route_uses_only_the_pinned_recipient_and_endpoint",
+        "delegate_provider_override_is_rejected_before_credential_egress"
+      ],
+      "owner": "downstream",
+      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Synthetic tests bind only an exact public fake token and loopback mock. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. Hosted validation is required; generated dependency lock updates are hosted-only.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "runtime-credential-proof",
+      "hotspot_files": [
+        "codex-rs/core/src/client.rs",
+        "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/mcp_tool_call.rs"
+      ],
+      "extraction_target": "native host capability for narrowly scoped MCP request proof"
     }
   ],
   "superseded_hunks": [
