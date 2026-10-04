@@ -2,6 +2,7 @@
 
 use super::*;
 use codex_config::config_toml::CircuitBreakAction;
+use codex_core::CodexThread;
 use codex_core::config::Constrained;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -10,12 +11,83 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::TurnAbortReason;
 use core_test_support::ThreadIdle;
+use core_test_support::responses::ResponseMock;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use test_case::test_case;
 use tokio::sync::oneshot;
+
+#[derive(Debug, Default)]
+struct GuardianEventCounts {
+    guardian_warning: u8,
+    turn_aborted: u8,
+    turn_complete: u8,
+    error: u8,
+    other: u8,
+}
+
+impl GuardianEventCounts {
+    fn record(&mut self, event: &codex_protocol::protocol::EventMsg) {
+        let count = match event {
+            EventMsg::GuardianWarning(_) => &mut self.guardian_warning,
+            EventMsg::TurnAborted(_) => &mut self.turn_aborted,
+            EventMsg::TurnComplete(_) => &mut self.turn_complete,
+            EventMsg::Error(_) => &mut self.error,
+            _ => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
+fn bounded_mock_request_counts(calls: &[ResponseMock], reviews: &[ResponseMock]) -> String {
+    let worker_exec = calls
+        .iter()
+        .map(|call| call.requests().len().min(1))
+        .collect::<Vec<_>>();
+    let guardian_reviews = reviews
+        .iter()
+        .map(|review| review.requests().len().min(1))
+        .collect::<Vec<_>>();
+    format!("worker_exec={worker_exec:?}, guardian_review={guardian_reviews:?}")
+}
+
+async fn wait_for_guardian_event_match<T, F>(
+    worker: &CodexThread,
+    stage: &str,
+    observed_events: &mut GuardianEventCounts,
+    calls: &[ResponseMock],
+    reviews: &[ResponseMock],
+    mut matcher: F,
+) -> T
+where
+    F: FnMut(&codex_protocol::protocol::EventMsg) -> Option<T>,
+{
+    loop {
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            worker.next_event(),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for Guardian event stage `{stage}`; observed event-type counts: {observed_events:?}; bounded mock request counts: {}",
+                bounded_mock_request_counts(calls, reviews)
+            )
+        })
+        .unwrap_or_else(|_| {
+            panic!(
+                "event stream ended while waiting for Guardian event stage `{stage}`; observed event-type counts: {observed_events:?}; bounded mock request counts: {}",
+                bounded_mock_request_counts(calls, reviews)
+            )
+        });
+        observed_events.record(&event.msg);
+        if let Some(matched) = matcher(&event.msg) {
+            return matched;
+        }
+    }
+}
 
 #[test_case(CircuitBreakAction::Strict; "strict_notifies_parent")]
 #[test_case(CircuitBreakAction::Default; "default_stays_silent")]
@@ -148,17 +220,32 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         .thread_manager
         .get_thread(created.recv().await?)
         .await?;
-    let warning = wait_for_event_match(&worker, |event| match event {
-        EventMsg::GuardianWarning(warning) if warning.message.contains("3 consecutive") => {
-            Some(warning.message.clone())
-        }
-        _ => None,
-    })
+    let mut observed_events = GuardianEventCounts::default();
+    let warning = wait_for_guardian_event_match(
+        &worker,
+        "GuardianWarning after three consecutive denials",
+        &mut observed_events,
+        &calls,
+        &reviews,
+        |event| match event {
+            EventMsg::GuardianWarning(warning) if warning.message.contains("3 consecutive") => {
+                Some(warning.message.clone())
+            }
+            _ => None,
+        },
+    )
     .await;
-    let aborted = wait_for_event_match(&worker, |event| match event {
-        EventMsg::TurnAborted(aborted) => Some(aborted.clone()),
-        _ => None,
-    })
+    let aborted = wait_for_guardian_event_match(
+        &worker,
+        "TurnAborted after GuardianWarning",
+        &mut observed_events,
+        &calls,
+        &reviews,
+        |event| match event {
+            EventMsg::TurnAborted(aborted) => Some(aborted.clone()),
+            _ => None,
+        },
+    )
     .await;
     ThreadIdle::wait(&worker).await;
     assert_eq!(
