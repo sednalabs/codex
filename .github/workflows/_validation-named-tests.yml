@@ -22,6 +22,10 @@ on:
       request_json:
         required: true
         type: string
+      runtime_preparation_only:
+        required: false
+        type: boolean
+        default: false
       artifact_name:
         required: false
         type: string
@@ -32,7 +36,10 @@ permissions:
 
 jobs:
   run:
-    name: Run exact named Rust tests
+    name: >-
+      ${{ inputs.runtime_preparation_only
+          && 'Runtime preflight only (not full target qualification)'
+          || 'Run exact named Rust tests' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -142,10 +149,15 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s .workflow-src/.github/scripts -p 'test_run_named_rust_tests.py'
 
-      - name: Inventory and run exact named tests
+      - name: >-
+          ${{ inputs.runtime_preparation_only
+              && 'Prepare fixed core runtime only'
+              || 'Inventory and run exact named tests' }}
         id: named_tests
         continue-on-error: true
         working-directory: validation-target
+        env:
+          VALIDATION_RUNTIME_PREPARATION_ONLY: ${{ inputs.runtime_preparation_only }}
         shell: bash
         run: |
           set -euo pipefail
@@ -170,6 +182,9 @@ jobs:
               payload = json.loads(path.read_text(encoding="utf-8"))
               identity = payload.get("identity") or {}
               print("### Named test evidence")
+              if payload.get("result_kind") == "runtime_preflight":
+                  print("- Result kind: `runtime_preflight`")
+                  print("- Scope: runtime preparation only; full target tests were not run.")
               print(f"- Status: `{payload.get('status', 'unknown')}`")
               print(f"- Request fingerprint: `{payload.get('request_fingerprint', '')}`")
               print(f"- Harness SHA: `{identity.get('harness_sha', '')}`")
@@ -189,7 +204,10 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Preserve failed exact-test result
+      - name: >-
+          ${{ inputs.runtime_preparation_only
+              && 'Preserve failed runtime preflight result'
+              || 'Preserve failed exact-test result' }}
         if: ${{ steps.named_tests.outcome == 'failure' }}
         shell: bash
         run: exit 1

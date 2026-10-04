@@ -66,6 +66,7 @@ CORE_RUNTIME_ENV_KEYS = {
     ),
     "codex": ("CARGO_BIN_EXE_codex",),
 }
+RUNTIME_PREPARATION_ONLY_ENV = "VALIDATION_RUNTIME_PREPARATION_ONLY"
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -526,13 +527,14 @@ def prepare_core_integration_runtime(
             ]
             return evidence
         build_succeeded = completed.returncode == 0
-        evidence["builds"].append(
-            {
-                "name": name,
-                "status": "success" if build_succeeded else "failure",
-                "exit_code": completed.returncode,
-            }
-        )
+        build_record: dict[str, Any] = {
+            "name": name,
+            "status": "success" if build_succeeded else "failure",
+            "exit_code": completed.returncode,
+        }
+        if not build_succeeded:
+            build_record["diagnostics"] = command_diagnostics(completed)
+        evidence["builds"].append(build_record)
         if not build_succeeded:
             evidence["failure_reason"] = "binary_build_failed"
             after_states = {
@@ -927,7 +929,52 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         command_record = select_target(request, load_manifest(repo_root))
     except ValueError as exc:
         return fail("target_selector_unknown", str(exc))
+    runtime_preparation_only_value = os.environ.get(RUNTIME_PREPARATION_ONLY_ENV)
+    if runtime_preparation_only_value is None:
+        runtime_preparation_only = False
+    elif runtime_preparation_only_value == "true":
+        runtime_preparation_only = True
+    elif runtime_preparation_only_value == "false":
+        runtime_preparation_only = False
+    else:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failure",
+            "result_kind": "runtime_preflight",
+            "failure_code": "runtime_preparation_mode_invalid",
+            "message": "runtime preparation mode must be exactly 'true' or 'false'",
+            "request": request,
+            "request_fingerprint": hashlib.sha256(
+                json.dumps(
+                    request, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
+            "inventory": {"status": "not-run", "tests": []},
+            "tests": [],
+        }
+    request_fingerprint = hashlib.sha256(
+        json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if runtime_preparation_only and (
+        request["package"],
+        request["target_kind"],
+        request["target"],
+    ) != CORE_RUNTIME_TARGET:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failure",
+            "result_kind": "runtime_preflight",
+            "failure_code": "runtime_preparation_only_unsupported_target",
+            "message": (
+                "runtime preparation only supports codex-core integration target all"
+            ),
+            "request": request,
+            "request_fingerprint": request_fingerprint,
+            "inventory": {"status": "not-run", "tests": []},
+            "tests": [],
+        }
     env = os.environ.copy()
+    env.pop(RUNTIME_PREPARATION_ONLY_ENV, None)
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
@@ -946,14 +993,27 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "status": "failure",
+            **(
+                {"result_kind": "runtime_preflight"}
+                if runtime_preparation_only
+                else {}
+            ),
             "failure_code": "runtime_preparation_failed",
             "message": "required core integration runtime preparation failed",
             "request": request,
-            "request_fingerprint": hashlib.sha256(
-                json.dumps(
-                    request, sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            ).hexdigest(),
+            "request_fingerprint": request_fingerprint,
+            "candidate_sha": source_sha,
+            "runtime_preparation": runtime_preparation,
+            "inventory": {"status": "not-run", "tests": []},
+            "tests": [],
+        }
+    if runtime_preparation_only:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "success",
+            "result_kind": "runtime_preflight",
+            "request": request,
+            "request_fingerprint": request_fingerprint,
             "candidate_sha": source_sha,
             "runtime_preparation": runtime_preparation,
             "inventory": {"status": "not-run", "tests": []},
@@ -991,9 +1051,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "status": "success",
         "request": request,
-        "request_fingerprint": hashlib.sha256(
-            json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest(),
+        "request_fingerprint": request_fingerprint,
         "candidate_sha": source_sha or git_sha(repo_root),
         **(
             {"runtime_preparation": runtime_preparation}

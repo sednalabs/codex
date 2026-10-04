@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -390,9 +391,11 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
         result, run, binary_state = self._run_with_builds(
             build_results,
             [(False, False), (False, False), (True, True), (True, True)],
+            extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "false"},
         )
 
         self.assertEqual(result["status"], "success")
+        self.assertNotIn("result_kind", result)
         self.assertEqual(result["runtime_preparation"]["status"], "success")
         self.assertEqual(result["runtime_preparation"]["source_sha"], self.source_sha)
         self.assertTrue(result["runtime_preparation"]["source_identity_matches"])
@@ -438,16 +441,124 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
             * 2,
         )
 
+    def test_missing_preflight_mode_preserves_legacy_full_target_path(self) -> None:
+        build_results = [
+            subprocess.CompletedProcess(list(command), 0, stdout="", stderr="")
+            for _, command in named_tests.CORE_RUNTIME_BUILDS
+        ]
+        result, run, _ = self._run_with_builds(
+            build_results,
+            [(False, False), (False, False), (True, True), (True, True)],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("result_kind", result)
+        self.assertEqual(result["inventory"]["status"], "success")
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [list(command) for _, command in named_tests.CORE_RUNTIME_BUILDS]
+            + [
+                list(self.command_record["inventory_argv"]),
+                list(self.command_record["execution_argv"]),
+            ],
+        )
+
+    def test_runtime_preflight_stops_after_exact_fixed_builds(self) -> None:
+        build_results = [
+            subprocess.CompletedProcess(list(command), 0, stdout="", stderr="")
+            for _, command in named_tests.CORE_RUNTIME_BUILDS
+        ]
+        result, run, _ = self._run_with_builds(
+            build_results,
+            [(False, False), (False, False), (True, True), (True, True)],
+            extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"},
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result_kind"], "runtime_preflight")
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                self.request, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(result["request_fingerprint"], request_fingerprint)
+        self.assertEqual(result["candidate_sha"], self.source_sha)
+        self.assertEqual(result["runtime_preparation"]["status"], "success")
+        self.assertEqual(result["inventory"], {"status": "not-run", "tests": []})
+        self.assertEqual(result["tests"], [])
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [list(command) for _, command in named_tests.CORE_RUNTIME_BUILDS],
+        )
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["cwd"], Path("/host/target") / "codex-rs")
+            self.assertEqual(
+                call.kwargs["env"],
+                {
+                    "VALIDATION_TARGET_SHA": self.source_sha,
+                    "RUST_MIN_STACK": "8388608",
+                },
+            )
+
+    def test_preflight_mode_rejects_malformed_value_before_build(self) -> None:
+        result, run, _ = self._run_with_builds(
+            [], [], extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "TRUE"}
+        )
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(
+            result["failure_code"], "runtime_preparation_mode_invalid"
+        )
+        self.assertEqual(result["result_kind"], "runtime_preflight")
+        self.assertEqual(result["inventory"], {"status": "not-run", "tests": []})
+        self.assertEqual(result["tests"], [])
+        self.assertEqual(len(run.call_args_list), 0)
+
+    def test_preflight_mode_rejects_non_core_target_before_build(self) -> None:
+        request = {
+            **self.request,
+            "package": "codex-test",
+            "target_kind": "lib",
+            "target": "",
+        }
+        with (
+            patch.dict(
+                "os.environ",
+                {"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"},
+                clear=True,
+            ),
+            patch.object(
+                named_tests,
+                "load_manifest",
+                return_value=self._fixture_manifest(request),
+            ),
+            patch.object(named_tests.subprocess, "run") as run,
+        ):
+            result = named_tests.run_request(request, Path("/host/target"))
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["result_kind"], "runtime_preflight")
+        self.assertEqual(
+            result["failure_code"], "runtime_preparation_only_unsupported_target"
+        )
+        self.assertEqual(result["inventory"], {"status": "not-run", "tests": []})
+        self.assertEqual(result["tests"], [])
+        run.assert_not_called()
+
     def test_failed_binary_build_stops_before_inventory(self) -> None:
+        stderr = "compiler failure " + "x" * (
+            named_tests.MAX_DIAGNOSTIC_CHARS + 50
+        )
         failed_build = subprocess.CompletedProcess(
             list(named_tests.CORE_RUNTIME_BUILDS[0][1]),
             17,
-            stdout="private",
-            stderr="private",
+            stdout="fixed build stdout diagnostic",
+            stderr=stderr,
         )
         result, run, _ = self._run_with_builds(
             [failed_build],
             [(False, False), (False, False), (False, False), (False, False)],
+            extra_env={"PRIVATE_DIAGNOSTIC_SECRET": "private"},
         )
 
         self.assertEqual(result["failure_code"], "runtime_preparation_failed")
@@ -457,6 +568,83 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
         self.assertEqual(result["inventory"]["status"], "not-run")
         self.assertEqual(len(run.call_args_list), 1)
         self.assertNotIn("private", json.dumps(result))
+        build = result["runtime_preparation"]["builds"][0]
+        self.assertEqual(
+            build["diagnostics"], named_tests.command_diagnostics(failed_build)
+        )
+        self.assertIn(
+            "fixed build stdout diagnostic", build["diagnostics"]["stdout_tail"]
+        )
+        self.assertTrue(
+            build["diagnostics"]["stderr_tail"].endswith(
+                "x" * named_tests.MAX_DIAGNOSTIC_CHARS
+            )
+        )
+        self.assertLessEqual(
+            len(build["diagnostics"]["stderr_tail"]),
+            named_tests.MAX_DIAGNOSTIC_CHARS
+            + len("...[truncated; only the bounded captured tail is retained]...\n"),
+        )
+        self.assertNotIn("argv", build["diagnostics"])
+        self.assertNotIn("cwd", build["diagnostics"])
+        self.assertNotIn("env", build["diagnostics"])
+
+    def test_runtime_preflight_second_build_failure_retains_its_diagnostics(
+        self,
+    ) -> None:
+        first_build = subprocess.CompletedProcess(
+            list(named_tests.CORE_RUNTIME_BUILDS[0][1]), 0, stdout="", stderr=""
+        )
+        second_build = subprocess.CompletedProcess(
+            list(named_tests.CORE_RUNTIME_BUILDS[1][1]),
+            101,
+            stdout="second build stdout",
+            stderr="second build compiler diagnostic",
+        )
+        result, run, _ = self._run_with_builds(
+            [first_build, second_build],
+            [(False, False), (False, False), (False, False), (False, False)],
+            extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"},
+        )
+
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(result["result_kind"], "runtime_preflight")
+        self.assertEqual(result["inventory"]["status"], "not-run")
+        self.assertEqual(result["tests"], [])
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [list(command) for _, command in named_tests.CORE_RUNTIME_BUILDS],
+        )
+        self.assertEqual(
+            result["runtime_preparation"]["builds"][1]["diagnostics"],
+            named_tests.command_diagnostics(second_build),
+        )
+        self.assertEqual(len(result["runtime_preparation"]["builds"]), 2)
+        self.assertEqual(len(run.call_args_list), 2)
+
+    def test_runtime_preflight_launch_failure_has_no_fabricated_diagnostics(
+        self,
+    ) -> None:
+        result, run, _ = self._run_with_builds(
+            [OSError("private launch detail")],
+            [(False, False), (False, False)],
+            extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"},
+        )
+
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(result["result_kind"], "runtime_preflight")
+        self.assertEqual(
+            result["runtime_preparation"]["builds"],
+            [
+                {
+                    "name": "codex-code-mode-host",
+                    "status": "launch_failed",
+                    "exit_code": None,
+                }
+            ],
+        )
+        self.assertNotIn("private launch detail", json.dumps(result))
+        self.assertEqual(len(run.call_args_list), 1)
 
     def test_missing_or_nonexecutable_output_stops_before_inventory(self) -> None:
         build_results = [
