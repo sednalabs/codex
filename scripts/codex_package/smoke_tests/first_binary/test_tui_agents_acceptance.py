@@ -1,5 +1,6 @@
 """Exercise the actual packaged TUI /agents view through a real Linux PTY."""
 
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -8,7 +9,45 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
 from package_acceptance import _mock_config
-from tui_pty import PackagedTui
+from tui_pty import PackagedTui, TerminalScreen
+
+
+def _field_value_is_rendered(frame: str, label: str, value: str) -> bool:
+    lines = [line.strip().strip("│").strip() for line in frame.replace("\r", "").splitlines()]
+    try:
+        label_index = lines.index(label)
+    except ValueError:
+        return False
+    return (
+        label_index + 1 < len(lines)
+        and lines[label_index + 1] == value
+        and re.fullmatch(r"[0-9a-f-]{36}", value) is not None
+    )
+
+
+def _thread_identity_is_rendered(frame: str, thread_id: str) -> bool:
+    return _field_value_is_rendered(frame, "Thread ID:", thread_id)
+
+
+def _assert_thread_identity_rendered(frame: str, thread_id: str) -> None:
+    lines = [line.strip() for line in frame.replace("\r", "").splitlines()]
+    assert _thread_identity_is_rendered(frame, thread_id), lines
+
+
+def _open_agents(
+    tui: PackagedTui, *, required_markers: tuple[str, ...] = ()
+) -> str:
+    # Establish readiness, then wait for the actual `/agents` popup entry
+    # before Enter so paste-burst handling cannot turn the command into text.
+    tui.until("Ask Codex to do anything")
+    tui.send("/agents")
+    popup = tui.until("open the agent command center")
+    assert "/agents" in popup, popup
+    tui.send("\r")
+    return tui.until_screen(
+        "Agent command center",
+        required_markers=("Group:", *required_markers),
+    )
 
 
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
@@ -25,16 +64,71 @@ def _sdk(package: SmokePackage) -> Codex:
     ))
 
 
+def _assert_screen_identity_oracle() -> None:
+    correct_id = "11111111-1111-4111-8111-111111111111"
+    stale_id = "22222222-2222-4222-8222-222222222222"
+    wrong_id = "33333333-3333-4333-8333-333333333333"
+    screen = TerminalScreen(rows=34, columns=110)
+
+    # Treat the initial chunks as output drained before the input under test.
+    for chunk in (
+        b"\x1b[1;",
+        b"21r\x1b[1;1HThread ID:",
+        b"\x1b[2;1H" + stale_id.encode() + b" ",
+        b"\x1b[3;1H",
+        b"\xe2",
+        b"\x80\xba",
+        b"\x1b[1;",
+        b"0r\x1b[r",
+    ):
+        screen.feed(chunk)
+    before_input = screen.text()
+    assert _thread_identity_is_rendered(before_input, stale_id)
+
+    # A fragmented cursor/erase repaint replaces the stale UUID rather than
+    # accepting an old label/value or a substring from the raw byte stream.
+    for chunk in (
+        b"\x1b[2;",
+        b"1H\x1b[2",
+        b"K" + correct_id.encode()[:9],
+        correct_id.encode()[9:],
+    ):
+        screen.feed(chunk)
+    after_input = screen.text()
+    assert after_input != before_input
+    assert _thread_identity_is_rendered(after_input, correct_id)
+    assert not _thread_identity_is_rendered(after_input, wrong_id)
+    assert not _thread_identity_is_rendered(after_input, stale_id)
+
+    separated = TerminalScreen(rows=34, columns=110)
+    separated.feed(
+        b"\x1b[1;1HThread ID:\x1b[3;1H" + stale_id.encode() + b" "
+    )
+    assert not _thread_identity_is_rendered(separated.text(), stale_id)
+
+    # T1's emitted reverse-index scrolls only within the configured region.
+    region = TerminalScreen(rows=4, columns=20)
+    region.feed(b"\x1b[2;3r\x1b[2;1Htop\x1bM")
+    assert region.text().splitlines()[1] == ""
+    assert region.text().splitlines()[2] == "top"
+
+    pane = TerminalScreen(rows=4, columns=80)
+    pane.feed(("│ Thread ID:\r\n│ " + correct_id).encode())
+    assert _thread_identity_is_rendered(pane.text(), correct_id)
+
+
 def test_actual_tui_agents_entry_has_initial_empty_search(package: SmokePackage) -> None:
+    _assert_screen_identity_oracle()
     isolated, home = _isolated(package, "tui-empty-search")
     with MockResponsesServer() as server:
         _mock_config(home, server, agent_tools=True)
         with PackagedTui(isolated) as tui:
-            tui.send("/agents\n")
-            opened = tui.until("Agent command center")
+            opened = _open_agents(tui, required_markers=("All 1",))
             assert "Group:" in opened
             tui.send("f")
-            search = tui.until("Search ›")
+            search = tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             assert "Search ›" in search and "Agent command center" in search
 
 
@@ -51,14 +145,16 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
                 ephemeral=False, approval_mode=ApprovalMode.deny_all,
                 sandbox=Sandbox.workspace_write,
             )
-            root.set_name("root-package-task")
             assert root.run("Complete root seed.").final_response == "root done"
-            child = client.thread_fork(root.id, ephemeral=False)
-            child.set_name("child-package-task")
+            root.set_name("root-package-task")
+            child = client.thread_fork(
+                root.id, ephemeral=False, include_turns=False,
+            )
             assert child.run("Complete child seed.").final_response == "child done"
+            child.set_name("child-package-task")
             nested = client.thread_fork(child.id, ephemeral=False)
-            nested.set_name("nested-package-task")
             assert nested.run("Complete nested seed.").final_response == "nested done"
+            nested.set_name("nested-package-task")
             root_id, child_id, nested_id = root.id, child.id, nested.id
 
         # A second packaged process must reopen the exact child identity.
@@ -67,37 +163,105 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
             assert client.thread_resume(root_id).id == root_id
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
-            tree = tui.until("nested-package-task")
-            assert "Agent command center" in tree
+            tree = _open_agents(
+                tui,
+                required_markers=(
+                    "root-package-task", "child-package-task", "nested-package-task"
+                ),
+            )
+            assert "nested-package-task" in tree
             assert "root-package-task" in tree and "child-package-task" in tree
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("child-package-task")
-            child_detail = tui.until(f"Thread ID: {child_id}")
-            assert f"Parent thread ID: {root_id}" in child_detail
+            # The helper applies actual incremental TUI cell updates, so the
+            # label row must remain adjacent to this exact child ID.
+            child_detail = tui.until_screen(
+                child_id,
+                value_label="Thread ID:",
+            )
+            _assert_thread_identity_rendered(child_detail, child_id)
+            assert not _thread_identity_is_rendered(
+                child_detail, "00000000-0000-0000-0000-000000000000"
+            ), child_detail
+            # `thread_fork` records an independent session, not a V2 subagent
+            # source; its detail view must not be assigned a synthetic parent.
             tui.send("\x03")
             assert "nested-package-task" in tui.until("nested-package-task")
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("nested-package-task")
-            nested_detail = tui.until(f"Thread ID: {nested_id}")
-            assert f"Parent thread ID: {child_id}" in nested_detail
+            nested_detail = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+            )
+            _assert_thread_identity_rendered(nested_detail, nested_id)
+            assert not _thread_identity_is_rendered(nested_detail, child_id), nested_detail
+            assert not _thread_identity_is_rendered(
+                nested_detail, "00000000-0000-0000-0000-000000000000"
+            ), nested_detail
+            # This session was likewise created with `thread_fork`; the
+            # separate V2 subagent acceptance verifies parent lineage.
             tui.send("\x03")
             assert "root-package-task" in tui.until("root-package-task")
             tui.send("f")
-            assert "Search ›" in tui.until("Search ›")
+            assert "Search ›" in tui.until_screen(
+                "Search ›", required_markers=("Agent command center",)
+            )
             tui.send("no-such-synthetic-task")
             assert "No matching tasks" in tui.until("No matching tasks")
             tui.send("\x03")
-            assert "nested-package-task" in tui.until("nested-package-task")
+            overview = tui.until_screen(
+                "Agent command center", required_markers=("nested-package-task",)
+            )
+            assert "nested-package-task" in overview
+            # The no-match search clears selection back to the overview default.
+            # Re-select the intended row and prove its exact ID before the rename
+            # key can act on it.
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("nested-package-task")
+            selected_nested = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("nested-package-task",),
+            )
+            _assert_thread_identity_rendered(selected_nested, nested_id)
+            tui.send("\x03")
+            overview_selection = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("Agent command center", "nested-package-task"),
+            )
+            _assert_thread_identity_rendered(overview_selection, nested_id)
             tui.send("r")
             assert "Rename ›" in tui.until("Rename ›")
-            tui.send("\x7f" * 80 + "live-renamed-package-task\n")
-            assert "live-renamed-package-task" in tui.until("live-renamed-package-task")
+            tui.send("\x7f" * 80 + "live-renamed-package-task")
+            tui.send("\r")
+            renamed_screen = tui.until_screen(
+                "live-renamed-package-task", required_markers=("Agent command center",)
+            )
+            assert nested_id in renamed_screen, renamed_screen
 
         with PackagedTui(isolated, "resume", root_id) as tui:
-            tui.send("/agents\n")
-            replay = tui.until("live-renamed-package-task")
-            assert "Agent command center" in replay
+            replay = _open_agents(
+                tui,
+                required_markers=(
+                    "live-renamed-package-task", "root-package-task", "child-package-task"
+                ),
+            )
+            assert "live-renamed-package-task" in replay
             assert "root-package-task" in replay and "child-package-task" in replay
+            tui.send("f")
+            tui.until_screen("Search ›", required_markers=("Agent command center",))
+            tui.send("live-renamed-package-task")
+            renamed_detail = tui.until_screen(
+                nested_id,
+                value_label="Thread ID:",
+                required_markers=("live-renamed-package-task",),
+            )
+            _assert_thread_identity_rendered(renamed_detail, nested_id)

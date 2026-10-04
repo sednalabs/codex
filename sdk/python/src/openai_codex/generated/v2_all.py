@@ -5432,10 +5432,6 @@ class SubAgentActivityThreadItem(BaseModel):
     )
     agent_path: Annotated[str, Field(alias="agentPath")]
     agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
-    configured_model: Annotated[str | None, Field(alias="configuredModel")] = None
-    configured_reasoning_effort: Annotated[
-        ReasoningEffort | None, Field(alias="configuredReasoningEffort")
-    ] = None
     id: str
     kind: SubAgentActivityKind
     type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]

@@ -67,7 +67,85 @@ class PackageEvidence:
     app_server: ArtifactEvidence
 
 
-def read_evidence(package: SmokePackage, cli_archive: Path, app_archive: Path) -> PackageEvidence:
+@dataclass(frozen=True)
+class ConsumerContext:
+    repository: str
+    workflow_path: str
+    event: str
+    workflow_host_sha: str
+    run_id: int
+    run_attempt: int
+    ref: str
+    branch: str
+    workflow_ref: str
+    target_sha: str
+    base_sha: str
+    target: str
+    architecture: str
+    runner_label: str
+
+
+def read_consumer_context(
+    path: Path,
+    *,
+    target_sha: str,
+    base_sha: str,
+    target: str,
+    producer_run_id: int | None = None,
+) -> ConsumerContext:
+    """Bind the current Actions API receipt to the untouched consumer env."""
+    assert os.environ.get("GITHUB_ACTIONS") == "true", "hosted Actions required"
+    assert path.is_absolute() and path.is_file() and not path.is_symlink()
+    runner_temp = Path(_required_string(os.environ.get("RUNNER_TEMP"), "RUNNER_TEMP"))
+    assert path.resolve(strict=True).is_relative_to(runner_temp.resolve(strict=True))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict) and data.get("schema_version") == "sedna-first-binary-consumer-api-v1"
+    repository = "sednalabs/codex"
+    workflow_path = ".github/workflows/sedna-branch-build.yml"
+    assert data.get("repository") == repository == os.environ.get("GITHUB_REPOSITORY")
+    assert data.get("workflow_path") == workflow_path
+    assert data.get("event") == "workflow_dispatch" == os.environ.get("GITHUB_EVENT_NAME")
+    host_sha = _required_string(data.get("workflow_host_sha"), "consumer.workflow_host_sha")
+    assert SHA.fullmatch(host_sha) and host_sha == os.environ.get("GITHUB_SHA")
+    run_id = data.get("run_id")
+    attempt = data.get("run_attempt")
+    assert type(run_id) is int and run_id > 0 and str(run_id) == os.environ.get("GITHUB_RUN_ID")
+    assert type(attempt) is int and attempt > 0 and str(attempt) == os.environ.get("GITHUB_RUN_ATTEMPT")
+    if producer_run_id is not None:
+        assert run_id != producer_run_id, "cross-run consumer reused producer run identity"
+    ref = _required_string(data.get("ref"), "consumer.ref")
+    branch = _required_string(data.get("branch"), "consumer.branch")
+    workflow_ref = _required_string(data.get("workflow_ref"), "consumer.workflow_ref")
+    assert ref == os.environ.get("GITHUB_REF")
+    assert branch == os.environ.get("GITHUB_REF_NAME")
+    assert workflow_ref == os.environ.get("GITHUB_WORKFLOW_REF")
+    assert workflow_ref == f"{repository}/{workflow_path}@{ref}"
+    assert data.get("product_sha") == target_sha and SHA.fullmatch(target_sha)
+    assert data.get("comparison_base_sha") == base_sha and SHA.fullmatch(base_sha)
+    assert data.get("target") == target and target in TARGET_ARCH
+    architecture = TARGET_ARCH[target]
+    runner_label = {
+        "x86_64": "ubuntu-24.04", "aarch64": "ubuntu-24.04-arm"
+    }[architecture]
+    assert data.get("architecture") == architecture
+    assert data.get("runner_label") == runner_label
+    assert platform.system() == "Linux" and platform.machine().lower() == architecture
+    assert os.environ.get("RUNNER_OS") == "Linux"
+    assert os.environ.get("RUNNER_ARCH") == {"x86_64": "X64", "aarch64": "ARM64"}[architecture]
+    return ConsumerContext(
+        repository, workflow_path, "workflow_dispatch", host_sha, run_id, attempt,
+        ref, branch, workflow_ref, target_sha, base_sha, target, architecture, runner_label,
+    )
+
+
+def read_evidence(
+    package: SmokePackage,
+    cli_archive: Path,
+    app_archive: Path,
+    *,
+    expected_producer_identity: tuple[str, int] | None = None,
+    consumer_context: ConsumerContext | None = None,
+) -> PackageEvidence:
     """Reject missing or cross-source H/T/B/run/artifact/target/digest joins."""
     evidence_path = Path(_required_string(os.environ.get("CODEX_PACKAGE_EVIDENCE"), "CODEX_PACKAGE_EVIDENCE"))
     data = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -87,8 +165,26 @@ def read_evidence(package: SmokePackage, cli_archive: Path, app_archive: Path) -
     assert platform.system() == "Linux"
     assert platform.machine().lower() == TARGET_ARCH[target]
     assert os.environ.get("GITHUB_ACTIONS") == "true", "hosted Actions execution required"
-    assert os.environ.get("GITHUB_RUN_ID") == str(run_id), "run identity mismatch"
-    assert os.environ.get("GITHUB_SHA") == host_sha, "workflow host mismatch"
+    if expected_producer_identity is None:
+        assert os.environ.get("GITHUB_RUN_ID") == str(run_id), "same-run producer mismatch"
+        assert os.environ.get("GITHUB_SHA") == host_sha, "same-run host mismatch"
+        if consumer_context is not None:
+            assert consumer_context.run_id == run_id
+            assert consumer_context.workflow_host_sha == host_sha
+    else:
+        producer_host, producer_run = expected_producer_identity
+        assert SHA.fullmatch(producer_host) and type(producer_run) is int and producer_run > 0
+        assert host_sha == producer_host and run_id == producer_run
+        assert consumer_context is not None, "cross-run consumer context required"
+        assert consumer_context.run_id != run_id
+        assert str(consumer_context.run_id) == os.environ.get("GITHUB_RUN_ID")
+        assert consumer_context.workflow_host_sha == os.environ.get("GITHUB_SHA")
+        assert str(consumer_context.run_attempt) == os.environ.get("GITHUB_RUN_ATTEMPT")
+        assert consumer_context.ref == os.environ.get("GITHUB_REF")
+        assert consumer_context.workflow_ref == os.environ.get("GITHUB_WORKFLOW_REF")
+        assert consumer_context.target_sha == target_sha
+        assert consumer_context.base_sha == base_sha
+        assert consumer_context.target == target
     assert os.environ.get("RUNNER_OS") == "Linux"
     assert os.environ.get("RUNNER_ARCH") == {"x86_64": "X64", "aarch64": "ARM64"}[TARGET_ARCH[target]]
     artifacts = data.get("artifacts")
@@ -147,6 +243,7 @@ def _mock_config(
     (home / "config.toml").write_text(
         'model = "package-smoke"\nmodel_provider = "package_smoke"\n'
         'approval_policy = "never"\nsandbox_mode = "workspace-write"\n'
+        '[sandbox_workspace_write]\nnetwork_access = true\n'
         '[features]\n'
         f'code_mode_only = {str(not agent_tools).lower()}\n'
         'code_mode_host = true\n'

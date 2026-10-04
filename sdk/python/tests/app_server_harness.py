@@ -6,10 +6,10 @@ import queue
 import shutil
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai_codex import CodexConfig
 
@@ -20,6 +20,7 @@ Json = dict[str, Any]
 class CapturedResponsesRequest:
     """Recorded request sent by app-server to the mock Responses API."""
 
+    request_id: int
     method: str
     path: str
     headers: dict[str, str]
@@ -100,6 +101,23 @@ class MockSseResponse:
         return chunks
 
 
+@dataclass
+class MockRequestRoute:
+    """One-shot request-matched SSE response, optionally held behind a gate."""
+
+    route_id: str
+    predicate: Callable[[CapturedResponsesRequest], bool]
+    response: MockSseResponse
+    gate: threading.Event | None = None
+    selected: threading.Event = dataclass_field(default_factory=threading.Event)
+    used: bool = False
+
+    def wait_until_selected(self, timeout_s: float = 5.0) -> None:
+        """Wait until a captured HTTP request selects this route."""
+        if not self.selected.wait(timeout_s):
+            raise AssertionError("request-matched route was not selected")
+
+
 class MockResponsesServer:
     """Local HTTP server that records `/v1/responses` requests and returns SSE."""
 
@@ -107,6 +125,12 @@ class MockResponsesServer:
         self._responses: queue.Queue[MockSseResponse] = queue.Queue()
         self._requests: list[CapturedResponsesRequest] = []
         self._requests_lock = threading.Lock()
+        self._requests_changed = threading.Condition(self._requests_lock)
+        self._routing_lock = threading.Lock()
+        self._response_mode: str | None = None
+        self._request_routes: list[MockRequestRoute] = []
+        self._routing_errors: list[str] = []
+        self._route_events: list[dict[str, Any]] = []
         self._server = _ResponsesHttpServer(("127.0.0.1", 0), _ResponsesHandler, self)
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -118,8 +142,15 @@ class MockResponsesServer:
         self._thread.start()
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
-        self.close()
+    def __exit__(self, _exc_type: object, exc: BaseException | None, _tb: object) -> None:
+        if exc is None:
+            self.close()
+            return
+        try:
+            self.close()
+        except AssertionError as routing_error:
+            note = f"Secondary mock Responses routing teardown failure: {routing_error}"
+            exc.args = (f"{exc}\n{note}",)
 
     @property
     def url(self) -> str:
@@ -129,9 +160,28 @@ class MockResponsesServer:
 
     def close(self) -> None:
         """Stop the background HTTP server thread."""
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=2)
+        # Release request handlers before server_close waits for active threads.
+        with self._routing_lock:
+            gates = [route.gate for route in self._request_routes if route.gate is not None]
+        for gate in gates:
+            gate.set()
+        if self._thread.is_alive():
+            self._server.shutdown()
+            self._server.server_close()
+            self._thread.join(timeout=2)
+        with self._routing_lock:
+            if self._response_mode == "request-matched":
+                unused = sum(not route.used for route in self._request_routes)
+                failures = list(self._routing_errors)
+            else:
+                unused = 0
+                failures = []
+        if failures or unused:
+            raise AssertionError(
+                "request routing did not reconcile: "
+                f"errors={failures!r}, unused_routes={unused}; "
+                f"trace={json.dumps(self.routing_trace(), sort_keys=True)}"
+            )
 
     def enqueue_sse(
         self,
@@ -140,12 +190,39 @@ class MockResponsesServer:
         delay_between_events_s: float = 0.0,
     ) -> None:
         """Queue one SSE body for the next `/v1/responses` request."""
-        self._responses.put(
-            MockSseResponse(
-                body=body,
-                delay_between_events_s=delay_between_events_s,
+        with self._routing_lock:
+            if self._response_mode == "request-matched":
+                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+            self._response_mode = "fifo"
+            self._responses.put(MockSseResponse(body, delay_between_events_s))
+
+    def enqueue_sse_for_request(
+        self,
+        predicate: Callable[[CapturedResponsesRequest], bool],
+        body: str,
+        *,
+        delay_between_events_s: float = 0.0,
+        gate: threading.Event | None = None,
+    ) -> MockRequestRoute:
+        """Register a single-use route selected by the captured request.
+
+        Matching is performed under one lock and every declared predicate is
+        considered, so overlapping routes fail as ambiguous instead of
+        depending on registration order. Event gates are waited outside the
+        selector lock so concurrent requests can select their own responses.
+        """
+        with self._routing_lock:
+            if self._response_mode == "fifo":
+                raise RuntimeError("FIFO and request-matched response modes cannot be mixed")
+            self._response_mode = "request-matched"
+            route = MockRequestRoute(
+                route_id=f"route-{len(self._request_routes) + 1}",
+                predicate=predicate,
+                response=MockSseResponse(body, delay_between_events_s),
+                gate=gate,
             )
-        )
+            self._request_routes.append(route)
+        return route
 
     def enqueue_assistant_message(self, text: str, *, response_id: str = "resp-1") -> None:
         """Queue a completed assistant-message model response."""
@@ -164,6 +241,88 @@ class MockResponsesServer:
         with self._requests_lock:
             return list(self._requests)
 
+    def wait_for_request(
+        self,
+        predicate: Callable[[CapturedResponsesRequest], bool],
+        *,
+        timeout_s: float = 5.0,
+    ) -> CapturedResponsesRequest:
+        """Condition-wait for a matching captured request witness."""
+        with self._requests_changed:
+            matched = self._requests_changed.wait_for(
+                lambda: any(predicate(request) for request in self._requests), timeout_s
+            )
+            if not matched:
+                raise AssertionError("timed out waiting for a matching Responses request")
+            return next(request for request in self._requests if predicate(request))
+
+    def routing_errors(self) -> list[str]:
+        """Return request-matcher errors recorded by HTTP handler threads."""
+        with self._routing_lock:
+            return list(self._routing_errors)
+
+    def routing_trace(self) -> dict[str, Any]:
+        """Return allowlisted request and one-shot-route evidence for fixture failures."""
+        with self._requests_lock:
+            requests = list(self._requests)
+        with self._routing_lock:
+            route_events = list(self._route_events)
+        return {
+            "requests": [self._request_trace(request) for request in requests],
+            "routes": route_events,
+        }
+
+    @staticmethod
+    def _request_trace(request: CapturedResponsesRequest) -> dict[str, Any]:
+        body = request.body_json()
+        metadata = body.get("client_metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        turn = metadata.get("x-codex-turn-metadata")
+        if isinstance(turn, str):
+            try:
+                turn = json.loads(turn)
+            except json.JSONDecodeError:
+                turn = {}
+        turn = turn if isinstance(turn, dict) else {}
+        inputs = body.get("input")
+        inputs = inputs if isinstance(inputs, list) else []
+        calls = [
+            {
+                "kind": item.get("type"),
+                "call_id": item.get("call_id"),
+                "name": item.get("name"),
+            }
+            for item in inputs
+            if isinstance(item, dict)
+            and item.get("type") in {"function_call", "function_call_output"}
+        ]
+        markers: list[str] = []
+        for item in inputs:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            texts = [content] if isinstance(content, str) else [
+                span.get("text")
+                for span in content
+                if isinstance(span, dict) and span.get("type") == "input_text"
+            ] if isinstance(content, list) else []
+            for text in texts:
+                if isinstance(text, str):
+                    markers.extend(
+                        token for token in text.split()
+                        if token.isupper() and ("MARKER" in token or "SENTINEL" in token)
+                    )
+        return {
+            "request_id": request.request_id,
+            "thread_id": metadata.get("thread_id"),
+            "parent_thread_id": request.header("x-codex-parent-thread-id"),
+            "turn_id": turn.get("turn_id"),
+            "turn_trigger": turn.get("turn_trigger"),
+            "previous_response_id": body.get("previous_response_id"),
+            "calls": calls,
+            "markers": sorted(set(markers)),
+        }
+
     def single_request(self) -> CapturedResponsesRequest:
         """Return the only recorded request, failing if the count differs."""
         requests = self.requests()
@@ -178,30 +337,85 @@ class MockResponsesServer:
         timeout_s: float = 5.0,
     ) -> list[CapturedResponsesRequest]:
         """Wait until at least `count` requests have been recorded."""
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            requests = self.requests()
-            if len(requests) >= count:
-                return requests
-            time.sleep(0.01)
-        requests = self.requests()
-        raise AssertionError(f"expected {count} requests, got {len(requests)}")
+        with self._requests_changed:
+            matched = self._requests_changed.wait_for(
+                lambda: len(self._requests) >= count, timeout_s
+            )
+            if not matched:
+                raise AssertionError(f"expected {count} requests, got {len(self._requests)}")
+            return list(self._requests)
 
-    def _record_request(self, handler: BaseHTTPRequestHandler, body: bytes) -> None:
+    def _record_request(
+        self, handler: BaseHTTPRequestHandler, body: bytes
+    ) -> CapturedResponsesRequest:
         """Record one inbound HTTP request from app-server."""
         headers = {key.lower(): value for key, value in handler.headers.items()}
-        request = CapturedResponsesRequest(
-            method=handler.command,
-            path=handler.path,
-            headers=headers,
-            body=body,
-        )
-        with self._requests_lock:
+        with self._requests_changed:
+            request_id = len(self._requests) + 1
+            request = CapturedResponsesRequest(
+                request_id=request_id,
+                method=handler.command,
+                path=handler.path,
+                headers=headers,
+                body=body,
+            )
             self._requests.append(request)
+            self._requests_changed.notify_all()
+        return request
 
-    def _next_response(self) -> MockSseResponse:
-        """Return the next queued SSE response or fail the HTTP request."""
-        return self._responses.get_nowait()
+    def _next_response(self, request: CapturedResponsesRequest) -> MockSseResponse:
+        """Select one FIFO response or exactly one matching route."""
+        with self._routing_lock:
+            if self._response_mode != "request-matched":
+                return self._responses.get_nowait()
+            matches = [route for route in self._request_routes if route.predicate(request)]
+            unused_matches = [route for route in matches if not route.used]
+            if len(unused_matches) == 1:
+                route = unused_matches[0]
+            elif unused_matches:
+                message = f"ambiguous Responses request matched {len(unused_matches)} routes"
+                self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [route.route_id for route in unused_matches],
+                    "selected_route_id": None,
+                    "error": message,
+                })
+                raise AssertionError(message)
+            elif matches:
+                message = "one-shot Responses route was matched more than once"
+                self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [route.route_id for route in matches],
+                    "selected_route_id": None,
+                    "error": message,
+                })
+                raise AssertionError(message)
+            else:
+                message = "unmatched Responses request"
+                self._routing_errors.append(message)
+                self._route_events.append({
+                    "request_id": request.request_id,
+                    "matched_route_ids": [],
+                    "selected_route_id": None,
+                    "error": message,
+                })
+                raise AssertionError(message)
+            self._route_events.append({
+                "request_id": request.request_id,
+                "matched_route_ids": [candidate.route_id for candidate in matches],
+                "selected_route_id": route.route_id,
+                "error": None,
+            })
+            route.used = True
+
+        route.selected.set()
+        if route.gate is not None and not route.gate.wait(timeout=30):
+            with self._routing_lock:
+                self._routing_errors.append("request-matched response gate timed out")
+            raise AssertionError("request-matched response gate timed out")
+        return route.response
 
 
 class AppServerHarness:
@@ -315,16 +529,19 @@ class _ResponsesHandler(BaseHTTPRequestHandler):
             # Optional cost probes are not model requests.
             self.send_error(404, "turn costs are unavailable for the mock provider")
             return
-        self.server.mock._record_request(self, body)
+        request = self.server.mock._record_request(self, body)
 
         if not (self.path.endswith("/v1/responses") or self.path.endswith("/responses")):
             self.send_error(404, f"unexpected POST {self.path}")
             return
 
         try:
-            response = self.server.mock._next_response()
+            response = self.server.mock._next_response(request)
         except queue.Empty:
             self.send_error(500, "no queued SSE response")
+            return
+        except AssertionError as error:
+            self.send_error(500, str(error))
             return
 
         self.send_response(200)

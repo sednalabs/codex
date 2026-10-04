@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from app_server_harness import MockResponsesServer
@@ -16,7 +17,7 @@ from artifact import (
     validate_extracted_layout,
 )
 from fixtures import SmokePackage
-from package_acceptance import open_and_reopen
+from package_acceptance import _mock_config, open_and_reopen
 
 
 def _read_again(directory: Path, evidence: FirstBinaryEvidence) -> FirstBinaryEvidence:
@@ -83,7 +84,7 @@ def test_banner_native_client_and_same_source_proxy_execution(
     artifact_evidence: FirstBinaryEvidence, package: SmokePackage, tmp_path: Path
 ) -> None:
     banner = package.run("--version").stdout.strip()
-    assert artifact_evidence.version in banner, banner
+    assert banner == f"codex Sedna v{artifact_evidence.version}", banner
     with Codex(config=CodexConfig(
         codex_bin=str(package.cli), cwd=str(package.directory), env=package.environment,
     )) as client:
@@ -107,6 +108,107 @@ def test_banner_native_client_and_same_source_proxy_execution(
     )
     assert parsed.returncode != 0
     assert "parsing --upstream-url" in parsed.stderr
+
+
+def test_packaged_model_list_exposes_bundled_gpt6_descriptors(
+    package: SmokePackage, responses_server: MockResponsesServer
+) -> None:
+    expected_models = {
+        "gpt-6.1-sol": (
+            "GPT-6.1-Sol",
+            "Latest workhorse model for coding and everyday work.",
+            "low",
+            (
+                ("low", "Fast responses with lighter reasoning"),
+                ("medium", "Balances speed and reasoning depth for everyday tasks"),
+                ("high", "Greater reasoning depth for complex problems"),
+                ("xhigh", "Extra high reasoning depth for complex problems"),
+                ("max", "Maximum reasoning depth for the hardest problems"),
+                ("ultra", "Maximum reasoning with automatic task delegation"),
+            ),
+            "v2",
+            ("text", "image"),
+            True,
+        ),
+        "gpt-6-sol": (
+            "GPT-6-Sol",
+            "Previous generation workhorse model.",
+            "medium",
+            (
+                ("low", "Fast responses with lighter reasoning"),
+                ("medium", "Balances speed and reasoning depth for everyday tasks"),
+                ("high", "Greater reasoning depth for complex problems"),
+                ("xhigh", "Extra high reasoning depth for complex problems"),
+                ("max", "Maximum reasoning depth for the hardest problems"),
+                ("ultra", "Maximum reasoning with automatic task delegation"),
+            ),
+            "v2",
+            ("text", "image"),
+            False,
+        ),
+        "gpt-6-luna": (
+            "GPT-6-Luna",
+            "Fast and affordable model for easier tasks.",
+            "medium",
+            (
+                ("low", "Fast responses with lighter reasoning"),
+                ("medium", "Balances speed and reasoning depth for everyday tasks"),
+                ("high", "Greater reasoning depth for complex problems"),
+                ("xhigh", "Extra high reasoning depth for complex problems"),
+                ("max", "Maximum reasoning depth for the hardest problems"),
+            ),
+            "v2",
+            ("text", "image"),
+            False,
+        ),
+    }
+
+    with TemporaryDirectory(prefix="model-list-", dir=package.directory) as home_path:
+        home = Path(home_path)
+        assert home.is_relative_to(package.directory)
+        _mock_config(home, responses_server)
+        environment = {**package.environment, "CODEX_HOME": str(home)}
+        environment.pop("OPENAI_API_KEY", None)
+        environment.pop("CODEX_API_KEY", None)
+        with Codex(config=CodexConfig(
+            codex_bin=str(package.cli), cwd=str(package.directory), env=environment,
+        )) as client:
+            response = client.models(include_hidden=False)
+
+    model_ids = [model.id for model in response.data]
+    assert response.next_cursor is None
+    assert [model_id for model_id in model_ids if model_id in expected_models] == list(
+        expected_models
+    )
+    for slug, expected in expected_models.items():
+        model = next(model for model in response.data if model.id == slug)
+        actual = (
+            model.id,
+            model.model,
+            model.display_name,
+            model.description,
+            model.default_reasoning_effort,
+            tuple(
+                (option.effort, option.description)
+                for option in model.supported_reasoning_efforts
+            ),
+            model.multi_agent_version,
+            tuple(model.input_modalities or ()),
+            model.hidden,
+            model.is_default,
+        )
+        assert actual == (
+            slug,
+            slug,
+            *expected[:4],
+            expected[4],
+            expected[5],
+            False,
+            expected[6],
+        )
+    assert not any(
+        request.path == "/v1/responses" for request in responses_server.requests()
+    )
 
 
 def test_persistent_code_mode_and_reopen_from_real_package(
@@ -140,8 +242,11 @@ def test_missing_host_cannot_qualify_code_mode(
         directory=package.directory,
         environment={**package.environment, "CODEX_HOME": str(package.directory / "missing-host-home")},
     )
-    with pytest.raises(AssertionError):
+    with pytest.raises(json.JSONDecodeError) as error:
         open_and_reopen(broken, package.directory / "missing-host-home", responses_server)
+    assert "failed to spawn code-mode host" in error.value.doc
+    assert "missing-host-control/bin/codex-code-mode-host" in error.value.doc
+    assert "No such file or directory" in error.value.doc
     assert any(req.path == "/v1/responses" for req in responses_server.requests()), (
         "negative control never reached the local mock provider"
     )

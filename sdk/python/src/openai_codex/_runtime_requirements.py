@@ -17,6 +17,16 @@ def require_runtime_version(version: str | None) -> None:
     """Reject unknown or unsupported versions, including prereleases at the minimum."""
     # CLI alpha hotfixes use 0.154.0-alpha.1.2; PEP 440 spells that a1.post2.
     normalized = re.sub(r"-alpha\.(\d+)\.(\d+)$", r"a\1.post\2", version or "")
+    # Translate only this repository's exact Cargo prerelease shape. Keep its
+    # numeric sequence as a PEP 440 development release for comparable ordering.
+    cargo_dev_match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"-dev\.sedna\.(0|[1-9][0-9]*)",
+        normalized,
+    )
+    if cargo_dev_match:
+        major, minor, patch, dev_number = cargo_dev_match.groups()
+        normalized = f"{major}.{minor}.{patch}.dev{dev_number}+sedna"
     try:
         if Version(normalized) >= Version(MINIMUM_RUNTIME_VERSION):
             return
