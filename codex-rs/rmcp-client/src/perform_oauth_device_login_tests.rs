@@ -9,6 +9,7 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::RouteAwareHttpClient;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
+use oauth2::TokenResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::atomic::AtomicUsize;
