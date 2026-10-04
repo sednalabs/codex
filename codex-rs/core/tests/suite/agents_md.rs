@@ -92,6 +92,72 @@ const SPAWN_PARENT_PROMPT: &str = "spawn a child with the parent context";
 const SPAWN_SEED_PROMPT: &str = "seed parent history";
 const PROVIDER_WARNING: &str = "global instruction source unavailable; using fallback";
 
+// These default-off markers diagnose only the two fixed hosted cases. Keep them
+// in this existing test module so no production logging or fixture API changes.
+struct RuntimeDiagnostic {
+    case: &'static str,
+    enabled: bool,
+}
+
+impl RuntimeDiagnostic {
+    fn for_case(case: &'static str) -> Self {
+        Self {
+            case,
+            enabled: !case.is_empty()
+                && std::env::var("CODEX_CORE_RUNTIME_DIAGNOSTIC_CASE")
+                    .is_ok_and(|selected| selected == case),
+        }
+    }
+
+    fn marker(&self, stage: &'static str, state: &'static str, error: &'static str) {
+        if self.enabled {
+            let case = self.case;
+            eprintln!(
+                "codex-core-runtime-diagnostic-v1 case={case} stage={stage} state={state} error={error}"
+            );
+        }
+    }
+
+    fn entered(&self, stage: &'static str) {
+        self.marker(stage, "entered", "none");
+    }
+
+    fn returned(&self, stage: &'static str) {
+        self.marker(stage, "returned", "none");
+    }
+
+    fn result<T>(&self, stage: &'static str, result: Result<T>) -> Result<T> {
+        if !self.enabled {
+            return result;
+        }
+        match &result {
+            Ok(_) => self.returned(stage),
+            Err(error) => {
+                let kind = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .map(std::io::Error::kind);
+                let label = match kind {
+                    Some(std::io::ErrorKind::NotFound) => "not_found",
+                    Some(std::io::ErrorKind::PermissionDenied) => "permission_denied",
+                    Some(std::io::ErrorKind::ConnectionRefused) => "connection_refused",
+                    Some(std::io::ErrorKind::ConnectionReset) => "connection_reset",
+                    Some(std::io::ErrorKind::BrokenPipe) => "broken_pipe",
+                    Some(std::io::ErrorKind::InvalidInput) => "invalid_input",
+                    Some(std::io::ErrorKind::InvalidData) => "invalid_data",
+                    Some(std::io::ErrorKind::TimedOut) => "timed_out",
+                    Some(std::io::ErrorKind::Interrupted) => "interrupted",
+                    Some(std::io::ErrorKind::UnexpectedEof) => "unexpected_eof",
+                    // ErrorKind is non-exhaustive. Never format unknown errors.
+                    _ => "other",
+                };
+                self.marker(stage, "error", label);
+            }
+        }
+        result
+    }
+}
+
 struct WarningInstructionsProvider {
     inner: CodexHomeUserInstructionsProvider,
     warning_active: AtomicBool,
@@ -174,23 +240,38 @@ impl ThreadInstructionsProvider for RecordingThreadInstructionsProvider {
     }
 }
 
-async fn agents_instructions(mut builder: TestCodexBuilder) -> Result<String> {
+async fn agents_instructions(builder: TestCodexBuilder) -> Result<String> {
+    agents_instructions_with_diagnostic(builder, &RuntimeDiagnostic::for_case("")).await
+}
+
+async fn agents_instructions_with_diagnostic(
+    mut builder: TestCodexBuilder,
+    diagnostic: &RuntimeDiagnostic,
+) -> Result<String> {
+    diagnostic.entered("mock_server");
     let server = start_mock_server().await;
+    diagnostic.returned("mock_server");
+    diagnostic.entered("sse_mount");
     let resp_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
+    diagnostic.returned("sse_mount");
 
-    let test = builder.build_with_auto_env(&server).await?;
-    test.submit_turn("hello").await?;
+    diagnostic.entered("builder");
+    let test = diagnostic.result("builder", builder.build_with_auto_env(&server).await)?;
+    diagnostic.entered("turn_submit");
+    diagnostic.result("turn_submit", test.submit_turn("hello").await)?;
 
+    diagnostic.entered("response_match");
     let request = resp_mock.single_request();
-    request
+    let result = request
         .message_input_texts("user")
         .into_iter()
         .find(|text| text.starts_with("# AGENTS.md instructions"))
-        .ok_or_else(|| anyhow::anyhow!("instructions message not found"))
+        .ok_or_else(|| anyhow::anyhow!("instructions message not found"));
+    diagnostic.result("response_match", result)
 }
 
 fn write_global_file(
@@ -446,7 +527,8 @@ async fn invalid_fallback_paths_do_not_prevent_loading_valid_filenames() -> Resu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agents_docs_are_concatenated_from_project_root_to_cwd() -> Result<()> {
-    let instructions = agents_instructions(
+    let diagnostic = RuntimeDiagnostic::for_case("project_docs");
+    let instructions = agents_instructions_with_diagnostic(
         test_codex()
             .with_config(|config| {
                 config.cwd = config.cwd.join("nested/workspace");
@@ -497,9 +579,11 @@ async fn agents_docs_are_concatenated_from_project_root_to_cwd() -> Result<()> {
                 .await?;
                 Ok::<(), anyhow::Error>(())
             }),
+        &diagnostic,
     )
     .await?;
 
+    diagnostic.entered("final_assertion");
     let root_pos = instructions
         .find("root doc")
         .expect("expected root doc in AGENTS instructions");
@@ -510,6 +594,7 @@ async fn agents_docs_are_concatenated_from_project_root_to_cwd() -> Result<()> {
         root_pos < child_pos,
         "expected root doc before child doc: {instructions}"
     );
+    diagnostic.returned("final_assertion");
 
     Ok(())
 }
@@ -777,12 +862,17 @@ async fn restricted_project_without_instructions_starts_successfully() -> Result
     );
     skip_if_sandbox!(Ok(()));
 
+    let diagnostic = RuntimeDiagnostic::for_case("restricted");
+    diagnostic.entered("mock_server");
     let server = start_mock_server().await;
+    diagnostic.returned("mock_server");
+    diagnostic.entered("sse_mount");
     let response_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
+    diagnostic.returned("sse_mount");
     let mut builder = test_codex().with_config(|config| {
         let mut file_system_policy = FileSystemSandboxPolicy::read_only();
         file_system_policy.entries.push(FileSystemSandboxEntry::new(
@@ -797,15 +887,24 @@ async fn restricted_project_without_instructions_starts_successfully() -> Result
             ))
             .expect("test config should allow a restricted read policy");
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    diagnostic.entered("builder");
+    let test = diagnostic.result("builder", builder.build_with_auto_env(&server).await)?;
 
+    diagnostic.entered("instruction_assertion");
     assert_eq!(
         test.codex.instruction_sources().await,
         Vec::<PathUri>::new()
     );
-    test.submit_text_turn("continue without project instructions")
-        .await?;
+    diagnostic.returned("instruction_assertion");
+    diagnostic.entered("turn_submit");
+    diagnostic.result(
+        "turn_submit",
+        test.submit_text_turn("continue without project instructions")
+            .await,
+    )?;
+    diagnostic.entered("response_match");
     response_mock.single_request();
+    diagnostic.returned("response_match");
 
     Ok(())
 }
