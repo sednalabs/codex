@@ -236,17 +236,25 @@ impl AgentMailboxStore {
         message_id: &str,
         stage: MailboxStage,
     ) -> anyhow::Result<bool> {
-        let column = match stage {
-            MailboxStage::WaitSignalled => "wait_signalled_at_ms",
-            MailboxStage::WaitReturned => "wait_returned_at_ms",
-            MailboxStage::ContextCommitted => "context_committed_at_ms",
-            MailboxStage::Delivered => "delivered_at_ms",
-        };
-        let query = format!(
-            "UPDATE agent_mailbox SET {column} = COALESCE({column}, ?)
+        let query = match stage {
+            MailboxStage::WaitSignalled => {
+                "UPDATE agent_mailbox SET wait_signalled_at_ms = COALESCE(wait_signalled_at_ms, ?)
              WHERE message_id = ?"
-        );
-        Ok(sqlx::query(&query)
+            }
+            MailboxStage::WaitReturned => {
+                "UPDATE agent_mailbox SET wait_returned_at_ms = COALESCE(wait_returned_at_ms, ?)
+             WHERE message_id = ?"
+            }
+            MailboxStage::ContextCommitted => {
+                "UPDATE agent_mailbox SET context_committed_at_ms = COALESCE(context_committed_at_ms, ?)
+             WHERE message_id = ?"
+            }
+            MailboxStage::Delivered => {
+                "UPDATE agent_mailbox SET delivered_at_ms = COALESCE(delivered_at_ms, ?)
+             WHERE message_id = ?"
+            }
+        };
+        Ok(sqlx::query(query)
             .bind(datetime_to_epoch_millis(Utc::now()))
             .bind(message_id)
             .execute(self.pool.as_ref())
