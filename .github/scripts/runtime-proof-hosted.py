@@ -82,10 +82,7 @@ EXPECTED_LOCAL_HELPERS = {
     ".github/scripts/setup-dev-drive.ps1": "e11b6a0bc5f4f51d6a4159e145b75fdee7ed4b5c7a2dfb683b9156e47746c794",
 }
 TEST_SUMMARY = re.compile(
-    r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;"
-)
-PANIC_LOCATION = re.compile(
-    r"^thread '[^']*' panicked at (.+):(\d+):(\d+):"
+    r"test result: (ok|FAILED)\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;"
 )
 PACKAGE_SOURCE_DIRS = {
     "codex-runtime-proof": "runtime-proof",
@@ -378,15 +375,24 @@ def prepare(manifest: dict[str, Any]) -> None:
 
 
 def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
-    return [
-        {
-            "status": match.group(1),
-            "passed": int(match.group(2)),
-            "failed": int(match.group(3)),
-            "ignored": int(match.group(4)),
-        }
-        for match in TEST_SUMMARY.finditer(output)
-    ]
+    summaries = []
+    for match in TEST_SUMMARY.finditer(output):
+        decimal_values = match.groups()[1:]
+        if any(len(value) > 10 for value in decimal_values):
+            continue
+        try:
+            passed, failed, ignored = (int(value) for value in decimal_values)
+        except ValueError:
+            continue
+        summaries.append(
+            {
+                "status": match.group(1),
+                "passed": passed,
+                "failed": failed,
+                "ignored": ignored,
+            }
+        )
+    return summaries
 
 
 def package_source_location(
@@ -447,12 +453,11 @@ def bounded_library_failure_summary(
     prebuild_compiler_errors = 0
     compiler_codes: list[str] = []
     source_locations: list[str] = []
-    panic_locations: list[str] = []
 
     for raw_line in output.splitlines():
         try:
             event = json.loads(raw_line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             event = None
         if isinstance(event, dict) and event.get("reason") == "build-finished":
             success = event.get("success")
@@ -496,14 +501,6 @@ def bounded_library_failure_summary(
                     source_locations.append(location)
             continue
 
-        panic_match = PANIC_LOCATION.match(raw_line)
-        if panic_match:
-            location = package_source_location(
-                package, panic_match.group(1), int(panic_match.group(2)), admitted_paths
-            )
-            if location and location not in panic_locations and len(panic_locations) < 20:
-                panic_locations.append(location)
-
     failed = sum(int(item["failed"]) for item in summaries)
     passed = sum(int(item["passed"]) for item in summaries)
     ignored = sum(int(item["ignored"]) for item in summaries)
@@ -514,7 +511,6 @@ def bounded_library_failure_summary(
         classification = "build_phase_unknown"
         compiler_codes = []
         source_locations = []
-        panic_locations = []
     elif build_succeeded is False and compiler_errors:
         classification = "compiler_error"
     elif build_succeeded is False:
@@ -539,7 +535,6 @@ def bounded_library_failure_summary(
         "passed": passed,
         "failed": failed,
         "ignored": ignored,
-        "panic_source_locations": panic_locations,
     }
 
 
