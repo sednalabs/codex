@@ -100,7 +100,9 @@ impl Summary {
                 }
             }
         }
-        let lifecycle = project_lifecycles(&clean);
+        let conflicting_ids = identities.iter().filter(|(_, variants)| variants.len() > 1)
+            .map(|(identity, _)| identity.clone()).collect::<BTreeSet<_>>();
+        let lifecycle = project_lifecycles(&clean, high_water, &conflicting_ids);
         out.wait_timelines = lifecycle.wait_timelines;
         out.message_timelines = lifecycle.message_timelines;
         out.boundary_timelines = lifecycle.boundary_timelines;
@@ -111,7 +113,6 @@ impl Summary {
         Self::schedulers(&mut out, &clean);
         Self::external(&mut out, &clean);
         Self::queues(&mut out, &clean);
-        Self::repetitions(&mut out, &clean);
         if out.capture_loss_observed || out.omitted_input_events > 0 {
             for row in &mut out.wait_timelines { row.complete = false; }
             for row in &mut out.sleep_timelines { row.complete = false; }
@@ -120,6 +121,7 @@ impl Summary {
             for row in &mut out.boundary_timelines { row.incomplete = true; }
             for row in &mut out.provider_call_timelines { row.complete = false; }
         }
+        Self::repetitions(&mut out, &clean);
         out
     }
     fn sleeps(out: &mut Self, events: &[&RecordedEvent]) {
@@ -174,11 +176,10 @@ impl Summary {
         let pre_turn_keys = groups.keys().filter(|(_, _, _, turn, _)| turn.is_none()).cloned().collect::<Vec<_>>();
         for (capture, source, thread, _, correlation) in pre_turn_keys {
             let prefix = (capture.clone(), source, thread.clone(), correlation.clone());
-            if let Some(turns) = turns_by_prefix.get(&prefix).filter(|turns| turns.len() == 1) {
-                let turn = turns.iter().next().cloned().expect("one scheduled turn");
-                if let Some(rows) = groups.remove(&(capture.clone(), source, thread.clone(), None, correlation.clone())) {
-                    groups.entry((capture, source, thread, Some(turn), correlation)).or_default().extend(rows);
-                }
+            if let Some(turns) = turns_by_prefix.get(&prefix).filter(|turns| turns.len() == 1)
+                && let Some(turn) = turns.iter().next().cloned()
+                && let Some(rows) = groups.remove(&(capture.clone(), source, thread.clone(), None, correlation.clone())) {
+                groups.entry((capture, source, thread, Some(turn), correlation)).or_default().extend(rows);
             }
         }
         let ambiguous_prefixes = turns_by_prefix.into_iter()
@@ -198,6 +199,9 @@ impl Summary {
             source_events.sort_by_key(|identity| identity.sequence);
             for (row, truncated, _) in rows {
                 incomplete |= truncated;
+                conflicting |= merge_guard(&mut pending_mail, row.pending_mail_observed);
+                conflicting |= merge_guard(&mut trigger_mail, row.trigger_turn_mail_observed);
+                conflicting |= merge_guard(&mut durable_sleep, row.durable_sleep_observed);
                 if let Some(previous) = stage_rows.iter().find(|previous| previous.phase == row.phase) {
                     conflicting |= *previous != row;
                 } else {
@@ -217,9 +221,6 @@ impl Summary {
                             },
                         };
                         basis = row.eligibility_basis;
-                        pending_mail = row.pending_mail_observed;
-                        trigger_mail = row.trigger_turn_mail_observed;
-                        durable_sleep = row.durable_sleep_observed;
                         outcome = row.outcome;
                     }
                     SchedulerPhase::ReservationAccepted => {
@@ -250,7 +251,29 @@ impl Summary {
             if lost == Some(true) && (registered.is_some() || published.is_some()) {
                 conflicting = true;
             }
-            let complete = eligible == Some(true) && reservation == Some(true) && cohort_seen
+            let guards_complete = match basis {
+                EligibilityBasis::PendingTriggerTurn => {
+                    conflicting |= pending_mail == Some(false) || trigger_mail == Some(false);
+                    pending_mail == Some(true) && trigger_mail == Some(true)
+                }
+                EligibilityBasis::QueueOnlyDurableSleep => {
+                    conflicting |= pending_mail == Some(false) || trigger_mail == Some(true) || durable_sleep == Some(false);
+                    pending_mail == Some(true) && trigger_mail == Some(false) && durable_sleep == Some(true)
+                }
+                EligibilityBasis::Unknown => false,
+            };
+            if eligible == Some(true) && !guards_complete { eligible = None; }
+            incomplete |= turn.is_none() || !guards_complete;
+            if turn.is_none() {
+                // A correlation token without the actual created turn cannot
+                // join registration/publication into a scheduling result.
+                registered = None;
+                published = None;
+                outcome = SchedulerOutcome::Unknown;
+            } else if registered == Some(true) && lost != Some(true) {
+                outcome = SchedulerOutcome::TaskRegistered;
+            }
+            let complete = turn.is_some() && eligible == Some(true) && reservation == Some(true) && cohort_seen
                 && reservation_matches == Some(true) && registered.is_some() && published.is_some()
                 && !lost.unwrap_or(false) && cohort_complete
                 && !conflicting && !incomplete;
@@ -298,8 +321,8 @@ impl Summary {
             }
         }
         for ((_capture, source, thread, call_id), rows) in calls {
-            let first = rows[0];
-            let first_op = first.input.external_operation.as_ref().unwrap();
+            let Some(first) = rows.first() else { continue };
+            let Some(first_op) = first.input.external_operation.as_ref() else { continue };
             let conflicting = rows.iter().any(|event| {
                 event.input.external_operation.as_ref().map(|op| op.returned_duration_ns) != Some(first_op.returned_duration_ns)
                     || event.input.operation_id != first.input.operation_id
@@ -330,36 +353,39 @@ impl Summary {
             Option<String>, Option<String>);
         type WaitResult = (SelectedOutcome, Vec<ReadinessObservation>, Option<String>, Option<String>,
             Vec<ReadinessObservation>, Vec<String>, TargetReferenceKind, Option<bool>, Option<ObservedHostWaitReturn>);
-        let mut waits = BTreeMap::<(String, SourcePlane, Option<String>, WaitRequest, WaitResult), BTreeSet<String>>::new();
-        let mut queries = BTreeMap::<(String, SourcePlane, Option<String>, StatusRequestProjection, StatusResultProjection), BTreeSet<String>>::new();
+        type CallIdentity = (Option<String>, String);
+        let mut waits = BTreeMap::<(String, SourcePlane, Option<String>, WaitRequest, WaitResult), BTreeSet<CallIdentity>>::new();
+        let mut queries = BTreeMap::<(String, SourcePlane, Option<String>, StatusRequestProjection, StatusResultProjection), BTreeSet<CallIdentity>>::new();
+        if out.capture_loss_observed || out.omitted_input_events > 0 || out.truncated_events > 0 { return; }
+        for wait in &out.wait_timelines {
+            let Some(operation) = &wait.operation_id else { continue };
+            let result_complete = if wait.source_plane == SourcePlane::ExternalHostEnvelope {
+                wait.observed_host_return.as_ref().is_some_and(|result| result.complete)
+            } else { wait.complete };
+            if !wait.conflicting && wait.phase == WaitPhase::Completed
+                && wait.return_when != ReturnWhen::Unknown
+                && wait.requested_target_set_complete && result_complete {
+                let request = (wait.primitive, wait.return_when, wait.target_mode, wait.any_targets,
+                    wait.requested_timeout_ms, wait.effective_timeout_ms, wait.requested_target_kind,
+                    wait.requested_target_ids.clone(), wait.requested_target_set_complete,
+                    wait.resolved_target_kind, wait.resolved_target_ids.clone(), wait.resolved_target_set_complete,
+                    wait.helper_id.clone(), wait.helper_version.clone());
+                let result = (wait.selected_outcome, wait.selected_readiness.clone(),
+                    wait.selected_target_id.clone(), wait.selected_target_turn_id.clone(),
+                    wait.subscribed_readiness.clone(), wait.resolved_target_ids.clone(),
+                    wait.resolved_target_kind, wait.resolved_target_set_complete, wait.observed_host_return.clone());
+                waits.entry((wait.capture_instance_id.clone(), wait.source_plane, wait.thread_id.clone(), request, result))
+                    .or_default().insert((wait.turn_id.clone(), operation.clone()));
+            }
+        }
         for event in events {
             let Some(operation) = event.input.operation_id.as_ref() else { continue };
-            if let Some(wait) = &event.input.wait {
-                let result_complete = wait.observed_host_return.as_ref().is_some_and(|result| result.complete)
-                    || wait.observed_host_return.is_none() && wait.selected_outcome != SelectedOutcome::Unknown
-                        && wait.selected_readiness_complete;
-                if !event.truncated && wait.phase == WaitPhase::Completed
-                    && wait.return_when != ReturnWhen::Unknown
-                    && wait.requested_target_set_complete && result_complete {
-                    let request = (wait.primitive, wait.return_when, wait.target_mode, wait.any_targets,
-                        wait.requested_timeout_ms, wait.effective_timeout_ms, wait.requested_target_kind,
-                        wait.requested_target_ids.clone(), wait.requested_target_set_complete,
-                        wait.resolved_target_kind, wait.target_ids.clone(), wait.resolved_target_set_complete,
-                        wait.helper_id.clone(), wait.helper_version.clone());
-                    let result = (wait.selected_outcome, wait.selected_readiness.clone(),
-                        wait.selected_target_id.clone(), wait.selected_target_turn_id.clone(),
-                        wait.subscribed_readiness.clone(), wait.target_ids.clone(),
-                        wait.resolved_target_kind, wait.resolved_target_set_complete,
-                        wait.observed_host_return.clone());
-                    waits.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                        event.input.thread_id.clone(), request, result)).or_default().insert(operation.clone());
-                }
-            }
             if let Some(query) = &event.input.status_query {
                 if let (Some(request), Some(result)) = (&query.request_projection, &query.result_projection) {
                     if request.complete && result.complete && !event.truncated {
                         queries.entry((event.identity.capture_instance_id.clone(), event.input.source_plane,
-                            event.input.thread_id.clone(), request.clone(), result.clone())).or_default().insert(operation.clone());
+                            event.input.thread_id.clone(), request.clone(), result.clone())).or_default()
+                            .insert((event.input.turn_id.clone(), operation.clone()));
                     }
                 }
             }
@@ -370,5 +396,13 @@ impl Summary {
     pub fn partitions_conserve(&self) -> bool {
         self.by_source.values().sum::<usize>() == self.event_count
             && self.by_kind.values().sum::<usize>() == self.event_count
+    }
+}
+
+fn merge_guard(current: &mut Option<bool>, incoming: Option<bool>) -> bool {
+    match (*current, incoming) {
+        (Some(left), Some(right)) => left != right,
+        (None, Some(_)) => { *current = incoming; false }
+        (Some(_), None) | (None, None) => false,
     }
 }

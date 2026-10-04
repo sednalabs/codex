@@ -208,8 +208,9 @@ pub fn join_control_plane_usage(
             conflicting_reference_ids.insert(identity);
             continue;
         }
-        let (source, key) = variants.into_iter().next().expect("one reference variant");
-        diagnostic_by_key.entry(key).or_default().insert((source, identity));
+        if let Some((source, key)) = variants.into_iter().next() {
+            diagnostic_by_key.entry(key).or_default().insert((source, identity));
+        }
     }
     for (call_id, mut rows) in grouped {
         rows.sort_by_key(|row| row.key.clone());
@@ -378,11 +379,6 @@ fn association_decision(usage: &UsageJoinKey, diagnostic: &UsageJoinKey) -> Asso
             AssociationDecision::Match
         };
     }
-    // A supplied primary key is authoritative: never rescue a different PK
-    // with a coincidentally equal response string.
-    if usage.call_id.is_some() && diagnostic.call_id.is_some() {
-        return AssociationDecision::NoMatch;
-    }
     if !exact_response { return AssociationDecision::NoMatch; }
     if usage.thread_id != diagnostic.thread_id { return AssociationDecision::NoMatch; }
     if usage.provider.is_some() && diagnostic.provider.is_some()
@@ -402,14 +398,17 @@ fn association_decision(usage: &UsageJoinKey, diagnostic: &UsageJoinKey) -> Asso
     if usage.turn_id.is_some() && diagnostic.turn_id.is_some() && usage.turn_id != diagnostic.turn_id {
         return AssociationDecision::Conflict;
     }
+    // Only the fully qualified response tuple makes a different supplied PK
+    // a contradiction. Equal response text in a foreign tuple is not a conflict.
     if diagnostic.call_id.is_some() && usage.call_id != diagnostic.call_id {
-        return AssociationDecision::NoMatch;
+        return AssociationDecision::Conflict;
     }
     AssociationDecision::Match
 }
 
 fn known_identity_conflict(usage: &UsageJoinKey, diagnostic: &UsageJoinKey) -> bool {
-    (usage.turn_id.is_some() && diagnostic.turn_id.is_some() && usage.turn_id != diagnostic.turn_id)
+    usage.thread_id != diagnostic.thread_id
+        || (usage.turn_id.is_some() && diagnostic.turn_id.is_some() && usage.turn_id != diagnostic.turn_id)
         || (usage.call_id.is_some() && diagnostic.call_id.is_some() && usage.call_id != diagnostic.call_id)
         || (usage.response_id.is_some() && diagnostic.response_id.is_some() && usage.response_id != diagnostic.response_id)
         || (usage.provider.is_some() && diagnostic.provider.is_some() && usage.provider != diagnostic.provider)

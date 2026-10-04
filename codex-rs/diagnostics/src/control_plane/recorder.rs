@@ -391,8 +391,7 @@ fn payload_capacity(input: &EventInput) -> usize {
         bytes += wait.target_ids.iter().map(String::capacity).sum::<usize>();
         bytes += wait.requested_target_ids.iter().map(String::capacity).sum::<usize>();
         for row in wait.subscribed_readiness.iter().chain(&wait.selected_readiness) {
-            bytes += row.target.as_ref().map_or(0, |target| String::capacity(&target.id));
-            bytes += row.target_turn_id.as_ref().map_or(0, String::capacity);
+            bytes += readiness_capacity(row);
         }
         bytes += wait.observed_host_return.as_ref().map_or(0, |result| {
             result.target_statuses.iter().map(|row| row.target_reference.id.capacity()).sum::<usize>()
@@ -418,7 +417,7 @@ fn payload_capacity(input: &EventInput) -> usize {
     if let Some(q) = &input.status_query {
         bytes += q.request_fingerprint.as_ref().map_or(0, String::capacity)
             + q.result_fingerprint.as_ref().map_or(0, String::capacity);
-        bytes += q.readiness.as_ref().and_then(|r| r.target_turn_id.as_ref()).map_or(0, String::capacity);
+        bytes += q.readiness.as_ref().map_or(0, readiness_capacity);
         bytes += q.request_projection.as_ref().map_or(0, |_| std::mem::size_of::<StatusRequestProjection>())
             + q.result_projection.as_ref().map_or(0, |_| std::mem::size_of::<StatusResultProjection>());
         if let Some(request) = &q.request_projection {
@@ -434,7 +433,7 @@ fn payload_capacity(input: &EventInput) -> usize {
             }
         }
     }
-    bytes += input.readiness.as_ref().and_then(|r| r.target_turn_id.as_ref()).map_or(0, String::capacity);
+    bytes += input.readiness.as_ref().map_or(0, readiness_capacity);
     bytes += input.external_operation.as_ref().map_or(0, |op| op.call_id.capacity());
     bytes += input.provider_call.as_ref().map_or(0, |provider| {
         provider.provider.capacity() + provider.response_id.capacity()
@@ -448,6 +447,10 @@ fn payload_capacity(input: &EventInput) -> usize {
 }
 fn identity_capacity(value: &Option<EventIdentity>) -> usize {
     value.as_ref().map_or(0, |id| id.capture_instance_id.capacity())
+}
+fn readiness_capacity(value: &ReadinessObservation) -> usize {
+    value.target.as_ref().map_or(0, |target| target.id.capacity())
+        + value.target_turn_id.as_ref().map_or(0, String::capacity)
 }
 fn structural_size(input: &EventInput) -> usize {
     std::mem::size_of::<EventInput>()

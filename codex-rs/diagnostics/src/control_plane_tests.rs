@@ -53,9 +53,15 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
         requested_target_kind: TargetReferenceKind::ExposedAgentPath,
         requested_target_set_complete: true,
         resolved_target_set_complete: Some(true),
-        subscribed_readiness: vec![],
+        subscribed_readiness: vec![ReadinessObservation {
+            target: Some(TargetReference { id: "resolved-thread".into(), kind: TargetReferenceKind::ThreadId }),
+            state: Readiness::Pending, target_turn_id: None,
+        }],
         subscribed_readiness_complete: true,
-        selected_readiness: vec![],
+        selected_readiness: vec![ReadinessObservation {
+            target: Some(TargetReference { id: "resolved-thread".into(), kind: TargetReferenceKind::ThreadId }),
+            state: Readiness::Pending, target_turn_id: None,
+        }],
         selected_readiness_complete: true,
         blocked_start_offset_ns: Some(10),
         blocked_end_offset_ns: Some(20),
@@ -741,4 +747,221 @@ fn disable_discards_capture_and_snapshot_reports_incomplete_high_water() {
     let snapshot = active.snapshot().unwrap();
     assert_eq!(snapshot.events.len(), 0);
     assert!(Summary::reduce_snapshot(&snapshot).capture_loss_observed);
+}
+
+#[test]
+fn sparse_terminal_cannot_hide_two_known_phase_contradictions() {
+    for dimension in 0..6 {
+        let active = recorder("capture-a");
+        let mut first = wait("sparse", SelectedOutcome::Timeout);
+        first.phase = WaitPhase::Selected;
+        first.selected_target_id = Some("resolved-thread".into());
+        first.selected_producer = Some(EventIdentity { capture_instance_id: "capture-a".into(), sequence: 1 });
+        let mut second = first.clone();
+        match dimension {
+            0 => second.selected_outcome = SelectedOutcome::TargetTerminal,
+            1 => second.selected_producer.as_mut().unwrap().sequence = 2,
+            2 => second.selected_target_id = Some("other-target".into()),
+            3 => second.helper_id = Some("other-helper".into()),
+            4 => second.return_when = ReturnWhen::All,
+            5 => second.target_ids = vec!["other-thread".into()],
+            _ => unreachable!(),
+        }
+        let mut sparse = first.clone();
+        sparse.phase = WaitPhase::Completed;
+        sparse.selected_outcome = SelectedOutcome::Unknown;
+        sparse.selected_producer = None;
+        sparse.selected_target_id = None;
+        sparse.helper_id = None;
+        sparse.return_when = ReturnWhen::Unknown;
+        sparse.target_ids.clear();
+        sparse.target_set_complete = false;
+        sparse.resolved_target_set_complete = None;
+        for observation in [first, second, sparse] {
+            let mut input = event(EventKind::WaitCompleted);
+            input.wait = Some(observation);
+            active.record(input).unwrap();
+        }
+        let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+        assert_eq!((summary.conflicting_wait_count, summary.repeated_wait_groups,
+            summary.waits_by_outcome), (1, 0, std::collections::BTreeMap::from([(SelectedOutcome::Unknown, 1)])));
+        let timeline = &summary.wait_timelines[0];
+        assert_eq!((timeline.conflicting, timeline.complete, timeline.phase, timeline.selected_producer.as_ref(),
+            timeline.helper_id.as_ref(), timeline.return_when), (true, false, WaitPhase::Unknown, None, None, ReturnWhen::Unknown));
+    }
+}
+
+#[test]
+fn sparse_phase_keeps_unique_known_request_and_selected_facts() {
+    let active = recorder("capture-a");
+    let producer = active.record(event(EventKind::OutcomePublished)).unwrap();
+    let mut selected = wait("sparse", SelectedOutcome::Timeout);
+    selected.phase = WaitPhase::Selected;
+    selected.helper_version = Some("native-v2".into());
+    selected.selected_producer = Some(producer.clone());
+    selected.selected_target_id = Some("resolved-thread".into());
+    let mut terminal = selected.clone();
+    terminal.phase = WaitPhase::Completed;
+    terminal.primitive = WaitPrimitive::Unknown;
+    terminal.return_when = ReturnWhen::Unknown;
+    terminal.helper_id = None;
+    terminal.helper_version = None;
+    terminal.requested_timeout_ms = None;
+    terminal.effective_timeout_ms = None;
+    terminal.selected_outcome = SelectedOutcome::Unknown;
+    terminal.selected_producer = None;
+    terminal.selected_target_id = None;
+    for observation in [selected, terminal] {
+        let mut input = event(EventKind::WaitCompleted);
+        input.operation_id = Some("op".into());
+        input.wait = Some(observation);
+        active.record(input).unwrap();
+    }
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    let row = &summary.wait_timelines[0];
+    assert_eq!((row.primitive, row.return_when, row.helper_id.as_deref(), row.helper_version.as_deref(),
+        row.requested_timeout_ms, row.effective_timeout_ms, row.selected_outcome,
+        row.selected_producer.as_ref(), row.selected_target_id.as_deref(), row.complete, row.conflicting),
+        (WaitPrimitive::V2Wait, ReturnWhen::Any, Some("wait_agent"), Some("native-v2"), Some(-1), Some(0),
+            SelectedOutcome::Timeout, Some(&producer), Some("resolved-thread"), true, false));
+}
+
+#[test]
+fn readiness_without_exact_unique_known_required_targets_is_incomplete_not_a_native_failure() {
+    for dimension in 0..5 {
+        let active = recorder("capture-a");
+        let mut observation = wait("readiness", SelectedOutcome::Timeout);
+        match dimension {
+            0 => observation.selected_readiness[0].target = None,
+            1 => observation.selected_readiness[0].target.as_mut().unwrap().kind = TargetReferenceKind::Unknown,
+            2 => observation.selected_readiness[0].state = Readiness::Unknown,
+            3 => observation.selected_readiness.push(observation.selected_readiness[0].clone()),
+            4 => observation.selected_readiness.clear(),
+            _ => unreachable!(),
+        }
+        let mut input = event(EventKind::WaitCompleted);
+        input.wait = Some(observation);
+        assert!(active.record(input).is_some());
+        let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+        let row = &summary.wait_timelines[0];
+        assert_eq!((row.complete, row.selected_readiness_complete, row.selected_outcome, row.conflicting),
+            (false, false, SelectedOutcome::Timeout, false));
+    }
+}
+
+#[test]
+fn selected_producer_requires_clean_retained_same_capture_evidence() {
+    let active = recorder("capture-a");
+    let producer = active.record(event(EventKind::OutcomePublished)).unwrap();
+    let mut input = event(EventKind::WaitCompleted);
+    input.wait = Some(wait("producer", SelectedOutcome::TargetTerminal));
+    input.wait.as_mut().unwrap().selected_producer = Some(producer.clone());
+    active.record(input).unwrap();
+    let good = active.snapshot().unwrap();
+    assert!(Summary::reduce_snapshot(&good).wait_timelines[0].complete);
+    for (case, reason) in [(0, UnknownReason::Lost), (1, UnknownReason::Ambiguous),
+        (2, UnknownReason::UnsupportedProducer), (3, UnknownReason::Lost)] {
+        let mut snapshot = good.clone();
+        match case {
+            0 => { snapshot.events.remove(0); snapshot.losses.capacity = 1; }
+            1 => {
+                let mut variant = snapshot.events[0].clone();
+                variant.input.kind = EventKind::ActivityPublished;
+                snapshot.events.push(variant);
+            }
+            2 => snapshot.events[1].input.wait.as_mut().unwrap().selected_producer.as_mut().unwrap()
+                .capture_instance_id = "foreign".into(),
+            3 => snapshot.events[1].input.wait.as_mut().unwrap().selected_producer.as_mut().unwrap().sequence = 99,
+            _ => unreachable!(),
+        }
+        let summary = Summary::reduce_snapshot(&snapshot);
+        let row = &summary.wait_timelines[0];
+        assert_eq!((row.selected_producer.as_ref(), row.complete), (None, false));
+        assert!(row.coverage.contains(&CoverageMark { field: CoverageField::SelectedProducer, unknown: Some(reason) }));
+    }
+}
+
+#[test]
+fn repetitions_use_reconciled_complete_results_and_turn_scoped_call_identity() {
+    let active = recorder("capture-a");
+    for turn in ["turn-a", "turn-b"] {
+        let mut input = event(EventKind::WaitCompleted);
+        input.turn_id = Some(turn.into());
+        input.operation_id = Some("same-operation-text".into());
+        input.wait = Some(wait("same-wait-text", SelectedOutcome::Timeout));
+        active.record(input).unwrap();
+    }
+    let good = active.snapshot().unwrap();
+    assert_eq!(Summary::reduce_snapshot(&good).repeated_wait_groups, 1);
+    let mut loss = good.clone();
+    loss.losses.contention = 1;
+    assert_eq!(Summary::reduce_snapshot(&loss).repeated_wait_groups, 0);
+    let mut conflict = good.clone();
+    let mut selected = conflict.events[0].clone();
+    selected.identity.sequence = 3;
+    selected.input.wait.as_mut().unwrap().phase = WaitPhase::Selected;
+    selected.input.wait.as_mut().unwrap().selected_outcome = SelectedOutcome::TargetTerminal;
+    conflict.events.push(selected);
+    conflict.high_water = 3;
+    assert_eq!(Summary::reduce_snapshot(&conflict).repeated_wait_groups, 0);
+    let mut incomplete = good;
+    incomplete.events[0].input.wait.as_mut().unwrap().subscribed_readiness.clear();
+    assert_eq!(Summary::reduce_snapshot(&incomplete).repeated_wait_groups, 0);
+}
+
+#[test]
+fn readiness_target_strings_participate_in_exact_dynamic_capacity_admission() {
+    let active = recorder("capture-a");
+    let id = "x".repeat(MAX_IDENTIFIER_BYTES);
+    let readiness = ReadinessObservation {
+        target: Some(TargetReference { id: id.clone(), kind: TargetReferenceKind::ThreadId }),
+        state: Readiness::Pending, target_turn_id: Some(id.clone()),
+    };
+    let mut input = event(EventKind::StatusQueryObserved);
+    input.operation_id = Some(id.clone()); input.thread_id = Some(id.clone()); input.turn_id = Some(id.clone());
+    input.root_thread_id = Some(id.clone()); input.parent_thread_id = Some(id.clone());
+    input.fork_parent_thread_id = Some(id.clone()); input.window_id = Some(id.clone()); input.previous_window_id = Some(id);
+    input.readiness = Some(readiness.clone());
+    input.status_query = Some(StatusQueryObservation {
+        readiness: Some(readiness), request_fingerprint: None, result_fingerprint: None,
+        request_projection: None, result_projection: None,
+    });
+    let per_record = 12 * MAX_IDENTIFIER_BYTES + "unit-test".len() + "capture-a".len();
+    let expected = MAX_OWNED_DYNAMIC_BYTES / per_record;
+    for _ in 0..expected { assert!(active.record(input.clone()).is_some()); }
+    assert_eq!(active.record(input), None);
+    assert_eq!(active.snapshot().unwrap().events.len(), expected);
+    assert_eq!(active.losses().capacity, 1);
+}
+
+#[test]
+fn scheduler_requires_supplied_basis_guards_and_an_observed_actual_turn() {
+    for case in 0..8 {
+        let active = recorder("capture-a");
+        for phase in [SchedulerPhase::Eligibility, SchedulerPhase::ReservationAccepted,
+            SchedulerPhase::CohortDrained, SchedulerPhase::TurnStartProducerPublication, SchedulerPhase::TaskRegistered] {
+            let mut input = event(EventKind::SchedulerEligibilityObserved);
+            input.scheduler = Some(SchedulerObservation {
+                primitive: "pending-work".into(), correlation_id: Some("correlation".into()),
+                pending_mail_observed: if case == 1 { Some(false) } else { Some(true) },
+                trigger_turn_mail_observed: if matches!(case, 2 | 7) { Some(true) } else { Some(false) },
+                durable_sleep_observed: match case { 3 => Some(false), 4 | 7 => None, _ => Some(true) },
+                idle_reservation_accepted: Some(true), reservation_still_matches: Some(true),
+                eligibility_basis: if case >= 6 { EligibilityBasis::PendingTriggerTurn } else { EligibilityBasis::QueueOnlyDurableSleep },
+                drained_message_cohort_ids: vec!["submission".into()], drained_cohort_complete: true,
+                drained_cohort_contains_trigger_turn_mail: Some(false), phase,
+                task_registration_event: None, scheduled_turn_id: if case == 5 { None } else { Some("actual-turn".into()) },
+                turn_start_publication_event: None, outcome: SchedulerOutcome::Unknown,
+            });
+            active.record(input).unwrap();
+        }
+        let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+        let row = &summary.scheduler_timelines[0];
+        assert_eq!((row.complete, row.conflicting, row.eligible),
+            (matches!(case, 0 | 7), matches!(case, 1..=3 | 6), if matches!(case, 0 | 5 | 7) { Some(true) } else { None }));
+        if case == 5 {
+            assert_eq!((row.turn_id.as_ref(), row.task_registered, row.turn_start_published, row.incomplete),
+                (None, None, None, true));
+        }
+    }
 }

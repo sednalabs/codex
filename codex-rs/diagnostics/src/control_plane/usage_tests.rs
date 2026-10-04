@@ -206,6 +206,7 @@ fn conflicting_duplicate_is_quarantined_into_unknown_partition() {
         UsagePartition {
             call_count: 1,
             strict_unpriced_or_missing_call_count: 1,
+            standard_scenario_unpriced_or_missing_call_count: 1,
             ..UsagePartition::default()
         },
     )]));
@@ -249,6 +250,7 @@ fn unknown_actual_model_and_missing_usage_are_not_filled_or_zero_priced() {
             output_tokens_rows: 0,
             total_tokens_sum: None,
             total_tokens_rows: 0,
+            standard_scenario_unpriced_or_missing_call_count: 1,
             ..UsagePartition::default()
         },
     )]));
@@ -407,7 +409,7 @@ fn response_key_requires_matching_provider_and_qualified_scope() {
     known_scope.account_scope = UsageAccountScope::KnownScope("account-1".to_string());
     let summary = join_control_plane_usage(&scope(), &[usage], &[reference_with_key(known_scope, 10)]);
     assert_eq!(summary.associated_call_count, 0);
-    assert_eq!(summary.conflicting_identity_event_count, 1);
+    assert_eq!(summary.conflicting_identity_event_count, 0);
 }
 
 #[test]
