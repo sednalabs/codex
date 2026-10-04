@@ -13346,3 +13346,28 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
 }
+
+#[test]
+fn interrupted_readiness_is_quiet_except_guardian_and_preserves_same_turn_errors() {
+    let previous = AgentOutcomeSnapshot::default();
+    assert_eq!(
+        interrupted_readiness("turn-1", None, &previous),
+        AgentReadiness::Pending
+    );
+    assert_eq!(
+        interrupted_readiness("turn-1", Some(CodexErrorInfo::TooManyDenials), &previous,),
+        AgentReadiness::ActionRequired
+    );
+
+    let mut previous_error = AgentOutcomeSnapshot::default();
+    previous_error.turn_id = Some("turn-1".to_string());
+    previous_error.readiness = AgentReadiness::Terminal;
+    assert_eq!(
+        interrupted_readiness("turn-1", None, &previous_error),
+        AgentReadiness::Terminal
+    );
+    assert_eq!(
+        interrupted_readiness("turn-2", None, &previous_error),
+        AgentReadiness::Pending
+    );
+}

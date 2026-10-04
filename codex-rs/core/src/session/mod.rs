@@ -2333,6 +2333,11 @@ impl Session {
             return;
         };
         let turn_id = turn_context.sub_id.clone();
+        let outcome_publisher = self
+            .services
+            .local_agent_runtime
+            .outcome_publisher(self.thread_id);
+        let previous = outcome_publisher.snapshot();
         let readiness = match msg {
             EventMsg::TurnStarted(_) => AgentReadiness::Pending,
             EventMsg::TurnComplete(event) if event.error.is_none() => {
@@ -2353,20 +2358,27 @@ impl Session {
                     _ => AgentReadiness::Terminal,
                 }
             }
+            EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted => {
+                interrupted_readiness(
+                    &turn_id,
+                    event
+                        .error
+                        .as_ref()
+                        .and_then(|error| error.codex_error_info.clone()),
+                    &previous,
+                )
+            }
             EventMsg::TurnAborted(_) => AgentReadiness::ActionRequired,
             EventMsg::TurnComplete(_) | EventMsg::Error(_) | EventMsg::ShutdownComplete => {
                 AgentReadiness::Terminal
             }
             _ => AgentReadiness::Pending,
         };
-        self.services
-            .local_agent_runtime
-            .outcome_publisher(self.thread_id)
-            .publish(AgentOutcomeSnapshot {
-                turn_id: Some(turn_id),
-                status,
-                readiness,
-            });
+        outcome_publisher.publish(AgentOutcomeSnapshot {
+            turn_id: Some(turn_id),
+            status,
+            readiness,
+        });
     }
 
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
@@ -2404,9 +2416,9 @@ impl Session {
                     && let Some(error) = &event.error
                     && error.codex_error_info == Some(CodexErrorInfo::TooManyDenials)
                 {
-                    // Report the safety stop to the parent without changing the child's
-                    // interrupted status or notifying for ordinary interruptions.
                     error_info = error.codex_error_info.clone();
+                    // Keep Guardian guidance on the parent outcome while the
+                    // session's raw status remains Interrupted.
                     AgentStatus::Errored(error.message.clone())
                 } else {
                     let Some(status) = agent_status_from_event(msg) else {
@@ -5167,6 +5179,25 @@ impl Session {
 
     fn show_raw_agent_reasoning(&self) -> bool {
         self.services.show_raw_agent_reasoning
+    }
+}
+
+fn interrupted_readiness(
+    turn_id: &str,
+    error_info: Option<CodexErrorInfo>,
+    previous: &AgentOutcomeSnapshot,
+) -> AgentReadiness {
+    if error_info == Some(CodexErrorInfo::TooManyDenials) {
+        return AgentReadiness::ActionRequired;
+    }
+
+    // An ordinary interruption is not a terminal outcome. Preserve an actionable
+    // error already published for this exact turn, but do not turn interruption
+    // itself into a parent handback or wait wake.
+    if previous.turn_id.as_deref() == Some(turn_id) && previous.readiness.wakes_wait() {
+        previous.readiness.clone()
+    } else {
+        AgentReadiness::Pending
     }
 }
 
