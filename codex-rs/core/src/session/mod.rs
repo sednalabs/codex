@@ -2337,7 +2337,6 @@ impl Session {
             .services
             .local_agent_runtime
             .outcome_publisher(self.thread_id);
-        let previous = outcome_publisher.snapshot();
         let readiness = match msg {
             EventMsg::TurnStarted(_) => AgentReadiness::Pending,
             EventMsg::TurnComplete(event) if event.error.is_none() => {
@@ -2360,12 +2359,10 @@ impl Session {
             }
             EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted => {
                 interrupted_readiness(
-                    &turn_id,
                     event
                         .error
                         .as_ref()
                         .and_then(|error| error.codex_error_info.clone()),
-                    &previous,
                 )
             }
             EventMsg::TurnAborted(_) => AgentReadiness::ActionRequired,
@@ -2374,11 +2371,17 @@ impl Session {
             }
             _ => AgentReadiness::Pending,
         };
-        outcome_publisher.publish(AgentOutcomeSnapshot {
+        let outcome = AgentOutcomeSnapshot {
             turn_id: Some(turn_id),
             status,
             readiness,
-        });
+        };
+        if matches!(msg, EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted)
+        {
+            outcome_publisher.publish_interrupted(outcome);
+        } else {
+            outcome_publisher.publish(outcome);
+        }
     }
 
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
@@ -5182,20 +5185,9 @@ impl Session {
     }
 }
 
-fn interrupted_readiness(
-    turn_id: &str,
-    error_info: Option<CodexErrorInfo>,
-    previous: &AgentOutcomeSnapshot,
-) -> AgentReadiness {
+fn interrupted_readiness(error_info: Option<CodexErrorInfo>) -> AgentReadiness {
     if error_info == Some(CodexErrorInfo::TooManyDenials) {
-        return AgentReadiness::ActionRequired;
-    }
-
-    // An ordinary interruption is not a terminal outcome. Preserve an actionable
-    // error already published for this exact turn, but do not turn interruption
-    // itself into a parent handback or wait wake.
-    if previous.turn_id.as_deref() == Some(turn_id) && previous.readiness.wakes_wait() {
-        previous.readiness.clone()
+        AgentReadiness::ActionRequired
     } else {
         AgentReadiness::Pending
     }

@@ -330,6 +330,27 @@ impl AgentOutcomePublisher {
             .publication_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publish_locked(snapshot);
+    }
+
+    /// Publish an interrupted turn without overwriting a wake-worthy outcome
+    /// already published for that exact turn.
+    pub(crate) fn publish_interrupted(&self, mut snapshot: AgentOutcomeSnapshot) {
+        let _guard = self
+            .publication_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = self.tx.borrow().clone();
+        if previous.turn_id == snapshot.turn_id
+            && previous.readiness.wakes_wait()
+            && !snapshot.readiness.wakes_wait()
+        {
+            snapshot.readiness = previous.readiness;
+        }
+        self.publish_locked(snapshot);
+    }
+
+    fn publish_locked(&self, snapshot: AgentOutcomeSnapshot) {
         self.tx.send_replace(snapshot.clone());
         if snapshot.readiness.wakes_wait() {
             let _ = self.actionable_tx.send(snapshot);

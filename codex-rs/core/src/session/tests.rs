@@ -1,4 +1,5 @@
 use crate::agent::LocalAgentControl;
+use crate::agent::api::AgentOutcomePublisher;
 #[path = "notification_tests.rs"]
 mod notification_tests;
 
@@ -13349,25 +13350,35 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
 
 #[test]
 fn interrupted_readiness_is_quiet_except_guardian_and_preserves_same_turn_errors() {
-    let previous = AgentOutcomeSnapshot::default();
+    assert_eq!(interrupted_readiness(None), AgentReadiness::Pending);
     assert_eq!(
-        interrupted_readiness("turn-1", None, &previous),
-        AgentReadiness::Pending
-    );
-    assert_eq!(
-        interrupted_readiness("turn-1", Some(CodexErrorInfo::TooManyDenials), &previous,),
+        interrupted_readiness(Some(CodexErrorInfo::TooManyDenials)),
         AgentReadiness::ActionRequired
     );
+}
 
-    let mut previous_error = AgentOutcomeSnapshot::default();
-    previous_error.turn_id = Some("turn-1".to_string());
-    previous_error.readiness = AgentReadiness::Terminal;
-    assert_eq!(
-        interrupted_readiness("turn-1", None, &previous_error),
-        AgentReadiness::Terminal
-    );
-    assert_eq!(
-        interrupted_readiness("turn-2", None, &previous_error),
-        AgentReadiness::Pending
-    );
+#[test]
+fn interrupted_publication_does_not_overwrite_same_turn_error_readiness() {
+    let publisher = AgentOutcomePublisher::default();
+    publisher.publish(AgentOutcomeSnapshot {
+        turn_id: Some("turn-1".to_string()),
+        status: AgentStatus::Errored("error".to_string()),
+        readiness: AgentReadiness::Terminal,
+    });
+    publisher.publish_interrupted(AgentOutcomeSnapshot {
+        turn_id: Some("turn-1".to_string()),
+        status: AgentStatus::Interrupted,
+        readiness: AgentReadiness::Pending,
+    });
+    let snapshot = publisher.snapshot();
+    assert_eq!(snapshot.turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(snapshot.status, AgentStatus::Interrupted);
+    assert_eq!(snapshot.readiness, AgentReadiness::Terminal);
+
+    publisher.publish_interrupted(AgentOutcomeSnapshot {
+        turn_id: Some("turn-2".to_string()),
+        status: AgentStatus::Interrupted,
+        readiness: AgentReadiness::Pending,
+    });
+    assert_eq!(publisher.snapshot().readiness, AgentReadiness::Pending);
 }
