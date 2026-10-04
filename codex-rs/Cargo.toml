@@ -7,6 +7,7 @@ members = [
     "agent-identity",
     "agent-roles",
     "backend-client",
+    "android-computer-use",
     "browser-computer-use",
     "bwrap",
     "build-info",
@@ -192,6 +193,7 @@ codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-build-info = { path = "build-info" }
+codex-android-computer-use = { path = "android-computer-use" }
 codex-browser-computer-use = { path = "browser-computer-use" }
 codex-chatgpt = { path = "chatgpt" }
 codex-client = { path = "codex-client" }

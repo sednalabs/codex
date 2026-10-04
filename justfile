@@ -97,6 +97,12 @@ test *args:
 test-github-scripts:
     {{ python }} -m unittest discover -s {{ justfile_directory() }}/.github/scripts -p 'test_*.py'
 
+# Focused native Android DynamicTool provider and request-routing checks.
+tui-native-computer-use-targeted:
+    cargo test --locked -p codex-android-computer-use --lib -- --test-threads=1
+    cargo test --locked -p codex-tui android_computer_use_provider::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-tui android_dynamic_tool_requests_from_abandoned_threads_do_not_start_provider --lib -- --test-threads=1
+
 # Run explicit workspace benchmark targets.
 bench *args:
     cargo bench --workspace --bench '*' {args}

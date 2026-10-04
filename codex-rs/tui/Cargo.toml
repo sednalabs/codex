@@ -23,6 +23,7 @@ workspace = true
 
 [dependencies]
 codex-build-info = { workspace = true }
+codex-android-computer-use = { workspace = true }
 codex-browser-computer-use = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, default-features = false, features = ["http1", "tokio"] }

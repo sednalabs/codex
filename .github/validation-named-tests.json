@@ -208,6 +208,14 @@
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "mcp_2026_oauth_discovery", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--test", "mcp_2026_oauth_discovery", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-android-computer-use",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-android-computer-use", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-android-computer-use", "--lib", "--", "--test-threads=1"]
     }
   ]
 }

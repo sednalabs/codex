@@ -64,7 +64,9 @@ impl ThreadToolTransport {
         codex_home: &std::path::Path,
     ) -> Result<(), String> {
         crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
+        crate::android_computer_use_provider::validate_no_reserved_name_conflict(params)?;
         let browser_specs = crate::browser_dynamic_tools::specs_for_codex_home(codex_home);
+        let android_specs = crate::android_computer_use_provider::specs_for_codex_home(codex_home);
         let mut specs = params.dynamic_tools.take().unwrap_or_default();
         match self {
             Self::Disabled => {}
@@ -74,6 +76,7 @@ impl ThreadToolTransport {
             }
         }
         specs.extend(browser_specs);
+        specs.extend(android_specs);
         params.dynamic_tools = (!specs.is_empty()).then_some(specs);
         Ok(())
     }
