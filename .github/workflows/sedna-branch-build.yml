@@ -1332,6 +1332,14 @@ jobs:
           import sys
           import xml.etree.ElementTree as ET
 
+          host_scripts = Path(os.environ["GITHUB_WORKSPACE"]) / ".workflow-src" / ".github" / "scripts"
+          sys.path.insert(0, str(host_scripts))
+          from verify_existing_first_binary_producer import (
+              CURRENT_BUILD_PLAIN_TEST_CASES,
+              consume_existing_test_plan,
+              plain_test_inventory_issues,
+          )
+
           junit_path = Path(os.environ["CONSUMER_JUNIT"])
           context_path = Path(os.environ["CONSUMER_CONTEXT"])
           producer_path = Path(os.environ["PRODUCER_EVIDENCE"])
@@ -1396,33 +1404,21 @@ jobs:
               if len(negative) != 8 or set(negative) != expected_negative:
                   issues.append("JUnit does not contain the exact 8 negative state-history cases")
               expected_state = expected_positive | expected_negative
-              expected_plain = {
-                  "test_exact_single_artifact_and_native_layout",
-                  "test_wrong_source_manifest_is_rejected_before_unpack",
-                  "test_wrong_target_and_missing_helper_are_rejected",
-                  "test_banner_native_client_and_same_source_proxy_execution",
-                  "test_persistent_code_mode_and_reopen_from_real_package",
-                  "test_missing_host_cannot_qualify_code_mode",
-                  "test_model_receives_and_executes_root_only_agent_list",
-                  "test_model_spawn_hidden_metadata_has_no_private_fields",
-                  "test_visible_model_spawn_and_resumed_list_keep_stable_identity",
-                  "test_actual_tui_agents_entry_has_initial_empty_search",
-                  "test_actual_tui_nested_filter_clear_live_rename_and_replay",
-                  "test_real_response_usage_joins_standard_rate_scenario_after_resume",
-              }
+              expected_plain_case_counts = (
+                  CURRENT_BUILD_PLAIN_TEST_CASES
+                  if mode == "build"
+                  else consume_existing_test_plan(
+                      os.environ["FIXTURE_SHA"], os.environ["SDK_SHA"], profile
+                  )["plain_case_counts"]
+              )
           else:
               if positive != ["fresh"] or negative != ["bad_checksum"]:
                   issues.append("pair profile did not execute exactly its two required state-history cases")
               expected_state = pair_positive | pair_negative
-              expected_plain = set()
+              expected_plain_case_counts = {}
 
-          plain_names = {
-              case.attrib.get("name", "") for case in cases
-              if not case.attrib.get("name", "").startswith((positive_prefix, negative_prefix))
-          }
-          if plain_names != expected_plain:
-              issues.append("JUnit plain-test inventory differs from the exact selected profile")
-          expected_case_count = len(expected_state) + len(expected_plain)
+          issues.extend(plain_test_inventory_issues(cases, expected_plain_case_counts))
+          expected_case_count = len(expected_state) + sum(expected_plain_case_counts.values())
           if len(cases) != expected_case_count:
               issues.append("JUnit executed-case count differs from the exact selected profile")
 
@@ -2286,6 +2282,13 @@ jobs:
           junit_path = Path(sys.argv[1])
           identity_path = Path(sys.argv[2])
           basetemp = Path(sys.argv[3])
+          host_scripts = Path(os.environ["GITHUB_WORKSPACE"]) / ".workflow-src" / ".github" / "scripts"
+          sys.path.insert(0, str(host_scripts))
+          from verify_existing_first_binary_producer import (
+              CURRENT_BUILD_PLAIN_TEST_CASES,
+              plain_test_inventory_issues,
+          )
+
           identity = json.loads(identity_path.read_text(encoding="utf-8"))
           pytest_exit = int(os.environ["PYTEST_EXIT_CODE"])
           issues: list[str] = []
@@ -2338,6 +2341,10 @@ jobs:
               issues.append("JUnit does not contain the exact 16 positive state-history cases")
           if len(negative) != 8 or set(negative) != expected_negative:
               issues.append("JUnit does not contain the exact 8 negative state-history cases")
+          issues.extend(plain_test_inventory_issues(cases, CURRENT_BUILD_PLAIN_TEST_CASES))
+          expected_case_count = len(expected_positive | expected_negative) + sum(CURRENT_BUILD_PLAIN_TEST_CASES.values())
+          if len(cases) != expected_case_count:
+              issues.append("JUnit executed-case count differs from the exact selected profile")
 
           witness_paths = sorted((basetemp / "state-history-witnesses").glob("*.json"))
           witness_hashes: dict[str, str] = {}

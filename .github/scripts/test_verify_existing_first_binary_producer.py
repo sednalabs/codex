@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
+import sys
 import tempfile
+import textwrap
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
+import xml.etree.ElementTree as ET
+
+import check_first_binary_contracts as checker
+from test_first_binary_contracts import OPTION_SOURCE
 
 from verify_existing_first_binary_producer import (
     ACCEPTED_INPUTS_PATH,
@@ -22,6 +30,7 @@ from verify_existing_first_binary_producer import (
     CONSUME_EXISTING_TEST_PLANS,
     FOCUSED_REPAIR_PLAIN_TESTS,
     FULL_PLAIN_TESTS,
+    CURRENT_BUILD_PLAIN_TEST_CASES,
     Q2_FIXTURE_SHA,
     Q3_ADDITIONAL_PLAIN_TESTS,
     Q3_FIXTURE_SHA,
@@ -50,6 +59,7 @@ from verify_existing_first_binary_producer import (
     Q67_FIXTURE_SHA,
     Q68_FIXTURE_SHA,
     Q69_FIXTURE_SHA,
+    Q56_FIXTURE_SHA,
     S0_SDK_SHA,
     S1_SDK_SHA,
     S2_SDK_SHA,
@@ -2228,6 +2238,12 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q69_full["state"])
         self.assertEqual(FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS, q69_full["plain"])
         self.assertEqual(17, len(q69_full["plain"]))
+        q56_full = consume_existing_test_plan(Q56_FIXTURE_SHA, S4_SDK_SHA, "full")
+        self.assertEqual(EXPECTED_STATE_POSITIVE | EXPECTED_STATE_NEGATIVE, q56_full["state"])
+        self.assertEqual(frozenset(CURRENT_BUILD_PLAIN_TEST_CASES), q56_full["plain"])
+        self.assertEqual(CURRENT_BUILD_PLAIN_TEST_CASES, q56_full["plain_case_counts"])
+        self.assertEqual(20, len(q56_full["plain"]))
+        self.assertEqual(21, sum(q56_full["plain_case_counts"].values()))
         for fixture_sha, sdk_sha, profile in (
             (Q3_FIXTURE_SHA, S1_SDK_SHA, "pair"),
             (Q3_FIXTURE_SHA, S0_SDK_SHA, "full"),
@@ -2294,6 +2310,9 @@ class AcceptedInputManifestTests(unittest.TestCase):
             (Q68_FIXTURE_SHA, S4_SDK_SHA, "pair"),
             (Q69_FIXTURE_SHA, S3_SDK_SHA, "focused"),
             (Q69_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q56_FIXTURE_SHA, S4_SDK_SHA, "pair"),
+            (Q56_FIXTURE_SHA, S4_SDK_SHA, "focused"),
+            (Q56_FIXTURE_SHA, S3_SDK_SHA, "full"),
             ("8" * 40, S0_SDK_SHA, "full"),
         ):
             with self.subTest(fixture_sha=fixture_sha, sdk_sha=sdk_sha, profile=profile), self.assertRaises(ValueError):
@@ -2338,6 +2357,68 @@ class AcceptedInputManifestTests(unittest.TestCase):
         self.assertEqual(2, s1["expected_test_cases"]["test_bad_request_route_sets_fail_and_are_reported_on_teardown"])
         with self.assertRaisesRegex(ValueError, "SDK source SHA"):
             sdk_test_plan("9" * 40)
+
+    def test_cumulative_static_declaration_join_uses_stems_not_executed_case_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            sdk = root / "sdk"
+            producer = root / "producer"
+            test_dir = source / checker.TEST_ROOT
+            test_dir.mkdir(parents=True)
+            (test_dir / "conftest.py").write_text(OPTION_SOURCE, encoding="utf-8")
+            declaration = test_dir / "test_cumulative.py"
+            declaration.write_text(
+                "".join(f"def {name}(): pass\n" for name in sorted(CURRENT_BUILD_PLAIN_TEST_CASES)),
+                encoding="utf-8",
+            )
+            for selector in sdk_test_plan(S4_SDK_SHA)["selectors"]:
+                module, name = selector.split("::", 1)
+                path = sdk / module
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(f"def {name}(): pass\n")
+            record = accepted_fixture_record()
+            record["identity"].update(fixture_sha=Q56_FIXTURE_SHA, sdk_sha=S4_SDK_SHA, profile="full")
+            producer_workflow = producer / checker.WORKFLOW
+            producer_workflow.parent.mkdir(parents=True)
+            producer_workflow.write_text(
+                "jobs:\n" + "".join(
+                    f"  job_{index}:\n    name: {row['name']}\n"
+                    for index, row in enumerate(record["jobs"])
+                ), encoding="utf-8",
+            )
+            args = mock.Mock(
+                workflow_root=ACCEPTED_INPUTS_PATH.parents[1], source_root=source,
+                sdk_root=sdk, producer_root=producer,
+            )
+            identity = record["identity"]
+            environment = {
+                "MODE": "consume-existing", "CONSUMER_PROFILE": "full", "EXPECTED_H": "7" * 40,
+                "TARGET_SHA": identity["product_sha"], "BASE_REF": identity["comparison_base_ref"],
+                "BASE_SHA": identity["comparison_base_sha"], "FIXTURE_SHA": Q56_FIXTURE_SHA,
+                "SDK_SHA": S4_SDK_SHA, "PRODUCER_RUN_ID": str(record["producer"]["run_id"]),
+                "PRODUCER_WORKFLOW_HOST_SHA": record["producer"]["workflow_host_sha"],
+            }
+            for extra in (False, True):
+                if extra:
+                    with declaration.open("a", encoding="utf-8") as stream:
+                        stream.write("def test_unadmitted_extra(): pass\n")
+                with mock.patch.object(checker, "_git_head") as heads, mock.patch(
+                    "verify_existing_first_binary_producer._read_manifest",
+                    return_value={"schema_version": "sedna-first-binary-accepted-inputs-v1", "records": [record]},
+                ), mock.patch.object(sys, "path", sys.path.copy()):
+                    result = checker.run(args, environment)
+                self.assertEqual(
+                    [(args.workflow_root, environment["EXPECTED_H"]), (source, Q56_FIXTURE_SHA),
+                     (sdk, S4_SDK_SHA), (producer, environment["PRODUCER_WORKFLOW_HOST_SHA"])],
+                    [call.args[:2] for call in heads.call_args_list],
+                )
+                if extra:
+                    self.assertEqual(2, len(result.errors))
+                    self.assertTrue(all("unexpected top-level plain test declaration: test_unadmitted_extra" in error for error in result.errors))
+                else:
+                    self.assertEqual([], result.errors)
 
     def test_workflow_restores_userns_for_all_consumer_profiles_and_runs_exact_sdk_inventory(self) -> None:
         workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
@@ -2833,6 +2914,7 @@ class ConsumerResultTests(unittest.TestCase):
         profile: str,
         fixture_sha: str,
         sdk_sha: str,
+        mode: str = "consume-existing",
     ) -> tuple[Path, Path, Path, Path, Path]:
         runner_temp = root / "runner-temp"
         runner_temp.mkdir()
@@ -2876,6 +2958,9 @@ class ConsumerResultTests(unittest.TestCase):
             "target": ARCHES["x86_64"]["target"],
             "runner_label": "ubuntu-24.04",
         }
+        if mode == "build":
+            consumer["workflow_host_sha"] = producer["workflow_host_sha"]
+            consumer["run_id"] = producer["run_id"]
         consumer_path = runner_temp / "consumer.json"
         producer_path = runner_temp / "producer.json"
         junit_path = runner_temp / "results.xml"
@@ -2884,7 +2969,11 @@ class ConsumerResultTests(unittest.TestCase):
         producer_path.write_text(json.dumps(producer), encoding="utf-8")
         selected_plan = consume_existing_test_plan(q_sha, sdk_sha, profile)
         state_cases = sorted(selected_plan["state"])
-        plain_cases = sorted(selected_plan["plain"])
+        plain_cases = [
+            name if count == 1 else f"{name}[case-{case_index}]"
+            for name, count in sorted(selected_plan["plain_case_counts"].items())
+            for case_index in range(1, count + 1)
+        ]
         testcase_xml = [
             f'<testcase name="test_packaged_historical_upgrade_and_reopen[{case_name}]"/>'
             for case_name in state_cases
@@ -2903,7 +2992,7 @@ class ConsumerResultTests(unittest.TestCase):
                 "case": case_name,
                 "product_target_sha": producer["product_sha"],
                 "comparison_base_sha": producer["comparison_base_sha"],
-                "fixture_source_sha": q_sha,
+                "fixture_source_sha": producer["product_sha"] if mode == "build" else q_sha,
                 "producer_workflow_host_sha": producer["workflow_host_sha"],
                 "producer_run_id": producer["run_id"],
                 "consumer_workflow_host_sha": consumer["workflow_host_sha"],
@@ -2919,6 +3008,118 @@ class ConsumerResultTests(unittest.TestCase):
         self._q_sha = q_sha
         self._sdk_sha = sdk_sha
         return junit_path, consumer_path, producer_path, witness_dir, result_path
+
+    def _change_cumulative_fixture(self, junit: Path, witnesses: Path, change: str) -> int:
+        tree = ET.parse(junit)
+        suite = tree.getroot()
+        pacing = "test_packaged_weekly_pacing_uses_account_usage_across_sparse_update_and_resume"
+        pacing_cases = [case for case in suite if case.attrib["name"].startswith(pacing + "[")]
+        if change == "missing-second":
+            suite.remove(pacing_cases[1])
+        elif change == "duplicate-parameter":
+            pacing_cases[1].set("name", pacing_cases[0].attrib["name"])
+        elif change == "extra-third":
+            ET.SubElement(suite, "testcase", name=f"{pacing}[case-3]")
+        elif change in {"empty-parameter", "nested-parameter", "blank-parameter", "bare-parameter"}:
+            suffix = {"empty-parameter": "[]", "nested-parameter": "[[case]]", "blank-parameter": "[ ]", "bare-parameter": ""}[change]
+            pacing_cases[1].set("name", pacing + suffix)
+        elif change in {"missing-catalog", "missing-escape"}:
+            name = (
+                "test_packaged_model_list_exposes_bundled_gpt6_descriptors"
+                if change == "missing-catalog"
+                else "test_packaged_double_escape_interrupt_persists_exact_turn_and_resumes"
+            )
+            suite.remove(next(case for case in suite if case.attrib["name"] == name))
+        elif change == "singleton-parameter":
+            singleton = next(case for case in suite if case.attrib["name"] == "test_packaged_model_list_exposes_bundled_gpt6_descriptors")
+            singleton.set("name", singleton.attrib["name"] + "[unexpected]")
+        elif change == "duplicate-state":
+            suite[1].set("name", suite[0].attrib["name"])
+        elif change in {"skipped", "ignored", "failure", "error"}:
+            ET.SubElement(suite[-1], "skipped" if change == "ignored" else change)
+        elif change == "wrong-provenance":
+            path = witnesses / "fresh.json"
+            witness = json.loads(path.read_text(encoding="utf-8"))
+            witness["product_target_sha"] = "9" * 40
+            path.write_text(json.dumps(witness), encoding="utf-8")
+        tree.write(junit, encoding="unicode")
+        return 1 if change == "nonzero" else 0
+
+    def test_cumulative_full_receiver_accepts_45_cases_and_rejects_inventory_drift(self) -> None:
+        changes = (
+            "valid", "missing-second", "duplicate-parameter", "extra-third", "empty-parameter",
+            "nested-parameter", "blank-parameter", "bare-parameter", "missing-catalog",
+            "missing-escape", "singleton-parameter", "duplicate-state", "skipped", "ignored",
+            "failure", "error", "nonzero", "wrong-provenance",
+        )
+        for mode in ("consume-existing", "build"):
+            for change in changes:
+                with self.subTest(mode=mode, change=change), tempfile.TemporaryDirectory() as temporary:
+                    junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                        Path(temporary), profile="full", fixture_sha=Q56_FIXTURE_SHA,
+                        sdk_sha=S4_SDK_SHA, mode=mode,
+                    )
+                    pytest_exit = self._change_cumulative_fixture(junit, witnesses, change)
+                    result = reconcile_consumer_results(
+                        junit_path=junit, consumer_context_path=consumer, producer_evidence_path=producer,
+                        witness_dir=witnesses, result_path=result_path, pytest_exit=pytest_exit,
+                        mode=mode, profile="full", fixture_sha=Q56_FIXTURE_SHA if mode == "consume-existing" else "",
+                        sdk_sha=S4_SDK_SHA if mode == "consume-existing" else "", runner_temp=witnesses.parent,
+                    )
+                    if change == "valid":
+                        self.assertEqual([], result["issues"])
+                        self.assertEqual(45, result["executed_cases"])
+                        self.assertEqual(24, result["state_history_witnesses"])
+                    else:
+                        self.assertTrue(result["issues"])
+
+    def test_both_native_build_inline_gates_share_cumulative_case_validation(self) -> None:
+        workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        steps = workflow.split("      - name: Run packaged first-binary consumers and preserve pytest status\n")[1:]
+        self.assertEqual(2, len(steps))
+        bodies = [
+            textwrap.dedent(step.split("<<'PY'\n", 1)[1].split("\n          PY", 1)[0])
+            for step in steps
+        ]
+        for architecture, body in zip(("x86_64", "aarch64"), bodies, strict=True):
+            for change in ("valid", "missing-second", "duplicate-parameter", "extra-third", "empty-parameter", "missing-catalog", "missing-escape", "skipped", "nonzero", "wrong-provenance"):
+                with self.subTest(architecture=architecture, change=change), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    junit, consumer, producer, witnesses, result_path = self._write_fixture(
+                        root, profile="full", fixture_sha=Q56_FIXTURE_SHA, sdk_sha=S4_SDK_SHA, mode="build",
+                    )
+                    pytest_exit = self._change_cumulative_fixture(junit, witnesses, change)
+                    workspace = root / "workspace"
+                    workspace.mkdir()
+                    (workspace / ".workflow-src").symlink_to(ACCEPTED_INPUTS_PATH.parents[1], target_is_directory=True)
+                    identity_path = root / "identity.json"
+                    identity_path.write_text(producer.read_text(encoding="utf-8"), encoding="utf-8")
+                    environment = {
+                        "GITHUB_WORKSPACE": str(workspace), "GITHUB_RUN_ATTEMPT": "1",
+                        "MODE": "build", "CONSUMER_PROFILE": "full", "FIXTURE_SHA": "", "SDK_SHA": "",
+                        "CONSUMER_JUNIT": str(junit), "CONSUMER_CONTEXT": str(consumer),
+                        "PRODUCER_EVIDENCE": str(producer), "CONSUMER_RESULT": str(result_path),
+                        "STATE_WITNESS_DIR": str(witnesses), "PYTEST_EXIT_CODE": str(pytest_exit),
+                    }
+                    exit_code = 0
+                    with mock.patch.dict(os.environ, environment), mock.patch.object(sys, "argv", ["inline-gate", str(junit), str(identity_path), str(witnesses.parent)]), mock.patch.object(sys, "path", sys.path.copy()), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        try:
+                            exec(compile(body, f"{workflow_path}:{architecture}", "exec"), {})
+                        except SystemExit as error:
+                            exit_code = error.code
+                    result = (
+                        json.loads(result_path.read_text(encoding="utf-8"))
+                        if architecture == "x86_64"
+                        else json.loads(identity_path.read_text(encoding="utf-8"))["consumer_test_result"]
+                    )
+                    if change == "valid":
+                        self.assertEqual(0, exit_code)
+                        self.assertEqual([], result["issues"])
+                        self.assertEqual(45, result["executed_cases"])
+                    else:
+                        self.assertEqual(1, exit_code)
+                        self.assertTrue(result["issues"])
 
     def test_exact_pair_result_and_witness_join_are_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

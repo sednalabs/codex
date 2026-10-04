@@ -17,6 +17,7 @@ import platform
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Any, Mapping
@@ -94,6 +95,7 @@ Q66_FIXTURE_SHA = "9fd64260e295861cab58d0a9b8fe6e852a3a2222"
 Q67_FIXTURE_SHA = "b9d83117a8eef946c00f89368e838eeb55dd9c45"
 Q68_FIXTURE_SHA = "e4970c51879dcda90a7bad93e1148f023d8b7225"
 Q69_FIXTURE_SHA = "258588aabeaf92a02a3d73a8d278b9d2a7ffeb5a"
+Q56_FIXTURE_SHA = "56cf9034ae4c90715741589538ba5db7cb3d85e4"
 S0_SDK_SHA = "dc802999023f8ed8b8021b415ea15f77afc41248"
 S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
 S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
@@ -147,6 +149,12 @@ FOCUSED_REPAIR_PLAIN_TESTS = frozenset(
         "test_actual_tui_nested_filter_clear_live_rename_and_replay",
     }
 )
+CURRENT_BUILD_PLAIN_TEST_CASES = {
+    **{name: 1 for name in FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS},
+    "test_packaged_model_list_exposes_bundled_gpt6_descriptors": 1,
+    "test_packaged_double_escape_interrupt_persists_exact_turn_and_resumes": 1,
+    "test_packaged_weekly_pacing_uses_account_usage_across_sparse_update_and_resume": 2,
+}
 CONSUME_EXISTING_TEST_PLANS = {
     (Q2_FIXTURE_SHA, S0_SDK_SHA): {
         "profiles": frozenset({"pair", "full"}),
@@ -268,6 +276,11 @@ CONSUME_EXISTING_TEST_PLANS = {
         "focused_plain": FOCUSED_REPAIR_PLAIN_TESTS,
         "full_plain": FULL_PLAIN_TESTS | Q3_ADDITIONAL_PLAIN_TESTS,
     },
+    (Q56_FIXTURE_SHA, S4_SDK_SHA): {
+        "profiles": frozenset({"full"}),
+        "full_plain": frozenset(CURRENT_BUILD_PLAIN_TEST_CASES),
+        "full_plain_case_counts": CURRENT_BUILD_PLAIN_TEST_CASES,
+    },
 }
 SDK_TEST_PLAN_BY_SHA = {
     S0_SDK_SHA: {
@@ -339,6 +352,13 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
     plan = CONSUME_EXISTING_TEST_PLANS.get((fixture_sha, sdk_sha))
     _require(plan is not None, "fixture/SDK source pair has no exact consume-existing test inventory")
     _require(profile in plan["profiles"], "fixture/SDK source pair does not admit this consumer profile")
+    plain = (
+        frozenset()
+        if profile == "pair"
+        else plan["focused_plain"]
+        if profile == "focused"
+        else plan["full_plain"]
+    )
     return {
         "state": (
             frozenset({"fresh", "bad_checksum"})
@@ -347,14 +367,45 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
             if profile == "full"
             else frozenset()
         ),
-        "plain": (
-            frozenset()
-            if profile == "pair"
-            else plan["focused_plain"]
-            if profile == "focused"
-            else plan["full_plain"]
+        "plain": plain,
+        "plain_case_counts": (
+            dict(plan["full_plain_case_counts"])
+            if profile == "full" and "full_plain_case_counts" in plan
+            else {name: 1 for name in plain}
         ),
     }
+
+
+def plain_test_inventory_issues(
+    cases: list[ET.Element], expected_case_counts: Mapping[str, int]
+) -> list[str]:
+    """Reconcile exact names and per-function multiplicity for package JUnit."""
+    issues: list[str] = []
+    names = [case.attrib.get("name", "") for case in cases]
+    if len(names) != len(set(names)):
+        issues.append("JUnit contains duplicate full test-case names")
+    counts: Counter[str] = Counter()
+    for name in names:
+        if name.startswith((
+            "test_packaged_historical_upgrade_and_reopen",
+            "test_packaged_historical_rejection_preserves_preimage",
+        )):
+            continue
+        if expected_case_counts.get(name) == 1:
+            counts[name] += 1
+            continue
+        parameterized = re.fullmatch(r"([^\[\]]+)\[([^\[\]\r\n]+)\]", name)
+        if (
+            parameterized
+            and parameterized[2].strip()
+            and expected_case_counts.get(parameterized[1], 0) > 1
+        ):
+            counts[parameterized[1]] += 1
+        else:
+            issues.append("JUnit plain-test name is not an exact selected case")
+    if counts != expected_case_counts:
+        issues.append("JUnit plain-test inventory differs from the exact selected profile")
+    return issues
 
 
 def sdk_test_plan(sdk_sha: str) -> dict[str, Any]:
@@ -987,19 +1038,19 @@ def reconcile_consumer_results(
     if mode == "build":
         profile = "full"
         expected_state = expected_positive | expected_negative
-        expected_plain = FULL_PLAIN_TESTS
+        expected_plain_case_counts = CURRENT_BUILD_PLAIN_TEST_CASES
     elif mode == "consume-existing":
         try:
             selected_plan = consume_existing_test_plan(fixture_sha, sdk_sha, profile)
         except ValueError as error:
             issues.append(str(error))
-            selected_plan = {"state": frozenset(), "plain": frozenset()}
+            selected_plan = {"state": frozenset(), "plain_case_counts": {}}
         expected_state = selected_plan["state"]
-        expected_plain = selected_plan["plain"]
+        expected_plain_case_counts = selected_plan["plain_case_counts"]
     else:
         issues.append("consumer result has an unsupported mode/profile")
         expected_state = frozenset()
-        expected_plain = frozenset()
+        expected_plain_case_counts = {}
     if profile not in {"pair", "focused", "full"}:
         issues.append("consumer result has an unsupported mode/profile")
     if mode == "consume-existing" and profile == "pair":
@@ -1013,13 +1064,8 @@ def reconcile_consumer_results(
             issues.append("JUnit does not contain the exact 16 positive state-history cases")
         if len(negative) != 8 or set(negative) != expected_negative:
             issues.append("JUnit does not contain the exact 8 negative state-history cases")
-    plain_names = {
-        case.attrib.get("name", "") for case in cases
-        if not case.attrib.get("name", "").startswith((positive_prefix, negative_prefix))
-    }
-    if plain_names != expected_plain:
-        issues.append("JUnit plain-test inventory differs from the exact selected profile")
-    if len(cases) != len(expected_state) + len(expected_plain):
+    issues.extend(plain_test_inventory_issues(cases, expected_plain_case_counts))
+    if len(cases) != len(expected_state) + sum(expected_plain_case_counts.values()):
         issues.append("JUnit executed-case count differs from the exact selected profile")
 
     try:
