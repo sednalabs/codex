@@ -211,14 +211,16 @@ async fn install_same_column_mailbox_schema_with_constraint_defect(
             .await
             .expect("drop original mailbox table");
     }
+    // These statements come from this test's synthetic migrated schema with only fixed
+    // defect substitutions above; none of the SQL is sourced from runtime or user input.
     for (_, sql) in tables {
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(pool)
             .await
             .expect("install altered same-column mailbox table");
     }
     for sql in indexes {
-        sqlx::raw_sql(&sql)
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .execute(pool)
             .await
             .expect("restore mailbox indexes");
