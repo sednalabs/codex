@@ -12,6 +12,7 @@ mod tests;
 pub use signer::ExecutionNonce;
 pub use signer::sign_claim_proof;
 pub use wire::RESERVED_META_KEY;
+pub use auth::McpRedactionContext;
 
 pub fn bearer_for_mcp(
     server: &str,
@@ -32,10 +33,18 @@ pub fn protected_provider_recipient() -> anyhow::Result<Option<String>> {
     auth::protected_provider_recipient()
 }
 
-pub fn redact_mcp_bearer(
+pub fn capture_mcp_redaction_context(
     server: &str,
     recipient: &str,
-    value: &mut serde_json::Value,
-) -> anyhow::Result<()> {
-    auth::redact_mcp_bearer(server, recipient, value)
+    proof: Option<&serde_json::Value>,
+) -> anyhow::Result<Option<McpRedactionContext>> {
+    auth::capture_mcp_redaction_context(server, recipient, proof)
+}
+
+pub fn protected_runtime_active_or_failed() -> bool {
+    auth::protected_runtime_active_or_failed()
+}
+
+pub fn erase_secret_string(value: &mut String) {
+    zeroize::Zeroize::zeroize(value);
 }

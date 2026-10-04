@@ -1,26 +1,42 @@
+#[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
+#[cfg(target_os = "linux")]
 use crate::provider_auth::SecretString;
+#[cfg(target_os = "linux")]
 use crate::provider_auth::valid_provider_recipient;
+#[cfg(target_os = "linux")]
 use crate::provider_auth::validate_provider_credential;
 use crate::signer;
 use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(target_os = "linux")]
 use serde::Deserialize;
+#[cfg(target_os = "linux")]
 use sha2::Digest as _;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "linux")]
 const AUTH_FD_ENV: &str = "OPS_RUNTIME_AUTH_FD";
+#[cfg(target_os = "linux")]
 const MAX_AUTH_FRAME_BYTES: usize = 32 * 1024;
 
 struct BootstrapAuth {
+    home: std::path::PathBuf,
     server: String,
     recipient: String,
     provider_recipient: String,
@@ -28,8 +44,25 @@ struct BootstrapAuth {
     bearer: Zeroizing<String>,
 }
 
-static BOOTSTRAP_AUTH: OnceLock<Mutex<Option<BootstrapAuth>>> = OnceLock::new();
+pub struct McpRedactionContext {
+    bearer: Zeroizing<String>,
+    proof_tokens: Vec<Zeroizing<String>>,
+}
 
+impl McpRedactionContext {
+    pub fn redact(&self, value: &mut serde_json::Value) {
+        redact_value(value, &self.bearer);
+        for token in &self.proof_tokens {
+            redact_value(value, token);
+        }
+    }
+}
+
+static BOOTSTRAP_AUTH: OnceLock<Mutex<Option<BootstrapAuth>>> = OnceLock::new();
+static PROTECTED_RUNTIME_EVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PROTECTED_RUNTIME_FAILED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthFrame {
@@ -94,6 +127,7 @@ pub(crate) fn initialize_from_environment(
     bail!("protected runtime authentication requires Linux")
 }
 
+#[cfg(target_os = "linux")]
 fn validate_and_import(
     frame: AuthFrame,
     claims: &wire::CertificateClaims,
@@ -164,6 +198,7 @@ fn validate_and_import(
     .context("import protected ChatGPT token into the ephemeral auth store")?;
 
     let auth = BootstrapAuth {
+        home: home.clone(),
         server: frame.mcp_server,
         recipient: frame.recipient,
         provider_recipient: frame.provider_recipient,
@@ -178,6 +213,7 @@ fn validate_and_import(
         bail!("protected runtime auth was initialized more than once");
     }
     *stored = Some(auth);
+    PROTECTED_RUNTIME_EVER_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -219,6 +255,7 @@ fn validate_raw_config(config: &[u8], server: &str, recipient: &str) -> Result<(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn require_root_read_only_directory(path: &Path) -> Result<()> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o222 != 0 {
@@ -297,6 +334,9 @@ fn receive_auth_frame(file: &std::fs::File) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 pub fn bearer_for_mcp(server: &str, recipient: &str) -> Result<Option<Zeroizing<String>>> {
+    if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
+        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+    }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
     };
@@ -323,11 +363,18 @@ pub(crate) fn erase_auth_authority() -> Result<()> {
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
-    *stored = None;
-    Ok(())
+    invalidate_auth(&mut stored)
+}
+
+pub fn protected_runtime_active_or_failed() -> bool {
+    PROTECTED_RUNTIME_EVER_ACTIVE.load(Ordering::Acquire)
+        || PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire)
 }
 
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
+    if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
+        return failed_target_match(server, recipient);
+    }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(false);
     };
@@ -348,6 +395,9 @@ pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
 }
 
 pub fn protected_mcp_target() -> Result<Option<(String, String)>> {
+    if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
+        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+    }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
     };
@@ -362,6 +412,9 @@ pub fn protected_mcp_target() -> Result<Option<(String, String)>> {
 }
 
 pub fn protected_provider_recipient() -> Result<Option<String>> {
+    if PROTECTED_RUNTIME_FAILED.load(Ordering::Acquire) {
+        return Err(anyhow::anyhow!("protected runtime credentials are unavailable"));
+    }
     let Some(store) = BOOTSTRAP_AUTH.get() else {
         return Ok(None);
     };
@@ -372,29 +425,41 @@ pub fn protected_provider_recipient() -> Result<Option<String>> {
     Ok(stored.as_ref().map(|auth| auth.provider_recipient.clone()))
 }
 
-pub fn redact_mcp_bearer(
+pub fn capture_mcp_redaction_context(
     server: &str,
     recipient: &str,
-    value: &mut serde_json::Value,
-) -> Result<()> {
+    proof: Option<&serde_json::Value>,
+) -> Result<Option<McpRedactionContext>> {
     let Some(store) = BOOTSTRAP_AUTH.get() else {
-        return Ok(());
+        return Ok(None);
     };
     let mut stored = store
         .lock()
         .map_err(|_| anyhow::anyhow!("protected runtime auth state is unavailable"))?;
     ensure_auth_active(&mut stored)?;
     let Some(auth) = stored.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     if server != auth.server || recipient != auth.recipient {
         if server == auth.server || recipient == auth.recipient {
             bail!("protected MCP redaction target differs from its pinned server and URL");
         }
-        return Ok(());
+        return Ok(None);
     }
-    redact_value(value, &auth.bearer);
-    Ok(())
+    let mut proof_tokens = Vec::new();
+    if let Some(envelope) = proof.and_then(serde_json::Value::as_object) {
+        for key in ["certificate", "proof"] {
+            if let Some(value) = envelope.get(key).and_then(serde_json::Value::as_str)
+                && !value.is_empty()
+            {
+                proof_tokens.push(Zeroizing::new(value.to_string()));
+            }
+        }
+    }
+    Ok(Some(McpRedactionContext {
+        bearer: Zeroizing::new(auth.bearer.to_string()),
+        proof_tokens,
+    }))
 }
 
 fn ensure_auth_active(stored: &mut Option<BootstrapAuth>) -> Result<()> {
@@ -402,23 +467,41 @@ fn ensure_auth_active(stored: &mut Option<BootstrapAuth>) -> Result<()> {
         return Ok(());
     };
     if crate::startup::verify_runtime_protection().is_err() {
-        *stored = None;
-        signer::erase_signer_authority()?;
+        invalidate_auth(stored)?;
         bail!("protected runtime authentication expired or its protection changed");
     }
     if unix_seconds()? >= expires_at {
-        *stored = None;
-        signer::erase_signer_authority()?;
+        invalidate_auth(stored)?;
         bail!("protected runtime authentication expired or its protection changed");
     }
     Ok(())
+}
+
+fn invalidate_auth(stored: &mut Option<BootstrapAuth>) -> Result<()> {
+    if PROTECTED_RUNTIME_EVER_ACTIVE.load(Ordering::Acquire) {
+        PROTECTED_RUNTIME_FAILED.store(true, Ordering::Release);
+    }
+    if let Some(auth) = stored.as_ref() {
+        let _ = codex_login::logout(
+            &auth.home,
+            codex_login::AuthCredentialsStoreMode::Ephemeral,
+            codex_login::AuthKeyringBackendKind::default(),
+        );
+    }
+    *stored = None;
+    signer::erase_signer_authority()?;
+    Ok(())
+}
+
+fn failed_target_match(_server: &str, _recipient: &str) -> Result<bool> {
+    bail!("protected runtime credentials are unavailable")
 }
 
 fn redact_value(value: &mut serde_json::Value, secret: &str) {
     match value {
         serde_json::Value::String(text) => {
             if !secret.is_empty() {
-                *text = text.replace(secret, "[runtime credential redacted]");
+                replace_and_zeroize(text, secret, "[runtime secret redacted]");
             }
         }
         serde_json::Value::Array(values) => {
@@ -427,12 +510,52 @@ fn redact_value(value: &mut serde_json::Value, secret: &str) {
             }
         }
         serde_json::Value::Object(values) => {
-            for value in values.values_mut() {
-                redact_value(value, secret);
+            let original = std::mem::take(values);
+            let reserved_keys = original
+                .keys()
+                .cloned()
+                .map(Zeroizing::new)
+                .collect::<Vec<_>>();
+            for (key, mut value) in original {
+                redact_value(&mut value, secret);
+                let mut key = Zeroizing::new(key);
+                let replacement = if !secret.is_empty() && key.contains(secret) {
+                    key.zeroize();
+                    unique_key(values, &reserved_keys, "[runtime secret redacted]")
+                } else {
+                    std::mem::take(&mut *key)
+                };
+                values.insert(replacement, value);
             }
         }
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
+}
+
+fn replace_and_zeroize(text: &mut String, secret: &str, marker: &str) {
+    if !text.contains(secret) {
+        return;
+    }
+    let mut original = Zeroizing::new(std::mem::take(text));
+    *text = original.replace(secret, marker);
+    original.zeroize();
+}
+
+fn unique_key(
+    values: &serde_json::Map<String, serde_json::Value>,
+    reserved: &[Zeroizing<String>],
+    base: &str,
+) -> String {
+    if !values.contains_key(base) && !reserved.iter().any(|key| key.as_str() == base) {
+        return base.to_string();
+    }
+    for suffix in 1_u64.. {
+        let key = format!("{base} {suffix}");
+        if !values.contains_key(&key) && !reserved.iter().any(|reserved| reserved.as_str() == key) {
+            return key;
+        }
+    }
+    unreachable!("u64 key space exhausted")
 }
 
 fn unix_seconds() -> Result<i64> {
@@ -442,6 +565,11 @@ fn unix_seconds() -> Result<i64> {
         .as_secs() as i64)
 }
 
+#[cfg(test)]
+#[path = "auth_tests.rs"]
+mod tests;
+
+#[cfg(target_os = "linux")]
 fn sha256_hex(value: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for byte in sha2::Sha256::digest(value) {
