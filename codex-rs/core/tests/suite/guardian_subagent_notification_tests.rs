@@ -41,7 +41,15 @@ impl GuardianEventCounts {
     }
 }
 
-fn bounded_mock_request_counts(calls: &[ResponseMock], reviews: &[ResponseMock]) -> String {
+fn bounded_mock_request_counts(
+    root_requests: &[ResponseMock],
+    calls: &[ResponseMock],
+    reviews: &[ResponseMock],
+) -> String {
+    let root = root_requests
+        .iter()
+        .map(|request| request.requests().len().min(1))
+        .collect::<Vec<_>>();
     let worker_exec = calls
         .iter()
         .map(|call| call.requests().len().min(1))
@@ -50,13 +58,14 @@ fn bounded_mock_request_counts(calls: &[ResponseMock], reviews: &[ResponseMock])
         .iter()
         .map(|review| review.requests().len().min(1))
         .collect::<Vec<_>>();
-    format!("worker_exec={worker_exec:?}, guardian_review={guardian_reviews:?}")
+    format!("root={root:?}, worker_exec={worker_exec:?}, guardian_review={guardian_reviews:?}")
 }
 
 async fn wait_for_guardian_event_match<T, F>(
     worker: &CodexThread,
     stage: &str,
     observed_events: &mut GuardianEventCounts,
+    root_requests: &[ResponseMock],
     calls: &[ResponseMock],
     reviews: &[ResponseMock],
     mut matcher: F,
@@ -73,13 +82,13 @@ where
         .unwrap_or_else(|_| {
             panic!(
                 "timed out waiting for Guardian event stage `{stage}`; observed event-type counts: {observed_events:?}; bounded mock request counts: {}",
-                bounded_mock_request_counts(calls, reviews)
+                bounded_mock_request_counts(root_requests, calls, reviews)
             )
         })
         .unwrap_or_else(|_| {
             panic!(
                 "event stream ended while waiting for Guardian event stage `{stage}`; observed event-type counts: {observed_events:?}; bounded mock request counts: {}",
-                bounded_mock_request_counts(calls, reviews)
+                bounded_mock_request_counts(root_requests, calls, reviews)
             )
         });
         observed_events.record(&event.msg);
@@ -213,18 +222,34 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         .await;
 
     let mut created = test.thread_manager.subscribe_thread_created();
-    test.submit_text_turn("Spawn a worker to run the checks.")
+    let root_requests = vec![spawn.clone(), parent_idle.clone()];
+    let mut observed_events = GuardianEventCounts::default();
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Spawn a worker to run the checks.".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
+    wait_for_guardian_event_match(
+        &test.codex,
+        "initial parent TurnComplete after spawn response",
+        &mut observed_events,
+        &root_requests,
+        &calls,
+        &reviews,
+        |event| matches!(event, EventMsg::TurnComplete(_)).then_some(()),
+    )
+    .await;
     ThreadIdle::wait(&test.codex).await;
     let worker = test
         .thread_manager
         .get_thread(created.recv().await?)
         .await?;
-    let mut observed_events = GuardianEventCounts::default();
     let warning = wait_for_guardian_event_match(
         &worker,
         "GuardianWarning after three consecutive denials",
         &mut observed_events,
+        &root_requests,
         &calls,
         &reviews,
         |event| match event {
@@ -239,6 +264,7 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         &worker,
         "TurnAborted after GuardianWarning",
         &mut observed_events,
+        &root_requests,
         &calls,
         &reviews,
         |event| match event {
@@ -295,7 +321,27 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         sse(vec![ev_completed("parent-continued")]),
     )
     .await;
-    test.submit_text_turn("Report the worker's status.").await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Report the worker's status.".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut final_root_requests = root_requests.clone();
+    final_root_requests.push(continued.clone());
+    if let Some(wait) = &_wait {
+        final_root_requests.push(wait.clone());
+    }
+    wait_for_guardian_event_match(
+        &test.codex,
+        "final parent TurnComplete after worker status report",
+        &mut observed_events,
+        &final_root_requests,
+        &calls,
+        &reviews,
+        |event| matches!(event, EventMsg::TurnComplete(_)).then_some(()),
+    )
+    .await;
     let continued_request = continued.single_request();
     let messages = continued_request.inputs_of_type("agent_message");
     let expected = if action == CircuitBreakAction::Strict {
