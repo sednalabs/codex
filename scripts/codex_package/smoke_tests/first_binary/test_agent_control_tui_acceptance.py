@@ -312,7 +312,10 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             assert "PRIVATE_PROMPT_SENTINEL" not in picker_rows, picker_rows
             details_tui.send("\x1b[B")
-            child_details = details_tui.until_screen(f"Thread ID: {child_id}")
+            child_details = details_tui.until_screen(
+                f"Thread ID: {child_id}",
+                required_markers=("Status: Active",),
+            )
             child_details_text = _normalized_screen(child_details)
             assert f"Thread ID: {child_id}" in child_details_text, child_details
             assert "Path: /root/worker" in child_details_text, child_details
@@ -337,7 +340,10 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             )
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker_rows, replay_picker_rows
             details_tui.send("\x1b[B")
-            replay_details = details_tui.until_screen(f"Thread ID: {child_id}")
+            replay_details = details_tui.until_screen(
+                f"Thread ID: {child_id}",
+                required_markers=("Status: Active",),
+            )
             replay_details_text = _normalized_screen(replay_details)
             assert f"Thread ID: {child_id}" in replay_details_text, replay_details
             assert f"Parent: {root_id}" in replay_details_text, replay_details
@@ -348,9 +354,16 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             child_gate.set()
             details_tui.send("\x1b")
             details_tui.until("Ask Codex to do anything")
-            child_final = details_tui.until_screen(
-                "TUI_RICH_CHILD_TERMINAL",
+            parent_completion = details_tui.until_screen(
+                "Completed `/root/worker`",
+                required_markers=("Ask Codex to do anything",),
             )
+            assert "Completed `/root/worker`" in parent_completion, parent_completion
+
+        # The worker's final answer belongs to its child transcript; the root
+        # view reports completion instead of inlining that child message.
+        with PackagedTui(isolated, "resume", child_id) as completed_child_tui:
+            child_final = completed_child_tui.until_screen("TUI_RICH_CHILD_TERMINAL")
             assert "TUI_RICH_CHILD_TERMINAL" in child_final, child_final
 
         # At width 40 the command center intentionally renders only its task
