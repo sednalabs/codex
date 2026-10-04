@@ -31,6 +31,7 @@ fn event(kind: EventKind) -> EventInput {
         message: None,
         scheduler: None,
         external_operation: None,
+        provider_call: None,
     }
 }
 fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
@@ -69,6 +70,22 @@ fn wait(id: &str, outcome: SelectedOutcome) -> WaitObservation {
 }
 fn recorder(id: &str) -> ControlPlaneRecorder {
     ControlPlaneRecorder::new(CaptureMode::Session, id).unwrap()
+}
+fn provider_event(
+    outcome: ProviderLedgerWriteOutcome,
+    response_scope: UsageAccountScope,
+    persisted_id: Option<&str>,
+) -> EventInput {
+    let mut input = event(EventKind::ProviderCompletionObserved);
+    input.producer_boundary = PROVIDER_COMPLETION_PRODUCER_BOUNDARY.into();
+    input.provider_call = Some(ProviderCallObservation {
+        provider: "provider-a".into(),
+        response_id: "response-a".into(),
+        persisted_provider_call_id: persisted_id.map(str::to_owned),
+        ledger_response_scope: response_scope,
+        ledger_write_outcome: outcome,
+    });
+    input
 }
 
 #[test]
@@ -294,6 +311,127 @@ fn truncated_producer_version_and_scheduler_rows_remain_incomplete() {
     assert!(summary.scheduler_timelines[0].incomplete);
     assert!(!summary.scheduler_timelines[0].drained_cohort_complete);
     assert!(!summary.scheduler_timelines[0].complete);
+}
+
+#[test]
+fn provider_completion_timeline_preserves_inserted_pk_and_duplicate_without_provisional_pk() {
+    let active = recorder("capture-a");
+    let mut inserted = provider_event(
+        ProviderLedgerWriteOutcome::Inserted,
+        UsageAccountScope::KnownScope("account-a".into()),
+        Some("committed-call-pk"),
+    );
+    inserted.thread_id = Some("native-thread".into());
+    inserted.turn_id = Some("native-turn".into());
+    active.record(inserted).unwrap();
+    let mut duplicate = provider_event(
+        ProviderLedgerWriteOutcome::Duplicate,
+        UsageAccountScope::WriterUnscoped,
+        None,
+    );
+    duplicate.thread_id = Some("native-thread".into());
+    duplicate.turn_id = Some("native-turn".into());
+    duplicate.provider_call.as_mut().unwrap().response_id = "response-b".into();
+    active.record(duplicate).unwrap();
+
+    let summary = Summary::reduce_snapshot(&active.snapshot().unwrap());
+    assert_eq!(summary.provider_call_timelines.len(), 2);
+    let inserted = &summary.provider_call_timelines[0];
+    assert!(inserted.complete);
+    assert_eq!(inserted.identity.capture_instance_id, "capture-a");
+    assert_eq!(inserted.identity.sequence, 1);
+    assert_eq!(inserted.source_plane, SourcePlane::RustCollab);
+    assert_eq!(inserted.producer_boundary, PROVIDER_COMPLETION_PRODUCER_BOUNDARY);
+    assert_eq!(inserted.thread_id.as_deref(), Some("native-thread"));
+    assert_eq!(inserted.turn_id.as_deref(), Some("native-turn"));
+    assert_eq!(inserted.wall_correlation, SystemTime::UNIX_EPOCH);
+    assert_eq!(inserted.observation, ProviderCallObservation {
+        provider: "provider-a".into(),
+        response_id: "response-a".into(),
+        persisted_provider_call_id: Some("committed-call-pk".into()),
+        ledger_response_scope: UsageAccountScope::KnownScope("account-a".into()),
+        ledger_write_outcome: ProviderLedgerWriteOutcome::Inserted,
+    });
+    let duplicate = &summary.provider_call_timelines[1];
+    assert!(duplicate.complete);
+    assert_eq!(duplicate.identity.sequence, 2);
+    assert_eq!(duplicate.observation, ProviderCallObservation {
+        provider: "provider-a".into(),
+        response_id: "response-b".into(),
+        persisted_provider_call_id: None,
+        ledger_response_scope: UsageAccountScope::WriterUnscoped,
+        ledger_write_outcome: ProviderLedgerWriteOutcome::Duplicate,
+    });
+}
+
+#[test]
+fn provider_identity_validation_and_default_off_do_not_invent_persisted_identity() {
+    let off = ControlPlaneRecorder::new(CaptureMode::Off, "capture-off").unwrap();
+    let event = provider_event(
+        ProviderLedgerWriteOutcome::Inserted,
+        UsageAccountScope::KnownScope("account-a".into()),
+        Some("committed-call-pk"),
+    );
+    assert_eq!(off.record(event), None);
+    assert_eq!(off.losses().disabled, 1);
+    assert!(off.snapshot().unwrap().events.is_empty());
+
+    let active = recorder("capture-a");
+    let mut invalid_provider = provider_event(
+        ProviderLedgerWriteOutcome::Duplicate,
+        UsageAccountScope::KnownScope("account-a".into()),
+        None,
+    );
+    invalid_provider.provider_call.as_mut().unwrap().response_id = "r".repeat(257);
+    assert_eq!(active.record(invalid_provider), None);
+    assert_eq!(active.losses().invalid_identity, 1);
+
+    let invalid_scope = provider_event(
+        ProviderLedgerWriteOutcome::Duplicate,
+        UsageAccountScope::KnownScope(String::new()),
+        None,
+    );
+    assert_eq!(active.record(invalid_scope), None);
+    assert_eq!(active.losses().invalid_identity, 2);
+}
+
+#[test]
+fn inconsistent_provider_pk_receipt_is_quarantined_and_not_complete() {
+    let active = recorder("capture-a");
+    let event = provider_event(
+        ProviderLedgerWriteOutcome::Duplicate,
+        UsageAccountScope::Unknown,
+        Some("not-a-canonical-pk"),
+    );
+    active.record(event).unwrap();
+    let snapshot = active.snapshot().unwrap();
+    assert!(snapshot.events[0].truncated);
+    assert_eq!(snapshot.events[0].input.provider_call.as_ref().unwrap().persisted_provider_call_id, None);
+    assert!(snapshot.events[0].input.field_coverage.iter().any(|mark|
+        mark.field == CoverageField::ProviderObservedIdentity && mark.unknown == Some(UnknownReason::Ambiguous)));
+    let summary = Summary::reduce_snapshot(&snapshot);
+    assert_eq!(summary.provider_call_timelines.len(), 1);
+    assert!(!summary.provider_call_timelines[0].complete);
+    assert_eq!(summary.provider_call_timelines[0].observation.ledger_write_outcome, ProviderLedgerWriteOutcome::Duplicate);
+}
+
+#[test]
+fn provider_completion_timelines_become_incomplete_when_capture_reports_loss() {
+    let active = recorder("capture-a");
+    let mut input = provider_event(
+        ProviderLedgerWriteOutcome::Inserted,
+        UsageAccountScope::Unknown,
+        Some("committed-call-pk"),
+    );
+    input.thread_id = Some("native-thread".into());
+    input.turn_id = Some("native-turn".into());
+    active.record(input).unwrap();
+    let mut snapshot = active.snapshot().unwrap();
+    snapshot.losses.contention = 1;
+    let summary = Summary::reduce_snapshot(&snapshot);
+    assert_eq!(summary.provider_call_timelines.len(), 1);
+    assert!(!summary.provider_call_timelines[0].complete);
+    assert!(summary.capture_loss_observed);
 }
 
 #[test]

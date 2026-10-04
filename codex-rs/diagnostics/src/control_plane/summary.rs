@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::lifecycle_timelines::{
-    BoundaryTimeline, MessageTimeline, WaitTimeline, project as project_lifecycles,
+    BoundaryTimeline, MessageTimeline, ProviderCallTimeline, WaitTimeline,
+    project as project_lifecycles,
 };
 use super::types::*;
 
@@ -23,6 +24,7 @@ pub struct Summary {
     pub queue_timelines: Vec<QueueTimeline>,
     pub message_timelines: Vec<MessageTimeline>,
     pub boundary_timelines: Vec<BoundaryTimeline>,
+    pub provider_call_timelines: Vec<ProviderCallTimeline>,
     pub conflicting_wait_count: usize,
     pub repeated_wait_groups: usize,
     pub repeated_status_query_groups: usize,
@@ -86,6 +88,7 @@ impl Summary {
         out.wait_timelines = lifecycle.wait_timelines;
         out.message_timelines = lifecycle.message_timelines;
         out.boundary_timelines = lifecycle.boundary_timelines;
+        out.provider_call_timelines = lifecycle.provider_call_timelines;
         out.waits_by_outcome = lifecycle.waits_by_outcome;
         out.conflicting_wait_count = lifecycle.conflicting_wait_count;
         Self::sleeps(&mut out, &clean);
@@ -99,6 +102,7 @@ impl Summary {
             for row in &mut out.scheduler_timelines { row.complete = false; row.incomplete = true; }
             for row in &mut out.message_timelines { row.incomplete = true; }
             for row in &mut out.boundary_timelines { row.incomplete = true; }
+            for row in &mut out.provider_call_timelines { row.complete = false; }
         }
         out
     }

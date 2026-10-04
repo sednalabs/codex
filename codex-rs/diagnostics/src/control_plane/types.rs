@@ -1,11 +1,15 @@
 //! Typed, content-free observations; join identifiers are never shortened.
 use std::time::SystemTime;
 
+use super::usage::UsageAccountScope;
+
 pub const MAX_RECORDS: usize = 2048;
 pub const MAX_OWNED_DYNAMIC_BYTES: usize = 2_097_152;
 pub const MAX_IDENTIFIER_BYTES: usize = 256;
 pub const MAX_TARGETS_PER_EVENT: usize = 64;
 pub const MAX_COVERAGE_MARKS_PER_EVENT: usize = 64;
+/// Literal identifying the accepted Session completion observation seam.
+pub const PROVIDER_COMPLETION_PRODUCER_BOUNDARY: &str = "session.record_observed_response_completed";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureMode { Off, Session }
@@ -19,7 +23,7 @@ pub enum EventKind {
     WaitAbandoned, SleepSelected, MessageAccepted, MessageEnqueued, MessageDrained,
     InputRecorded, ActivityPublished, OutcomePublished, StatusQueryObserved,
     WindowBoundaryObserved, RecoveryBoundaryObserved, SchedulerEligibilityObserved,
-    TaskRegistered, TurnStartPublicationObserved, Unknown,
+    TaskRegistered, TurnStartPublicationObserved, ProviderCompletionObserved, Unknown,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum WaitPrimitive { V2Wait, ClockSleep, Unknown }
@@ -65,6 +69,11 @@ pub enum SchedulerOutcome { NotEligibleObserved, ActiveTurnPresentObserved, Rese
 pub enum SchedulerPhase { Eligibility, ReservationAccepted, ReservationLost, CohortDrained, TaskRegistered, TurnStartProducerPublication, Unknown }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FollowupSelection { Kept, Replaced, Unknown }
+/// Receipt emitted at the existing provider-completion observation boundary.
+/// It is not evidence that a provider result was durably stored unless the
+/// outcome is `Inserted` and a persisted call identity is present.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderLedgerWriteOutcome { Inserted, Duplicate, FailedUnknown, NotConfigured }
 
 /// Stable event identity within one recorder lifetime; not an agent identity.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -157,6 +166,18 @@ pub struct ExternalOperationObservation {
     /// Host-observed request/return duration, never actual blocked duration.
     pub returned_duration_ns: Option<u64>,
 }
+/// Allowlisted provider-completion identifiers and the existing ledger
+/// writer's receipt; response bodies and usage amounts are intentionally absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderCallObservation {
+    pub provider: String,
+    pub response_id: String,
+    /// Present only when the existing ledger writer returned Inserted.
+    pub persisted_provider_call_id: Option<String>,
+    /// Distinguishes an explicitly unscoped writer row from unavailable scope.
+    pub ledger_response_scope: UsageAccountScope,
+    pub ledger_write_outcome: ProviderLedgerWriteOutcome,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventInput {
     pub source_plane: SourcePlane, pub producer_boundary: String,
@@ -171,6 +192,7 @@ pub struct EventInput {
     pub queue: Option<QueueObservation>, pub field_coverage: Vec<CoverageMark>,
     pub message: Option<MessageObservation>, pub scheduler: Option<SchedulerObservation>,
     pub external_operation: Option<ExternalOperationObservation>,
+    pub provider_call: Option<ProviderCallObservation>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedEvent { pub identity: EventIdentity, pub input: EventInput, pub truncated: bool }

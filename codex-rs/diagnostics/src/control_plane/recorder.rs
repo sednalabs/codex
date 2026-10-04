@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::types::*;
+use super::usage::UsageAccountScope;
 
 const MAX_STRUCTURAL_BYTES: usize = 4_194_304;
 
@@ -42,7 +43,9 @@ impl ControlPlaneRecorder {
             self.invalid_identity_loss.fetch_add(1, Ordering::Relaxed);
             return None;
         }
-        let truncated = bound_and_compact(&mut input) || projection_incomplete || version_incomplete;
+        let provider_incomplete = sanitize_provider_call(&mut input);
+        let truncated = bound_and_compact(&mut input) || projection_incomplete
+            || version_incomplete || provider_incomplete;
         let payload = payload_capacity(&input) + self.capture_instance_id.capacity();
         let structural = structural_size(&input) + std::mem::size_of::<RecordedEvent>();
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
@@ -153,6 +156,15 @@ fn valid_input_ids(input: &EventInput) -> bool {
         })
         && input.readiness.as_ref().is_none_or(|r| check(&r.target_turn_id))
         && input.external_operation.as_ref().is_none_or(|op| valid_id(&op.call_id))
+        && input.provider_call.as_ref().is_none_or(|provider| {
+            let provider_id = |value: &str| valid_id(value) && !value.chars().any(char::is_control);
+            provider_id(&provider.provider) && provider_id(&provider.response_id)
+                && provider.persisted_provider_call_id.as_deref().is_none_or(provider_id)
+                && match &provider.ledger_response_scope {
+                    UsageAccountScope::KnownScope(scope) => provider_id(scope),
+                    UsageAccountScope::WriterUnscoped | UsageAccountScope::Unknown => true,
+                }
+        })
 }
 fn compact(value: String) -> String { value.into_boxed_str().into_string() }
 fn compact_limited(value: String, limit: usize) -> (String, bool) {
@@ -184,6 +196,23 @@ fn bound_producer_version(input: &mut EventInput) -> bool {
         }
         true
     } else { false }
+}
+fn sanitize_provider_call(input: &mut EventInput) -> bool {
+    let Some(provider) = &mut input.provider_call else { return false };
+    let consistent = match provider.ledger_write_outcome {
+        ProviderLedgerWriteOutcome::Inserted => provider.persisted_provider_call_id.is_some(),
+        ProviderLedgerWriteOutcome::Duplicate | ProviderLedgerWriteOutcome::FailedUnknown
+            | ProviderLedgerWriteOutcome::NotConfigured => provider.persisted_provider_call_id.is_none(),
+    };
+    if consistent { return false; }
+    provider.persisted_provider_call_id = None;
+    if input.field_coverage.len() < MAX_COVERAGE_MARKS_PER_EVENT {
+        input.field_coverage.push(CoverageMark {
+            field: CoverageField::ProviderObservedIdentity,
+            unknown: Some(UnknownReason::Ambiguous),
+        });
+    }
+    true
 }
 fn sanitize_status_projection(input: &mut EventInput) -> bool {
     let mut incomplete = false;
@@ -308,6 +337,14 @@ fn bound_and_compact(input: &mut EventInput) -> bool {
     if let Some(operation) = &mut input.external_operation {
         operation.call_id = compact(std::mem::take(&mut operation.call_id));
     }
+    if let Some(provider) = &mut input.provider_call {
+        provider.provider = compact(std::mem::take(&mut provider.provider));
+        provider.response_id = compact(std::mem::take(&mut provider.response_id));
+        compact_option(&mut provider.persisted_provider_call_id);
+        if let UsageAccountScope::KnownScope(scope) = &mut provider.ledger_response_scope {
+            *scope = compact(std::mem::take(scope));
+        }
+    }
     truncated |= compact_vec(&mut input.field_coverage, MAX_COVERAGE_MARKS_PER_EVENT);
     truncated
 }
@@ -372,6 +409,14 @@ fn payload_capacity(input: &EventInput) -> usize {
     }
     bytes += input.readiness.as_ref().and_then(|r| r.target_turn_id.as_ref()).map_or(0, String::capacity);
     bytes += input.external_operation.as_ref().map_or(0, |op| op.call_id.capacity());
+    bytes += input.provider_call.as_ref().map_or(0, |provider| {
+        provider.provider.capacity() + provider.response_id.capacity()
+            + provider.persisted_provider_call_id.as_ref().map_or(0, String::capacity)
+            + match &provider.ledger_response_scope {
+                UsageAccountScope::KnownScope(scope) => scope.capacity(),
+                UsageAccountScope::WriterUnscoped | UsageAccountScope::Unknown => 0,
+            }
+    });
     bytes
 }
 fn identity_capacity(value: &Option<EventIdentity>) -> usize {
@@ -398,4 +443,5 @@ fn structural_size(input: &EventInput) -> usize {
                 + q.result_projection.as_ref().map_or(0, |r| r.actors.capacity() * std::mem::size_of::<StatusActorProjection>())
         })
         + input.readiness.as_ref().map_or(0, |_| std::mem::size_of::<ReadinessObservation>())
+        + input.provider_call.as_ref().map_or(0, |_| std::mem::size_of::<ProviderCallObservation>())
 }

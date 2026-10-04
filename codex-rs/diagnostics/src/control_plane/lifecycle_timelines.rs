@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::types::*;
+use super::usage::UsageAccountScope;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitTimeline {
@@ -89,11 +90,35 @@ pub struct BoundaryTimeline {
     pub incomplete: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderCallTimeline {
+    pub identity: EventIdentity,
+    pub source_plane: SourcePlane,
+    pub producer_boundary: String,
+    pub producer_version: Option<String>,
+    pub operation_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub root_thread_id: Option<String>,
+    pub parent_thread_id: Option<String>,
+    pub fork_parent_thread_id: Option<String>,
+    pub window_id: Option<String>,
+    pub window_number: Option<u64>,
+    pub previous_window_id: Option<String>,
+    pub wall_correlation: std::time::SystemTime,
+    pub monotonic_offset_ns: Option<u64>,
+    pub quality: ObservationQuality,
+    pub coverage: Vec<CoverageMark>,
+    pub observation: ProviderCallObservation,
+    pub complete: bool,
+}
+
 #[derive(Default)]
 pub(super) struct LifecycleProjection {
     pub wait_timelines: Vec<WaitTimeline>,
     pub message_timelines: Vec<MessageTimeline>,
     pub boundary_timelines: Vec<BoundaryTimeline>,
+    pub provider_call_timelines: Vec<ProviderCallTimeline>,
     pub waits_by_outcome: BTreeMap<SelectedOutcome, usize>,
     pub conflicting_wait_count: usize,
 }
@@ -102,7 +127,49 @@ pub(super) fn project(events: &[&RecordedEvent]) -> LifecycleProjection {
     let mut projection = LifecycleProjection::default();
     project_waits(&mut projection, events);
     project_messages_and_boundaries(&mut projection, events);
+    project_provider_calls(&mut projection, events);
     projection
+}
+
+fn project_provider_calls(projection: &mut LifecycleProjection, events: &[&RecordedEvent]) {
+    for event in events {
+        let Some(observation) = &event.input.provider_call else { continue };
+        let receipt_matches = match observation.ledger_write_outcome {
+            ProviderLedgerWriteOutcome::Inserted => observation.persisted_provider_call_id.is_some(),
+            ProviderLedgerWriteOutcome::Duplicate | ProviderLedgerWriteOutcome::FailedUnknown
+                | ProviderLedgerWriteOutcome::NotConfigured => observation.persisted_provider_call_id.is_none(),
+        };
+        let valid_id = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES
+            && !value.chars().any(char::is_control);
+        let valid_scope = match &observation.ledger_response_scope {
+            UsageAccountScope::KnownScope(value) => valid_id(value),
+            UsageAccountScope::WriterUnscoped | UsageAccountScope::Unknown => true,
+        };
+        let valid_observation = valid_id(&observation.provider) && valid_id(&observation.response_id)
+            && observation.persisted_provider_call_id.as_deref().is_none_or(valid_id)
+            && valid_scope && !event.identity.capture_instance_id.is_empty()
+            && event.identity.capture_instance_id.len() <= MAX_IDENTIFIER_BYTES && event.identity.sequence > 0;
+        let complete = !event.truncated && receipt_matches
+            && valid_observation
+            && event.input.kind == EventKind::ProviderCompletionObserved
+            && event.input.producer_boundary == PROVIDER_COMPLETION_PRODUCER_BOUNDARY
+            && event.input.source_plane == SourcePlane::RustCollab
+            && event.input.quality == ObservationQuality::Owned
+            && event.input.thread_id.is_some() && event.input.turn_id.is_some();
+        projection.provider_call_timelines.push(ProviderCallTimeline {
+            identity: event.identity.clone(), source_plane: event.input.source_plane,
+            producer_boundary: event.input.producer_boundary.clone(),
+            producer_version: event.input.producer_version.clone(),
+            operation_id: event.input.operation_id.clone(), thread_id: event.input.thread_id.clone(),
+            turn_id: event.input.turn_id.clone(), root_thread_id: event.input.root_thread_id.clone(),
+            parent_thread_id: event.input.parent_thread_id.clone(),
+            fork_parent_thread_id: event.input.fork_parent_thread_id.clone(),
+            window_id: event.input.window_id.clone(), window_number: event.input.window_number,
+            previous_window_id: event.input.previous_window_id.clone(), wall_correlation: event.input.wall_correlation,
+            monotonic_offset_ns: event.input.monotonic_offset_ns, quality: event.input.quality,
+            coverage: event.input.field_coverage.clone(), observation: observation.clone(), complete,
+        });
+    }
 }
 
 fn project_waits(projection: &mut LifecycleProjection, events: &[&RecordedEvent]) {
