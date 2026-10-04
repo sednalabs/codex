@@ -278,8 +278,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             assert "PRIVATE_PROMPT_SENTINEL" not in overview, overview
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
-            _open_subagents(tui)
-            picker = tui.until_screen(child_id)
+            picker = _open_subagents(tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in picker, picker
             tui.send("\x1b[B")
             child_details = tui.until_screen(child_id)
@@ -299,8 +298,7 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
 
             tui.send("\x1b")
             tui.until("Ask Codex to do anything")
-            _open_subagents(tui)
-            replay_picker = tui.until_screen(child_id)
+            replay_picker = _open_subagents(tui)
             assert "PRIVATE_PROMPT_SENTINEL" not in replay_picker, replay_picker
             tui.send("\x1b[B")
             replay_details = tui.until_screen(child_id)
