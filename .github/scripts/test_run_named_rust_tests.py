@@ -625,14 +625,24 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
     def test_runtime_preflight_launch_failure_has_no_fabricated_diagnostics(
         self,
     ) -> None:
-        result, run, _ = self._run_with_builds(
+        result, run, binary_state = self._run_with_builds(
             [OSError("private launch detail")],
-            [(False, False), (False, False)],
+            [(False, False), (False, False), (False, False), (False, False)],
             extra_env={"VALIDATION_RUNTIME_PREPARATION_ONLY": "true"},
         )
 
         self.assertEqual(result["failure_code"], "runtime_preparation_failed")
         self.assertEqual(result["result_kind"], "runtime_preflight")
+        self.assertEqual(result["candidate_sha"], self.source_sha)
+        self.assertEqual(
+            result["runtime_preparation"]["source_sha"], self.source_sha
+        )
+        self.assertTrue(result["runtime_preparation"]["source_identity_matches"])
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"], "binary_build_failed"
+        )
+        self.assertEqual(result["inventory"], {"status": "not-run", "tests": []})
+        self.assertEqual(result["tests"], [])
         self.assertEqual(
             result["runtime_preparation"]["builds"],
             [
@@ -644,7 +654,16 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
             ],
         )
         self.assertNotIn("private launch detail", json.dumps(result))
+        self.assertNotIn("diagnostics", result["runtime_preparation"]["builds"][0])
         self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(
+            [call.args[0] for call in binary_state.call_args_list],
+            [
+                Path("/host/target/codex-rs/target/debug") / name
+                for name, _ in named_tests.CORE_RUNTIME_BUILDS
+            ]
+            * 2,
+        )
 
     def test_missing_or_nonexecutable_output_stops_before_inventory(self) -> None:
         build_results = [
