@@ -20,7 +20,6 @@ use std::time::Duration;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use tokio::process::ChildStderr;
 use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 use tokio::process::Command;
@@ -226,6 +225,7 @@ fn serialize_request_bounded<T: Serialize>(value: &T) -> Result<Vec<u8>, String>
     Ok(writer.bytes)
 }
 
+#[derive(Debug)]
 struct CapturedStderr {
     bytes: Vec<u8>,
     truncated: bool,
@@ -333,8 +333,8 @@ async fn read_stdout_bounded(
     }
 }
 
-async fn read_stderr_bounded(
-    stderr: ChildStderr,
+async fn read_stderr_bounded<R: AsyncRead + Unpin>(
+    stderr: R,
     limit: usize,
 ) -> Result<CapturedStderr, String> {
     let mut reader = stderr;
@@ -659,6 +659,40 @@ mod tests {
         assert!(error.contains("The command was not started"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exact_request_limit_is_accepted_and_sent_to_fake_provider() {
+        let mut params = DynamicToolCallParams {
+            thread_id: "thread".to_string(),
+            turn_id: "turn".to_string(),
+            call_id: "call".to_string(),
+            namespace: Some(NAMESPACE.to_string()),
+            tool: OBSERVE_TOOL_NAME.to_string(),
+            arguments: json!(""),
+        };
+        let baseline = serialize_request_bounded(&params).unwrap().len();
+        params.arguments = json!("x".repeat(MAX_REQUEST_BYTES - baseline + 2));
+        assert_eq!(
+            serialize_request_bounded(&params).unwrap().len(),
+            MAX_REQUEST_BYTES
+        );
+
+        let config = DesktopRuntimeConfig {
+            argv: vec![
+                "python3".to_string(),
+                "-c".to_string(),
+                r#"import sys; sys.stdin.buffer.read(); sys.stdout.write('{"content_items":[{"type":"inputText","text":"ok"}],"success":true}')"#.to_string(),
+            ],
+            timeout: Duration::from_secs(3),
+        };
+        let response = run_provider(&params, config).await.unwrap();
+        assert!(response.success);
+        assert!(matches!(
+            response.content_items.as_slice(),
+            [DynamicToolCallOutputContentItem::InputText { text }] if text == "ok"
+        ));
+    }
+
     #[test]
     fn explicit_none_and_unsupported_provider_remain_unavailable() {
         for provider in ["none", "unknown"] {
@@ -690,6 +724,70 @@ mod tests {
         let captured = reader_task.await.unwrap().unwrap();
         assert_eq!(captured.bytes.as_slice(), b"1234");
         assert!(captured.truncated);
+    }
+
+    #[tokio::test]
+    async fn exact_and_over_configured_stdout_limits_are_distinguished() {
+        fn json_response_with_text_len(text_len: usize) -> Vec<u8> {
+            serde_json::to_vec(&DynamicToolCallResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "x".repeat(text_len),
+                }],
+                success: true,
+            })
+            .unwrap()
+        }
+
+        async fn limited_output(bytes: Vec<u8>) -> Result<Vec<u8>, BoundedReadError> {
+            let (mut writer, reader) = tokio::io::duplex(IO_CHUNK_BYTES * 2);
+            let write_task = tokio::spawn(async move {
+                for chunk in bytes.chunks(IO_CHUNK_BYTES) {
+                    if writer.write_all(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            let output = read_to_end_bounded(reader, MAX_STDOUT_BYTES).await;
+            write_task.await.unwrap();
+            output
+        }
+
+        let empty_response = json_response_with_text_len(0);
+        let exact_text_len = MAX_STDOUT_BYTES - empty_response.len();
+        let exact_json = json_response_with_text_len(exact_text_len);
+        assert_eq!(exact_json.len(), MAX_STDOUT_BYTES);
+        let exact = limited_output(exact_json).await.unwrap();
+        let parsed = parse_provider_response(&exact).unwrap();
+        assert!(parsed.success);
+        assert!(matches!(
+            limited_output(json_response_with_text_len(exact_text_len + 1)).await,
+            Err(BoundedReadError::Limit)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_provider_drains_large_output_before_reading_full_request() {
+        let argv = vec![
+            "python3".to_string(),
+            "-c".to_string(),
+            "import sys; sys.stdout.buffer.write(b'o' * 1048576); sys.stdout.flush(); sys.stderr.buffer.write(b'e' * 1048576); sys.stderr.flush(); data = sys.stdin.buffer.read(); sys.exit(0 if len(data) == 65536 else 7)"
+                .to_string(),
+        ];
+        let request = vec![b'r'; MAX_REQUEST_BYTES];
+        let (stdout, stderr, status) = run_provider_process(
+            &argv,
+            &request,
+            Duration::from_secs(5),
+            MAX_STDOUT_BYTES,
+            MAX_STDERR_CAPTURE_BYTES,
+        )
+        .await
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(stdout.len(), 1_048_576);
+        assert_eq!(stderr.bytes.len(), MAX_STDERR_CAPTURE_BYTES);
+        assert!(stderr.truncated);
     }
 
     #[cfg(unix)]
@@ -732,10 +830,10 @@ mod tests {
         );
         assert!(matches!(
             response.content_items.as_slice(),
-            [DynamicToolCallOutputContentItem::InputImage { image_url },
-             DynamicToolCallOutputContentItem::InputText { text }]
-                if image_url == "data:image/png;base64,AAAA"
-                    && text.contains("stderr was truncated")
+            [DynamicToolCallOutputContentItem::InputText { text },
+             DynamicToolCallOutputContentItem::InputImage { image_url }]
+                if text.contains("stderr was truncated")
+                    && image_url == "data:image/png;base64,AAAA"
         ));
     }
 
@@ -811,12 +909,14 @@ mod tests {
     async fn timeout_kills_owned_fake_child_and_returns_unknown_result() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("started");
+        let finished = dir.path().join("finished");
         let argv = vec![
             "python3".to_string(),
             "-c".to_string(),
             format!(
-                "from pathlib import Path; import time; Path({:?}).write_text('started'); time.sleep(5)",
-                marker.display().to_string()
+                "from pathlib import Path; import time; Path({:?}).write_text('started'); time.sleep(1.5); Path({:?}).write_text('finished')",
+                marker.display().to_string(),
+                finished.display().to_string()
             ),
         ];
 
@@ -832,6 +932,8 @@ mod tests {
             .unwrap_err()
             .contains("The command may have executed; do not replay"));
         assert!(marker.exists());
+        tokio::time::sleep(Duration::from_millis(1_600)).await;
+        assert!(!finished.exists(), "timed-out child continued after cleanup");
     }
 
     #[cfg(unix)]
