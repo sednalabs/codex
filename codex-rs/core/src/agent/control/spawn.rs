@@ -290,34 +290,71 @@ impl LocalAgentControl {
             }
         }
 
-        // Hold every reservation until the entire batch is ready. A path/name
-        // collision drops them all and inserts no new descendant identity.
-        let mut reservations = Vec::with_capacity(prepared.len());
-        for (thread_id, path, role, nickname) in prepared {
-            if registry.agent_metadata_for_thread(thread_id).is_some() {
-                continue;
+        // Reserve every fallible slot/path before consuming any nickname. A
+        // collision after preflight then drops only path reservations.
+        let pending: Vec<_> = prepared
+            .into_iter()
+            .filter(|(thread_id, _, _, _)| {
+                registry.agent_metadata_for_thread(*thread_id).is_none()
+            })
+            .map(|(thread_id, path, role, nickname)| {
+                let candidate_names = agent_nickname_candidates(config, role.as_deref());
+                (thread_id, path, role, nickname, candidate_names)
+            })
+            .collect();
+        if let Some((thread_id, _, role, _, _)) = pending.iter().find(
+            |(_, _, _, nickname, candidate_names)| nickname.is_none() && candidate_names.is_empty(),
+        ) {
+            warn!(
+                "failed to preflight V2 agent nickname candidates for {thread_id} (role {:?})",
+                role
+            );
+            return;
+        }
+
+        let path_reservations = match registry.reserve_restore_batch_paths(
+            pending.iter().map(|(_, path, _, _, _)| path.clone()),
+        ) {
+            Ok(reservations) => reservations,
+            Err(err) => {
+                warn!("failed to reserve V2 agent metadata paths for {root_thread_id}: {err}");
+                return;
             }
-            let restore_result =
-                registry
-                    .reserve_spawn_slot(/*max_threads*/ None)
-                    .and_then(|mut reservation| {
-                        let mut metadata = self.prepare_agent_metadata(
-                            &mut reservation,
-                            config,
-                            path,
-                            role,
-                            nickname,
-                        )?;
-                        metadata.agent_id = Some(thread_id);
-                        Ok((reservation, metadata))
-                    });
-            match restore_result {
-                Ok(entry) => reservations.push(entry),
+        };
+
+        // Candidate emptiness was checked above, and nickname reservation is
+        // now the only remaining operation before infallible registry commits.
+        let mut reservations = Vec::with_capacity(pending.len());
+        for (
+            (thread_id, path, role, preferred_nickname, candidate_names),
+            mut reservation,
+        ) in pending.into_iter().zip(path_reservations)
+        {
+            let candidate_name_refs: Vec<&str> =
+                candidate_names.iter().map(String::as_str).collect();
+            let agent_nickname = match reservation
+                .reserve_agent_nickname_with_preference(
+                    &candidate_name_refs,
+                    preferred_nickname.as_deref(),
+                )
+            {
+                Ok(agent_nickname) => agent_nickname,
                 Err(err) => {
-                    warn!("failed to reserve V2 agent metadata for {thread_id}: {err}");
+                    warn!(
+                        "failed to reserve preflighted V2 agent nickname for {thread_id}: {err}"
+                    );
                     return;
                 }
-            }
+            };
+            reservations.push((
+                reservation,
+                AgentMetadata {
+                    agent_id: Some(thread_id),
+                    agent_path: path,
+                    agent_nickname: Some(agent_nickname),
+                    agent_role: role,
+                },
+            ));
         }
         for (reservation, metadata) in reservations {
             reservation.commit(metadata);
