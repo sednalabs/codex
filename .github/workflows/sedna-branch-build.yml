@@ -1169,7 +1169,6 @@ jobs:
               TEST_ARGS=("${TEST_ROOT}")
               PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
               FIXTURE_ARGS=()
-              CONTEXT_ARGS=()
               ;;
             consume-existing:pair)
               TEST_ARGS=(
@@ -1180,8 +1179,10 @@ jobs:
                 --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}"
                 --expected-producer-run-id "${PRODUCER_RUN_ID}"
               )
-              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}")
-              CONTEXT_ARGS=(--consumer-context-file "${CONSUMER_CONTEXT}")
+              FIXTURE_ARGS=(
+                --fixture-sha "${FIXTURE_SHA}"
+                --consumer-context-file "${CONSUMER_CONTEXT}"
+              )
               ;;
             consume-existing:full)
               TEST_ARGS=("${TEST_ROOT}")
@@ -1189,8 +1190,10 @@ jobs:
                 --expected-producer-workflow-host-sha "${PRODUCER_WORKFLOW_HOST_SHA}"
                 --expected-producer-run-id "${PRODUCER_RUN_ID}"
               )
-              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}")
-              CONTEXT_ARGS=(--consumer-context-file "${CONSUMER_CONTEXT}")
+              FIXTURE_ARGS=(
+                --fixture-sha "${FIXTURE_SHA}"
+                --consumer-context-file "${CONSUMER_CONTEXT}"
+              )
               ;;
             *) echo "unsupported consumer mode/profile combination" >&2; exit 1 ;;
           esac
@@ -1211,7 +1214,6 @@ jobs:
               --base-sha "${BASE_SHA}" \
               "${PRODUCER_ARGS[@]}" \
               "${FIXTURE_ARGS[@]}" \
-              "${CONTEXT_ARGS[@]}" \
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
