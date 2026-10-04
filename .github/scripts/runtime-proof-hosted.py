@@ -28,12 +28,47 @@ WINDOWS_PACKAGES = [*CARGO_PACKAGES, "codex-cli"]
 EXPECTED_PACKAGE_MANIFESTS = {
     "codex-cli": "cli/Cargo.toml",
     "codex-mcp": "codex-mcp/Cargo.toml",
+    "codex-runtime-proof": "runtime-proof/Cargo.toml",
+    "codex-rmcp-client": "rmcp-client/Cargo.toml",
+    "codex-core": "core/Cargo.toml",
+    "codex-exec": "exec/Cargo.toml",
 }
 EXPECTED_ARTIFACT_TARGETS = {
     ("codex-cli", "codex", "bin"): "cli/src/main.rs",
     ("codex-cli", "runtime_execution_proof", "test"): "cli/tests/runtime_execution_proof.rs",
     ("codex-mcp", "codex_mcp", "lib"): "codex-mcp/src/lib.rs",
+    ("codex-runtime-proof", "codex_runtime_proof", "lib"): "runtime-proof/src/lib.rs",
+    ("codex-rmcp-client", "codex_rmcp_client", "lib"): "rmcp-client/src/lib.rs",
+    ("codex-core", "codex_core", "lib"): "core/src/lib.rs",
+    ("codex-exec", "codex_exec", "lib"): "exec/src/lib.rs",
 }
+LIBRARY_TEST_TARGETS = {
+    "codex-runtime-proof": ("codex_runtime_proof", "runtime-proof/src/lib.rs"),
+    "codex-mcp": ("codex_mcp", "codex-mcp/src/lib.rs"),
+    "codex-rmcp-client": ("codex_rmcp_client", "rmcp-client/src/lib.rs"),
+    "codex-core": ("codex_core", "core/src/lib.rs"),
+    "codex-exec": ("codex_exec", "exec/src/lib.rs"),
+}
+LIBRARY_RUNTIME_ENV_KEYS = (
+    "CARGO",
+    "CARGO_MANIFEST_DIR",
+    "CARGO_MANIFEST_PATH",
+    "CARGO_PKG_VERSION",
+    "CARGO_PKG_VERSION_MAJOR",
+    "CARGO_PKG_VERSION_MINOR",
+    "CARGO_PKG_VERSION_PATCH",
+    "CARGO_PKG_VERSION_PRE",
+    "CARGO_PKG_NAME",
+    "CARGO_PKG_DESCRIPTION",
+    "CARGO_PKG_HOMEPAGE",
+    "CARGO_PKG_REPOSITORY",
+    "CARGO_PKG_LICENSE",
+    "CARGO_PKG_LICENSE_FILE",
+    "CARGO_PKG_AUTHORS",
+    "CARGO_PKG_RUST_VERSION",
+    "CARGO_PKG_README",
+)
+LINUX_HOST_TARGET = "x86_64-unknown-linux-gnu"
 TARGET_IDENTITY_FIELDS = ("name", "kind", "crate_types", "src_path", "edition", "test", "doctest")
 EXPECTED_FORMAT_PACKAGES = [
     "codex-runtime-proof",
@@ -399,6 +434,224 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
     return summaries
 
 
+def cargo_package_runtime_variables(
+    package: dict[str, Any], cargo_executable: str
+) -> dict[str, str]:
+    version = package.get("version")
+    version_match = (
+        re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+            r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+            r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?",
+            version,
+        )
+        if isinstance(version, str)
+        else None
+    )
+    if not version_match or any(
+        len(part) > 20 or int(part) > 18446744073709551615
+        for part in version_match.groups()[:3]
+    ):
+        refuse("selected Cargo package version metadata is invalid")
+    prerelease = version_match.group(4)
+    if prerelease and any(
+        identifier.isdecimal() and len(identifier) > 1 and identifier.startswith("0")
+        for identifier in prerelease.split(".")
+    ):
+        refuse("selected Cargo package version metadata is invalid")
+
+    manifest_value = package.get("manifest_path")
+    if not isinstance(manifest_value, str):
+        refuse("selected Cargo package manifest metadata is invalid")
+    manifest_path = Path(manifest_value)
+    if not manifest_path.is_absolute():
+        refuse("selected Cargo package manifest metadata is invalid")
+    manifest_path = manifest_path.resolve(strict=True)
+    package_root = manifest_path.parent
+
+    authors = package.get("authors")
+    if not isinstance(authors, list) or not all(isinstance(item, str) for item in authors):
+        refuse("selected Cargo package author metadata is invalid")
+
+    def optional_metadata_string(key: str) -> str:
+        value = package.get(key)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            refuse("selected Cargo package metadata is invalid")
+        return value
+
+    name = package.get("name")
+    if not isinstance(name, str) or not name:
+        refuse("selected Cargo package name metadata is invalid")
+    variables = {
+        "CARGO": cargo_executable,
+        "CARGO_MANIFEST_DIR": str(package_root),
+        "CARGO_MANIFEST_PATH": str(manifest_path),
+        "CARGO_PKG_VERSION": version,
+        "CARGO_PKG_VERSION_MAJOR": version_match.group(1),
+        "CARGO_PKG_VERSION_MINOR": version_match.group(2),
+        "CARGO_PKG_VERSION_PATCH": version_match.group(3),
+        "CARGO_PKG_VERSION_PRE": version_match.group(4) or "",
+        "CARGO_PKG_NAME": name,
+        "CARGO_PKG_DESCRIPTION": optional_metadata_string("description"),
+        "CARGO_PKG_HOMEPAGE": optional_metadata_string("homepage"),
+        "CARGO_PKG_REPOSITORY": optional_metadata_string("repository"),
+        "CARGO_PKG_LICENSE": optional_metadata_string("license"),
+        "CARGO_PKG_LICENSE_FILE": optional_metadata_string("license_file"),
+        "CARGO_PKG_AUTHORS": ":".join(authors),
+        "CARGO_PKG_RUST_VERSION": optional_metadata_string("rust_version"),
+        "CARGO_PKG_README": optional_metadata_string("readme"),
+    }
+    if tuple(variables) != LIBRARY_RUNTIME_ENV_KEYS:
+        refuse("Cargo package runtime environment inventory changed")
+    return variables
+
+
+def cargo_native_directories(linked_paths: list[str], root_output: str) -> list[str]:
+    cargo_kinds = {"native", "crate", "dependency", "framework", "all"}
+    root = Path(root_output)
+    native_dirs = set()
+    for raw_path in linked_paths:
+        kind, separator, path_value = raw_path.partition("=")
+        if separator and kind in cargo_kinds:
+            raw_path = path_value
+        candidate = Path(raw_path)
+        if candidate.is_absolute() and candidate.is_relative_to(root):
+            native_dirs.add(str(candidate))
+    return sorted(native_dirs)
+
+
+def cargo_runtime_search_path_value(
+    native_dirs: list[str],
+    root_output: str,
+    deps_output: str,
+    sysroot_libdir: str,
+    inherited_path: str | None,
+) -> str:
+    search_path = [*native_dirs, root_output, deps_output, sysroot_libdir]
+    inherited = inherited_path.split(os.pathsep) if inherited_path is not None else []
+    if inherited[: len(search_path)] == search_path:
+        search_path = inherited
+    else:
+        search_path.extend(inherited)
+    return os.pathsep.join(search_path)
+
+
+def cargo_runtime_search_path(
+    linked_paths: list[str],
+    root_output: Path,
+    deps_output: Path,
+    sysroot_libdir: Path,
+    inherited_path: str | None,
+) -> str:
+    root_output = root_output.resolve(strict=True)
+    deps_output = deps_output.resolve(strict=True)
+    sysroot_libdir = sysroot_libdir.resolve(strict=True)
+    if not all(path.is_dir() for path in (root_output, deps_output, sysroot_libdir)):
+        refuse("Cargo runtime library search directory is unavailable")
+
+    if not all(isinstance(raw_path, str) for raw_path in linked_paths):
+        refuse("Cargo build-script library path metadata is invalid")
+    native_dirs = []
+    for raw_path in cargo_native_directories(linked_paths, str(root_output)):
+        candidate = Path(raw_path)
+        try:
+            canonical_candidate = candidate.resolve(strict=True)
+        except OSError:
+            refuse("Cargo build-script library path is unavailable")
+        if (
+            canonical_candidate != candidate
+            or not canonical_candidate.is_dir()
+            or not canonical_candidate.is_relative_to(root_output)
+        ):
+            refuse("Cargo build-script library path is invalid")
+        native_dirs.append(canonical_candidate)
+
+    return cargo_runtime_search_path_value(
+        [str(path) for path in native_dirs],
+        str(root_output),
+        str(deps_output),
+        str(sysroot_libdir),
+        inherited_path,
+    )
+
+
+def compose_cargo_test_environment(
+    inherited_environment: dict[str, str],
+    package_variables: dict[str, str],
+    dylib_path: str,
+) -> dict[str, str]:
+    environment = dict(inherited_environment)
+    environment.update(package_variables)
+    environment["LD_LIBRARY_PATH"] = dylib_path
+    return environment
+
+
+def cargo_library_process_result(
+    returncode: int | None,
+    summaries: list[dict[str, int | str]],
+    output_sha256: str,
+    spawn_failed: bool = False,
+) -> dict[str, Any]:
+    passed = sum(int(item["passed"]) for item in summaries)
+    failed = sum(int(item["failed"]) for item in summaries)
+    ignored = sum(int(item["ignored"]) for item in summaries)
+    if spawn_failed:
+        status: dict[str, int | str | None] = {
+            "classification": "test_process_spawn_failure",
+            "exit_code": None,
+            "signal": None,
+        }
+    elif returncode is None:
+        status = {
+            "classification": "test_process_status_unknown",
+            "exit_code": None,
+            "signal": None,
+        }
+    elif returncode < 0:
+        status = {
+            "classification": "test_process_signal",
+            "exit_code": None,
+            "signal": -returncode,
+        }
+    elif returncode != 0:
+        status = {
+            "classification": "test_process_exit_failure",
+            "exit_code": returncode,
+            "signal": None,
+        }
+    elif not summaries:
+        status = {
+            "classification": "missing_test_summary",
+            "exit_code": 0,
+            "signal": None,
+        }
+    elif any(
+        item["status"] != "ok" or item["passed"] == 0 or item["failed"] != 0
+        for item in summaries
+    ):
+        status = {
+            "classification": "test_summary_failure",
+            "exit_code": 0,
+            "signal": None,
+        }
+    else:
+        status = {
+            "classification": "passed",
+            "exit_code": 0,
+            "signal": None,
+        }
+    return {
+        **status,
+        "test_summary_count": len(summaries),
+        "passed": passed,
+        "failed": failed,
+        "ignored": ignored,
+        "output_sha256": output_sha256,
+    }
+
+
 def verify_test_summary_parser_contract() -> None:
     single_summary = "test result: ok. 1 passed; 0 failed; 0 ignored;"
     expected_single = [
@@ -422,6 +675,209 @@ def verify_test_summary_parser_contract() -> None:
             refuse("test summary parser contract failed")
     else:
         refuse("test summary parser contract failed")
+
+    package = {
+        "name": "sample",
+        "version": "1.2.3-rc.4+build.7",
+        "manifest_path": str(CODEX_RS / "runtime-proof/Cargo.toml"),
+        "authors": ["A", "B"],
+        "description": None,
+        "homepage": "https://example.invalid",
+        "repository": None,
+        "license": "MIT",
+        "license_file": None,
+        "rust_version": "1.70.0",
+        "readme": "README.md",
+    }
+    expected_variables = {
+        "CARGO": "/toolchain/bin/cargo",
+        "CARGO_MANIFEST_DIR": str((CODEX_RS / "runtime-proof").resolve()),
+        "CARGO_MANIFEST_PATH": str((CODEX_RS / "runtime-proof/Cargo.toml").resolve()),
+        "CARGO_PKG_VERSION": "1.2.3-rc.4+build.7",
+        "CARGO_PKG_VERSION_MAJOR": "1",
+        "CARGO_PKG_VERSION_MINOR": "2",
+        "CARGO_PKG_VERSION_PATCH": "3",
+        "CARGO_PKG_VERSION_PRE": "rc.4",
+        "CARGO_PKG_NAME": "sample",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "https://example.invalid",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_LICENSE": "MIT",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_AUTHORS": "A:B",
+        "CARGO_PKG_RUST_VERSION": "1.70.0",
+        "CARGO_PKG_README": "README.md",
+    }
+    if cargo_package_runtime_variables(package, "/toolchain/bin/cargo") != expected_variables:
+        refuse("Cargo package runtime environment contract failed")
+    artifact_target = {
+        "name": "codex_runtime_proof",
+        "kind": ["lib"],
+        "crate_types": ["lib"],
+        "src_path": "/source/runtime-proof/src/lib.rs",
+        "edition": "2024",
+        "test": True,
+        "doctest": True,
+    }
+    artifact = {
+        "package_id": "path+file:///source/runtime-proof#0.0.0",
+        "target": artifact_target,
+        "profile": {"test": True},
+        "executable": "/target/debug/deps/codex_runtime_proof-test",
+    }
+    if not compiler_artifact_matches(
+        artifact, artifact["package_id"], artifact_target, True
+    ):
+        refuse("Cargo compiler artifact identity contract failed")
+    unrelated_artifact = {**artifact, "package_id": "path+file:///other#0.0.0"}
+    if compiler_artifact_matches(
+        unrelated_artifact,
+        "path+file:///source/runtime-proof#0.0.0",
+        unrelated_artifact["target"],
+        True,
+    ):
+        refuse("Cargo compiler artifact identity contract failed")
+    dylib_prefix = [
+        "/target/debug/build/a/out",
+        "/target/debug/build/z/out",
+        "/target/debug",
+        "/target/debug/deps",
+        "/toolchain/lib",
+    ]
+    if cargo_native_directories(
+        [
+            "framework=/outside/lib",
+            "native=/target/debug/build/z/out",
+            "native=/target/debug/build/a/out",
+            "native=/target/debug/build/z/out",
+        ],
+        "/target/debug",
+    ) != dylib_prefix[:2]:
+        refuse("Cargo native library search ordering contract failed")
+    joined_prefix = os.pathsep.join(dylib_prefix)
+    if cargo_runtime_search_path_value(
+        dylib_prefix[:2], "/target/debug", "/target/debug/deps", "/toolchain/lib",
+        joined_prefix + os.pathsep + "/inherited/lib",
+    ) != joined_prefix + os.pathsep + "/inherited/lib":
+        refuse("Cargo inherited library search prefix contract failed")
+    if cargo_runtime_search_path_value(
+        dylib_prefix[:2], "/target/debug", "/target/debug/deps", "/toolchain/lib",
+        "/inherited/lib",
+    ) != joined_prefix + os.pathsep + "/inherited/lib":
+        refuse("Cargo library search append contract failed")
+    inherited_environment = {
+        "PATH": "/usr/bin",
+        "KEEP": "unchanged",
+        "CARGO": "stale-cargo",
+        "CARGO_PKG_NAME": "stale-package",
+        "CARGO_TARGET_TMPDIR": "/stale/tmp",
+        "CARGO_CRATE_NAME": "stale-crate",
+        "CARGO_BIN_EXE_stale": "/stale/bin",
+        "LD_LIBRARY_PATH": "/old/lib",
+    }
+    expected_environment = {
+        "PATH": "/usr/bin",
+        "KEEP": "unchanged",
+        "CARGO_TARGET_TMPDIR": "/stale/tmp",
+        "CARGO_CRATE_NAME": "stale-crate",
+        "CARGO_BIN_EXE_stale": "/stale/bin",
+        **expected_variables,
+        "LD_LIBRARY_PATH": joined_prefix,
+    }
+    if compose_cargo_test_environment(
+        inherited_environment, expected_variables, joined_prefix
+    ) != expected_environment:
+        refuse("Cargo test child environment contract failed")
+
+    success = [{"status": "ok", "passed": 2, "failed": 0, "ignored": 1}]
+    success_counts = {"test_summary_count": 1, "passed": 2, "failed": 0, "ignored": 1}
+    if cargo_library_process_result(0, success, "a" * 64) != {
+        "classification": "passed",
+        "exit_code": 0,
+        "signal": None,
+        **success_counts,
+        "output_sha256": "a" * 64,
+    }:
+        refuse("library process result contract failed")
+    if cargo_library_process_result(7, success, "b" * 64) != {
+        "classification": "test_process_exit_failure",
+        "exit_code": 7,
+        "signal": None,
+        **success_counts,
+        "output_sha256": "b" * 64,
+    }:
+        refuse("library process result contract failed")
+    empty_counts = {"test_summary_count": 0, "passed": 0, "failed": 0, "ignored": 0}
+    empty_cases = [
+        (
+            -9,
+            "c" * 64,
+            False,
+            {"classification": "test_process_signal", "exit_code": None, "signal": 9},
+        ),
+        (
+            0,
+            "d" * 64,
+            False,
+            {"classification": "missing_test_summary", "exit_code": 0, "signal": None},
+        ),
+        (
+            None,
+            "e" * 64,
+            True,
+            {"classification": "test_process_spawn_failure", "exit_code": None, "signal": None},
+        ),
+    ]
+    for returncode, digest, spawn_failed, status in empty_cases:
+        if cargo_library_process_result(
+            returncode, [], digest, spawn_failed=spawn_failed
+        ) != {**status, **empty_counts, "output_sha256": digest}:
+            refuse("library process result contract failed")
+    prebuild_error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {"level": "error", "code": {"code": "E0001"}},
+        }
+    )
+    build_failed = json.dumps({"reason": "build-finished", "success": False})
+    no_run_tests = {"test_summary_count": 0, "passed": 0, "failed": 0, "ignored": 0}
+    if bounded_library_failure_summary(
+        "codex-core", f"{prebuild_error}\n{build_failed}", 101, set()
+    ) != {
+        "classification": "compiler_error",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": False,
+        "compiler_error_count": 1,
+        "compiler_error_codes": ["E0001"],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo no-run compiler failure contract failed")
+    postbuild_error = json.dumps(
+        {
+            "reason": "compiler-message",
+            "message": {"level": "error", "code": {"code": "E0002"}},
+        }
+    )
+    build_succeeded = json.dumps({"reason": "build-finished", "success": True})
+    if bounded_library_failure_summary(
+        "codex-core",
+        f'{build_succeeded}\n{postbuild_error}\n'
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored;",
+        101,
+        set(),
+    ) != {
+        "classification": "post_build_failure_unclassified",
+        "cargo_exit_code": 101,
+        "build_finished_count": 1,
+        "build_succeeded": True,
+        "compiler_error_count": 0,
+        "compiler_error_codes": [],
+        "primary_source_locations": [],
+        **no_run_tests,
+    }:
+        refuse("Cargo no-run post-build failure contract failed")
 
 
 def package_source_location(
@@ -477,7 +933,6 @@ def package_source_location(
 def bounded_library_failure_summary(
     package: str, output: str, exit_code: int, admitted_paths: set[str]
 ) -> dict[str, Any]:
-    summaries = parse_test_summaries(output)
     build_events: list[bool | None] = []
     prebuild_compiler_errors = 0
     compiler_codes: list[str] = []
@@ -530,12 +985,13 @@ def bounded_library_failure_summary(
                     source_locations.append(location)
             continue
 
-    failed = sum(int(item["failed"]) for item in summaries)
-    passed = sum(int(item["passed"]) for item in summaries)
-    ignored = sum(int(item["ignored"]) for item in summaries)
     valid_build_event = len(build_events) == 1 and build_events[0] is not None
     build_succeeded = build_events[0] if valid_build_event else None
-    compiler_errors = prebuild_compiler_errors if valid_build_event else 0
+    compiler_errors = (
+        prebuild_compiler_errors
+        if valid_build_event and build_succeeded is False
+        else 0
+    )
     if not valid_build_event:
         classification = "build_phase_unknown"
         compiler_codes = []
@@ -544,14 +1000,10 @@ def bounded_library_failure_summary(
         classification = "compiler_error"
     elif build_succeeded is False:
         classification = "build_failure_unclassified"
-    elif failed:
-        classification = "test_failure"
     elif exit_code:
         classification = "post_build_failure_unclassified"
-    elif not summaries:
-        classification = "missing_test_summary"
     else:
-        classification = "test_summary_failure"
+        classification = "build_failure_unclassified"
     return {
         "classification": classification,
         "cargo_exit_code": exit_code,
@@ -560,49 +1012,95 @@ def bounded_library_failure_summary(
         "compiler_error_count": compiler_errors,
         "compiler_error_codes": compiler_codes,
         "primary_source_locations": source_locations,
-        "test_summary_count": len(summaries),
-        "passed": passed,
-        "failed": failed,
-        "ignored": ignored,
+        "test_summary_count": 0,
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
     }
 
 
-def run_library_suite(package: str, admitted_paths: set[str]) -> dict[str, Any]:
+def run_library_suite(
+    package_name: str,
+    metadata: dict[str, dict[str, Any]],
+    admitted_paths: set[str],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    target = LIBRARY_TEST_TARGETS.get(package_name)
+    package = metadata.get(package_name)
+    if target is None or package is None:
+        refuse("library test package is outside the fixed Cargo metadata inventory")
+    target_name, _ = target
     command = [
-        "cargo",
+        str(context["cargo"]),
         "test",
         "--locked",
         "-p",
-        package,
+        package_name,
         "--lib",
+        "--no-run",
         "--message-format=json",
     ]
-    result = subprocess.run(
+    artifact = cargo_artifact_details(
         command,
-        cwd=CODEX_RS,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        metadata,
+        package_name,
+        target_name,
+        "lib",
+        admitted_paths=admitted_paths,
+        require_test_profile=True,
+        capture_runtime_inputs=True,
     )
-    summaries = parse_test_summaries(result.stdout)
-    if result.returncode != 0 or not summaries or any(
-        item["status"] != "ok" or item["passed"] == 0 or item["failed"]
-        for item in summaries
-    ):
-        failure = bounded_library_failure_summary(
-            package, result.stdout, result.returncode, admitted_paths
+    binary = artifact_path(artifact["relative_path"])
+    before_hash = sha256_file(binary)
+    if before_hash != artifact["sha256"]:
+        refuse(f"bound library test executable changed before invocation: {package_name}")
+    environment = cargo_library_test_environment(
+        package_name,
+        package,
+        context,
+        artifact["linked_paths"],
+        dict(os.environ),
+    )
+    try:
+        result = subprocess.run(
+            [str(binary)],
+            cwd=Path(package["manifest_path"]).resolve(strict=True).parent,
+            env=environment,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
+        output = result.stdout.decode("utf-8", errors="replace")
+        output_hash = sha256_bytes(result.stdout)
+        process_result = cargo_library_process_result(
+            result.returncode, parse_test_summaries(output), output_hash
+        )
+    except OSError:
+        output_hash = sha256_bytes(b"")
+        process_result = cargo_library_process_result(
+            None, [], output_hash, spawn_failed=True
+        )
+    after_hash = sha256_file(binary)
+    if after_hash != before_hash:
+        refuse(f"bound library test executable changed during invocation: {package_name}")
+    if process_result["classification"] != "passed":
         refuse(
             "required library suite failed: "
-            f"{package}; output_sha256={sha256_bytes(result.stdout.encode())}; "
-            f"diagnostic_summary={json.dumps(failure, sort_keys=True, separators=(',', ':'))}"
+            f"{package_name}; output_sha256={process_result['output_sha256']}; "
+            "diagnostic_summary="
+            f"{json.dumps(process_result, sort_keys=True, separators=(',', ':'))}"
         )
     return {
-        "package": package,
-        "command": command,
-        "summaries": summaries,
-        "output_sha256": sha256_bytes(result.stdout.encode()),
+        "package": package_name,
+        "command": [
+            "cargo test --locked -p <fixed-package> --lib --no-run --message-format=json",
+            "<bound-library-test-executable>",
+        ],
+        "summaries": parse_test_summaries(output),
+        "process": process_result,
+        "output_sha256": output_hash,
+        "artifact_relative_path": str(artifact["relative_path"]),
+        "artifact_sha256": before_hash,
     }
 
 
@@ -657,13 +1155,36 @@ def target_identity(target: dict[str, Any]) -> dict[str, Any]:
     return {field: target.get(field) for field in TARGET_IDENTITY_FIELDS}
 
 
-def cargo_artifact(
+def compiler_artifact_matches(
+    event: dict[str, Any],
+    package_id: str,
+    expected_target: dict[str, Any],
+    require_test_profile: bool,
+) -> bool:
+    target = event.get("target")
+    profile = event.get("profile")
+    executable = event.get("executable")
+    return (
+        event.get("package_id") == package_id
+        and isinstance(target, dict)
+        and target_identity(target) == expected_target
+        and isinstance(executable, str)
+        and bool(executable)
+        and isinstance(profile, dict)
+        and (not require_test_profile or profile.get("test") is True)
+    )
+
+
+def cargo_artifact_details(
     command: list[str],
     metadata: dict[str, dict[str, Any]],
     package_name: str,
     target_name: str,
     kind: str,
-) -> Path:
+    admitted_paths: set[str] | None = None,
+    require_test_profile: bool = False,
+    capture_runtime_inputs: bool = False,
+) -> dict[str, Any]:
     package = metadata.get(package_name)
     expected_source = EXPECTED_ARTIFACT_TARGETS.get((package_name, target_name, kind))
     if package is None or expected_source is None:
@@ -679,37 +1200,77 @@ def cargo_artifact(
     if len(target_matches) != 1:
         refuse(f"Cargo metadata did not bind one exact target source: {package_name}/{target_name}")
     expected_target = target_identity(target_matches[0])
+    if require_test_profile and (
+        target_matches[0].get("kind") != ["lib"]
+        or target_matches[0].get("test") is not True
+        or not isinstance(target_matches[0].get("crate_types"), list)
+        or "lib" not in target_matches[0]["crate_types"]
+    ):
+        refuse(f"Cargo metadata library test target is unsupported: {package_name}")
+    if capture_runtime_inputs and any(
+        "custom-build" in target.get("kind", [])
+        for target in package.get("targets", [])
+        if isinstance(target, dict)
+    ):
+        refuse(f"library package build-script runtime environment is unsupported: {package_name}")
     result = subprocess.run(
         command,
         cwd=CODEX_RS,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if capture_runtime_inputs else None,
     )
     if result.returncode != 0:
+        if capture_runtime_inputs:
+            output_hash = sha256_bytes(result.stdout.encode())
+            failure = bounded_library_failure_summary(
+                package_name, result.stdout, result.returncode, admitted_paths or set()
+            )
+            refuse(
+                f"required locked library build failed: {package_name}; "
+                f"output_sha256={output_hash}; "
+                f"diagnostic_summary={json.dumps(failure, sort_keys=True, separators=(',', ':'))}"
+            )
         refuse(f"required locked compile failed for {package_name}/{target_name}")
     artifacts: list[Path] = []
+    build_finished: list[bool | None] = []
+    linked_paths: list[str] = []
     for line in result.stdout.splitlines():
         try:
             event = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("reason") == "build-finished":
+            success = event.get("success")
+            build_finished.append(success if type(success) is bool else None)
+            continue
+        if capture_runtime_inputs and event.get("reason") == "build-script-executed":
+            event_paths = event.get("linked_paths")
+            if not isinstance(event_paths, list) or not all(
+                isinstance(path, str) for path in event_paths
+            ):
+                refuse("Cargo build-script library path metadata is invalid")
+            linked_paths.extend(event_paths)
+            if event.get("package_id") == package["id"] and event.get("env") != []:
+                refuse(f"library package build-script environment is unsupported: {package_name}")
         if event.get("reason") != "compiler-artifact":
             continue
-        target = event.get("target", {})
-        if (
-            event.get("package_id") == package["id"]
-            and target_identity(target) == expected_target
-            and event.get("executable")
+        if compiler_artifact_matches(
+            event, package["id"], expected_target, require_test_profile
         ):
             artifacts.append(Path(event["executable"]))
     if len(artifacts) != 1:
         refuse(f"expected exactly one compiler artifact for {package_name}/{target_name}")
+    if capture_runtime_inputs and build_finished != [True]:
+        refuse(f"locked library build phase was not exactly successful: {package_name}")
     artifact = artifacts[0]
     if not artifact.is_absolute():
         artifact = CODEX_RS / artifact
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", ""))
-    if not target_root.is_absolute() or not target_root.is_dir():
+    if not target_root.is_absolute():
         refuse("fixed Cargo target directory is unavailable")
     if artifact.is_symlink() or not artifact.is_file() or not os.access(artifact, os.X_OK):
         refuse(f"compiler artifact is not a regular executable: {target_name}")
@@ -721,7 +1282,134 @@ def cargo_artifact(
         refuse(f"compiler artifact escaped the fixed Cargo target root: {target_name}")
     if not stat.S_ISREG(resolved_artifact.stat().st_mode):
         refuse(f"compiler artifact is not regular: {target_name}")
-    return relative
+    return {
+        "relative_path": relative,
+        "sha256": sha256_file(resolved_artifact),
+        "linked_paths": linked_paths,
+        "build_finished": build_finished,
+        "output_sha256": sha256_bytes(result.stdout.encode()),
+    }
+
+
+def cargo_artifact(
+    command: list[str],
+    metadata: dict[str, dict[str, Any]],
+    package_name: str,
+    target_name: str,
+    kind: str,
+) -> Path:
+    return cargo_artifact_details(
+        command, metadata, package_name, target_name, kind
+    )["relative_path"]
+
+
+def pinned_toolchain_executable(name: str) -> Path:
+    result = subprocess.run(
+        ["rustup", "which", name, "--toolchain", "1.96.0"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    values = result.stdout.splitlines()
+    if result.returncode != 0 or len(values) != 1:
+        refuse("pinned Rust toolchain executable is unavailable")
+    executable = Path(values[0])
+    if (
+        not executable.is_absolute()
+        or executable.is_symlink()
+        or not executable.is_file()
+        or not os.access(executable, os.X_OK)
+    ):
+        refuse("pinned Rust toolchain executable is invalid")
+    try:
+        if executable.resolve(strict=True) != executable:
+            refuse("pinned Rust toolchain executable is invalid")
+    except OSError:
+        refuse("pinned Rust toolchain executable is invalid")
+    return executable
+
+
+def library_runtime_context() -> dict[str, Any]:
+    cargo_executable = pinned_toolchain_executable("cargo")
+    rustc_executable = pinned_toolchain_executable("rustc")
+    version_result = subprocess.run(
+        [str(rustc_executable), "--version", "--verbose"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    host_values = [
+        line.removeprefix("host: ")
+        for line in version_result.stdout.splitlines()
+        if line.startswith("host: ")
+    ]
+    if version_result.returncode != 0 or host_values != [LINUX_HOST_TARGET]:
+        refuse("pinned Rust host target is unsupported")
+    libdir_result = subprocess.run(
+        [
+            str(rustc_executable),
+            "--print",
+            "target-libdir",
+            "--target",
+            LINUX_HOST_TARGET,
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    libdirs = libdir_result.stdout.splitlines()
+    if libdir_result.returncode != 0 or len(libdirs) != 1:
+        refuse("pinned Rust sysroot library directory is unavailable")
+    sysroot_libdir = Path(libdirs[0])
+    if not sysroot_libdir.is_absolute() or not sysroot_libdir.is_dir():
+        refuse("pinned Rust sysroot library directory is invalid")
+    try:
+        sysroot_libdir = sysroot_libdir.resolve(strict=True)
+    except OSError:
+        refuse("pinned Rust sysroot library directory is invalid")
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", ""))
+    if not target_root.is_absolute():
+        refuse("fixed Cargo target directory is unavailable")
+    return {
+        "cargo": cargo_executable,
+        "rustc": rustc_executable,
+        "sysroot_libdir": sysroot_libdir,
+        "target_root": target_root.resolve(strict=False),
+    }
+
+
+def cargo_library_test_environment(
+    package_name: str,
+    package: dict[str, Any],
+    context: dict[str, Any],
+    linked_paths: list[str],
+    inherited_environment: dict[str, str],
+) -> dict[str, str]:
+    relative_manifest = EXPECTED_PACKAGE_MANIFESTS.get(package_name)
+    if relative_manifest is None or package_name not in LIBRARY_TEST_TARGETS:
+        refuse("library test package is outside the fixed package inventory")
+    expected_manifest = (CODEX_RS / relative_manifest).resolve(strict=True)
+    manifest_value = package.get("manifest_path")
+    if not isinstance(manifest_value, str):
+        refuse("selected Cargo package manifest metadata is invalid")
+    if Path(manifest_value).resolve(strict=True) != expected_manifest:
+        refuse("selected Cargo package manifest identity changed")
+    variables = cargo_package_runtime_variables(package, str(context["cargo"]))
+    if variables["CARGO_PKG_NAME"] != package_name:
+        refuse("selected Cargo package identity changed")
+    root_output = context["target_root"] / "debug"
+    deps_output = root_output / "deps"
+    dylib_path = cargo_runtime_search_path(
+        linked_paths,
+        root_output,
+        deps_output,
+        context["sysroot_libdir"],
+        inherited_environment.get("LD_LIBRARY_PATH"),
+    )
+    return compose_cargo_test_environment(inherited_environment, variables, dylib_path)
 
 
 def artifact_path(relative: Path) -> Path:
@@ -832,8 +1520,9 @@ def validate_linux(manifest: dict[str, Any]) -> None:
 
     metadata = cargo_metadata_index()
     admitted_paths = set(manifest["product_inputs"])
+    runtime_context = library_runtime_context()
     library_results = [
-        run_library_suite(package, admitted_paths)
+        run_library_suite(package, metadata, admitted_paths, runtime_context)
         for package in manifest["linux_library_test_packages"]
     ]
     cli_relative = cargo_artifact(
@@ -860,13 +1549,12 @@ def validate_linux(manifest: dict[str, Any]) -> None:
         "runtime_execution_proof",
         "test",
     )
-    mcp_test_relative = cargo_artifact(
-        ["cargo", "test", "--locked", "-p", "codex-mcp", "--lib", "--no-run", "--message-format=json"],
-        metadata,
-        "codex-mcp",
-        "codex_mcp",
-        "lib",
+    mcp_library_result = next(
+        (item for item in library_results if item["package"] == "codex-mcp"), None
     )
+    if mcp_library_result is None:
+        refuse("required MCP library test artifact is unavailable")
+    mcp_test_relative = Path(mcp_library_result["artifact_relative_path"])
     cli_binary = artifact_path(cli_test_relative)
     mcp_binary = artifact_path(mcp_test_relative)
     cli_image = artifact_path(cli_relative)
@@ -881,7 +1569,9 @@ def validate_linux(manifest: dict[str, Any]) -> None:
 
     cli_image_sha256 = sha256_file(cli_image)
     cli_test_sha256 = sha256_file(cli_binary)
-    mcp_test_sha256 = sha256_file(mcp_binary)
+    mcp_test_sha256 = mcp_library_result["artifact_sha256"]
+    if sha256_file(mcp_binary) != mcp_test_sha256:
+        refuse("MCP library test artifact changed after its bound test run")
     fixtures = []
     for test_name in manifest["cli_ignored_tests"]:
         fixtures.append(run_ignored_root_test(cli_binary, test_name, cli_test_sha256))
