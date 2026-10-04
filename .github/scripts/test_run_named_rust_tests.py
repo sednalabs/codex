@@ -174,7 +174,13 @@ class NamedFailureObserverTests(unittest.TestCase):
         )
         stderr = f"---- {name} stderr ----\nconnection refused\n"
 
-        evidence = self._evidence(stdout, stderr, requested=(name,), known={name})
+        evidence = self._evidence(
+            stdout,
+            stderr,
+            requested=(name,),
+            known={name},
+            summary=named_tests.test_result_counts(stdout),
+        )
 
         self.assertEqual(
             [
