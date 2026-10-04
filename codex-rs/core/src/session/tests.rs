@@ -13382,3 +13382,42 @@ fn interrupted_publication_does_not_overwrite_same_turn_error_readiness() {
     });
     assert_eq!(publisher.snapshot().readiness, AgentReadiness::Pending);
 }
+
+#[test]
+fn interrupted_notification_uses_exact_published_turn_when_current_turn_changes() {
+    let current = AgentOutcomeSnapshot {
+        turn_id: Some("new-turn".to_string()),
+        status: AgentStatus::Running,
+        readiness: AgentReadiness::Pending,
+    };
+    let interrupted = AgentOutcomeSnapshot {
+        turn_id: Some("old-turn".to_string()),
+        status: AgentStatus::Interrupted,
+        readiness: AgentReadiness::Pending,
+    };
+    assert_eq!(
+        notification_readiness(
+            "old-turn",
+            &current,
+            Some(&interrupted),
+            true,
+            &AgentStatus::Interrupted,
+        ),
+        AgentReadiness::Pending
+    );
+
+    let guardian = AgentOutcomeSnapshot {
+        readiness: AgentReadiness::ActionRequired,
+        ..interrupted
+    };
+    assert_eq!(
+        notification_readiness(
+            "old-turn",
+            &current,
+            Some(&guardian),
+            true,
+            &AgentStatus::Interrupted,
+        ),
+        AgentReadiness::ActionRequired
+    );
+}

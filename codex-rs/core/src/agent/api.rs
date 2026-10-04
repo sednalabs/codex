@@ -335,7 +335,10 @@ impl AgentOutcomePublisher {
 
     /// Publish an interrupted turn without overwriting a wake-worthy outcome
     /// already published for that exact turn.
-    pub(crate) fn publish_interrupted(&self, mut snapshot: AgentOutcomeSnapshot) {
+    pub(crate) fn publish_interrupted(
+        &self,
+        mut snapshot: AgentOutcomeSnapshot,
+    ) -> AgentOutcomeSnapshot {
         let _guard = self
             .publication_lock
             .lock()
@@ -347,14 +350,15 @@ impl AgentOutcomePublisher {
         {
             snapshot.readiness = previous.readiness;
         }
-        self.publish_locked(snapshot);
+        self.publish_locked(snapshot)
     }
 
-    fn publish_locked(&self, snapshot: AgentOutcomeSnapshot) {
+    fn publish_locked(&self, snapshot: AgentOutcomeSnapshot) -> AgentOutcomeSnapshot {
         self.tx.send_replace(snapshot.clone());
         if snapshot.readiness.wakes_wait() {
-            let _ = self.actionable_tx.send(snapshot);
+            let _ = self.actionable_tx.send(snapshot.clone());
         }
+        snapshot
     }
 
     fn mark_current_goal_action_required(&self) {

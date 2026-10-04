@@ -2278,7 +2278,7 @@ impl Session {
         }
         // Publish the goal-bound decision before the raw terminal event is visible to
         // status subscribers, parent notification routing, or an active native wait.
-        self.publish_agent_outcome(turn_context, &legacy_source);
+        let published_outcome = self.publish_agent_outcome(turn_context, &legacy_source);
         self.services
             .rollout_thread_trace
             .record_codex_turn_event(&turn_context.sub_id, &legacy_source);
@@ -2308,8 +2308,12 @@ impl Session {
                 .track_guardian_session_event(self.thread_id, &event);
         }
         self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
-            .await;
+        self.maybe_notify_parent_of_terminal_turn(
+            turn_context,
+            &legacy_source,
+            published_outcome.as_ref(),
+        )
+        .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2328,9 +2332,13 @@ impl Session {
         }
     }
 
-    fn publish_agent_outcome(&self, turn_context: &TurnContext, msg: &EventMsg) {
+    fn publish_agent_outcome(
+        &self,
+        turn_context: &TurnContext,
+        msg: &EventMsg,
+    ) -> Option<AgentOutcomeSnapshot> {
         let Some(status) = agent_status_from_event(msg) else {
-            return;
+            return None;
         };
         let turn_id = turn_context.sub_id.clone();
         let outcome_publisher = self
@@ -2376,12 +2384,16 @@ impl Session {
             status,
             readiness,
         };
-        if matches!(msg, EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted)
-        {
-            outcome_publisher.publish_interrupted(outcome);
+        let published = if matches!(
+            msg,
+            EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted
+        ) {
+            outcome_publisher.publish_interrupted(outcome)
         } else {
-            outcome_publisher.publish(outcome);
-        }
+            outcome_publisher.publish(outcome.clone());
+            outcome
+        };
+        Some(published)
     }
 
     /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
@@ -2389,6 +2401,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        published_outcome: Option<&AgentOutcomeSnapshot>,
     ) {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
             return;
@@ -2431,20 +2444,34 @@ impl Session {
                 }
             }
         };
-        let outcome_snapshot = self
+        let current_snapshot = self
             .services
             .local_agent_runtime
             .outcome_publisher(self.thread_id)
             .snapshot();
-        let readiness = if outcome_snapshot.turn_id.as_deref() == Some(turn_context.sub_id.as_str())
-        {
-            outcome_snapshot.readiness
-        } else if is_final(&status) {
-            // Unknown or stale binding fails open to the established terminal path.
-            AgentReadiness::Terminal
-        } else {
-            AgentReadiness::ActionRequired
-        };
+        let is_interrupted = matches!(
+            msg,
+            EventMsg::TurnAborted(event) if event.reason == TurnAbortReason::Interrupted
+        );
+        let readiness = notification_readiness(
+            &turn_context.sub_id,
+            &current_snapshot,
+            published_outcome,
+            is_interrupted,
+            &status,
+        );
+        self.notify_parent_with_readiness(turn_context, msg, status, error_info, readiness)
+            .await;
+    }
+
+    async fn notify_parent_with_readiness(
+        &self,
+        turn_context: &TurnContext,
+        msg: &EventMsg,
+        status: AgentStatus,
+        error_info: Option<CodexErrorInfo>,
+        readiness: AgentReadiness,
+    ) {
         if !readiness.wakes_wait() {
             return;
         }
@@ -2486,7 +2513,7 @@ impl Session {
         if snapshot.turn_id.as_deref() == Some(turn_context.sub_id.as_str())
             && matches!(snapshot.readiness, AgentReadiness::ActionRequired)
         {
-            self.maybe_notify_parent_of_terminal_turn(turn_context, msg)
+            self.maybe_notify_parent_of_terminal_turn(turn_context, msg, None)
                 .await;
         }
     }
@@ -5190,6 +5217,30 @@ fn interrupted_readiness(error_info: Option<CodexErrorInfo>) -> AgentReadiness {
         AgentReadiness::ActionRequired
     } else {
         AgentReadiness::Pending
+    }
+}
+
+fn notification_readiness(
+    turn_id: &str,
+    current: &AgentOutcomeSnapshot,
+    published: Option<&AgentOutcomeSnapshot>,
+    is_interrupted: bool,
+    status: &AgentStatus,
+) -> AgentReadiness {
+    if current.turn_id.as_deref() == Some(turn_id) {
+        current.readiness.clone()
+    } else if let Some(published) =
+        published.filter(|outcome| outcome.turn_id.as_deref() == Some(turn_id))
+    {
+        published.readiness.clone()
+    } else if is_interrupted {
+        // A superseded interruption has no current-turn readiness to promote.
+        AgentReadiness::Pending
+    } else if is_final(status) {
+        // Unknown or stale binding fails open to the established terminal path.
+        AgentReadiness::Terminal
+    } else {
+        AgentReadiness::ActionRequired
     }
 }
 
