@@ -21,6 +21,8 @@ use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
 use crate::event_processor::handle_last_message;
 
+const HUMAN_OUTPUT_BANNER: &str = concat!("Sedna v", env!("CARGO_PKG_VERSION"), "\n--------");
+
 pub(crate) struct EventProcessorWithHumanOutput {
     bold: Style,
     cyan: Style,
@@ -215,8 +217,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
         prompt: &str,
         session_configured_event: &SessionConfiguredEvent,
     ) {
-        const VERSION: &str = env!("CARGO_PKG_VERSION");
-        eprintln!("OpenAI Codex v{VERSION}\n--------");
+        eprintln!("{HUMAN_OUTPUT_BANNER}");
         for (key, value) in config_summary_entries(config, session_configured_event) {
             eprintln!("{} {}", format!("{key}:").style(self.bold), value);
         }

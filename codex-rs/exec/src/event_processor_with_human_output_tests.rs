@@ -21,12 +21,21 @@ use owo_colors::Style;
 use pretty_assertions::assert_eq;
 
 use super::EventProcessorWithHumanOutput;
+use super::HUMAN_OUTPUT_BANNER;
 use super::config_summary_entries;
 use super::final_message_from_turn_items;
 use super::reasoning_text;
 use super::should_print_final_message_to_stdout;
 use super::should_print_final_message_to_tty;
 use crate::event_processor::EventProcessor;
+
+#[test]
+fn human_output_banner_identifies_sedna_with_the_existing_package_version() {
+    assert_eq!(
+        HUMAN_OUTPUT_BANNER,
+        format!("Sedna v{}\n--------", env!("CARGO_PKG_VERSION"))
+    );
+}
 
 #[test]
 fn suppresses_final_stdout_message_when_both_streams_are_terminals() {
