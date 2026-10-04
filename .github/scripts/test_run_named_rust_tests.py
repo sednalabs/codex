@@ -7,7 +7,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -221,6 +221,266 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertNotIn("sample", rendered)
         self.assertNotIn("/home/runner", rendered)
 
+
+class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
+    source_sha = "a" * 40
+    request = {
+        "schema_version": named_tests.SCHEMA_VERSION,
+        "profile": "rust_integration",
+        "package": "codex-core",
+        "target_kind": "integration",
+        "target": "all",
+        "tests": ["suite::selected"],
+    }
+    command_record = {
+        "inventory_argv": (
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "codex-core",
+            "--test",
+            "all",
+            "--",
+            "--list",
+        ),
+        "execution_argv": (
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "codex-core",
+            "--test",
+            "all",
+            "--",
+            "--test-threads=1",
+        ),
+    }
+
+    def _run_with_builds(
+        self,
+        build_results: list[subprocess.CompletedProcess[str]],
+        binary_states: list[tuple[bool, bool]],
+        *,
+        source_sha: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> tuple[dict[str, object], Mock, Mock]:
+        env = {"VALIDATION_TARGET_SHA": self.source_sha}
+        env.update(extra_env or {})
+        inventory = subprocess.CompletedProcess(
+            ["cargo", "test"], 0, stdout="suite::selected: test\n", stderr=""
+        )
+        execution = subprocess.CompletedProcess(
+            ["cargo", "test"],
+            0,
+            stdout=(
+                "test suite::selected ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n"
+            ),
+            stderr="",
+        )
+        command_results = [*build_results, inventory, execution]
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch.object(
+                named_tests, "select_target", return_value=self.command_record
+            ),
+            patch.object(
+                named_tests,
+                "git_sha",
+                return_value=self.source_sha if source_sha is None else source_sha,
+            ),
+            patch.object(
+                named_tests,
+                "_core_runtime_binary_state",
+                side_effect=binary_states,
+            ) as binary_state,
+            patch.object(
+                named_tests.subprocess, "run", side_effect=command_results
+            ) as run,
+        ):
+            result = named_tests.run_request(self.request, Path("/host/target"))
+        return result, run, binary_state
+
+    def test_core_all_builds_exact_binaries_before_unchanged_inventory_and_test(
+        self,
+    ) -> None:
+        build_results = [
+            subprocess.CompletedProcess(list(command), 0, stdout="", stderr="")
+            for _, command in named_tests.CORE_RUNTIME_BUILDS
+        ]
+        result, run, binary_state = self._run_with_builds(
+            build_results,
+            [(False, False), (False, False), (True, True), (True, True)],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["runtime_preparation"]["status"], "success")
+        self.assertEqual(result["runtime_preparation"]["source_sha"], self.source_sha)
+        self.assertTrue(result["runtime_preparation"]["source_identity_matches"])
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [list(command) for _, command in named_tests.CORE_RUNTIME_BUILDS]
+            + [
+                list(self.command_record["inventory_argv"]),
+                list(self.command_record["execution_argv"]),
+            ],
+        )
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["cwd"], Path("/host/target") / "codex-rs")
+            self.assertEqual(
+                call.kwargs["env"],
+                {
+                    "VALIDATION_TARGET_SHA": self.source_sha,
+                    "RUST_MIN_STACK": "8388608",
+                },
+            )
+            self.assertFalse(call.kwargs["shell"])
+            self.assertTrue(call.kwargs["capture_output"])
+        self.assertEqual(
+            [
+                binary["regular_file_before"]
+                for binary in result["runtime_preparation"]["binaries"]
+            ],
+            [False, False],
+        )
+        self.assertEqual(
+            [
+                binary["executable_after"]
+                for binary in result["runtime_preparation"]["binaries"]
+            ],
+            [True, True],
+        )
+        self.assertEqual(
+            [call.args[0] for call in binary_state.call_args_list],
+            [
+                Path("/host/target/codex-rs/target/debug") / name
+                for name, _ in named_tests.CORE_RUNTIME_BUILDS
+            ]
+            * 2,
+        )
+
+    def test_failed_binary_build_stops_before_inventory(self) -> None:
+        failed_build = subprocess.CompletedProcess(
+            list(named_tests.CORE_RUNTIME_BUILDS[0][1]),
+            17,
+            stdout="private",
+            stderr="private",
+        )
+        result, run, _ = self._run_with_builds(
+            [failed_build],
+            [(False, False), (False, False), (False, False), (False, False)],
+        )
+
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"], "binary_build_failed"
+        )
+        self.assertEqual(result["inventory"]["status"], "not-run")
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertNotIn("private", json.dumps(result))
+
+    def test_missing_or_nonexecutable_output_stops_before_inventory(self) -> None:
+        build_results = [
+            subprocess.CompletedProcess(list(command), 0, stdout="", stderr="")
+            for _, command in named_tests.CORE_RUNTIME_BUILDS
+        ]
+        for bad_state in ((False, False), (True, False)):
+            with self.subTest(bad_state=bad_state):
+                result, run, _ = self._run_with_builds(
+                    build_results,
+                    [(False, False), (False, False), bad_state, (True, True)],
+                )
+                self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+                self.assertEqual(
+                    result["runtime_preparation"]["failure_reason"],
+                    "binary_missing_or_not_executable",
+                )
+                self.assertEqual(result["inventory"]["status"], "not-run")
+                self.assertEqual(len(run.call_args_list), 2)
+
+    def test_source_or_target_directory_mismatch_stops_before_build(self) -> None:
+        result, run, _ = self._run_with_builds([], [], source_sha="b" * 40)
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"],
+            "source_identity_mismatch",
+        )
+        self.assertEqual(len(run.call_args_list), 0)
+
+        result, run, _ = self._run_with_builds(
+            [], [], extra_env={"CARGO_TARGET_DIR": "relative/target"}
+        )
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"],
+            "unsupported_target_dir_context",
+        )
+        self.assertEqual(len(run.call_args_list), 0)
+
+    def test_unexpected_binary_override_stops_before_build(self) -> None:
+        result, run, _ = self._run_with_builds(
+            [],
+            [(False, False), (False, False)],
+            extra_env={"CARGO_BIN_EXE_codex-code-mode-host": "/private/host"},
+        )
+
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"],
+            "unexpected_binary_environment_override",
+        )
+        self.assertIn(
+            "CARGO_BIN_EXE_codex-code-mode-host",
+            json.dumps(result["runtime_preparation"]["binaries"]),
+        )
+        self.assertNotIn("/private/host", json.dumps(result))
+        self.assertEqual(len(run.call_args_list), 0)
+
+    def test_preexisting_binary_is_not_accepted_as_same_target_build_output(
+        self,
+    ) -> None:
+        result, run, _ = self._run_with_builds(
+            [], [(True, True), (False, False)]
+        )
+
+        self.assertEqual(result["failure_code"], "runtime_preparation_failed")
+        self.assertEqual(
+            result["runtime_preparation"]["failure_reason"],
+            "binary_present_before_build",
+        )
+        self.assertEqual(
+            [
+                binary["regular_file_before"]
+                for binary in result["runtime_preparation"]["binaries"]
+            ],
+            [True, False],
+        )
+        self.assertEqual(len(run.call_args_list), 0)
+
+
+class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
+    def _evidence(
+        self,
+        stdout: str,
+        stderr: str = "",
+        *,
+        requested: tuple[str, ...] = (),
+        known: set[str] | None = None,
+        summary: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        known_names = known or set()
+        output = "\n".join(value for value in (stdout, stderr) if value)
+        return named_tests.failure_evidence(
+            {"tests": list(requested)},
+            known_names,
+            stdout,
+            stderr,
+            summary,
+            output,
+        )
+
     def test_markers_and_numeric_codes_are_allowlisted_only(self) -> None:
         name = "suite::safe"
         private = "https://private.example/path?token=secret /home/runner/alice alice@example.com"
@@ -300,6 +560,68 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertEqual(result["failure_code"], "named_test_failed")
         self.assertEqual(result["failure_evidence"]["cargo_summary_failed_count"], 1)
         self.assertEqual(result["failure_evidence"]["failed_name_distinct_count"], 1)
+
+    def test_non_core_target_does_not_prebuild_runtime_binaries(self) -> None:
+        request = {
+            **CoreIntegrationRuntimePreparationTests.request,
+            "package": "codex-test",
+            "target_kind": "lib",
+            "target": "",
+        }
+        inventory = subprocess.CompletedProcess(
+            ["cargo", "test"], 0, stdout="suite::selected: test\n", stderr=""
+        )
+        execution = subprocess.CompletedProcess(
+            ["cargo", "test"],
+            0,
+            stdout=(
+                "test suite::selected ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n"
+            ),
+            stderr="",
+        )
+        record = {
+            "inventory_argv": ("cargo", "test", "--list"),
+            "execution_argv": ("cargo", "test"),
+        }
+        source_sha = CoreIntegrationRuntimePreparationTests.source_sha
+        with (
+            patch.dict(
+                "os.environ", {"VALIDATION_TARGET_SHA": source_sha}, clear=True
+            ),
+            patch.object(named_tests, "select_target", return_value=record),
+            patch.object(named_tests, "git_sha", return_value=source_sha),
+            patch.object(
+                named_tests.subprocess, "run", side_effect=[inventory, execution]
+            ) as run,
+        ):
+            result = named_tests.run_request(request, Path("/host/target"))
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("runtime_preparation", result)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [list(record["inventory_argv"]), list(record["execution_argv"])],
+        )
+
+    def test_unknown_target_is_rejected_without_runtime_action(self) -> None:
+        with (
+            patch.object(
+                named_tests,
+                "select_target",
+                side_effect=ValueError(
+                    "request target selector is not in the committed catalog"
+                ),
+            ),
+            patch.object(named_tests.subprocess, "run") as run,
+        ):
+            result = named_tests.run_request(
+                CoreIntegrationRuntimePreparationTests.request, Path("/host/target")
+            )
+
+        self.assertEqual(result["failure_code"], "target_selector_unknown")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

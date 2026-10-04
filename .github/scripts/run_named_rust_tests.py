@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,32 @@ MAX_FAILURE_BLOCKS = 8
 MAX_FAILURE_EVIDENCE_BYTES = 350 * 1024
 MAX_FAILURE_BLOCK_EVIDENCE_CHARS = 2048
 MAX_FAILURE_MARKERS_PER_BLOCK = 16
+CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
+CORE_RUNTIME_BUILDS = (
+    (
+        "codex-code-mode-host",
+        (
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "codex-code-mode-host",
+            "--bin",
+            "codex-code-mode-host",
+        ),
+    ),
+    (
+        "codex",
+        ("cargo", "build", "--locked", "-p", "codex-cli", "--bin", "codex"),
+    ),
+)
+CORE_RUNTIME_ENV_KEYS = {
+    "codex-code-mode-host": (
+        "CARGO_BIN_EXE_codex-code-mode-host",
+        "CARGO_BIN_EXE_codex_code_mode_host",
+    ),
+    "codex": ("CARGO_BIN_EXE_codex",),
+}
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -321,6 +348,199 @@ def cargo_args(
     if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
         raise ValueError("command catalog entry is not a complete argv tuple")
     return list(command)
+
+
+def _core_runtime_target_dir(manifest_root: Path, env: dict[str, str]) -> Path | None:
+    """Resolve only target-directory forms whose Cargo output location is exact."""
+
+    if env.get("CARGO_BUILD_TARGET"):
+        return None
+    configured_target_dir = env.get("CARGO_TARGET_DIR")
+    if configured_target_dir is None:
+        target_dir = manifest_root / "target"
+    else:
+        target_dir = Path(configured_target_dir)
+        if not target_dir.is_absolute():
+            return None
+    return target_dir / "debug"
+
+
+def _core_runtime_binary_state(path: Path) -> tuple[bool, bool]:
+    """Return regular-file and executable state without exposing the path."""
+
+    try:
+        is_regular_file = stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False, False
+    return is_regular_file, is_regular_file and os.access(path, os.X_OK)
+
+
+def _runtime_binary_evidence(
+    name: str,
+    env: dict[str, str],
+    *,
+    before: tuple[bool, bool] | None,
+    after: tuple[bool, bool] | None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "env_key_set": {
+            key: key in env for key in CORE_RUNTIME_ENV_KEYS[name]
+        },
+        "regular_file_before": None if before is None else before[0],
+        "executable_before": None if before is None else before[1],
+        "regular_file_after": None if after is None else after[0],
+        "executable_after": None if after is None else after[1],
+    }
+
+
+def prepare_core_integration_runtime(
+    request: dict[str, Any],
+    manifest_root: Path,
+    env: dict[str, str],
+    source_sha: str,
+) -> dict[str, Any] | None:
+    """Build and prove the fixed cross-package binaries for core/all only."""
+
+    if (
+        request["package"],
+        request["target_kind"],
+        request["target"],
+    ) != CORE_RUNTIME_TARGET:
+        return None
+
+    supplied_sha = env.get("VALIDATION_TARGET_SHA", "")
+    expected_sha = (
+        supplied_sha if re.fullmatch(r"[0-9a-f]{40}", supplied_sha) else ""
+    )
+    evidence: dict[str, Any] = {
+        "status": "failure",
+        "source_sha": source_sha,
+        "expected_target_sha": expected_sha,
+        "source_identity_matches": bool(
+            re.fullmatch(r"[0-9a-f]{40}", source_sha)
+            and re.fullmatch(r"[0-9a-f]{40}", expected_sha)
+            and source_sha == expected_sha
+        ),
+        "target_dir_context": "unsupported",
+        "builds": [],
+        "binaries": [],
+    }
+    if not evidence["source_identity_matches"]:
+        evidence["failure_reason"] = "source_identity_mismatch"
+        return evidence
+
+    binary_dir = _core_runtime_target_dir(manifest_root, env)
+    if binary_dir is None:
+        evidence["failure_reason"] = "unsupported_target_dir_context"
+        evidence["binaries"] = [
+            _runtime_binary_evidence(name, env, before=None, after=None)
+            for name, _ in CORE_RUNTIME_BUILDS
+        ]
+        return evidence
+    evidence["target_dir_context"] = (
+        "absolute_override" if "CARGO_TARGET_DIR" in env else "workspace_default"
+    )
+
+    before_states: dict[str, tuple[bool, bool]] = {}
+    for name, _ in CORE_RUNTIME_BUILDS:
+        before_states[name] = _core_runtime_binary_state(binary_dir / name)
+
+    evidence["binaries"] = [
+        _runtime_binary_evidence(
+            name,
+            env,
+            before=before_states[name],
+            after=None,
+        )
+        for name, _ in CORE_RUNTIME_BUILDS
+    ]
+    if any(
+        key in env
+        for name, _ in CORE_RUNTIME_BUILDS
+        for key in CORE_RUNTIME_ENV_KEYS[name]
+    ):
+        evidence["failure_reason"] = "unexpected_binary_environment_override"
+        return evidence
+    if any(regular or executable for regular, executable in before_states.values()):
+        evidence["failure_reason"] = "binary_present_before_build"
+        return evidence
+
+    for name, command in CORE_RUNTIME_BUILDS:
+        try:
+            completed = subprocess.run(
+                list(command),
+                cwd=manifest_root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+        except OSError:
+            evidence["builds"].append(
+                {"name": name, "status": "launch_failed", "exit_code": None}
+            )
+            evidence["failure_reason"] = "binary_build_failed"
+            after_states = {
+                item_name: _core_runtime_binary_state(binary_dir / item_name)
+                for item_name, _ in CORE_RUNTIME_BUILDS
+            }
+            evidence["binaries"] = [
+                _runtime_binary_evidence(
+                    item_name,
+                    env,
+                    before=before_states[item_name],
+                    after=after_states[item_name],
+                )
+                for item_name, _ in CORE_RUNTIME_BUILDS
+            ]
+            return evidence
+        build_succeeded = completed.returncode == 0
+        evidence["builds"].append(
+            {
+                "name": name,
+                "status": "success" if build_succeeded else "failure",
+                "exit_code": completed.returncode,
+            }
+        )
+        if not build_succeeded:
+            evidence["failure_reason"] = "binary_build_failed"
+            after_states = {
+                item_name: _core_runtime_binary_state(binary_dir / item_name)
+                for item_name, _ in CORE_RUNTIME_BUILDS
+            }
+            evidence["binaries"] = [
+                _runtime_binary_evidence(
+                    item_name,
+                    env,
+                    before=before_states[item_name],
+                    after=after_states[item_name],
+                )
+                for item_name, _ in CORE_RUNTIME_BUILDS
+            ]
+            return evidence
+
+    after_states = {
+        name: _core_runtime_binary_state(binary_dir / name)
+        for name, _ in CORE_RUNTIME_BUILDS
+    }
+    evidence["binaries"] = [
+        _runtime_binary_evidence(
+            name,
+            env,
+            before=before_states[name],
+            after=after_states[name],
+        )
+        for name, _ in CORE_RUNTIME_BUILDS
+    ]
+    if not all(
+        regular and executable for regular, executable in after_states.values()
+    ):
+        evidence["failure_reason"] = "binary_missing_or_not_executable"
+        return evidence
+    evidence["status"] = "success"
+    return evidence
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -678,6 +898,34 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # These are the established hosted-runner contracts.  Do not accept them
     # from the request: the request selects tests, never runner capabilities.
     env.setdefault("RUST_MIN_STACK", "8388608")
+    source_sha = ""
+    runtime_preparation = None
+    if (
+        request["package"],
+        request["target_kind"],
+        request["target"],
+    ) == CORE_RUNTIME_TARGET:
+        source_sha = git_sha(repo_root)
+        runtime_preparation = prepare_core_integration_runtime(
+            request, manifest_root, env, source_sha
+        )
+    if runtime_preparation is not None and runtime_preparation["status"] != "success":
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failure",
+            "failure_code": "runtime_preparation_failed",
+            "message": "required core integration runtime preparation failed",
+            "request": request,
+            "request_fingerprint": hashlib.sha256(
+                json.dumps(
+                    request, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest(),
+            "candidate_sha": source_sha,
+            "runtime_preparation": runtime_preparation,
+            "inventory": {"status": "not-run", "tests": []},
+            "tests": [],
+        }
     # Both subprocess commands are complete tuples from the closed catalog.
     # Request fields select a catalog entry and never form an argv element.
     inventory_command = cargo_args(
@@ -713,7 +961,12 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         "request_fingerprint": hashlib.sha256(
             json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
-        "candidate_sha": git_sha(repo_root),
+        "candidate_sha": source_sha or git_sha(repo_root),
+        **(
+            {"runtime_preparation": runtime_preparation}
+            if runtime_preparation is not None
+            else {}
+        ),
         "inventory": {
             "status": "success",
             "test_count": len(names),
