@@ -32,6 +32,11 @@ MAX_REQUEST_CHARS = 32768
 MAX_DIAGNOSTIC_CHARS = 4096
 MAX_MATCHED_TEST_LINES = 4
 MAX_MATCHED_TEST_LINE_CHARS = 512
+MAX_FAILURE_NAMES = 1024
+MAX_FAILURE_BLOCKS = 8
+MAX_FAILURE_EVIDENCE_BYTES = 350 * 1024
+MAX_FAILURE_BLOCK_EVIDENCE_CHARS = 2048
+MAX_FAILURE_MARKERS_PER_BLOCK = 16
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -41,6 +46,47 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+FAILURE_HEADER_RE = re.compile(
+    r"^---- (?P<name>.{1,256}) (?P<channel>stdout|stderr) ----$"
+)
+FAILURE_MARKER_PATTERNS = (
+    ("permission-denied", re.compile(r"\bpermission denied\b", re.IGNORECASE)),
+    (
+        "operation-not-permitted",
+        re.compile(r"\boperation not permitted\b", re.IGNORECASE),
+    ),
+    ("no-such-file", re.compile(r"\bno such file or directory\b", re.IGNORECASE)),
+    ("not-found", re.compile(r"\bnot found\b", re.IGNORECASE)),
+    ("broken-pipe", re.compile(r"\bbroken pipe\b", re.IGNORECASE)),
+    ("connection-refused", re.compile(r"\bconnection refused\b", re.IGNORECASE)),
+    ("connection-reset", re.compile(r"\bconnection reset\b", re.IGNORECASE)),
+    ("timed-out", re.compile(r"\btimed out\b|\btimeout\b", re.IGNORECASE)),
+    (
+        "resource-unavailable",
+        re.compile(
+            r"\bresource temporarily unavailable\b|\bwould block\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "assertion-failed",
+        re.compile(r"\bassertion(?: `[^`]{0,64}`)? failed\b", re.IGNORECASE),
+    ),
+    (
+        "unwrap-error",
+        re.compile(r"\bcalled `(?:Result|Option)::unwrap\(\)`", re.IGNORECASE),
+    ),
+    ("panicked", re.compile(r"\bpanicked\b|\bthread .* panicked\b", re.IGNORECASE)),
+)
+OS_ERROR_CODE_RE = re.compile(r"\bOs\s*\{\s*code:\s*(\d{1,5})\b")
+HTTP_STATUS_CODE_RE = re.compile(
+    r"\b(?:HTTP(?:/\d(?:\.\d)?)?\s+|status(?: code)?[:= ]+)([1-5]\d{2})\b",
+    re.IGNORECASE,
+)
+PROCESS_EXIT_CODE_RE = re.compile(
+    r"\b(?:exit(?:ed)? (?:with )?status|exit code)[:= ]+(-?\d{1,5})\b",
+    re.IGNORECASE,
+)
 
 
 def bounded_diagnostic(value: str | None) -> str:
@@ -49,7 +95,9 @@ def bounded_diagnostic(value: str | None) -> str:
     text = str(value or "").strip()
     if len(text) <= MAX_DIAGNOSTIC_CHARS:
         return text
-    return "...[truncated; see hosted job log]...\n" + text[-MAX_DIAGNOSTIC_CHARS:]
+    return "...[truncated; only the bounded captured tail is retained]...\n" + text[
+        -MAX_DIAGNOSTIC_CHARS:
+    ]
 
 
 def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
@@ -308,6 +356,301 @@ def test_outcome_lines(output: str) -> dict[str, list[str]]:
     return lines
 
 
+def _is_header_candidate(line: str) -> bool:
+    return line.startswith("---- ") and (
+        line.endswith(" stdout ----") or line.endswith(" stderr ----")
+    )
+
+
+def _failure_markers_for_line(line: str) -> tuple[set[str], set[tuple[str, int]]]:
+    markers = {
+        marker
+        for marker, pattern in FAILURE_MARKER_PATTERNS
+        if pattern.search(line)
+    }
+    numeric_captures: set[tuple[str, int]] = set()
+    for kind, pattern in (
+        ("os-error-code", OS_ERROR_CODE_RE),
+        ("http-status-code", HTTP_STATUS_CODE_RE),
+        ("process-exit-code", PROCESS_EXIT_CODE_RE),
+    ):
+        numeric_captures.update((kind, int(value)) for value in pattern.findall(line))
+    if any(kind == "http-status-code" for kind, _ in numeric_captures):
+        markers.add("http-error")
+    return markers, numeric_captures
+
+
+def _finish_failure_block(block: dict[str, Any]) -> dict[str, Any]:
+    markers = sorted(block.pop("_markers"))
+    numeric_captures = sorted(block.pop("_numeric_captures"))
+    markers_truncated = len(markers) > MAX_FAILURE_MARKERS_PER_BLOCK
+    numeric_truncated = len(numeric_captures) > MAX_FAILURE_MARKERS_PER_BLOCK
+    block["markers"] = markers[:MAX_FAILURE_MARKERS_PER_BLOCK]
+    block["numeric_captures"] = [
+        {"kind": kind, "value": value}
+        for kind, value in numeric_captures[:MAX_FAILURE_MARKERS_PER_BLOCK]
+    ]
+    block["markers_truncated"] = markers_truncated
+    block["numeric_captures_truncated"] = numeric_truncated
+    block["evidence_truncated"] = markers_truncated or numeric_truncated
+
+    def encoded_size() -> int:
+        return len(json.dumps(block, sort_keys=True, separators=(",", ":")))
+
+    while encoded_size() > MAX_FAILURE_BLOCK_EVIDENCE_CHARS:
+        if block["numeric_captures"]:
+            block["numeric_captures"].pop()
+            block["numeric_captures_truncated"] = True
+        elif block["markers"]:
+            block["markers"].pop()
+            block["markers_truncated"] = True
+        else:
+            break
+        block["evidence_truncated"] = True
+    block["evidence_char_count"] = encoded_size()
+    return block
+
+
+def parse_failure_blocks(
+    stdout: str, stderr: str, known_test_names: set[str]
+) -> dict[str, Any]:
+    """Extract bounded, safe observations from captured Rust failure blocks.
+
+    Stream-local ordinals are deterministic provenance, not a cross-stream
+    chronology claim. Captured block text is scanned but never retained.
+    """
+
+    parsed_blocks: list[dict[str, Any]] = []
+    stream_metadata: dict[str, dict[str, int | str]] = {}
+    for stream_name, source in (("stdout", stdout), ("stderr", stderr)):
+        candidate_count = 0
+        unrecognized_count = 0
+        stream_block_count = 0
+        active: dict[str, Any] | None = None
+
+        def finish_active() -> None:
+            nonlocal active
+            if active is not None:
+                parsed_blocks.append(_finish_failure_block(active))
+                active = None
+
+        for raw_line in source.splitlines(keepends=True):
+            line = raw_line.rstrip("\r\n")
+            if line == "failures:":
+                finish_active()
+                break
+            if _is_header_candidate(line):
+                finish_active()
+                candidate_count += 1
+                match = FAILURE_HEADER_RE.fullmatch(line)
+                if (
+                    match is None
+                    or not TEST_RE.fullmatch(match.group("name"))
+                    or match.group("name") not in known_test_names
+                ):
+                    unrecognized_count += 1
+                    continue
+                stream_block_count += 1
+                active = {
+                    "name": match.group("name"),
+                    "source_stream": stream_name,
+                    "stream_ordinal": stream_block_count,
+                    "channel": match.group("channel"),
+                    "original_char_count": 0,
+                    "_markers": set(),
+                    "_numeric_captures": set(),
+                }
+                continue
+            if active is not None:
+                active["original_char_count"] += len(raw_line)
+                markers, numeric_captures = _failure_markers_for_line(line)
+                active["_markers"].update(markers)
+                active["_numeric_captures"].update(numeric_captures)
+        finish_active()
+        status = (
+            "parsed"
+            if stream_block_count
+            else "unrecognized"
+            if candidate_count
+            else "none"
+        )
+        stream_metadata[stream_name] = {
+            "status": status,
+            "source_char_count": len(source),
+            "header_candidate_count": candidate_count,
+            "parsed_header_count": stream_block_count,
+            "unrecognized_header_count": unrecognized_count,
+            "capture_truncated": False,
+        }
+
+    if parsed_blocks:
+        source_status = "parsed"
+    elif any(stream["header_candidate_count"] for stream in stream_metadata.values()):
+        source_status = "unrecognized"
+    else:
+        source_status = "none"
+    return {
+        "source_status": source_status,
+        "streams": stream_metadata,
+        "blocks": parsed_blocks,
+        "block_count": len(parsed_blocks),
+        "unrecognized_block_count": sum(
+            int(stream["unrecognized_header_count"])
+            for stream in stream_metadata.values()
+        ),
+    }
+
+
+def failure_evidence(
+    request: dict[str, Any],
+    known_test_names: set[str],
+    stdout: str,
+    stderr: str,
+    summary_counts: dict[str, int] | None,
+    combined_output: str,
+) -> dict[str, Any]:
+    """Build one bounded top-level failure observation without raw test text."""
+
+    stream_outcomes = {
+        "stdout": test_outcomes(stdout),
+        "stderr": test_outcomes(stderr),
+    }
+    all_failed_names: list[str] = []
+    failed_occurrences_by_name: dict[str, int] = {}
+    for stream_name in ("stdout", "stderr"):
+        for name, statuses in stream_outcomes[stream_name].items():
+            failed_count = statuses.count("FAILED")
+            if not failed_count:
+                continue
+            if name not in failed_occurrences_by_name:
+                all_failed_names.append(name)
+                failed_occurrences_by_name[name] = 0
+            failed_occurrences_by_name[name] += failed_count
+
+    safe_failed_names = [
+        name
+        for name in all_failed_names
+        if TEST_RE.fullmatch(name) and name in known_test_names
+    ]
+    invalid_failed_name_count = len(all_failed_names) - len(safe_failed_names)
+    requested_failed_names = [
+        name
+        for name in request["tests"]
+        if name in failed_occurrences_by_name
+        and TEST_RE.fullmatch(name)
+        and name in known_test_names
+    ]
+    ordered_names = [
+        *requested_failed_names,
+        *(name for name in safe_failed_names if name not in requested_failed_names),
+    ]
+
+    blocks = parse_failure_blocks(stdout, stderr, known_test_names)
+    requested_order = {
+        name: index for index, name in enumerate(requested_failed_names)
+    }
+    stream_order = {"stdout": 0, "stderr": 1}
+    requested_blocks = sorted(
+        (
+            block
+            for block in blocks["blocks"]
+            if block["name"] in requested_order
+        ),
+        key=lambda block: (
+            requested_order[block["name"]],
+            stream_order[block["source_stream"]],
+            block["stream_ordinal"],
+        ),
+    )
+    other_blocks = sorted(
+        (
+            block
+            for block in blocks["blocks"]
+            if block["name"] not in requested_order
+        ),
+        key=lambda block: (
+            stream_order[block["source_stream"]],
+            block["stream_ordinal"],
+        ),
+    )
+    prioritized_blocks = [*requested_blocks, *other_blocks]
+    selected_blocks = prioritized_blocks[:MAX_FAILURE_BLOCKS]
+    for block in selected_blocks:
+        block["requested_failed_selector"] = block["name"] in requested_order
+        block["evidence_char_count"] = 0
+        while True:
+            actual_chars = len(json.dumps(block, sort_keys=True, separators=(",", ":")))
+            if block["evidence_char_count"] == actual_chars:
+                break
+            block["evidence_char_count"] = actual_chars
+    matched_requested_blocks = {block["name"] for block in requested_blocks}
+    unmatched_requested = [
+        name for name in requested_failed_names if name not in matched_requested_blocks
+    ]
+
+    summary_match_count = len(list(TEST_RESULT_RE.finditer(combined_output)))
+    evidence: dict[str, Any] = {
+        "source_status": blocks["source_status"],
+        "streams": blocks["streams"],
+        "failed_name_ordering": (
+            "requested selectors first, then first-seen stdout and stderr outcomes"
+        ),
+        "parsed_block_count": blocks["block_count"],
+        "emitted_block_count": len(selected_blocks),
+        "omitted_block_count": blocks["block_count"] - len(selected_blocks),
+        "unrecognized_block_count": blocks["unrecognized_block_count"],
+        "block_ordering": (
+            "requested failed selectors first, then stdout/stderr stream-local "
+            "ordinals; not chronology"
+        ),
+        "blocks_truncated": len(selected_blocks) < blocks["block_count"],
+        "blocks": selected_blocks,
+        "failed_name_occurrence_count": sum(failed_occurrences_by_name.values()),
+        "failed_name_distinct_count": len(failed_occurrences_by_name),
+        "safe_failed_name_count": len(safe_failed_names),
+        "unsafe_or_unknown_failed_name_count": invalid_failed_name_count,
+        "failed_names": ordered_names[:MAX_FAILURE_NAMES],
+        "failed_names_omitted_count": max(0, len(ordered_names) - MAX_FAILURE_NAMES),
+        "failed_names_truncated": len(ordered_names) > MAX_FAILURE_NAMES,
+        "requested_failed_selectors": requested_failed_names,
+        "requested_failed_selectors_without_blocks": unmatched_requested,
+        "cargo_summary_status": (
+            "parsed"
+            if summary_match_count == 1
+            else "none"
+            if summary_match_count == 0
+            else "unrecognized"
+        ),
+        "cargo_summary_failed_count": (
+            summary_counts["failed"] if summary_counts is not None else None
+        ),
+        "capture_truncated": False,
+        "upstream_output_truncation": "unknown",
+    }
+
+    evidence["structured_evidence_bytes"] = 0
+    while True:
+        actual_size = len(json.dumps(evidence, sort_keys=True).encode("utf-8"))
+        if actual_size <= MAX_FAILURE_EVIDENCE_BYTES:
+            if evidence["structured_evidence_bytes"] != actual_size:
+                evidence["structured_evidence_bytes"] = actual_size
+                continue
+            break
+        if evidence["failed_names"]:
+            evidence["failed_names"].pop()
+            evidence["failed_names_omitted_count"] += 1
+            evidence["failed_names_truncated"] = True
+            continue
+        if evidence["blocks"]:
+            evidence["blocks"].pop()
+            evidence["emitted_block_count"] -= 1
+            evidence["omitted_block_count"] += 1
+            evidence["blocks_truncated"] = True
+            continue
+        break
+    return evidence
+
+
 def matched_test_evidence(lines: list[str]) -> dict[str, Any]:
     """Bound selector evidence while retaining the total exact line count."""
 
@@ -404,6 +747,14 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     counts = test_result_counts(output)
     outcomes = test_outcomes(output)
     outcome_lines = test_outcome_lines(output)
+    result["failure_evidence"] = failure_evidence(
+        request,
+        {name for name in names if TEST_RE.fullmatch(name)},
+        completed.stdout,
+        completed.stderr,
+        counts,
+        output,
+    )
     for name in request["tests"]:
         observed = outcomes.get(name, [])
         matched_lines = outcome_lines.get(name, [])
@@ -441,7 +792,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             result["failure_code"] = failure_code
             result["message"] = (
                 "named test did not produce exactly one non-ignored passing result; "
-                "see bounded diagnostics and the hosted job log"
+                "only bounded captured diagnostics are retained"
             )
             break
     return result
