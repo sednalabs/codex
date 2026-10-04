@@ -29,8 +29,9 @@ def _open_agents(
     # before Enter so paste-burst handling cannot turn the command into text.
     tui.until_screen("Ask Codex to do anything")
     tui.send("/agents")
-    popup = tui.until("open the agent command center")
-    assert "/agents" in popup, popup
+    popup = tui.until_screen("open the agent command center")
+    popup_text = " ".join(popup.split())
+    assert "/agents open the agent command center" in popup_text, popup
     tui.send("\r")
     return tui.until_screen(
         "Agent command center",
@@ -41,8 +42,9 @@ def _open_agents(
 def _open_subagents(tui: PackagedTui) -> str:
     tui.until_screen("Ask Codex to do anything")
     tui.send("/subagents")
-    popup = tui.until("switch between this session's subagents")
-    assert "/subagents" in popup, popup
+    popup = tui.until_screen("session's subagents")
+    popup_text = " ".join(popup.split())
+    assert "/subagents switch between this session's subagents" in popup_text, popup
     tui.send("\r")
     return tui.until_screen(
         "Subagents",
