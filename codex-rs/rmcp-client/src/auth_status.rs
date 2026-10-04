@@ -703,7 +703,6 @@ mod tests {
     #[tokio::test]
     async fn discover_streamable_http_oauth_returns_normalized_scopes() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
-            "issuer": "https://example.com",
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
             "device_authorization_endpoint": "https://example.com/device",
@@ -731,7 +730,7 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
-                issuer: Some("https://example.com".to_string()),
+                issuer: Some(server.url.clone()),
                 device_authorization_endpoint: Some("https://example.com/device".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 registration_endpoint: Some("https://example.com/register".to_string()),
@@ -746,7 +745,6 @@ mod tests {
     #[tokio::test]
     async fn malformed_device_metadata_is_not_advertised_as_usable() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
-            "issuer": "https://example.com",
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
             "device_authorization_endpoint": {"unexpected": "object"},
