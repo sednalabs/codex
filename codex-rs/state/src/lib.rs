@@ -10,6 +10,8 @@ const _: () = assert!(
 );
 
 mod audit;
+mod control_plane_usage;
+mod control_plane_usage_reader;
 mod extract;
 pub mod log_db;
 mod migrations;
@@ -39,6 +41,13 @@ pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;
+pub use control_plane_usage::{
+    read_control_plane_usage_snapshot, ResponseIdentity, StandardRateScenarioEstimate,
+    StrictCreditEstimate, UsageCallRow, UsageCreditScenario, UsageLineage, UsageSnapshot,
+    UsageSnapshotCoverage, UsageSnapshotReadError, UsageSnapshotReadObservation,
+    UsageSnapshotReadRequest, UsageSnapshotSource, UsageSnapshotSourceKind,
+    UsageSnapshotSourceProvenance, UsageSourcePlane, ResponseAccountScope,
+};
 pub use extract::GUARDIAN_THREAD_PREVIEW;
 pub use extract::GUARDIAN_THREAD_TITLE;
 /// Low-level storage engine: useful for focused tests.
