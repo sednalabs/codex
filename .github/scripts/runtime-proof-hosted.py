@@ -4,11 +4,13 @@
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
 import sys
+import tempfile
+import uuid
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,26 +51,30 @@ LIBRARY_TEST_TARGETS = {
     "codex-core": ("codex_core", "core/src/lib.rs"),
     "codex-exec": ("codex_exec", "exec/src/lib.rs"),
 }
-LIBRARY_RUNTIME_ENV_KEYS = (
-    "CARGO",
-    "CARGO_MANIFEST_DIR",
-    "CARGO_MANIFEST_PATH",
-    "CARGO_PKG_VERSION",
-    "CARGO_PKG_VERSION_MAJOR",
-    "CARGO_PKG_VERSION_MINOR",
-    "CARGO_PKG_VERSION_PATCH",
-    "CARGO_PKG_VERSION_PRE",
-    "CARGO_PKG_NAME",
-    "CARGO_PKG_DESCRIPTION",
-    "CARGO_PKG_HOMEPAGE",
-    "CARGO_PKG_REPOSITORY",
-    "CARGO_PKG_LICENSE",
-    "CARGO_PKG_LICENSE_FILE",
-    "CARGO_PKG_AUTHORS",
-    "CARGO_PKG_RUST_VERSION",
-    "CARGO_PKG_README",
-)
 LINUX_HOST_TARGET = "x86_64-unknown-linux-gnu"
+RUNNER_MODE = "--cargo-runtime-proof-runner"
+RUNNER_BINDING_KEYS = {
+    "schema_version",
+    "invocation_id",
+    "package",
+    "head",
+    "script_sha256",
+    "cwd",
+    "artifact_relative_path",
+    "artifact_sha256",
+}
+RUNNER_RESULT_KEYS = {
+    "schema_version",
+    "invocation_id",
+    "package",
+    "head",
+    "script_sha256",
+    "cwd",
+    "artifact_relative_path",
+    "artifact_sha256",
+    "process",
+}
+MAX_RUNNER_RECORD_BYTES = 8192
 TARGET_IDENTITY_FIELDS = ("name", "kind", "crate_types", "src_path", "edition", "test", "doctest")
 EXPECTED_FORMAT_PACKAGES = [
     "codex-runtime-proof",
@@ -434,158 +440,395 @@ def parse_test_summaries(output: str) -> list[dict[str, int | str]]:
     return summaries
 
 
-def cargo_package_runtime_variables(
-    package: dict[str, Any], cargo_executable: str
-) -> dict[str, str]:
-    version = package.get("version")
-    version_match = (
-        re.fullmatch(
-            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-            r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-            r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?",
-            version,
-        )
-        if isinstance(version, str)
-        else None
-    )
-    if not version_match or any(
-        len(part) > 20 or int(part) > 18446744073709551615
-        for part in version_match.groups()[:3]
-    ):
-        refuse("selected Cargo package version metadata is invalid")
-    prerelease = version_match.group(4)
-    if prerelease and any(
-        identifier.isdecimal() and len(identifier) > 1 and identifier.startswith("0")
-        for identifier in prerelease.split(".")
-    ):
-        refuse("selected Cargo package version metadata is invalid")
-
-    manifest_value = package.get("manifest_path")
-    if not isinstance(manifest_value, str):
-        refuse("selected Cargo package manifest metadata is invalid")
-    manifest_path = Path(manifest_value)
-    if not manifest_path.is_absolute():
-        refuse("selected Cargo package manifest metadata is invalid")
-    manifest_path = manifest_path.resolve(strict=True)
-    package_root = manifest_path.parent
-
-    authors = package.get("authors")
-    if not isinstance(authors, list) or not all(isinstance(item, str) for item in authors):
-        refuse("selected Cargo package author metadata is invalid")
-
-    def optional_metadata_string(key: str) -> str:
-        value = package.get(key)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            refuse("selected Cargo package metadata is invalid")
-        return value
-
-    name = package.get("name")
-    if not isinstance(name, str) or not name:
-        refuse("selected Cargo package name metadata is invalid")
-    variables = {
-        "CARGO": cargo_executable,
-        "CARGO_MANIFEST_DIR": str(package_root),
-        "CARGO_MANIFEST_PATH": str(manifest_path),
-        "CARGO_PKG_VERSION": version,
-        "CARGO_PKG_VERSION_MAJOR": version_match.group(1),
-        "CARGO_PKG_VERSION_MINOR": version_match.group(2),
-        "CARGO_PKG_VERSION_PATCH": version_match.group(3),
-        "CARGO_PKG_VERSION_PRE": version_match.group(4) or "",
-        "CARGO_PKG_NAME": name,
-        "CARGO_PKG_DESCRIPTION": optional_metadata_string("description"),
-        "CARGO_PKG_HOMEPAGE": optional_metadata_string("homepage"),
-        "CARGO_PKG_REPOSITORY": optional_metadata_string("repository"),
-        "CARGO_PKG_LICENSE": optional_metadata_string("license"),
-        "CARGO_PKG_LICENSE_FILE": optional_metadata_string("license_file"),
-        "CARGO_PKG_AUTHORS": ":".join(authors),
-        "CARGO_PKG_RUST_VERSION": optional_metadata_string("rust_version"),
-        "CARGO_PKG_README": optional_metadata_string("readme"),
+def make_runner_binding(
+    package: str,
+    head: str,
+    script_sha256: str,
+    cwd: str,
+    artifact_relative_path: str,
+    artifact_sha256: str,
+    invocation_id: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "invocation_id": invocation_id,
+        "package": package,
+        "head": head,
+        "script_sha256": script_sha256,
+        "cwd": cwd,
+        "artifact_relative_path": artifact_relative_path,
+        "artifact_sha256": artifact_sha256,
     }
-    if tuple(variables) != LIBRARY_RUNTIME_ENV_KEYS:
-        refuse("Cargo package runtime environment inventory changed")
-    return variables
 
 
-def cargo_native_directories(linked_paths: list[str], root_output: str) -> list[str]:
-    cargo_kinds = {"native", "crate", "dependency", "framework", "all"}
-    root = Path(root_output)
-    native_dirs = set()
-    for raw_path in linked_paths:
-        kind, separator, path_value = raw_path.partition("=")
-        if separator and kind in cargo_kinds:
-            raw_path = path_value
-        candidate = Path(raw_path)
-        if candidate.is_absolute() and candidate.is_relative_to(root):
-            native_dirs.add(str(candidate))
-    return sorted(native_dirs)
-
-
-def cargo_runtime_search_path_value(
-    native_dirs: list[str],
-    root_output: str,
-    deps_output: str,
-    sysroot_libdir: str,
-    inherited_path: str | None,
-) -> str:
-    search_path = [*native_dirs, root_output, deps_output, sysroot_libdir]
-    inherited = inherited_path.split(os.pathsep) if inherited_path is not None else []
-    if inherited[: len(search_path)] == search_path:
-        search_path = inherited
-    else:
-        search_path.extend(inherited)
-    return os.pathsep.join(search_path)
-
-
-def cargo_runtime_search_path(
-    linked_paths: list[str],
-    root_output: Path,
-    deps_output: Path,
-    sysroot_libdir: Path,
-    inherited_path: str | None,
-) -> str:
-    root_output = root_output.resolve(strict=True)
-    deps_output = deps_output.resolve(strict=True)
-    sysroot_libdir = sysroot_libdir.resolve(strict=True)
-    if not all(path.is_dir() for path in (root_output, deps_output, sysroot_libdir)):
-        refuse("Cargo runtime library search directory is unavailable")
-
-    if not all(isinstance(raw_path, str) for raw_path in linked_paths):
-        refuse("Cargo build-script library path metadata is invalid")
-    native_dirs = []
-    for raw_path in cargo_native_directories(linked_paths, str(root_output)):
-        candidate = Path(raw_path)
-        try:
-            canonical_candidate = candidate.resolve(strict=True)
-        except OSError:
-            refuse("Cargo build-script library path is unavailable")
-        if (
-            canonical_candidate != candidate
-            or not canonical_candidate.is_dir()
-            or not canonical_candidate.is_relative_to(root_output)
-        ):
-            refuse("Cargo build-script library path is invalid")
-        native_dirs.append(canonical_candidate)
-
-    return cargo_runtime_search_path_value(
-        [str(path) for path in native_dirs],
-        str(root_output),
-        str(deps_output),
-        str(sysroot_libdir),
-        inherited_path,
+def valid_runner_binding(value: Any) -> bool:
+    if not isinstance(value, dict) or not isinstance(
+        value.get("artifact_relative_path"), str
+    ):
+        return False
+    package = value.get("package")
+    artifact_path = PurePosixPath(value["artifact_relative_path"])
+    expected_cwd = None
+    if isinstance(package, str) and package in EXPECTED_PACKAGE_MANIFESTS:
+        expected_cwd = "codex-rs/" + PurePosixPath(
+            EXPECTED_PACKAGE_MANIFESTS[package]
+        ).parent.as_posix()
+    return (
+        isinstance(value, dict)
+        and set(value) == RUNNER_BINDING_KEYS
+        and type(value.get("schema_version")) is int
+        and value["schema_version"] == 1
+        and package in CARGO_PACKAGES
+        and value.get("cwd") == expected_cwd
+        and isinstance(value.get("head"), str)
+        and re.fullmatch(r"[0-9a-f]{40}", value["head"]) is not None
+        and isinstance(value.get("script_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["script_sha256"]) is not None
+        and not artifact_path.is_absolute()
+        and bool(artifact_path.parts)
+        and ".." not in artifact_path.parts
+        and value["artifact_relative_path"] == artifact_path.as_posix()
+        and isinstance(value.get("artifact_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["artifact_sha256"]) is not None
+        and isinstance(value.get("invocation_id"), str)
+        and re.fullmatch(r"[0-9a-f]{32}", value["invocation_id"]) is not None
     )
 
 
-def compose_cargo_test_environment(
-    inherited_environment: dict[str, str],
-    package_variables: dict[str, str],
-    dylib_path: str,
-) -> dict[str, str]:
-    environment = dict(inherited_environment)
-    environment.update(package_variables)
-    environment["LD_LIBRARY_PATH"] = dylib_path
-    return environment
+def make_runner_result(
+    binding: dict[str, Any], process: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        **{key: binding[key] for key in RUNNER_BINDING_KEYS},
+        "process": process,
+    }
+
+
+def runner_process_result_shape(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "classification",
+            "exit_code",
+            "signal",
+            "test_summary_count",
+            "passed",
+            "failed",
+            "ignored",
+            "output_sha256",
+            "summaries",
+        }
+        and isinstance(value.get("classification"), str)
+        and value.get("classification")
+        in {
+            "passed",
+            "test_process_spawn_failure",
+            "test_process_status_unknown",
+            "test_process_signal",
+            "test_process_exit_failure",
+            "missing_test_summary",
+            "test_summary_failure",
+        }
+        and (
+            value.get("exit_code") is None
+            or type(value.get("exit_code")) is int
+        )
+        and (
+            value.get("signal") is None
+            or (type(value.get("signal")) is int and value["signal"] > 0)
+        )
+        and all(
+            type(value.get(key)) is int and value[key] >= 0
+            for key in ("test_summary_count", "passed", "failed", "ignored")
+        )
+        and isinstance(value.get("output_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", value["output_sha256"]) is not None
+        and isinstance(value.get("summaries"), list)
+        and all(
+            isinstance(summary, dict)
+            and set(summary) == {"status", "passed", "failed", "ignored"}
+            and isinstance(summary.get("status"), str)
+            and summary.get("status") in {"ok", "FAILED"}
+            and all(
+                type(summary.get(key)) is int and summary[key] >= 0
+                for key in ("passed", "failed", "ignored")
+            )
+            for summary in value["summaries"]
+        )
+    )
+
+
+def valid_runner_result(value: Any, binding: dict[str, Any]) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == RUNNER_RESULT_KEYS
+        and all(value.get(key) == binding.get(key) for key in RUNNER_BINDING_KEYS)
+        and runner_process_result_shape(value.get("process"))
+    )
+
+
+def runner_process_is_consistent(process: dict[str, Any]) -> bool:
+    summaries = process["summaries"]
+    classification = process["classification"]
+    if classification == "test_process_spawn_failure":
+        expected = cargo_library_process_result(
+            None, [], process["output_sha256"], spawn_failed=True
+        )
+    elif process["signal"] is not None:
+        expected = cargo_library_process_result(
+            -process["signal"], summaries, process["output_sha256"]
+        )
+    elif process["exit_code"] is not None:
+        expected = cargo_library_process_result(
+            process["exit_code"], summaries, process["output_sha256"]
+        )
+    else:
+        return False
+    return {**expected, "summaries": summaries} == process
+
+
+def runner_binding_bytes(binding: dict[str, Any]) -> bytes:
+    return (json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def write_private_runner_binding(path: Path, binding: dict[str, Any]) -> None:
+    payload = runner_binding_bytes(binding)
+    if len(payload) > MAX_RUNNER_RECORD_BYTES:
+        refuse("Cargo runner binding exceeds its fixed size limit")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError:
+        refuse("Cargo runner binding could not be created exclusively")
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                refuse("Cargo runner binding write was incomplete")
+            remaining = remaining[written:]
+    finally:
+        os.close(descriptor)
+
+
+def private_record_directory(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and not path.is_symlink()
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o700
+    )
+
+
+def read_private_runner_record(path: Path) -> Any | None:
+    directory = path.parent
+    if not private_record_directory(directory):
+        refuse("Cargo runner private result directory is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        refuse("Cargo runner result could not be opened safely")
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > MAX_RUNNER_RECORD_BYTES
+        ):
+            refuse("Cargo runner result file is invalid")
+        chunks = bytearray()
+        while len(chunks) <= MAX_RUNNER_RECORD_BYTES:
+            chunk = os.read(
+                descriptor,
+                MAX_RUNNER_RECORD_BYTES + 1 - len(chunks),
+            )
+            if not chunk:
+                break
+            chunks.extend(chunk)
+        payload = bytes(chunks)
+    finally:
+        os.close(descriptor)
+    if not payload or len(payload) > MAX_RUNNER_RECORD_BYTES:
+        return None
+    try:
+        return json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        return None
+
+
+def reserve_private_runner_result(path: Path) -> int:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        return os.open(path, flags, 0o600)
+    except OSError:
+        refuse("Cargo runner invocation could not be claimed exclusively")
+
+
+def write_reserved_runner_result(
+    descriptor: int, binding: dict[str, Any], process: dict[str, Any]
+) -> None:
+    result = make_runner_result(binding, process)
+    payload = (json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(payload) > MAX_RUNNER_RECORD_BYTES:
+        refuse("Cargo runner result exceeds its fixed size limit")
+    remaining = memoryview(payload)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            refuse("Cargo runner result write was incomplete")
+        remaining = remaining[written:]
+
+
+def runner_binding_path(path_value: str) -> tuple[Path, dict[str, Any]]:
+    path = Path(path_value)
+    if not path.is_absolute() or path.name != "binding.json":
+        refuse("Cargo runner binding path is invalid")
+    directory = path.parent
+    runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
+    try:
+        resolved_temp = runner_temp.resolve(strict=True)
+        resolved_directory = directory.resolve(strict=True)
+        if not resolved_directory.is_relative_to(resolved_temp):
+            refuse("Cargo runner binding path is outside the private runner directory")
+    except OSError:
+        refuse("Cargo runner private directory is unavailable")
+    if not private_record_directory(directory):
+        refuse("Cargo runner private directory is invalid")
+    record = read_private_runner_record(path)
+    if not valid_runner_binding(record):
+        refuse("Cargo runner binding record is invalid")
+    return path, record
+
+
+def check_runner_binary(binding: dict[str, Any], binary_arg: str) -> Path:
+    package = binding["package"]
+    target_name, _ = LIBRARY_TEST_TARGETS[package]
+    source_relative = EXPECTED_ARTIFACT_TARGETS[(package, target_name, "lib")]
+    manifest = load_manifest()
+    head, _ = verify_inputs(manifest)
+    if manifest["phase"] != "validate" or head != binding["head"]:
+        refuse("Cargo runner source binding does not match the validation candidate")
+    if sha256_file(Path(__file__).resolve(strict=True)) != binding["script_sha256"]:
+        refuse("Cargo runner script digest changed")
+    source_relative = f"codex-rs/{source_relative}"
+    expected_source_hash = manifest["product_inputs"].get(source_relative)
+    source_path = ROOT / source_relative
+    if (
+        expected_source_hash is None
+        or source_path.is_symlink()
+        or not source_path.is_file()
+        or sha256_file(source_path) != expected_source_hash
+    ):
+        refuse("Cargo runner package source binding changed")
+    expected_cwd = (
+        CODEX_RS / Path(EXPECTED_PACKAGE_MANIFESTS[package]).parent
+    ).resolve(strict=True)
+    try:
+        current_cwd = Path.cwd().resolve(strict=True)
+    except OSError:
+        refuse("Cargo runner package working directory is unavailable")
+    if current_cwd != expected_cwd:
+        refuse("Cargo runner package working directory does not match")
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", ""))
+    if not target_root.is_absolute():
+        refuse("Cargo runner target root is unavailable")
+    try:
+        target_root = target_root.resolve(strict=True)
+        relative = Path(binding["artifact_relative_path"])
+        expected_binary = target_root / relative
+        binary = Path(binary_arg)
+        if not binary.is_absolute():
+            binary = current_cwd / binary
+        binary = binary.resolve(strict=True)
+        expected_binary = expected_binary.resolve(strict=True)
+        binary.relative_to(target_root)
+    except (OSError, ValueError):
+        refuse("Cargo runner executable path is outside the bound target")
+    if (
+        binary != expected_binary
+        or Path(binary_arg).is_symlink()
+        or not binary.is_file()
+        or not os.access(binary, os.X_OK)
+        or sha256_file(binary) != binding["artifact_sha256"]
+    ):
+        refuse("Cargo runner executable does not match its bound artifact")
+    return binary
+
+
+def cargo_runtime_test_runner(binding_path_value: str, binary_arg: str) -> None:
+    if not sys.platform.startswith("linux") or not hasattr(os, "geteuid"):
+        refuse("Cargo runtime-proof runner is supported only on Linux")
+    binding_path, binding = runner_binding_path(binding_path_value)
+    if binding_path.resolve(strict=True) != binding_path:
+        refuse("Cargo runner binding path is not canonical")
+    binary = check_runner_binary(binding, binary_arg)
+    result_path = binding_path.parent / "result.json"
+    result_fd = reserve_private_runner_result(result_path)
+    try:
+        try:
+            child = subprocess.run(
+                [str(binary)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                close_fds=False,
+            )
+            output = child.stdout
+            output_text = output.decode("utf-8", errors="replace")
+            try:
+                summaries = parse_test_summaries(output_text)
+            except SystemExit:
+                summaries = None
+            process = (
+                {
+                    **cargo_library_process_result(
+                        child.returncode, summaries, sha256_bytes(output)
+                    ),
+                    "summaries": summaries,
+                }
+                if summaries is not None
+                else {
+                    "classification": "missing_test_summary",
+                    "exit_code": child.returncode,
+                    "signal": None,
+                    "test_summary_count": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "ignored": 0,
+                    "output_sha256": sha256_bytes(output),
+                    "summaries": [],
+                }
+            )
+        except OSError:
+            output = b""
+            process = {
+                **cargo_library_process_result(
+                    None, [], sha256_bytes(output), spawn_failed=True
+                ),
+                "summaries": [],
+            }
+        write_reserved_runner_result(result_fd, binding, process)
+        os.fsync(result_fd)
+    finally:
+        os.close(result_fd)
+    if output:
+        sys.stdout.buffer.write(output)
+        sys.stdout.buffer.flush()
+    if process["classification"] != "passed":
+        code = process.get("exit_code")
+        if isinstance(code, int) and code > 0:
+            raise SystemExit(min(code, 255))
+        signal = process.get("signal")
+        raise SystemExit(min(128 + signal, 255) if isinstance(signal, int) else 1)
 
 
 def cargo_library_process_result(
@@ -676,118 +919,62 @@ def verify_test_summary_parser_contract() -> None:
     else:
         refuse("test summary parser contract failed")
 
-    package = {
-        "name": "sample",
-        "version": "1.2.3-rc.4+build.7",
-        "manifest_path": str(CODEX_RS / "runtime-proof/Cargo.toml"),
-        "authors": ["A", "B"],
-        "description": None,
-        "homepage": "https://example.invalid",
-        "repository": None,
-        "license": "MIT",
-        "license_file": None,
-        "rust_version": "1.70.0",
-        "readme": "README.md",
+    binding = make_runner_binding(
+        "codex-core",
+        "1" * 40,
+        "2" * 64,
+        "codex-rs/core",
+        "debug/deps/codex_core-test",
+        "3" * 64,
+        "4" * 32,
+    )
+    result_contract = make_runner_result(binding, {})
+    if not valid_runner_binding(binding) or set(result_contract) != RUNNER_RESULT_KEYS:
+        refuse("Cargo runner binding contract failed")
+    if valid_runner_binding({**binding, "artifact_relative_path": "../escape"}):
+        refuse("Cargo runner binding contract failed")
+    if valid_runner_binding({**binding, "package": "codex-cli"}):
+        refuse("Cargo runner binding contract failed")
+    if valid_runner_binding({**binding, "cwd": "codex-rs/cli"}):
+        refuse("Cargo runner binding contract failed")
+    if valid_runner_binding({**binding, "unknown": True}):
+        refuse("Cargo runner binding contract failed")
+    runner_summaries = [{"status": "ok", "passed": 1, "failed": 0, "ignored": 0}]
+    runner_process = {
+        **cargo_library_process_result(0, runner_summaries, "5" * 64),
+        "summaries": runner_summaries,
     }
-    expected_variables = {
-        "CARGO": "/toolchain/bin/cargo",
-        "CARGO_MANIFEST_DIR": str((CODEX_RS / "runtime-proof").resolve()),
-        "CARGO_MANIFEST_PATH": str((CODEX_RS / "runtime-proof/Cargo.toml").resolve()),
-        "CARGO_PKG_VERSION": "1.2.3-rc.4+build.7",
-        "CARGO_PKG_VERSION_MAJOR": "1",
-        "CARGO_PKG_VERSION_MINOR": "2",
-        "CARGO_PKG_VERSION_PATCH": "3",
-        "CARGO_PKG_VERSION_PRE": "rc.4",
-        "CARGO_PKG_NAME": "sample",
-        "CARGO_PKG_DESCRIPTION": "",
-        "CARGO_PKG_HOMEPAGE": "https://example.invalid",
-        "CARGO_PKG_REPOSITORY": "",
-        "CARGO_PKG_LICENSE": "MIT",
-        "CARGO_PKG_LICENSE_FILE": "",
-        "CARGO_PKG_AUTHORS": "A:B",
-        "CARGO_PKG_RUST_VERSION": "1.70.0",
-        "CARGO_PKG_README": "README.md",
-    }
-    if cargo_package_runtime_variables(package, "/toolchain/bin/cargo") != expected_variables:
-        refuse("Cargo package runtime environment contract failed")
-    artifact_target = {
-        "name": "codex_runtime_proof",
-        "kind": ["lib"],
-        "crate_types": ["lib"],
-        "src_path": "/source/runtime-proof/src/lib.rs",
-        "edition": "2024",
-        "test": True,
-        "doctest": True,
-    }
-    artifact = {
-        "package_id": "path+file:///source/runtime-proof#0.0.0",
-        "target": artifact_target,
-        "profile": {"test": True},
-        "executable": "/target/debug/deps/codex_runtime_proof-test",
-    }
-    if not compiler_artifact_matches(
-        artifact, artifact["package_id"], artifact_target, True
+    runner_result = make_runner_result(binding, runner_process)
+    if not valid_runner_result(runner_result, binding) or not runner_process_is_consistent(
+        runner_process
     ):
-        refuse("Cargo compiler artifact identity contract failed")
-    unrelated_artifact = {**artifact, "package_id": "path+file:///other#0.0.0"}
-    if compiler_artifact_matches(
-        unrelated_artifact,
-        "path+file:///source/runtime-proof#0.0.0",
-        unrelated_artifact["target"],
-        True,
+        refuse("Cargo runner result contract failed")
+    if valid_runner_result({**runner_result, "extra": True}, binding):
+        refuse("Cargo runner result contract failed")
+    if valid_runner_result({**runner_result, "cwd": "codex-rs/cli"}, binding):
+        refuse("Cargo runner result contract failed")
+    failed_runner_process = {
+        **cargo_library_process_result(9, runner_summaries, "6" * 64),
+        "summaries": runner_summaries,
+    }
+    if runner_process_is_consistent(
+        {**failed_runner_process, "classification": "passed"}
     ):
-        refuse("Cargo compiler artifact identity contract failed")
-    dylib_prefix = [
-        "/target/debug/build/a/out",
-        "/target/debug/build/z/out",
-        "/target/debug",
-        "/target/debug/deps",
-        "/toolchain/lib",
-    ]
-    if cargo_native_directories(
-        [
-            "framework=/outside/lib",
-            "native=/target/debug/build/z/out",
-            "native=/target/debug/build/a/out",
-            "native=/target/debug/build/z/out",
-        ],
-        "/target/debug",
-    ) != dylib_prefix[:2]:
-        refuse("Cargo native library search ordering contract failed")
-    joined_prefix = os.pathsep.join(dylib_prefix)
-    if cargo_runtime_search_path_value(
-        dylib_prefix[:2], "/target/debug", "/target/debug/deps", "/toolchain/lib",
-        joined_prefix + os.pathsep + "/inherited/lib",
-    ) != joined_prefix + os.pathsep + "/inherited/lib":
-        refuse("Cargo inherited library search prefix contract failed")
-    if cargo_runtime_search_path_value(
-        dylib_prefix[:2], "/target/debug", "/target/debug/deps", "/toolchain/lib",
-        "/inherited/lib",
-    ) != joined_prefix + os.pathsep + "/inherited/lib":
-        refuse("Cargo library search append contract failed")
-    inherited_environment = {
-        "PATH": "/usr/bin",
-        "KEEP": "unchanged",
-        "CARGO": "stale-cargo",
-        "CARGO_PKG_NAME": "stale-package",
-        "CARGO_TARGET_TMPDIR": "/stale/tmp",
-        "CARGO_CRATE_NAME": "stale-crate",
-        "CARGO_BIN_EXE_stale": "/stale/bin",
-        "LD_LIBRARY_PATH": "/old/lib",
+        refuse("Cargo runner result contract failed")
+    signaled_runner_process = {
+        **cargo_library_process_result(-9, [], "7" * 64),
+        "summaries": [],
     }
-    expected_environment = {
-        "PATH": "/usr/bin",
-        "KEEP": "unchanged",
-        "CARGO_TARGET_TMPDIR": "/stale/tmp",
-        "CARGO_CRATE_NAME": "stale-crate",
-        "CARGO_BIN_EXE_stale": "/stale/bin",
-        **expected_variables,
-        "LD_LIBRARY_PATH": joined_prefix,
+    if not runner_process_is_consistent(signaled_runner_process) or runner_process_is_consistent(
+        {**signaled_runner_process, "signal": 0}
+    ):
+        refuse("Cargo runner result contract failed")
+    spawn_failed_runner_process = {
+        **cargo_library_process_result(None, [], "8" * 64, spawn_failed=True),
+        "summaries": [],
     }
-    if compose_cargo_test_environment(
-        inherited_environment, expected_variables, joined_prefix
-    ) != expected_environment:
-        refuse("Cargo test child environment contract failed")
+    if not runner_process_is_consistent(spawn_failed_runner_process):
+        refuse("Cargo runner result contract failed")
 
     success = [{"status": "ok", "passed": 2, "failed": 0, "ignored": 1}]
     success_counts = {"test_summary_count": 1, "passed": 2, "failed": 0, "ignored": 1}
@@ -1048,60 +1235,108 @@ def run_library_suite(
         "lib",
         admitted_paths=admitted_paths,
         require_test_profile=True,
-        capture_runtime_inputs=True,
+        capture_library_failure=True,
     )
     binary = artifact_path(artifact["relative_path"])
     before_hash = sha256_file(binary)
     if before_hash != artifact["sha256"]:
         refuse(f"bound library test executable changed before invocation: {package_name}")
-    environment = cargo_library_test_environment(
+    head = run_git("rev-parse", "HEAD").strip()
+    script_sha256 = sha256_file(Path(__file__).resolve(strict=True))
+    invocation_id = uuid.uuid4().hex
+    binding = make_runner_binding(
         package_name,
-        package,
-        context,
-        artifact["linked_paths"],
-        dict(os.environ),
+        head,
+        script_sha256,
+        f"codex-rs/{Path(EXPECTED_PACKAGE_MANIFESTS[package_name]).parent.as_posix()}",
+        str(artifact["relative_path"]),
+        before_hash,
+        invocation_id,
     )
+    runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    private_dir = Path(
+        tempfile.mkdtemp(prefix="runtime-proof-cargo-runner-", dir=runner_temp)
+    )
+    binding_path = private_dir / "binding.json"
+    result_path = private_dir / "result.json"
     try:
-        result = subprocess.run(
-            [str(binary)],
-            cwd=Path(package["manifest_path"]).resolve(strict=True).parent,
-            env=environment,
+        write_private_runner_binding(binding_path, binding)
+        runner_args = [
+            sys.executable,
+            str(Path(__file__).resolve(strict=True)),
+            RUNNER_MODE,
+            str(binding_path),
+        ]
+        runner_config = (
+            f"target.'{LINUX_HOST_TARGET}'.runner="
+            f"{json.dumps(runner_args, separators=(',', ':'))}"
+        )
+        test_command = [
+            str(context["cargo"]),
+            "--config",
+            runner_config,
+            "test",
+            "--locked",
+            "-p",
+            package_name,
+            "--lib",
+            "--message-format=json",
+        ]
+        cargo_result = subprocess.run(
+            test_command,
+            cwd=CODEX_RS,
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            close_fds=False,
         )
-        output = result.stdout.decode("utf-8", errors="replace")
-        output_hash = sha256_bytes(result.stdout)
-        process_result = cargo_library_process_result(
-            result.returncode, parse_test_summaries(output), output_hash
-        )
-    except OSError:
-        output_hash = sha256_bytes(b"")
-        process_result = cargo_library_process_result(
-            None, [], output_hash, spawn_failed=True
-        )
-    after_hash = sha256_file(binary)
-    if after_hash != before_hash:
-        refuse(f"bound library test executable changed during invocation: {package_name}")
-    if process_result["classification"] != "passed":
-        refuse(
-            "required library suite failed: "
-            f"{package_name}; output_sha256={process_result['output_sha256']}; "
-            "diagnostic_summary="
-            f"{json.dumps(process_result, sort_keys=True, separators=(',', ':'))}"
-        )
-    return {
-        "package": package_name,
-        "command": [
-            "cargo test --locked -p <fixed-package> --lib --no-run --message-format=json",
-            "<bound-library-test-executable>",
-        ],
-        "summaries": parse_test_summaries(output),
-        "process": process_result,
-        "output_sha256": output_hash,
-        "artifact_relative_path": str(artifact["relative_path"]),
-        "artifact_sha256": before_hash,
-    }
+        output = cargo_result.stdout.decode("utf-8", errors="replace")
+        try:
+            cargo_summaries = parse_test_summaries(output)
+        except SystemExit:
+            refuse(f"required library suite returned unsupported summaries: {package_name}")
+        runner_value = read_private_runner_record(result_path)
+        if not valid_runner_result(runner_value, binding):
+            refuse(f"required library suite has no valid current runner result: {package_name}")
+        if cargo_summaries != runner_value["process"]["summaries"]:
+            refuse(f"Cargo and runner test summaries disagree: {package_name}")
+        process_result = runner_value["process"]
+        if not runner_process_is_consistent(process_result):
+            refuse(f"library runner process result is internally inconsistent: {package_name}")
+        after_hash = sha256_file(binary)
+        if after_hash != before_hash:
+            refuse(f"bound library test executable changed during invocation: {package_name}")
+        if cargo_result.returncode != 0 or process_result["classification"] != "passed":
+            refuse(
+                "required library suite failed: "
+                f"{package_name}; cargo_exit_code={cargo_result.returncode}; "
+                "runner_result="
+                f"{json.dumps(process_result, sort_keys=True, separators=(',', ':'))}"
+            )
+        return {
+            "package": package_name,
+            "command": [
+                "cargo test --locked -p <fixed-package> --lib --no-run --message-format=json",
+                "cargo --config <fixed-host-runner> test --locked -p <fixed-package> --lib --message-format=json",
+            ],
+            "summaries": cargo_summaries,
+            "cargo_exit_code": cargo_result.returncode,
+            "process": process_result,
+            "output_sha256": process_result["output_sha256"],
+            "artifact_relative_path": str(artifact["relative_path"]),
+            "artifact_sha256": before_hash,
+        }
+    finally:
+        if private_record_directory(private_dir):
+            for owned_file in (binding_path, result_path):
+                try:
+                    owned_file.unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                private_dir.rmdir()
+            except OSError:
+                refuse("Cargo runner private directory could not be cleaned safely")
 
 
 def cargo_metadata_index() -> dict[str, dict[str, Any]]:
@@ -1183,7 +1418,7 @@ def cargo_artifact_details(
     kind: str,
     admitted_paths: set[str] | None = None,
     require_test_profile: bool = False,
-    capture_runtime_inputs: bool = False,
+    capture_library_failure: bool = False,
 ) -> dict[str, Any]:
     package = metadata.get(package_name)
     expected_source = EXPECTED_ARTIFACT_TARGETS.get((package_name, target_name, kind))
@@ -1207,22 +1442,16 @@ def cargo_artifact_details(
         or "lib" not in target_matches[0]["crate_types"]
     ):
         refuse(f"Cargo metadata library test target is unsupported: {package_name}")
-    if capture_runtime_inputs and any(
-        "custom-build" in target.get("kind", [])
-        for target in package.get("targets", [])
-        if isinstance(target, dict)
-    ):
-        refuse(f"library package build-script runtime environment is unsupported: {package_name}")
     result = subprocess.run(
         command,
         cwd=CODEX_RS,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT if capture_runtime_inputs else None,
+        stderr=subprocess.STDOUT if capture_library_failure else None,
     )
     if result.returncode != 0:
-        if capture_runtime_inputs:
+        if capture_library_failure:
             output_hash = sha256_bytes(result.stdout.encode())
             failure = bounded_library_failure_summary(
                 package_name, result.stdout, result.returncode, admitted_paths or set()
@@ -1235,7 +1464,6 @@ def cargo_artifact_details(
         refuse(f"required locked compile failed for {package_name}/{target_name}")
     artifacts: list[Path] = []
     build_finished: list[bool | None] = []
-    linked_paths: list[str] = []
     for line in result.stdout.splitlines():
         try:
             event = json.loads(line)
@@ -1247,15 +1475,6 @@ def cargo_artifact_details(
             success = event.get("success")
             build_finished.append(success if type(success) is bool else None)
             continue
-        if capture_runtime_inputs and event.get("reason") == "build-script-executed":
-            event_paths = event.get("linked_paths")
-            if not isinstance(event_paths, list) or not all(
-                isinstance(path, str) for path in event_paths
-            ):
-                refuse("Cargo build-script library path metadata is invalid")
-            linked_paths.extend(event_paths)
-            if event.get("package_id") == package["id"] and event.get("env") != []:
-                refuse(f"library package build-script environment is unsupported: {package_name}")
         if event.get("reason") != "compiler-artifact":
             continue
         if compiler_artifact_matches(
@@ -1264,7 +1483,7 @@ def cargo_artifact_details(
             artifacts.append(Path(event["executable"]))
     if len(artifacts) != 1:
         refuse(f"expected exactly one compiler artifact for {package_name}/{target_name}")
-    if capture_runtime_inputs and build_finished != [True]:
+    if capture_library_failure and build_finished != [True]:
         refuse(f"locked library build phase was not exactly successful: {package_name}")
     artifact = artifacts[0]
     if not artifact.is_absolute():
@@ -1285,7 +1504,6 @@ def cargo_artifact_details(
     return {
         "relative_path": relative,
         "sha256": sha256_file(resolved_artifact),
-        "linked_paths": linked_paths,
         "build_finished": build_finished,
         "output_sha256": sha256_bytes(result.stdout.encode()),
     }
@@ -1331,85 +1549,7 @@ def pinned_toolchain_executable(name: str) -> Path:
 
 
 def library_runtime_context() -> dict[str, Any]:
-    cargo_executable = pinned_toolchain_executable("cargo")
-    rustc_executable = pinned_toolchain_executable("rustc")
-    version_result = subprocess.run(
-        [str(rustc_executable), "--version", "--verbose"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    host_values = [
-        line.removeprefix("host: ")
-        for line in version_result.stdout.splitlines()
-        if line.startswith("host: ")
-    ]
-    if version_result.returncode != 0 or host_values != [LINUX_HOST_TARGET]:
-        refuse("pinned Rust host target is unsupported")
-    libdir_result = subprocess.run(
-        [
-            str(rustc_executable),
-            "--print",
-            "target-libdir",
-            "--target",
-            LINUX_HOST_TARGET,
-        ],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    libdirs = libdir_result.stdout.splitlines()
-    if libdir_result.returncode != 0 or len(libdirs) != 1:
-        refuse("pinned Rust sysroot library directory is unavailable")
-    sysroot_libdir = Path(libdirs[0])
-    if not sysroot_libdir.is_absolute() or not sysroot_libdir.is_dir():
-        refuse("pinned Rust sysroot library directory is invalid")
-    try:
-        sysroot_libdir = sysroot_libdir.resolve(strict=True)
-    except OSError:
-        refuse("pinned Rust sysroot library directory is invalid")
-    target_root = Path(os.environ.get("CARGO_TARGET_DIR", ""))
-    if not target_root.is_absolute():
-        refuse("fixed Cargo target directory is unavailable")
-    return {
-        "cargo": cargo_executable,
-        "rustc": rustc_executable,
-        "sysroot_libdir": sysroot_libdir,
-        "target_root": target_root.resolve(strict=False),
-    }
-
-
-def cargo_library_test_environment(
-    package_name: str,
-    package: dict[str, Any],
-    context: dict[str, Any],
-    linked_paths: list[str],
-    inherited_environment: dict[str, str],
-) -> dict[str, str]:
-    relative_manifest = EXPECTED_PACKAGE_MANIFESTS.get(package_name)
-    if relative_manifest is None or package_name not in LIBRARY_TEST_TARGETS:
-        refuse("library test package is outside the fixed package inventory")
-    expected_manifest = (CODEX_RS / relative_manifest).resolve(strict=True)
-    manifest_value = package.get("manifest_path")
-    if not isinstance(manifest_value, str):
-        refuse("selected Cargo package manifest metadata is invalid")
-    if Path(manifest_value).resolve(strict=True) != expected_manifest:
-        refuse("selected Cargo package manifest identity changed")
-    variables = cargo_package_runtime_variables(package, str(context["cargo"]))
-    if variables["CARGO_PKG_NAME"] != package_name:
-        refuse("selected Cargo package identity changed")
-    root_output = context["target_root"] / "debug"
-    deps_output = root_output / "deps"
-    dylib_path = cargo_runtime_search_path(
-        linked_paths,
-        root_output,
-        deps_output,
-        context["sysroot_libdir"],
-        inherited_environment.get("LD_LIBRARY_PATH"),
-    )
-    return compose_cargo_test_environment(inherited_environment, variables, dylib_path)
+    return {"cargo": pinned_toolchain_executable("cargo")}
 
 
 def artifact_path(relative: Path) -> Path:
@@ -1639,6 +1779,9 @@ def validate_windows(manifest: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    if len(sys.argv) == 4 and sys.argv[1] == RUNNER_MODE:
+        cargo_runtime_test_runner(sys.argv[2], sys.argv[3])
+        return
     if len(sys.argv) != 2 or sys.argv[1] not in {"bind", "prepare", "validate-linux", "validate-windows"}:
         refuse("use one fixed phase command: bind, prepare, validate-linux, or validate-windows")
     mode = sys.argv[1]
