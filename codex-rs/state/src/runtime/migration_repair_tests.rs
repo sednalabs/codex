@@ -421,8 +421,7 @@ async fn partial_mailbox_schema_without_migration_row_rejects_without_bridge_wri
 #[tokio::test]
 async fn recorded_mailbox_migration_with_missing_index_rejects_without_bridge_writes() {
     let (_sqlite, pool) = fixture().await;
-    STATE_MIGRATOR
-        .run(&pool)
+    run_state_migrations(&pool, &STATE_MIGRATOR)
         .await
         .expect("complete synthetic state migrations");
     sqlx::query("DROP INDEX idx_agent_mailbox_reply_to")
@@ -452,8 +451,7 @@ async fn recorded_mailbox_migration_with_same_column_wrong_constraints_rejects()
         "missing_supersession_no_self_check",
     ] {
         let (_sqlite, pool) = fixture().await;
-        STATE_MIGRATOR
-            .run(&pool)
+        run_state_migrations(&pool, &STATE_MIGRATOR)
             .await
             .expect("complete synthetic state migrations");
         install_same_column_mailbox_schema_with_constraint_defect(&pool, defect).await;
