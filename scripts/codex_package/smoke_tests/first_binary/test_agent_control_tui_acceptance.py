@@ -231,7 +231,10 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
         with PackagedTui(isolated, "resume", root_id, columns=40) as tui:
             tui.until("Ask Codex to do anything")
             tui.send("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
-            tui.until("TUI_RICH_ROOT_MARKER: start one synthetic worker.")
+            tui.until_screen(
+                "TUI_RICH_ROOT_MARKER:",
+                required_markers=("synthetic worker.",),
+            )
             tui.send("\r")
             tui.until("TUI_RICH_ROOT_TERMINAL")
             active_child_route.wait_until_selected(timeout_s=30)
