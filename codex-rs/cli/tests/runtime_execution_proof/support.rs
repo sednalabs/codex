@@ -64,6 +64,9 @@ struct ModelResponder {
     root_calls: Arc<Mutex<usize>>,
     delegate_calls: Arc<Mutex<usize>>,
     wait_targets: Arc<Mutex<Vec<String>>>,
+    wait_call_ids: Arc<Mutex<Vec<String>>>,
+    accepted_wait_results: Arc<Mutex<Vec<(bool, bool)>>>,
+    spawn_child: bool,
 }
 
 impl Respond for ModelResponder {
@@ -93,10 +96,8 @@ impl Respond for ModelResponder {
                     .map(str::to_string),
             );
         }
-        let (namespace, name, arguments, call_id) = if request_has_user_text(
-            &body,
-            "delegate-claim",
-        ) {
+        let (namespace, name, arguments, call_id): (&str, &str, String, String) =
+            if request_has_user_text(&body, "delegate-claim") {
             let mut calls = self
                 .delegate_calls
                 .lock()
@@ -107,10 +108,10 @@ impl Respond for ModelResponder {
                     "mcp__ops",
                     "work_item_claim",
                     ARGUMENTS.to_string(),
-                    "delegate-claim-call",
+                    "delegate-claim-call".to_string(),
                 )
             } else {
-                ("", "", String::new(), "delegate-final")
+                ("", "", String::new(), "delegate-final".to_string())
             }
         } else if request_has_user_text(&body, "root-claim")
             || request_has_user_text(&body, "role-provider-control")
@@ -119,48 +120,102 @@ impl Respond for ModelResponder {
                 .root_calls
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let response = if *calls == 0 {
+            if *calls == 0 {
                 *calls += 1;
                 (
                     "mcp__ops",
                     "work_item_claim",
                     ARGUMENTS.to_string(),
-                    "root-claim-call",
+                    "root-claim-call".to_string(),
                 )
             } else if *calls == 1 {
                 *calls += 1;
-                (
-                    "multi_agent_v1",
-                    "spawn_agent",
-                    if request_has_user_text(&body, "role-provider-control") {
-                        r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
-                    } else {
-                        r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
-                    },
-                    "root-spawn-call",
-                )
-            } else if *calls == 2 {
-                *calls += 1;
-                let target = find_spawned_agent_id(&body).unwrap_or_default();
-                if let Ok(mut targets) = self.wait_targets.lock() {
-                    targets.push(target.clone());
+                if self.spawn_child {
+                    (
+                        "multi_agent_v1",
+                        "spawn_agent",
+                        if request_has_user_text(&body, "role-provider-control") {
+                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"proof-child"}"#.to_string()
+                        } else {
+                            r#"{"message":"delegate-claim","task_name":"proof-child","agent_type":"worker"}"#.to_string()
+                        },
+                        "root-spawn-call".to_string(),
+                    )
+                } else {
+                    ("", "", String::new(), "root-final".to_string())
                 }
-                (
-                    "multi_agent_v1",
-                    "wait_agent",
-                    serde_json::json!({
-                        "targets": [target],
-                        "timeout_ms": 80000
-                    })
-                    .to_string(),
-                    "root-wait-call",
-                )
             } else {
-                ("", "", String::new(), "root-final")
-            };
-            response
+                let target = self
+                    .wait_targets
+                    .lock()
+                    .ok()
+                    .and_then(|targets| targets.first().cloned())
+                    .or_else(|| find_spawned_agent_id(&body))
+                    .unwrap_or_default();
+                let previous_wait = self
+                    .wait_call_ids
+                    .lock()
+                    .ok()
+                    .and_then(|calls| calls.last().cloned());
+                let expects_provider_rejection = request_has_user_text(&body, "role-provider-control");
+                let accepted = previous_wait
+                    .as_deref()
+                    .and_then(|call_id| function_output(&body, call_id))
+                    .and_then(|output| serde_json::from_str::<Value>(output).ok())
+                    .and_then(|result| wait_result_for_target(&result, &target))
+                    .map(|status| {
+                        let accepted = if expects_provider_rejection {
+                            status
+                                .get("errored")
+                                .and_then(Value::as_str)
+                                .is_some_and(|error| {
+                                    error.contains(
+                                        "effective provider URL differs from its root-bound recipient",
+                                    )
+                                })
+                        } else {
+                            status.get("completed").is_some()
+                        };
+                        if accepted {
+                            self.accepted_wait_results
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .push((!expects_provider_rejection, expects_provider_rejection));
+                        }
+                        accepted
+                    })
+                    .unwrap_or(false);
+                if accepted {
+                    ("", "", String::new(), "root-final".to_string())
+                } else {
+                    let wait_number = self
+                        .wait_call_ids
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .len();
+                    let call_id = format!("root-wait-call-{wait_number}");
+                    self.wait_targets
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(target.clone());
+                    self.wait_call_ids
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(call_id.clone());
+                    (
+                        "multi_agent_v1",
+                        "wait_agent",
+                        serde_json::json!({
+                            "targets": [target],
+                            "timeout_ms": 80000
+                        })
+                        .to_string(),
+                        call_id,
+                    )
+                }
+            }
         } else {
-            ("", "", String::new(), "final")
+            ("", "", String::new(), "final".to_string())
         };
         let response_id = format!("response-{}", call_id);
         let mut events =
@@ -232,32 +287,69 @@ fn find_spawned_agent_id(value: &Value) -> Option<String> {
     }
 }
 
+fn function_output<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
+    body.get("input")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|item| {
+            item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+        })?
+        .get("output")?
+        .as_str()
+}
+
+fn wait_result_for_target<'a>(result: &'a Value, target: &str) -> Option<&'a Value> {
+    if target.is_empty() || result.get("timed_out")?.as_bool()? {
+        return None;
+    }
+    result.get("status")?.get(target)
+}
+
 #[derive(Clone)]
 struct McpResponder {
     calls: Arc<Mutex<Vec<Value>>>,
     authorization_headers: Arc<Mutex<Vec<Option<String>>>>,
+    request_records: Arc<Mutex<Vec<McpRequestRecord>>>,
     redirect_claims: bool,
     delay_first_claim: bool,
     error_claims: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpRequestRecord {
+    pub http_method: String,
+    pub path: String,
+    pub phase: String,
+    pub authorization: Option<String>,
+}
+
 impl Respond for McpResponder {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
         let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
-        if let Ok(mut headers) = self.authorization_headers.lock() {
-            headers.push(
-                request
-                    .headers
-                    .get("authorization")
-                    .and_then(|header| header.to_str().ok())
-                    .map(str::to_string),
-            );
-        }
         let id = body.get("id").cloned().unwrap_or(Value::Null);
         let method = body
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let authorization = request
+            .headers
+            .get("authorization")
+            .and_then(|header| header.to_str().ok())
+            .map(str::to_string);
+        if let Ok(mut records) = self.request_records.lock() {
+            records.push(McpRequestRecord {
+                http_method: request.method.as_str().to_string(),
+                path: request.url.path().to_string(),
+                phase: method.to_string(),
+                authorization: authorization.clone(),
+            });
+        }
+        if method == "tools/call" {
+            if let Ok(mut headers) = self.authorization_headers.lock() {
+                headers.push(authorization);
+            }
+        }
         let response = match method {
             "initialize" => serde_json::json!({
                 "jsonrpc":"2.0","id":id,"result":{
@@ -342,33 +434,37 @@ pub struct ProtectedRuntimeFixture {
     model_account_headers: Arc<Mutex<Vec<Option<String>>>>,
     claim_calls: Arc<Mutex<Vec<Value>>>,
     mcp_authorization_headers: Arc<Mutex<Vec<Option<String>>>>,
+    mcp_request_records: Arc<Mutex<Vec<McpRequestRecord>>>,
     followed_redirects: Arc<AtomicUsize>,
     wait_targets: Arc<Mutex<Vec<String>>>,
+    wait_call_ids: Arc<Mutex<Vec<String>>>,
+    accepted_wait_results: Arc<Mutex<Vec<(bool, bool)>>>,
     delay_first_claim: bool,
     expiring_provider_token: Arc<Mutex<Option<String>>>,
 }
 
 impl ProtectedRuntimeFixture {
     pub async fn start() -> Result<Self> {
-        Self::start_config(false, false, false).await
+        Self::start_config(false, false, false, true).await
     }
 
     pub async fn start_with_redirect(redirect_claims: bool) -> Result<Self> {
-        Self::start_config(redirect_claims, false, false).await
+        Self::start_config(redirect_claims, false, false, true).await
     }
 
-    pub async fn start_expiring_cached_send() -> Result<Self> {
-        Self::start_config(false, true, false).await
+    pub async fn start_delayed_response_expiry() -> Result<Self> {
+        Self::start_config(false, true, false, false).await
     }
 
     pub async fn start_with_mcp_error() -> Result<Self> {
-        Self::start_config(false, false, true).await
+        Self::start_config(false, false, true, true).await
     }
 
     async fn start_config(
         redirect_claims: bool,
         delay_first_claim: bool,
         error_claims: bool,
+        spawn_child: bool,
     ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let root = temp.path();
@@ -394,8 +490,11 @@ impl ProtectedRuntimeFixture {
         let model_account_headers = Arc::new(Mutex::new(Vec::new()));
         let claim_calls = Arc::new(Mutex::new(Vec::new()));
         let mcp_authorization_headers = Arc::new(Mutex::new(Vec::new()));
+        let mcp_request_records = Arc::new(Mutex::new(Vec::new()));
         let followed_redirects = Arc::new(AtomicUsize::new(0));
         let wait_targets = Arc::new(Mutex::new(Vec::new()));
+        let wait_call_ids = Arc::new(Mutex::new(Vec::new()));
+        let accepted_wait_results = Arc::new(Mutex::new(Vec::new()));
         let expiring_provider_token = Arc::new(Mutex::new(None));
         let model_responder = ModelResponder {
             requests: model_requests.clone(),
@@ -405,6 +504,9 @@ impl ProtectedRuntimeFixture {
             root_calls: Arc::new(Mutex::new(0)),
             delegate_calls: Arc::new(Mutex::new(0)),
             wait_targets: wait_targets.clone(),
+            wait_call_ids: wait_call_ids.clone(),
+            accepted_wait_results: accepted_wait_results.clone(),
+            spawn_child,
         };
         Mock::given(method("POST"))
             .and(path("/v1/responses"))
@@ -421,6 +523,7 @@ impl ProtectedRuntimeFixture {
             .respond_with(McpResponder {
                 calls: claim_calls.clone(),
                 authorization_headers: mcp_authorization_headers.clone(),
+                request_records: mcp_request_records.clone(),
                 redirect_claims,
                 delay_first_claim,
                 error_claims,
@@ -495,8 +598,11 @@ impl ProtectedRuntimeFixture {
             model_account_headers,
             claim_calls,
             mcp_authorization_headers,
+            mcp_request_records,
             followed_redirects,
             wait_targets,
+            wait_call_ids,
+            accepted_wait_results,
             delay_first_claim,
             expiring_provider_token,
         })
@@ -760,12 +866,26 @@ impl ProtectedRuntimeFixture {
             .clone()
     }
 
+    pub fn mcp_request_records(&self) -> Vec<McpRequestRecord> {
+        self.mcp_request_records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     pub fn followed_redirects(&self) -> usize {
         self.followed_redirects.load(Ordering::Acquire)
     }
 
     pub fn wait_targets(&self) -> Vec<String> {
         self.wait_targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn accepted_wait_results(&self) -> Vec<(bool, bool)> {
+        self.accepted_wait_results
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()

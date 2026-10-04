@@ -153,8 +153,12 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         calls.len()
     );
     anyhow::ensure!(
-        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
-        "root did not wait on the spawned delegate's terminal status before finalizing"
+        !fixture.wait_targets().is_empty() && fixture.wait_targets().iter().all(|target| !target.is_empty()),
+        "root did not wait on the spawned delegate before finalizing"
+    );
+    anyhow::ensure!(
+        fixture.accepted_wait_results() == vec![(true, false)],
+        "root did not consume a non-timeout successful terminal result for the exact child"
     );
     let issuer_key = fixture.issuer_verifying_key();
     let mut invocation_nonces = Vec::new();
@@ -495,8 +499,8 @@ async fn protected_trace_logging_does_not_echo_proof_or_bearer() -> Result<()> {
         );
     }
     anyhow::ensure!(
-        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
-        "TRACE control did not wait for delegate terminal status"
+        fixture.accepted_wait_results() == vec![(true, false)],
+        "TRACE control did not consume the delegate's successful terminal result"
     );
     assert_no_secret(
         &fixture.fixture_root(),
@@ -643,8 +647,12 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
         "delegate MCP claim was not rejected before credential egress"
     );
     anyhow::ensure!(
-        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
-        "root did not wait for the rejected delegate to become terminal"
+        !fixture.wait_targets().is_empty() && fixture.wait_targets().iter().all(|target| !target.is_empty()),
+        "root did not wait for the rejected delegate"
+    );
+    anyhow::ensure!(
+        fixture.accepted_wait_results() == vec![(false, true)],
+        "root did not consume the exact child's terminal provider-pin rejection"
     );
     let expected_authorization = format!("Bearer {}", fixture.provider_token());
     anyhow::ensure!(
@@ -676,8 +684,8 @@ async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<(
         "root and delegate must both reach the pinned MCP recipient"
     );
     anyhow::ensure!(
-        fixture.wait_targets().len() == 1 && !fixture.wait_targets()[0].is_empty(),
-        "root did not wait on the spawned delegate before finalizing"
+        fixture.accepted_wait_results() == vec![(true, false)],
+        "root did not consume the spawned delegate's successful terminal result"
     );
     let expected_authorization = format!(
         "Bearer {}",
@@ -707,21 +715,34 @@ async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an explicitly invoked disposable Linux root fixture"]
-async fn expired_protected_runtime_cannot_reuse_a_cached_mcp_client() -> Result<()> {
+async fn delayed_mcp_response_is_redacted_after_protected_auth_expiry() -> Result<()> {
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
-    let fixture = ProtectedRuntimeFixture::start_expiring_cached_send().await?;
+    let fixture = ProtectedRuntimeFixture::start_delayed_response_expiry().await?;
     let _ = fixture
         .run_cli_with_auth_fault(Some(
             runtime_execution_proof_support::AuthFault::ExpireAfterFirstClaim,
         ))
         .await?;
+    let mcp_requests = fixture.mcp_request_records();
+    let claims = mcp_requests
+        .iter()
+        .filter(|request| request.http_method == "POST" && request.phase == "tools/call")
+        .collect::<Vec<_>>();
+    anyhow::ensure!(claims.len() == 1, "fixture did not issue exactly one claim call");
     anyhow::ensure!(
-        fixture.claim_calls().len() == 1,
-        "cached protected MCP client sent after its runtime lease expired"
+        mcp_requests.iter().any(|request| request.phase == "initialize")
+            && mcp_requests.iter().any(|request| request.phase == "tools/list"),
+        "fixture did not record lifecycle request phases separately from the claim"
+    );
+    let expected_authorization = format!(
+        "Bearer {}",
+        runtime_execution_proof_support::OPS_BEARER_TOKEN
     );
     anyhow::ensure!(
-        fixture.mcp_authorization_headers().len() == 1,
-        "protected MCP bearer was reused after expiry"
+        claims
+            .iter()
+            .all(|request| request.authorization.as_deref() == Some(expected_authorization.as_str())),
+        "delayed claim did not use the selected MCP bearer"
     );
     let output = fixture.captured_output()?;
     if let Some(token) = fixture.expiring_provider_token() {

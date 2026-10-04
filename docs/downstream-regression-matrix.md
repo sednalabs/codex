@@ -1127,11 +1127,25 @@ state, issuer validation by the service, or an end-to-end lease; those require
 the separately authorized protected-host and service-consumer validation
 paths. Dependency and Bazel lock generation is hosted-only.
 
-The protected CLI fixture additionally waits for the delegated process terminal
-result, checks redirected MCP requests have zero off-recipient egress, checks
-error echoes and TRACE output for public synthetic credential/proof remnants,
-and proves an expired protected context cannot send through a retained MCP
-client. Invoke the ignored root test binary explicitly on a disposable hosted
-Linux runner. Ordinary non-Linux compile coverage must include the new
-crate and all production consumers. These fixture and compile lanes supplement
-the exact protected contribution checks; source inspection does not replace them.
+Runtime-proof unit regressions also force an invalidation between the getter's
+fast precheck and its mutex acquisition, then exercise the same locked target
+getter used in production; the cleared state must still return a protected
+failure. Protected cloud-config eligibility matches the current service's
+business-like, enterprise and education plan rules and refuses eligible or
+unknown protected plans before credential import and loader startup, while
+keeping known ineligible plans and ordinary cloud behavior intact.
+
+The protected CLI fixture additionally consumes the exact delegated process's
+non-timeout wait result before root finalization: the positive case requires
+completion, and the provider-override case requires the expected provider-pin
+rejection. It checks redirected MCP requests have zero off-recipient egress,
+checks error echoes and TRACE output for public synthetic credential/proof
+remnants, and separates HTTP method from MCP lifecycle phase accounting. The
+delayed-response fixture proves redaction after auth expiry only. A separate
+ignored root fixture imports actual synthetic protected auth and calls the
+retained production HTTP client after expiry, asserting its underlying send
+delegate sees no second request. Invoke both ignored root fixtures explicitly
+on a disposable hosted Linux runner. Ordinary non-Linux compile coverage must
+include the new crate and all production consumers. These fixture and compile
+lanes supplement the exact protected contribution checks; source inspection
+does not replace them.
