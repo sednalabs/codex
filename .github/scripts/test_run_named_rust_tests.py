@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -199,6 +200,46 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertEqual(evidence["upstream_output_truncation"], "unknown")
         self.assertEqual(evidence["cargo_summary_failed_count"], 1)
 
+    def test_cargo_summary_channels_are_numeric_bounded_and_private(self) -> None:
+        private = "https://private.example/token=secret /home/runner/user"
+        summary = (
+            "test result: FAILED. 1 passed; 2 failed; 3 ignored; "
+            "4 measured; 5 filtered out"
+        )
+        evidence = self._evidence(
+            "\n".join([f"{summary} {private}" for _ in range(6)]),
+            f"{summary} {private}",
+        )
+        channels = evidence["cargo_summary_channels"]
+        self.assertEqual(channels["stdout"]["match_count"], 6)
+        self.assertEqual(channels["stdout"]["omitted_count"], 2)
+        self.assertTrue(channels["stdout"]["truncated"])
+        self.assertEqual(len(channels["stdout"]["summaries"]), 4)
+        self.assertEqual(channels["stderr"]["match_count"], 1)
+        self.assertEqual(channels["stderr"]["omitted_count"], 0)
+        self.assertFalse(channels["stderr"]["truncated"])
+        self.assertEqual(
+            channels["stdout"]["summaries"][0],
+            {"passed": 1, "failed": 2, "ignored": 3, "measured": 4, "filtered": 5},
+        )
+        rendered = json.dumps(evidence)
+        for secret in ("private.example", "token=", "/home/runner"):
+            self.assertNotIn(secret, rendered)
+
+    def test_cargo_summary_channels_report_zero_and_multiple_combined_matches(self) -> None:
+        none = self._evidence("no summary", "still no summary")
+        self.assertEqual(none["cargo_summary_status"], "none")
+        self.assertEqual(none["cargo_summary_channels"]["stdout"]["match_count"], 0)
+        self.assertEqual(none["cargo_summary_channels"]["stderr"]["match_count"], 0)
+        summary = (
+            "test result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 0 filtered out"
+        )
+        multiple = self._evidence(summary, summary)
+        self.assertEqual(multiple["cargo_summary_status"], "unrecognized")
+        self.assertEqual(multiple["cargo_summary_channels"]["stdout"]["match_count"], 1)
+        self.assertEqual(multiple["cargo_summary_channels"]["stderr"]["match_count"], 1)
+
     def test_header_status_and_sensitive_body_handling(self) -> None:
         missing = self._evidence("ordinary output with no block")
         invalid = "---- private/path?token=secret stdout ----\nsecret body\n"
@@ -257,6 +298,40 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
         ),
     }
 
+    @classmethod
+    def _fixture_manifest(
+        cls, request: dict[str, object]
+    ) -> dict[tuple[str, str, str], dict[str, object]]:
+        package = str(request["package"])
+        target_kind = str(request["target_kind"])
+        target = str(request["target"])
+        inventory, execution = named_tests.expected_commands(
+            package, target_kind, target
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_file = root / ".github" / named_tests.MANIFEST_NAME
+            manifest_file.parent.mkdir(parents=True)
+            manifest_file.write_text(
+                json.dumps(
+                    {
+                        "schema_version": named_tests.MANIFEST_SCHEMA_VERSION,
+                        "targets": [
+                            {
+                                "package": package,
+                                "target_kind": target_kind,
+                                "target": target,
+                                "profiles": [str(request["profile"])],
+                                "inventory_argv": inventory,
+                                "execution_argv": execution,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return named_tests.load_manifest(root)
+
     def _run_with_builds(
         self,
         build_results: list[subprocess.CompletedProcess[str]],
@@ -284,7 +359,9 @@ class CoreIntegrationRuntimePreparationTests(unittest.TestCase):
         with (
             patch.dict("os.environ", env, clear=True),
             patch.object(
-                named_tests, "select_target", return_value=self.command_record
+                named_tests,
+                "load_manifest",
+                return_value=self._fixture_manifest(self.request),
             ),
             patch.object(
                 named_tests,
@@ -543,13 +620,14 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
             "target": "",
             "tests": [selected],
         }
-        record = {
-            "inventory_argv": ("cargo", "test", "--list"),
-            "execution_argv": ("cargo", "test"),
-        }
         with (
-            patch.object(named_tests, "load_manifest", return_value={}),
-            patch.object(named_tests, "select_target", return_value=record),
+            patch.object(
+                named_tests,
+                "load_manifest",
+                return_value=CoreIntegrationRuntimePreparationTests._fixture_manifest(
+                    request
+                ),
+            ),
             patch.object(named_tests, "git_sha", return_value="a" * 40),
             patch.object(named_tests.subprocess, "run", side_effect=[inventory, execution]),
         ):
@@ -560,6 +638,64 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
         self.assertEqual(result["failure_code"], "named_test_failed")
         self.assertEqual(result["failure_evidence"]["cargo_summary_failed_count"], 1)
         self.assertEqual(result["failure_evidence"]["failed_name_distinct_count"], 1)
+
+    def test_red_target_serializes_all_selectors_and_preserves_first_failure(self) -> None:
+        first, second = "suite::first", "suite::second"
+        request = {
+            "schema_version": named_tests.SCHEMA_VERSION,
+            "profile": "rust_minimal",
+            "package": "codex-test",
+            "target_kind": "lib",
+            "target": "",
+            "tests": [first, second],
+        }
+        inventory = subprocess.CompletedProcess(
+            ["cargo", "test", "--list"],
+            0,
+            stdout=f"{first}: test\n{second}: test\n",
+            stderr="",
+        )
+        outputs = (
+            (f"test {second} ... FAILED\n", 1, "execution_reconciliation_failed"),
+            (
+                f"test {first} ... ignored\ntest {second} ... FAILED\n",
+                1,
+                "named_test_ignored",
+            ),
+            (
+                f"test {first} ... FAILED\ntest {second} ... ignored\n",
+                1,
+                "named_test_failed",
+            ),
+            (
+                f"test {first} ... ok\ntest {second} ... ok\n",
+                0,
+                "execution_reconciliation_failed",
+            ),
+        )
+        manifest = CoreIntegrationRuntimePreparationTests._fixture_manifest(request)
+        for output, exit_code, first_failure in outputs:
+            with self.subTest(output=output):
+                execution = subprocess.CompletedProcess(
+                    ["cargo", "test"], exit_code, stdout=output, stderr=""
+                )
+                with (
+                    patch.object(named_tests, "load_manifest", return_value=manifest),
+                    patch.object(named_tests, "git_sha", return_value="a" * 40),
+                    patch.object(
+                        named_tests.subprocess,
+                        "run",
+                        side_effect=[inventory, execution],
+                    ),
+                ):
+                    result = named_tests.run_request(request, Path("."))
+
+                self.assertEqual(len(result["tests"]), 2)
+                self.assertEqual(
+                    [test["name"] for test in result["tests"]], [first, second]
+                )
+                self.assertEqual(result["status"], "failure")
+                self.assertEqual(result["failure_code"], first_failure)
 
     def test_non_core_target_does_not_prebuild_runtime_binaries(self) -> None:
         request = {
@@ -581,16 +717,21 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
             ),
             stderr="",
         )
-        record = {
-            "inventory_argv": ("cargo", "test", "--list"),
-            "execution_argv": ("cargo", "test"),
-        }
+        record = CoreIntegrationRuntimePreparationTests._fixture_manifest(request)[
+            named_tests.target_key("codex-test", "lib", "")
+        ]
         source_sha = CoreIntegrationRuntimePreparationTests.source_sha
         with (
             patch.dict(
                 "os.environ", {"VALIDATION_TARGET_SHA": source_sha}, clear=True
             ),
-            patch.object(named_tests, "select_target", return_value=record),
+            patch.object(
+                named_tests,
+                "load_manifest",
+                return_value=CoreIntegrationRuntimePreparationTests._fixture_manifest(
+                    request
+                ),
+            ),
             patch.object(named_tests, "git_sha", return_value=source_sha),
             patch.object(
                 named_tests.subprocess, "run", side_effect=[inventory, execution]
@@ -609,10 +750,8 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
         with (
             patch.object(
                 named_tests,
-                "select_target",
-                side_effect=ValueError(
-                    "request target selector is not in the committed catalog"
-                ),
+                "load_manifest",
+                return_value={},
             ),
             patch.object(named_tests.subprocess, "run") as run,
         ):

@@ -38,6 +38,7 @@ MAX_FAILURE_BLOCKS = 8
 MAX_FAILURE_EVIDENCE_BYTES = 350 * 1024
 MAX_FAILURE_BLOCK_EVIDENCE_CHARS = 2048
 MAX_FAILURE_MARKERS_PER_BLOCK = 16
+MAX_CARGO_SUMMARIES_PER_CHANNEL = 4
 CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
 CORE_RUNTIME_BUILDS = (
     (
@@ -144,6 +145,25 @@ def test_result_counts(output: str) -> dict[str, int] | None:
     return {
         name: int(match.group(name))
         for name in ("passed", "failed", "ignored", "measured", "filtered")
+    }
+
+
+def cargo_summary_channel_evidence(output: str) -> dict[str, Any]:
+    """Expose bounded numeric Cargo summary counts without retaining log text."""
+
+    matches = list(TEST_RESULT_RE.finditer(output))
+    emitted = matches[:MAX_CARGO_SUMMARIES_PER_CHANNEL]
+    return {
+        "match_count": len(matches),
+        "summaries": [
+            {
+                name: int(match.group(name))
+                for name in ("passed", "failed", "ignored", "measured", "filtered")
+            }
+            for match in emitted
+        ],
+        "omitted_count": len(matches) - len(emitted),
+        "truncated": len(matches) > len(emitted),
     }
 
 
@@ -848,6 +868,10 @@ def failure_evidence(
         "cargo_summary_failed_count": (
             summary_counts["failed"] if summary_counts is not None else None
         ),
+        "cargo_summary_channels": {
+            "stdout": cargo_summary_channel_evidence(stdout),
+            "stderr": cargo_summary_channel_evidence(stderr),
+        },
         "capture_truncated": False,
         "upstream_output_truncation": "unknown",
     }
@@ -1044,14 +1068,13 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "diagnostics": command_diagnostics(completed),
             }
         )
-        if status != "success":
+        if status != "success" and result["status"] == "success":
             result["status"] = "failure"
             result["failure_code"] = failure_code
             result["message"] = (
                 "named test did not produce exactly one non-ignored passing result; "
                 "only bounded captured diagnostics are retained"
             )
-            break
     return result
 
 
