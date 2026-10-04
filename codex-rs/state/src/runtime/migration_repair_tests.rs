@@ -206,7 +206,9 @@ async fn install_same_column_mailbox_schema_with_constraint_defect(
         })
         .collect::<Vec<_>>();
     for (name, _) in &tables {
-        sqlx::query(&format!("DROP TABLE {name}"))
+        // `name` is from sqlite_schema, restricted to the fixed synthetic mailbox
+        // table names above; it is not runtime or user input.
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP TABLE {name}")))
             .execute(pool)
             .await
             .expect("drop original mailbox table");

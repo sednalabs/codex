@@ -473,7 +473,8 @@ async fn validate_schema(
         table_exists(connection, "agent_mailbox").await?,
         table_exists(connection, "agent_mailbox_supersessions").await?,
     ];
-    let mailbox_migration_sql = &embedded(migrator, FORK_9004)?.sql;
+    let mailbox_migration = embedded(migrator, FORK_9004)?;
+    let mailbox_migration_sql = mailbox_migration.sql.as_str();
     let mailbox_index_presence = [
         migration_schema_object_matches(
             connection,
