@@ -126,11 +126,11 @@
     "codex-rs/runtime-proof/src/startup_tests.rs": "fdcc1782a7a847f9c2f673200a4fd6cedc206a317c0cda86898e25a403c21495",
     "codex-rs/runtime-proof/src/tests.rs": "8db5acad101362a856db68e3e864da2647ebc0003cdae381ba99f708b8b4e972",
     "codex-rs/runtime-proof/src/wire.rs": "86489323a0ad6ca26af1c5d6efab776bfded2d1b2195f7b3580936eb0e2c2bbb",
-    "docs/carry-divergence-ledger.md": "dd6805c63fa67e877004320b3a73f9b1ebfcdec7bab9ce3d3a4d98d8135bbf98",
-    "docs/divergences/index.yaml": "13b8e21872ac97d5d8819035e3e8b6d5d502486ff38bf16192a79586c9d41d15",
-    "docs/downstream-regression-matrix.md": "e3230f71c3ea325d26441d4e2f7944431c14555017b6f4c7e108a77ece16f718"
+    "docs/carry-divergence-ledger.md": "2ef3e359848fee0339d3ee9a9a5b3de46e2d9f06b0f57d61b33d498d0137921f",
+    "docs/divergences/index.yaml": "5de66261b59e41079f419c42dec8b5a1ebf2d590edc33ed3663ba123f7221b66",
+    "docs/downstream-regression-matrix.md": "83d30bdb90136e0962dcb7f8e88a8cfcaebba4d1d8ce56e965deedb98ee2ddf2"
   },
-  "product_source_commit": "0557a152cb9a57217c4a586c76f5cbeeaae20943",
+  "product_source_commit": "300fbe0a3aa6c4c53c2c9a86e3a50a488f06ecb2",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
