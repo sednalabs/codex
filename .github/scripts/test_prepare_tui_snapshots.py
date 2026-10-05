@@ -1,5 +1,6 @@
 """Hosted regression controls for the closed TUI snapshot preparation route."""
 
+import copy
 import hashlib
 import io
 import importlib.util
@@ -374,6 +375,10 @@ class GeneratedSnapshotTests(OutputFixture):
         self.add_pending(contents=b"ghp_abcdefghijklmnopqrstuvwxyz123456\n")
         with self.assertRaisesRegex(ValueError, "token-like"):
             self.validate()
+        (self.root / relative).unlink()
+        self.add_pending(contents=b"github_pat_abcdefghijklmnopqrstuvwxyz123456\n")
+        with self.assertRaisesRegex(ValueError, "token-like"):
+            self.validate()
 
     def test_wrong_manifest_length_or_duplicate_is_rejected(self):
         with mock.patch.object(
@@ -710,7 +715,7 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(contents)
 
-    def _invoke(self, action, exit_code=101, generator_count=1, post_generator_git=None):
+    def _invoke(self, action, exit_code=101, generator_count=1, post_generator_git=None, body_bundle=False):
         original_run = subprocess.run
         calls, generators = [], []
         roots = {str(self.workflow_root), str(self.product_root)}
@@ -757,7 +762,8 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
         data = (artifact / "diagnostic.json").read_bytes() if artifact.exists() else None
         if artifact.exists():
-            self.assertEqual({path.name for path in artifact.iterdir()}, {"diagnostic.json"})
+            self.assertEqual({path.name for path in artifact.iterdir()},
+                             {"diagnostic.json", "snapshots", "inline-review.json"} if body_bundle else {"diagnostic.json"})
         return data, stderr.getvalue()
 
     @staticmethod
@@ -1594,6 +1600,249 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertEqual((inventory["observed_count"], inventory["observed_entry_count"], inventory["omitted_count"], inventory["complete"]),
                          (None, 2000, 2000, False))
         self.assertEqual(inventory["omission_reasons"], self._omissions(metadata_budget=(2000, 2000)))
+
+    def _body_fixture(self):
+        sources = (*prepare_tui_snapshots.DIAGNOSTIC_BODY_SOURCES, prepare_tui_snapshots.DIAGNOSTIC_BODY_INLINE_SOURCE)
+        for relative in sources:
+            path = self.product_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_bytes(b"tracked public source fixture\n")
+        self._git(self.product_root, "add", "--", *sources)
+        self._commit(self.product_root, "diagnostic body source fixture")
+        self.target_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
+        self.environment["TARGET_SHA"] = self.target_sha
+        self.body_input = {"product_sha": self.target_sha,
+            "product_tree": self._git(self.product_root, "rev-parse", "HEAD^{tree}").decode().strip(),
+            "comparison_base_sha": self.base_sha,
+            "comparison_base_tree": self._git(self.product_root, "rev-parse", f"{self.base_sha}^{{tree}}").decode().strip()}
+        self.body_outputs = {source + ".new": f"public pending fixture {index}\n".encode()
+                             for index, source in enumerate(prepare_tui_snapshots.DIAGNOSTIC_BODY_SOURCES)}
+        source = Path("codex-rs/tui/src/chatwidget/rendering_tests.rs")
+        self.body_inline_path = source.with_name("." + source.name + ".pending-snap").as_posix()
+
+    @staticmethod
+    def _body_inline_records():
+        # Pinned producer shape: old has default metadata/no name; new is source-bound.
+        return [{"run_id": "PRIVATE_RUN_CANARY", "line": 403,
+                 "old": {"module_name": "codex_tui__chatwidget__rendering__tests", "metadata": {}, "snapshot": "old inline\n"},
+                 "new": {"module_name": "codex_tui__chatwidget__rendering__tests",
+                         "snapshot_name": "initial_session_header_starts_at_the_top_of_the_viewport",
+                         "metadata": {"source": "tui/src/chatwidget/rendering_tests.rs", "assertion_line": 403,
+                                      "expression": "PRIVATE_EXPRESSION", "description": "PRIVATE_DESCRIPTION",
+                                      "input_file": "PRIVATE_INPUT", "info": {"private": "/home/runner/private github_pat_abcdefghijklmnopqrstuvwxyz123456 https://private.invalid"}},
+                         "snapshot": "new inline\n"}},
+                {"run_id": "PRIVATE_RUN_CANARY", "line": 152, "old": None, "new": None},
+                {"run_id": "PRIVATE_RUN_CANARY", "line": 350, "old": None, "new": None}]
+
+    def _body_generate(self, records=None):
+        for relative, data in self.body_outputs.items():
+            self._pending(relative, data)
+        records = self._body_inline_records() if records is None else records
+        self._pending(self.body_inline_path, ("\n".join(json.dumps(record) for record in records) + "\n").encode())
+
+    def _body_invoke(self, action=None, body_bundle=False):
+        # Only the immutable identity binding is fixture-adapted; Git, validators,
+        # bounded reads, JSON projection and atomic writer remain real.
+        with mock.patch.object(prepare_tui_snapshots, "DIAGNOSTIC_BODY_INPUT", self.body_input):
+            return self._invoke(self._body_generate if action is None else action, exit_code=100, body_bundle=body_bundle)
+
+    def _assert_body_gap(self, data, stderr, code):
+        public = json.loads(data)
+        self.assertEqual((public["status"], public["artifact_kind"], public["generated_output_acceptance"],
+                          public["accepted_output_limit"], public["failure_code"], public["generator_exit_code"],
+                          public["metadata_status"], public["metadata_failure_code"]),
+                         ("failure", "diagnostic-only", False, 69, "output_count_exceeded", 100, "incomplete", code))
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+        self.assertNotIn(b"PRIVATE", data)
+
+    def test_body_diagnostic_whole_bundle_has_exact_reads_projection_and_red_conservation(self):
+        self._body_fixture()
+        original_open, reads = Path.open, []
+        expected_reads = {self.product_root / path for path in (*self.body_outputs, self.body_inline_path)}
+        allowed = expected_reads | {self.product_root / path for path in (*prepare_tui_snapshots.SNAPSHOT_PATHS, *prepare_tui_snapshots.LOCK_PATHS)}
+        artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
+        allowed.add(artifact / "diagnostic.json")
+        def open_path(path, *args, **kwargs):
+            mode = kwargs.get("mode", args[0] if args else "r")
+            if mode == "rb":
+                self.assertIn(path, allowed, "unexpected diagnostic body read")
+                if path in expected_reads:
+                    reads.append(path)
+            return original_open(path, *args, **kwargs)
+        with mock.patch.object(Path, "open", open_path):
+            data, stderr = self._body_invoke(body_bundle=True)
+        self.assertEqual((len(reads), set(reads)), (81, expected_reads))
+        public = json.loads(data)
+        self.assertEqual((public["status"], public["artifact_kind"], public["generated_output_acceptance"], public["accepted_output_limit"],
+                          public["failure_code"], public["generator_exit_code"], public["inventory"]["observed_count"], public["metadata_status"]),
+                         ("failure", "diagnostic-only", False, 69, "output_count_exceeded", 100, 80, "complete"))
+        self.assertEqual({key: value["status"] for key, value in public["conservation"].items()},
+                         {"baselines": "verified", "locks": "verified", "workflow_host": "verified", "other_files": "failed"})
+        expected = {"diagnostic.json": data, **{"snapshots/" + path: body for path, body in self.body_outputs.items()},
+                    "inline-review.json": (json.dumps([
+                        {"source_locator": "codex-rs/tui/src/chatwidget/rendering_tests.rs", "assertion_line": 403, "old": "old inline\n", "new": "new inline\n"},
+                        {"source_locator": "codex-rs/tui/src/chatwidget/rendering_tests.rs", "assertion_line": 152, "old": None, "new": None},
+                        {"source_locator": "codex-rs/tui/src/chatwidget/rendering_tests.rs", "assertion_line": 350, "old": None, "new": None},
+                    ], indent=2, sort_keys=True) + "\n").encode()}
+        self.assertEqual({path.relative_to(artifact).as_posix(): path.read_bytes() for path in artifact.rglob("*") if path.is_file()}, expected)
+        whole = b"\n".join(expected.values())
+        raw = ("\n".join(json.dumps(record) for record in self._body_inline_records()) + "\n").encode()
+        for canary in (b"PRIVATE", b"github_pat_", b"/home/runner/", b"https://private.invalid", self.body_inline_path.encode(),
+                       b'"run_id"', b'"snapshot_name"', b'"metadata"', hashlib.sha256(raw).hexdigest().encode()):
+            self.assertNotIn(canary, whole)
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+
+    def test_body_inline_reader_rejects_isolated_grammar_identity_and_conflict_mutations(self):
+        baseline = self._body_inline_records()
+        encoded = lambda records: ("\n".join(json.dumps(record) for record in records) + "\n").encode()
+        projected = prepare_tui_snapshots._project_inline_pending(encoded(baseline), self.environment)
+        self.assertEqual([item["assertion_line"] for item in json.loads(projected)], [403, 152, 350])
+        cleanup = prepare_tui_snapshots._project_inline_pending(encoded(baseline[1:]), self.environment)
+        self.assertEqual(json.loads(cleanup), [
+            {"source_locator": "codex-rs/tui/src/chatwidget/rendering_tests.rs", "assertion_line": line, "old": None, "new": None}
+            for line in (152, 350)])
+        variants = []
+        for mutate in (
+            lambda row: row.update(private_field="PRIVATE_BODY"),
+            lambda row: row.update(run_id="PRIVATE/path"),
+            lambda row: row.update(line=True),
+            lambda row: row.update(old=None),
+            lambda row: row["new"].update(module_name="PRIVATE_MODULE"),
+            lambda row: row["new"].update(snapshot_name="github_pat_" + "x" * 20),
+            lambda row: row["new"].update(unknown="PRIVATE_FIELD"),
+            lambda row: row["new"].update(snapshot=["PRIVATE_BODY"]),
+            lambda row: row["old"]["metadata"].update(source="PRIVATE_SOURCE"),
+            lambda row: row["new"]["metadata"].update(source="codex-rs/tui/src/chatwidget/rendering_tests.rs"),
+            lambda row: row["new"]["metadata"].update(assertion_line=350),
+            lambda row: row["new"]["metadata"].update(expression=None),
+            lambda row: row["new"]["metadata"].update(snapshot_kind="binary"),
+        ):
+            rows = copy.deepcopy(baseline)
+            mutate(rows[0])
+            variants.append(encoded(rows))
+        conflict = copy.deepcopy(baseline)
+        conflict[1]["run_id"] = "ANOTHER_RUN"
+        variants.extend((encoded(conflict), encoded([baseline[0], baseline[0]]), b"",
+                         encoded(baseline).replace(b'"line": 403', b'"line": 403, "line": 350', 1),
+                         encoded(baseline).rstrip(b"\n"), b'{"PRIVATE": NaN}\n', b"not JSON\n"))
+        for invalid in variants:
+            with self.subTest(invalid_index=variants.index(invalid)), self.assertRaises(ValueError):
+                prepare_tui_snapshots._project_inline_pending(invalid, self.environment)
+
+    def test_body_inline_unknown_material_persists_only_coded_metadata(self):
+        self._body_fixture()
+        records = self._body_inline_records()
+        records[0]["new"]["metadata"]["source"] = "/private/PRIVATE_SOURCE"
+        data, stderr = self._body_invoke(lambda: self._body_generate(records))
+        self._assert_body_gap(data, stderr, "diagnostic_body_inline_invalid")
+
+    def test_body_snapshot_fine_grained_token_publishes_no_partial_bundle(self):
+        self._body_fixture()
+        self.body_outputs[next(reversed(self.body_outputs))] = b"github_pat_abcdefghijklmnopqrstuvwxyz123456\n"
+        data, stderr = self._body_invoke()
+        self._assert_body_gap(data, stderr, "diagnostic_body_privacy_failed")
+
+    def test_body_inline_decoded_runner_path_is_rejected_even_when_json_escaped(self):
+        self._body_fixture()
+        records = self._body_inline_records()
+        records[0]["new"]["snapshot"] = "/home/runner/PRIVATE_INLINE"
+        def action():
+            self._body_generate(records)
+            raw = ("\n".join(json.dumps(row) for row in records) + "\n").replace("/", "\\u002f").encode()
+            self._pending(self.body_inline_path, raw)
+        data, stderr = self._body_invoke(action)
+        self._assert_body_gap(data, stderr, "diagnostic_body_privacy_failed")
+
+    def test_body_capture_requires_exact_inventory_and_prelaunch_inline_absence(self):
+        self._body_fixture()
+        (self.product_root / ".git/info/exclude").write_text("*.pending-snap\n", encoding="utf-8")
+        self._pending(self.body_inline_path, b"PRIVATE_PREEXISTING")
+        with mock.patch.object(prepare_tui_snapshots, "_read_diagnostic_body") as read:
+            data, stderr = self._body_invoke()
+        read.assert_not_called()
+        self._assert_body_gap(data, stderr, "diagnostic_body_inventory_mismatch")
+
+    def test_body_unknown_output_inventory_is_metadata_only_before_any_body_read(self):
+        self._body_fixture()
+        def action():
+            self._body_generate()
+            self._pending("codex-rs/tui/src/snapshots/codex_tui__PRIVATE_UNKNOWN.snap.new")
+        with mock.patch.object(prepare_tui_snapshots, "_read_diagnostic_body") as read:
+            data, stderr = self._body_invoke(action)
+        read.assert_not_called()
+        self._assert_body_gap(data, stderr, "diagnostic_body_inventory_mismatch")
+
+    def test_body_capture_does_not_generalize_to_a_different_immutable_input(self):
+        self._body_fixture()
+        self.body_input["product_tree"] = "0" * 40
+        with mock.patch.object(prepare_tui_snapshots, "_read_diagnostic_body") as read:
+            data, stderr = self._body_invoke()
+        read.assert_not_called()
+        self.assertNotIn("metadata_failure_code", json.loads(data))
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+
+    def test_body_source_link_change_after_generation_is_rechecked_before_read(self):
+        self._body_fixture()
+        def action():
+            self._body_generate()
+            os.link(self.product_root / prepare_tui_snapshots.DIAGNOSTIC_BODY_SOURCES[0], self.product_root / ".git/body-source-alias")
+        with mock.patch.object(prepare_tui_snapshots, "_read_diagnostic_body") as read:
+            data, stderr = self._body_invoke(action)
+        read.assert_not_called()
+        self._assert_body_gap(data, stderr, "diagnostic_body_file_invalid")
+
+    def test_body_reader_rechecks_links_and_bounds_without_reading_aliases(self):
+        self._body_fixture()
+        source = self.product_root / prepare_tui_snapshots.DIAGNOSTIC_BODY_SOURCES[0]
+        symlink = self.product_root / "codex-rs/tui/src/PRIVATE_ALIAS"
+        symlink.symlink_to(source)
+        hardlink = self.product_root / "codex-rs/tui/src/PRIVATE_LINK"
+        os.link(source, hardlink)
+        with mock.patch.object(Path, "open") as opened:
+            for relative in (symlink.relative_to(self.product_root).as_posix(), hardlink.relative_to(self.product_root).as_posix()):
+                with self.assertRaises(ValueError):
+                    prepare_tui_snapshots._read_diagnostic_body(self.product_root, relative)
+            with mock.patch.object(prepare_tui_snapshots, "MAX_FILE_BYTES", 1), self.assertRaises(ValueError):
+                prepare_tui_snapshots._read_diagnostic_body(self.product_root, prepare_tui_snapshots.DIAGNOSTIC_BODY_SOURCES[1])
+        opened.assert_not_called()
+
+    def test_body_file_limit_keeps_complete_inventory_but_publishes_metadata_only(self):
+        self._body_fixture()
+        with mock.patch.object(prepare_tui_snapshots, "MAX_FILE_BYTES", 1):
+            data, stderr = self._body_invoke()
+        self._assert_body_gap(data, stderr, "diagnostic_body_size_limit")
+        self.assertTrue(json.loads(data)["inventory"]["complete"])
+
+    def test_body_aggregate_limit_includes_projected_inline_and_never_publishes_partial(self):
+        self._body_fixture()
+        limit = sum(len(body) for body in self.body_outputs.values())
+        with mock.patch.object(prepare_tui_snapshots, "MAX_OUTPUT_BYTES", limit):
+            data, stderr = self._body_invoke()
+        self._assert_body_gap(data, stderr, "diagnostic_body_size_limit")
+
+    def test_body_artifact_limit_retains_metadata_without_relaxing_existing_budget(self):
+        self._body_fixture()
+        self.body_outputs = {path: b"public\n" * 2000 for path in self.body_outputs}
+        with mock.patch.object(prepare_tui_snapshots, "MAX_ARTIFACT_BYTES", prepare_tui_snapshots.MAX_METADATA_BYTES):
+            data, stderr = self._body_invoke()
+        self._assert_body_gap(data, stderr, "diagnostic_body_size_limit")
+
+    def test_body_partial_persistence_is_removed_before_metadata_only_atomic_publication(self):
+        self._body_fixture()
+        original_write, failed = Path.write_bytes, []
+        staging = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_STAGING_DIRECTORY_NAME
+        def write(path, data):
+            if staging / "snapshots" in path.parents and not failed:
+                failed.append(path)
+                original_write(path, data)
+                raise OSError("PRIVATE_BODY_PERSISTENCE")
+            return original_write(path, data)
+        with mock.patch.object(Path, "write_bytes", write):
+            data, stderr = self._body_invoke()
+        self.assertEqual(len(failed), 1)
+        self._assert_body_gap(data, stderr, "diagnostic_body_persistence_failed")
+        self.assertFalse(staging.exists())
 
     def test_invalid_identity_never_launches_or_persists_and_main_error_is_coded(self):
         with mock.patch.dict(os.environ, {**self.environment, "TARGET_SHA": "PRIVATE_IDENTITY"}, clear=True), \

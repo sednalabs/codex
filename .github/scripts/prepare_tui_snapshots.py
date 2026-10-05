@@ -44,6 +44,9 @@ FAILURE_CODES = {
     "output_size_limit", "other_files_changed", "workflow_host_changed",
     "accepted_artifact_persistence_failed", "diagnostic_persistence_failed",
     "diagnostic_metadata_overflow", "preparation_failed",
+    "diagnostic_body_inventory_mismatch", "diagnostic_body_file_invalid",
+    "diagnostic_body_inline_invalid", "diagnostic_body_privacy_failed",
+    "diagnostic_body_size_limit", "diagnostic_body_persistence_failed",
 }
 FIXED_TARGET_SUFFIX = TARGET_DIRECTORY_NAME
 FIXED_ARTIFACT_SUFFIX = ARTIFACT_DIRECTORY_NAME
@@ -268,7 +271,7 @@ def _validate_public_output(contents: bytes, relative: str, environment: dict[st
     ]
     if any(value and value in text for value in forbidden):
         raise ValueError(f"pending snapshot contains a runner path or private-key marker: {relative}")
-    if re.search(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,})\b", text):
+    if re.search(r"\b(?:(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,})\b", text):
         raise ValueError(f"pending snapshot contains a token-like value: {relative}")
 
 
@@ -499,6 +502,100 @@ DIAGNOSTIC_SNAPSHOT_CANDIDATES = (
 )
 DIAGNOSTIC_INLINE_SOURCE = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
 DIAGNOSTIC_INLINE_PENDING = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+# A diagnostic-only inventory from one immutable source, never an acceptance expansion.
+DIAGNOSTIC_BODY_INPUT = {
+    "product_sha": "60171beef0932ba64af67fc6cff33237e21da32d",
+    "product_tree": "a926cf929f046242a9ccd531903a75c74c37d77e",
+    "comparison_base_sha": "8389b61d82cb6fb936e4e500b977f31682441ffe",
+    "comparison_base_tree": "699cd8b075e3aeafff573557612cdb944eb75c0a",
+}
+DIAGNOSTIC_BODY_SOURCES = (
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_markdown.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_model_grouping.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__agents_overview_recent_sessions.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__command_center__live_center_columns.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__agents_overview__tests__usage__agents_overview_usage.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__composer_hints__tests__composer_usage_notice.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__daemon_menu__tests__daemon_cli_confirmation.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__empty_state_animation_tests__fresh_thread_header.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__owned_transcript__follow_tests__running_without_composer_hint.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__app_server_thread_replacement_clears_previous_transcript_before_replay-2.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__turn_tips__tests__turn_tip_placements.snap",
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__turn_tips__tests__working_tip_mouse_down.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__active_reconnect__unavailable_conversation.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__navigation_reconnect__daemon_command_center_reconnecting.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__realtime_requests__voice_buffered_replay_reconciles_captions.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__realtime_requests__voice_completed_after_thread_switch.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__realtime_requests__voice_partial_completed_after_thread_switch.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__realtime_requests__voice_replay_reconciles_matching_captions.snap",
+    "codex-rs/tui/src/app/tests/snapshots/codex_tui__app__tests__startup_frame_tests__startup_tip_in_transcript.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__app_server_collab_wait_items_render_history.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__catalog_model_session_header_startup.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__chatwidget_exec_and_status_layout_vt100_snapshot.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__chatwidget_tall.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__compact_queues_user_messages_snapshot.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__compaction_running.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__completed_turn_clears_visible_running_hook.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__guardian_goal_continuation_drops_stale_reviews.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__guardian_parallel_reviews_render_aggregate_status.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__guardian_write_stdin_review_status.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__hidden_shell_paste_queued_preview.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__image_generation_begin_restores_working_status.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__interrupted_turn_clears_visible_running_hook.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__overlapping_hook_live_cell_snapshot.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__preamble_keeps_working_status.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__reasoning_activity_row_80.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__reasoning_delta_restores_recreated_status_indicator.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__replayed_in_progress_turn.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__review_queues_user_messages_snapshot.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__running_hooks_share_background_activity_row.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__slash_copy_picker_status_fields.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__slash_side_requests_forked_side_question_while_task_running.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__status_widget_active.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__unified_exec_begin_restores_working_status.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__unified_exec_wait_status_renders_command_in_single_details_row.snap",
+    "codex-rs/tui/src/history_cell/snapshots/codex_tui__history_cell__tests__pnpm_update_available_history_cell_snapshot.snap",
+    "codex-rs/tui/src/history_cell/snapshots/codex_tui__history_cell__tests__session_info_availability_nux_tooltip_snapshot.snap",
+    "codex-rs/tui/src/history_cell/snapshots/codex_tui__history_cell__tests__standalone_unix_update_available_history_cell_snapshot.snap",
+    "codex-rs/tui/src/history_cell/snapshots/codex_tui__history_cell__tests__standalone_windows_update_available_history_cell_snapshot.snap",
+    "codex-rs/tui/src/history_cell/snapshots/codex_tui__history_cell__tests__vite_plus_update_available_history_cell_snapshot.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__app__agents_overview__tests__agents_overview_live_activity.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__app__tests__clear_ui_after_long_transcript_fresh_header_only.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__started_sub_agent_activity_configured_identity.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__started_sub_agent_activity_missing_identity.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__startup_draft__layout__tests__owned_startup_layout.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__startup_draft__tests__startup_draft_fresh_session_transitions.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__startup_draft__tests__startup_draft_full_frames.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__startup_draft__tests__startup_draft_onboarding_transition.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__startup_draft__tests__terminal_app_ssh_startup.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__update_prompt__tests__update_picker_selected_28x12.snap",
+    "codex-rs/tui/src/snapshots/codex_tui__update_prompt__tests__update_prompt_modal.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_server_auth_not_required.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_cached_limits_hide_credits_without_flag.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_credits_and_limits.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_enterprise_monthly_credit_limit.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_forked_from.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_monthly_limit.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_reasoning_details.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_active_user_defined_profile.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_auto_review_permissions.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_chatgpt_plan_without_email.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_missing_limits_message.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_refreshing_limits_notice.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_stale_limits_message.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_shows_unavailable_limits_message.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_treats_refreshing_empty_limits_as_unavailable.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_truncates_halfwidth_kana_in_narrow_terminal.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_truncates_in_narrow_terminal.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_uses_default_reasoning_when_config_empty.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_uses_generic_limit_labels_for_unsupported_windows.snap",
+    "codex-rs/tui/src/status/snapshots/codex_tui__status__tests__transcript_overlay_status_rate_limit_refresh.snap",
+)
+DIAGNOSTIC_BODY_INLINE_SOURCE = "codex-rs/tui/src/chatwidget/rendering_tests.rs"
+DIAGNOSTIC_BODY_INLINE_WORKSPACE_SOURCE = "tui/src/chatwidget/rendering_tests.rs"
+DIAGNOSTIC_BODY_INLINE_MODULE = "codex_tui__chatwidget__rendering__tests"
+DIAGNOSTIC_BODY_INLINE_LINES = (152, 350, 403)
+
 
 
 def _inline_pending_locators(catalogue: set[str] | None) -> dict[str, str]:
@@ -755,9 +852,168 @@ def _rejection_diagnostic(
                 and all(item["status"] != "unknown" for item in conservation.values()) else "incomplete"}
 
 
-def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[str, object]) -> None:
+def _diagnostic_body_input(identity: dict[str, str]) -> bool:
+    return all(identity.get(key) == value for key, value in DIAGNOSTIC_BODY_INPUT.items())
+
+
+def _read_diagnostic_body(root: Path, relative: str) -> bytes:
+    path = _relative_path(root, relative)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise SnapshotPreparationError("diagnostic_body_file_invalid", "diagnostic body is not a regular single-link file")
+    if not 0 < before.st_size <= MAX_FILE_BYTES:
+        raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic body exceeds its file limit")
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_nlink, opened.st_size) != (
+                before.st_dev, before.st_ino, before.st_mode, 1, before.st_size):
+            raise SnapshotPreparationError("diagnostic_body_file_invalid", "diagnostic body changed before reading")
+        data = stream.read(MAX_FILE_BYTES + 1)
+        after = os.fstat(stream.fileno())
+    if (len(data) != before.st_size or (after.st_mode, after.st_nlink, after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+            (before.st_mode, 1, before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+        raise SnapshotPreparationError("diagnostic_body_file_invalid", "diagnostic body changed during reading")
+    return data
+
+
+def _project_inline_pending(data: bytes, environment: dict[str, str]) -> bytes:
+    """Read pinned Insta JSON-lines, never publish the pending record or its metadata."""
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate inline JSON key")
+            value[key] = item
+        return value
+
+    def invalid_constant(_value):
+        raise ValueError("nonfinite inline JSON value")
+
+    records, seen, run_id = [], set(), None
+    lines = data.decode("utf-8", errors="strict").split("\n")
+    if lines[-1] != "":
+        raise ValueError("inline pending batch is not a complete JSON-lines write")
+    for line in lines[:-1]:
+        value = json.loads(line, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+        if not isinstance(value, dict) or set(value) != {"run_id", "line", "new", "old"}:
+            raise ValueError("inline pending record fields differ")
+        identity, location = value["run_id"], value["line"]
+        if (not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identity)
+                or type(location) is not int or location not in DIAGNOSTIC_BODY_INLINE_LINES
+                or location in seen or run_id not in (None, identity)):
+            raise ValueError("inline pending identity or assertion location differs")
+        seen.add(location)
+        run_id = identity
+        projected = {"source_locator": DIAGNOSTIC_BODY_INLINE_SOURCE, "assertion_line": location}
+        for side in ("old", "new"):
+            snapshot = value[side]
+            if snapshot is None:
+                projected[side] = None
+                continue
+            if (not isinstance(snapshot, dict) or not {"module_name", "metadata", "snapshot"}.issubset(snapshot)
+                    or set(snapshot) - {"module_name", "snapshot_name", "metadata", "snapshot"}
+                    or snapshot["module_name"] != DIAGNOSTIC_BODY_INLINE_MODULE
+                    or ("snapshot_name" in snapshot and (side == "old" or not isinstance(snapshot["snapshot_name"], str)
+                        or not re.fullmatch(r"[A-Za-z0-9_]{1,240}", snapshot["snapshot_name"])
+                        or CREDENTIAL_PATH.search(snapshot["snapshot_name"])))
+                    or not isinstance(snapshot["metadata"], dict) or not isinstance(snapshot["snapshot"], str)):
+                raise ValueError("inline snapshot identity or fields differ")
+            metadata = snapshot["metadata"]
+            if (side == "old" and metadata) or (side == "new" and (
+                    set(metadata) - {"source", "assertion_line", "description", "expression", "info", "input_file"}
+                    or metadata.get("source") != DIAGNOSTIC_BODY_INLINE_WORKSPACE_SOURCE
+                    or type(metadata.get("assertion_line")) is not int or metadata["assertion_line"] != location
+                    or any(key in metadata and not isinstance(metadata[key], str)
+                           for key in ("description", "expression", "input_file")))):
+                raise ValueError("inline snapshot source or assertion location differs")
+            body = snapshot["snapshot"].encode("utf-8", errors="strict")
+            try:
+                _validate_public_output(body, DIAGNOSTIC_BODY_INLINE_SOURCE, environment)
+            except ValueError as error:
+                raise SnapshotPreparationError("diagnostic_body_privacy_failed", "inline text failed its public guard") from error
+            projected[side] = snapshot["snapshot"]
+        if (projected["old"] is None) != (projected["new"] is None):
+            raise ValueError("inline pending pair is incomplete")
+        records.append(projected)
+    if not records:
+        raise ValueError("inline pending batch is empty")
+    encoded = (json.dumps(records, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > MAX_FILE_BYTES:
+        raise SnapshotPreparationError("diagnostic_body_size_limit", "inline projection exceeds its file limit")
+    return encoded
+
+
+def _capture_diagnostic_bodies(root: Path, diagnostic, attributed, catalogue, closed_eligible,
+                              inline_absent: bool, environment: dict[str, str]) -> dict[str, bytes]:
+    expected = {source + ".new" for source in DIAGNOSTIC_BODY_SOURCES}
+    inventory = diagnostic["inventory"]
+    actual = {item.get("path", item.get("source_locator", "") + ".new") for item in inventory["paths"]}
+    conservation = diagnostic["conservation"]
+    other = conservation["other_files"]
+    evidence = other["evidence"]
+    inline = {"source_locator": DIAGNOSTIC_BODY_INLINE_SOURCE, "kind": "insta_inline_pending",
+              "git_status": "??", "observed_via": ["nonignored_untracked", "status"]}
+    if (diagnostic["failure_code"] != "output_count_exceeded" or diagnostic["phase"] != "outputs-validation"
+            or not diagnostic["generation_attempted"] or type(diagnostic["generator_exit_code"]) is not int
+            or not inline_absent or not inventory["complete"] or actual != expected
+            or len(inventory["paths"]) != len(expected) or inventory["observed_count"] != len(expected)
+            or inventory["observed_entry_count"] != len(expected) or inventory["emitted_count"] != len(expected)
+            or inventory["omitted_count"] != 0 or other["status"] != "failed" or other["actual_matches"] is not False
+            or not evidence["complete"] or evidence["paths"] != [inline]
+            or any(evidence[key] != value for key, value in (("observed_count", 1), ("observed_entry_count", 1), ("emitted_count", 1), ("omitted_count", 0)))
+            or set(evidence["queries"]) != {"status", "nonignored_untracked"}
+            or any(item["status"] != "complete" or item["observed_count"] != len(expected) + 1
+                   for item in evidence["queries"].values())
+            or any(conservation[key]["status"] != "verified" for key in ("baselines", "locks", "workflow_host"))
+            or catalogue is None or attributed is None or closed_eligible is None
+            or DIAGNOSTIC_BODY_INLINE_SOURCE not in closed_eligible):
+        raise SnapshotPreparationError("diagnostic_body_inventory_mismatch", "diagnostic body input set is incomplete or differs")
+    bodies, total = {}, 0
+    for source in DIAGNOSTIC_BODY_SOURCES:
+        if source not in catalogue or (source + ".new" not in attributed and source not in closed_eligible):
+            raise SnapshotPreparationError("diagnostic_body_inventory_mismatch", "diagnostic body source was not eligible before generation")
+        if _observed_file_omission(root, source):
+            raise SnapshotPreparationError("diagnostic_body_file_invalid", "diagnostic body source is no longer eligible")
+        data = _read_diagnostic_body(root, source + ".new")
+        try:
+            _validate_public_output(data, source, environment)
+        except ValueError as error:
+            raise SnapshotPreparationError("diagnostic_body_privacy_failed", "diagnostic snapshot body failed its public guard") from error
+        total += len(data)
+        if total > MAX_OUTPUT_BYTES:
+            raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic bodies exceed the aggregate limit")
+        bodies["snapshots/" + source + ".new"] = data
+    source = Path(DIAGNOSTIC_BODY_INLINE_SOURCE)
+    if _observed_file_omission(root, source.as_posix()):
+        raise SnapshotPreparationError("diagnostic_body_file_invalid", "inline source is no longer eligible")
+    pending = source.with_name("." + source.name + ".pending-snap").as_posix()
+    raw_inline = _read_diagnostic_body(root, pending)
+    try:
+        projected = _project_inline_pending(raw_inline, environment)
+    except SnapshotPreparationError:
+        raise
+    except (ValueError, RecursionError) as error:
+        raise SnapshotPreparationError("diagnostic_body_inline_invalid", "inline pending data failed its source or public guard") from error
+    if total + len(projected) > MAX_OUTPUT_BYTES:
+        raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic bodies exceed the aggregate limit")
+    bodies["inline-review.json"] = projected
+    return bodies
+
+
+def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[str, object],
+                               bodies: dict[str, bytes] | None = None) -> None:
+    expected = {"snapshots/" + source + ".new" for source in DIAGNOSTIC_BODY_SOURCES} | {"inline-review.json"}
+    if bodies is not None and (set(bodies) != expected or any(type(data) is not bytes or not 0 < len(data) <= MAX_FILE_BYTES
+                               for data in bodies.values()) or sum(len(data) for data in bodies.values()) > MAX_OUTPUT_BYTES):
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit"}
+        bodies = None
     encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if bodies is not None and len(encoded) + sum(len(data) for data in bodies.values()) > MAX_ARTIFACT_BYTES:
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit"}
+        bodies = None
+        encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES:
+        bodies = None
         inventory = dict(diagnostic["inventory"])
         other = dict(diagnostic["conservation"]["other_files"])
         evidence = dict(other["evidence"])
@@ -777,12 +1033,35 @@ def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[s
         encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
         raise SnapshotPreparationError("diagnostic_metadata_overflow", "diagnostic metadata exceeds its fixed limit")
-    # Never reuse a partial accepted-output staging directory or recursively
-    # repair persistence. Only a completed metadata file becomes upload-visible.
+    # Never reuse accepted-output staging or make a partial body bundle visible.
     if any(path.exists() or path.is_symlink() for path in (staging, artifact)):
         raise SnapshotPreparationError("diagnostic_persistence_failed", "diagnostic output path is already occupied")
     staging.mkdir(mode=0o700)
     (staging / "diagnostic.json").write_bytes(encoded)
+    attempted, directories = [], set()
+    try:
+        for relative, data in sorted((bodies or {}).items()):
+            destination = staging / relative
+            for parent in destination.parents:
+                if parent == staging:
+                    break
+                directories.add(parent)
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            attempted.append(destination)
+            destination.write_bytes(data)
+    except OSError:
+        # Remove only this fresh writer's finite body paths, never recurse or retry
+        # a failed/uncertain metadata write. Cleanup failure leaves no visible artifact.
+        for destination in reversed(attempted):
+            destination.unlink(missing_ok=True)
+        for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+            if directory.exists():
+                directory.rmdir()
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_persistence_failed"}
+        encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
+            raise SnapshotPreparationError("diagnostic_metadata_overflow", "body failure metadata exceeds its fixed limit")
+        (staging / "diagnostic.json").write_bytes(encoded)
     staging.rename(artifact)
 
 
@@ -803,6 +1082,7 @@ def prepare(environment: dict[str, str]) -> int:
     fallback_code = "prelaunch_failed"
     actual_exit = None
     generation_attempted = False
+    inline_absent = False
     try:
         baseline = _capture_baseline(product_root)
         locks_before = _capture_locks(product_root)
@@ -810,6 +1090,10 @@ def prepare(environment: dict[str, str]) -> int:
         catalogue = _tracked_path_set(product_root)
         attributed = _diagnostic_attribution(product_root, catalogue)
         closed_eligible = _closed_diagnostic_attribution(product_root, catalogue)
+        if _diagnostic_body_input(identity) and DIAGNOSTIC_BODY_INLINE_SOURCE in closed_eligible:
+            source = _relative_path(product_root, DIAGNOSTIC_BODY_INLINE_SOURCE)
+            pending = source.with_name("." + source.name + ".pending-snap")
+            inline_absent = not (pending.exists() or pending.is_symlink())
         target_dir.mkdir(mode=0o700)
         output_env = dict(environment)
         output_env["INSTA_UPDATE"] = "new"
@@ -831,8 +1115,16 @@ def prepare(environment: dict[str, str]) -> int:
         code = error.code if isinstance(error, SnapshotPreparationError) else fallback_code
         diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed, catalogue, closed_eligible,
                                             phase, code, actual_exit, generation_attempted)
+        bodies = None
+        if _diagnostic_body_input(identity):
+            try:
+                bodies = _capture_diagnostic_bodies(product_root, diagnostic, attributed, catalogue, closed_eligible,
+                                                    inline_absent, environment)
+            except (OSError, ValueError, TypeError, RecursionError) as capture_error:
+                capture_code = capture_error.code if isinstance(capture_error, SnapshotPreparationError) else "diagnostic_body_file_invalid"
+                diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": capture_code}
         try:
-            _write_diagnostic_artifact(staging_dir, artifact_dir, diagnostic)
+            _write_diagnostic_artifact(staging_dir, artifact_dir, diagnostic, bodies)
         except (OSError, ValueError) as persistence_error:
             persistence_code = persistence_error.code if isinstance(persistence_error, SnapshotPreparationError) else "diagnostic_persistence_failed"
             print(f"TUI snapshot preparation failed: {persistence_code}; artifact_state=unknown", file=sys.stderr)
