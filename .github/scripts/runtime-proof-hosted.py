@@ -229,8 +229,8 @@ def load_manifest() -> dict[str, Any]:
         "bazelisk": "1.28.1",
     }:
         refuse("manifest toolchain pins changed")
-    if len(value["product_inputs"]) != 41:
-        refuse("manifest must bind the exact forty-one frozen product inputs")
+    if len(value["product_inputs"]) != 40:
+        refuse("manifest must bind the exact forty frozen product inputs")
     return value
 
 

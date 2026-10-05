@@ -32,7 +32,6 @@
     "codex-rs/core/src/client_tests.rs",
     "codex-rs/core/src/mcp_tool_call.rs",
     "codex-rs/core/src/mcp_tool_call_tests.rs",
-    "codex-rs/core/src/session/handlers.rs",
     "codex-rs/core/src/session/session.rs",
     "codex-rs/core/src/session/tests.rs",
     "codex-rs/exec/src/lib.rs",
@@ -106,7 +105,6 @@
     "codex-rs/core/src/client_tests.rs": "8adf49aa6823d8e72b90dfedc5cbc580aa6f39fae55c3d24a55cadbb8ee37569",
     "codex-rs/core/src/mcp_tool_call.rs": "4c9548cb9d9302cc44bdef3d921719f634fa132cdb7c17094b94eb1976271242",
     "codex-rs/core/src/mcp_tool_call_tests.rs": "7ca5ad3bbb0e0e788ec46f6631ae643ddcc56d9f402eaf168e5d6a30f5bcdf91",
-    "codex-rs/core/src/session/handlers.rs": "1beeef1cb1ffb13eb1ac6757191d3e0c7a73f40076d93f1862ba497f7e6da0c6",
     "codex-rs/core/src/session/session.rs": "6827a4e52a54a4e826b7efc4d7e411f87e0f8d6a9623ab54d98d5620aab1e2cf",
     "codex-rs/core/src/session/tests.rs": "356c37e5800bb72c5b9d872cfe4703eadb736f6fe7ea34b7ce24fa953e0213b8",
     "codex-rs/exec/Cargo.toml": "3f0e247a4bdcc71933b66582fa029864eb4bc648b038401879466acc922b6237",
@@ -126,11 +124,11 @@
     "codex-rs/runtime-proof/src/startup_tests.rs": "fdcc1782a7a847f9c2f673200a4fd6cedc206a317c0cda86898e25a403c21495",
     "codex-rs/runtime-proof/src/tests.rs": "8db5acad101362a856db68e3e864da2647ebc0003cdae381ba99f708b8b4e972",
     "codex-rs/runtime-proof/src/wire.rs": "86489323a0ad6ca26af1c5d6efab776bfded2d1b2195f7b3580936eb0e2c2bbb",
-    "docs/carry-divergence-ledger.md": "0a13904f386471b912311b791f1de8e47f748aeafa4f424a12bad36441ed3ecf",
-    "docs/divergences/index.yaml": "6fb400768323c47b78a518aa0865ba21524b9b15285ec9813afef63bc55c4f9f",
-    "docs/downstream-regression-matrix.md": "45a5bc91f1934b2c3c11e30620e596d95ebd5c86f2e4ef5d9c803bff22f3f65b"
+    "docs/carry-divergence-ledger.md": "30be9c1ab622896fff1e576caed9427c52a115abe4d6f9466e4d8c90d2d1d3bb",
+    "docs/divergences/index.yaml": "5c111881dbd8b7bd19510024063d3d049ff78ae1ae5bf90e2085d87dfaac7702",
+    "docs/downstream-regression-matrix.md": "74995ac1978ea9c1d5ea943a4827442e71c73a9139cd88d1f8c2586367a181b3"
   },
-  "product_source_commit": "d2d650cc8a87c80b470455b920e3418d686638c6",
+  "product_source_commit": "568ee7a8fc568668e7a89e70d4442525707d2224",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
