@@ -86,6 +86,7 @@ jobs:
         env:
           EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
           EXPECTED_RUNNER_OS: ${{ runner.os }}
+          RUSTUP_TOOLCHAIN: 1.96.0
         run: python3 .github/scripts/runtime-proof-hosted.py validate-linux
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
