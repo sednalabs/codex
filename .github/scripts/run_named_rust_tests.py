@@ -120,9 +120,19 @@ CORE_BUILDER_PHASES = {
 CORE_BUILDER_RESULT_PHASES = frozenset({"auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
                                       "workspace_setup", "installation_id_resolution", "ordinary_conversation_start"})
 CORE_BUILDER_CLASSES = (CORE_DIAGNOSTIC_ERRORS - {"other"}) | {
-    "no_io_cause", "unlisted_io_kind", "codex_fatal", "codex_invalid_request",
-    "codex_unsupported_operation", "codex_sandbox", "codex_sandbox_executable_not_provided",
-    "codex_json", "codex_tokio_join", "codex_env_var", "unlisted_codex_kind",
+    "no_io_cause", "unlisted_io_kind",
+    "codex_turn_aborted", "codex_session_budget_exceeded", "codex_stream", "codex_content_filter",
+    "codex_rate_limit_exceeded", "codex_context_window_exceeded", "codex_thread_not_found",
+    "codex_agent_limit_reached", "codex_session_configured_not_first_event", "codex_timeout",
+    "codex_request_timeout", "codex_spawn", "codex_interrupted", "codex_unexpected_status",
+    "codex_invalid_request", "codex_invalid_prompt", "codex_tool_collision", "codex_invalid_image_request",
+    "codex_usage_limit_reached", "codex_server_overloaded", "codex_flex_unavailable", "codex_cyber_policy",
+    "codex_bio_policy", "codex_misalignment_policy_violation", "codex_response_stream_failed",
+    "codex_connection_failed", "codex_quota_exceeded", "codex_usage_not_included",
+    "codex_internal_server_error", "codex_retry_limit", "codex_internal_agent_died", "codex_sandbox",
+    "codex_landlock_sandbox_executable_not_provided", "codex_unsupported_operation", "codex_refresh_token_failed",
+    "codex_fatal", "codex_io", "codex_json", "codex_landlock_ruleset", "codex_landlock_path_fd",
+    "codex_tokio_join", "codex_env_var", "unlisted_codex_kind",
 }
 VALIDATION_IDENTITY_ENV = {
     "harness_sha": "VALIDATION_HARNESS_SHA", "base_ref": "VALIDATION_BASE_REF",

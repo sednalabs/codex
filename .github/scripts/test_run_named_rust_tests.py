@@ -1203,10 +1203,21 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
 
 class CoreRuntimeDiagnosticTests(unittest.TestCase):
-    # Independent payload-free labels from the frozen Rust error_class mapping.
-    codex_classes = ("codex_fatal", "codex_invalid_request", "codex_unsupported_operation",
-                     "codex_sandbox", "codex_sandbox_executable_not_provided", "codex_json",
-                     "codex_tokio_join", "codex_env_var", "unlisted_codex_kind")
+    # Independent complete CodexErrKind serde snake_case vocabulary, including Linux-only kinds.
+    codex_classes = (
+        "codex_turn_aborted", "codex_session_budget_exceeded", "codex_stream", "codex_content_filter",
+        "codex_rate_limit_exceeded", "codex_context_window_exceeded", "codex_thread_not_found",
+        "codex_agent_limit_reached", "codex_session_configured_not_first_event", "codex_timeout",
+        "codex_request_timeout", "codex_spawn", "codex_interrupted", "codex_unexpected_status",
+        "codex_invalid_request", "codex_invalid_prompt", "codex_tool_collision", "codex_invalid_image_request",
+        "codex_usage_limit_reached", "codex_server_overloaded", "codex_flex_unavailable", "codex_cyber_policy",
+        "codex_bio_policy", "codex_misalignment_policy_violation", "codex_response_stream_failed",
+        "codex_connection_failed", "codex_quota_exceeded", "codex_usage_not_included",
+        "codex_internal_server_error", "codex_retry_limit", "codex_internal_agent_died", "codex_sandbox",
+        "codex_landlock_sandbox_executable_not_provided", "codex_unsupported_operation", "codex_refresh_token_failed",
+        "codex_fatal", "codex_io", "codex_json", "codex_landlock_ruleset", "codex_landlock_path_fd",
+        "codex_tokio_join", "codex_env_var", "unlisted_codex_kind",
+    )
     root = Path(named_tests.__file__).resolve().parents[2]
     identity = {"harness_sha": "b" * 40, "base_sha": "c" * 40, "target_sha": "a" * 40,
                 "base_ref": "validation/base", "run_id": "123", "run_attempt": "2"}
@@ -1497,7 +1508,8 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                          tuple(public["diagnostic_samples"][0]["builder_evidence"][key]
                                for key in ("sequence_status", "terminal_phase", "terminal_class")))
         self.assertEqual("success", public["diagnostic_samples"][1]["status"])
-        for invalid in ("codex_unknown_category", "codex_refusal", "codex_fatal:PRIVATE_PAYLOAD",
+        for invalid in ("codex_unknown_category", "codex_refusal", "codex_sandbox_executable_not_provided",
+                        "codex_fatal:PRIVATE_PAYLOAD", "codex_landlock_sandbox_executable_not_provided:PRIVATE_PAYLOAD",
                         "codex_fatal PRIVATE_BODY /private/path https://private.invalid github_pat_PRIVATE"):
             rejected_stream = stream.replace("class=codex_fatal", "class=" + invalid)
             self.assertEqual("partial", named_tests.core_stage_evidence("restricted", "", rejected_stream)["sequence_status"])
