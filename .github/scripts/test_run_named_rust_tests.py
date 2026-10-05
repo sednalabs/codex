@@ -1203,6 +1203,10 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
 
 class CoreRuntimeDiagnosticTests(unittest.TestCase):
+    # Independent payload-free labels from the frozen Rust error_class mapping.
+    codex_classes = ("codex_fatal", "codex_invalid_request", "codex_unsupported_operation",
+                     "codex_sandbox", "codex_sandbox_executable_not_provided", "codex_json",
+                     "codex_tokio_join", "codex_env_var", "unlisted_codex_kind")
     root = Path(named_tests.__file__).resolve().parents[2]
     identity = {"harness_sha": "b" * 40, "base_sha": "c" * 40, "target_sha": "a" * 40,
                 "base_ref": "validation/base", "run_id": "123", "run_attempt": "2"}
@@ -1237,7 +1241,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         index = self._builder_phases(case).index(phase)
         nested = self._builder_markers(case).splitlines()[:2 * index + 1]
         nested.append(f"codex-core-runtime-diagnostic-builder-v1 case={case} phase={phase} state=error class={error_class}")
-        outer_class = "other" if error_class in {"no_io_cause", "unlisted_io_kind"} else error_class
+        outer_class = "other" if error_class in {"no_io_cause", "unlisted_io_kind", *self.codex_classes} else error_class
         return "\n".join([*self._markers(case).splitlines()[:5], *nested,
                           f"codex-core-runtime-diagnostic-v1 case={case} stage=builder state=error error={outer_class}"])
 
@@ -1444,7 +1448,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             for phase in self._builder_phases(case):
                 if phase not in result_phases:
                     continue
-                for error_class in ("no_io_cause", "unlisted_io_kind", "permission_denied"):
+                for error_class in ("no_io_cause", "unlisted_io_kind", "permission_denied", *self.codex_classes):
                     with self.subTest(case=case, phase=phase, error_class=error_class):
                         samples = [self._sample(key, "FAILED", self._builder_error_markers(key, phase, error_class))
                                    if key == case else self._sample(key) for key, _, _ in named_tests.CORE_DIAGNOSTIC_CASES]
@@ -1458,24 +1462,60 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                                          tuple(evidence[key] for key in ("sequence_status", "completed_path", "terminal_phase", "terminal_class")))
                         self.assertEqual((phase, "error", error_class),
                                          tuple(evidence["records"][-1][key] for key in ("phase", "state", "class")))
+                        if error_class in self.codex_classes:
+                            self.assertEqual("other", sample["stage_evidence"]["records"][-1]["error"])
+                            self.assertEqual((False, False, "unknown", "unknown"),
+                                             tuple(evidence[key] for key in ("completed_path", "attribution_complete",
+                                                                            "cross_stream_chronology", "writer_process_identity")))
                         self.assertEqual("success", next(item for item in public["diagnostic_samples"] if item["case"] != case)["status"])
 
     def test_builder_closed_error_classes_do_not_create_self_option_or_infallible_errors(self) -> None:
         classes = {"not_found", "permission_denied", "connection_refused", "connection_reset",
                    "broken_pipe", "invalid_input", "invalid_data", "timed_out", "interrupted",
-                   "unexpected_eof", "no_io_cause", "unlisted_io_kind"}
+                   "unexpected_eof", "no_io_cause", "unlisted_io_kind", *self.codex_classes}
         self.assertEqual(classes | {"none"}, named_tests.CORE_BUILDER_CLASSES)
         for error_class in classes:
             stream = self._builder_error_markers("restricted", "config_preparation", error_class)
             evidence = named_tests.core_builder_evidence("restricted", "", stream)
             self.assertEqual(("error", error_class), (evidence["sequence_status"], evidence["terminal_class"]))
         for phase in ("environment_manager_creation", "state_database_optional_initialization", "thread_manager_construction"):
-            stream = self._builder_error_markers("restricted", phase, "no_io_cause")
-            self.assertEqual("invalid", named_tests.core_builder_evidence("restricted", "", stream)["sequence_status"])
+            for error_class in ("no_io_cause", *self.codex_classes):
+                stream = self._builder_error_markers("restricted", phase, error_class)
+                self.assertEqual("invalid", named_tests.core_builder_evidence("restricted", "", stream)["sequence_status"])
         for error_class in ("none", "other", "unknown", "PRIVATE_ERROR"):
             stream = self._builder_error_markers("restricted", "config_preparation", error_class)
             self.assertFalse(named_tests.core_builder_evidence("restricted", "", stream)["completed_path"])
             self.assertEqual("invalid", named_tests.core_builder_evidence("restricted", "", stream)["sequence_status"])
+
+    def test_builder_codex_unknown_payload_and_refusal_are_isolated_public_negatives(self) -> None:
+        stream = self._builder_error_markers("restricted", "ordinary_conversation_start", "codex_fatal")
+        baseline, calls = self._run(samples=[self._sample("restricted", "FAILED", stream), self._sample("project_docs")])
+        public = json.loads(named_tests.public_artifact_bytes(baseline))
+        self.assertEqual((6, "failure", True, False, "not_attempted"),
+                         (len(calls), public["status"], public["sampling_complete"], public["full_target_execution"], public["qualification_status"]))
+        self.assertEqual(("error", "ordinary_conversation_start", "codex_fatal"),
+                         tuple(public["diagnostic_samples"][0]["builder_evidence"][key]
+                               for key in ("sequence_status", "terminal_phase", "terminal_class")))
+        self.assertEqual("success", public["diagnostic_samples"][1]["status"])
+        for invalid in ("codex_unknown_category", "codex_refusal", "codex_fatal:PRIVATE_PAYLOAD",
+                        "codex_fatal PRIVATE_BODY /private/path https://private.invalid github_pat_PRIVATE"):
+            rejected_stream = stream.replace("class=codex_fatal", "class=" + invalid)
+            self.assertEqual("partial", named_tests.core_stage_evidence("restricted", "", rejected_stream)["sequence_status"])
+            result, calls = self._run(samples=[self._sample("restricted", "FAILED", rejected_stream), self._sample("project_docs")])
+            data = named_tests.public_artifact_bytes(result)
+            rejected = json.loads(data)
+            self.assertEqual((6, "failure", True, False, "not_attempted"),
+                             (len(calls), rejected["status"], rejected["sampling_complete"], rejected["full_target_execution"], rejected["qualification_status"]))
+            self.assertEqual(("invalid", False, ""), tuple(rejected["diagnostic_samples"][0]["builder_evidence"][key]
+                             for key in ("sequence_status", "completed_path", "terminal_class")))
+            damaged = copy.deepcopy(baseline)
+            damaged["diagnostic_samples"][0]["builder_evidence"]["records"][-1]["class"] = invalid
+            projected = named_tests.public_artifact_bytes(damaged)
+            self.assertEqual("invalid", json.loads(projected)["diagnostic_samples"][0]["builder_evidence"]["sequence_status"])
+            for output in (data, projected):
+                for token in (invalid.encode(), b"PRIVATE", b"/private", b"https://", b"github_pat_",
+                              hashlib.sha256(invalid.encode()).hexdigest().encode()):
+                    self.assertNotIn(token, output)
 
     def test_builder_entered_only_prefix_reports_incomplete_without_fabricating_error(self) -> None:
         for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:

@@ -119,7 +119,11 @@ CORE_BUILDER_PHASES = {
 }
 CORE_BUILDER_RESULT_PHASES = frozenset({"auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
                                       "workspace_setup", "installation_id_resolution", "ordinary_conversation_start"})
-CORE_BUILDER_CLASSES = (CORE_DIAGNOSTIC_ERRORS - {"other"}) | {"no_io_cause", "unlisted_io_kind"}
+CORE_BUILDER_CLASSES = (CORE_DIAGNOSTIC_ERRORS - {"other"}) | {
+    "no_io_cause", "unlisted_io_kind", "codex_fatal", "codex_invalid_request",
+    "codex_unsupported_operation", "codex_sandbox", "codex_sandbox_executable_not_provided",
+    "codex_json", "codex_tokio_join", "codex_env_var", "unlisted_codex_kind",
+}
 VALIDATION_IDENTITY_ENV = {
     "harness_sha": "VALIDATION_HARNESS_SHA", "base_ref": "VALIDATION_BASE_REF",
     "base_sha": "VALIDATION_BASE_SHA", "target_sha": "VALIDATION_TARGET_SHA",
