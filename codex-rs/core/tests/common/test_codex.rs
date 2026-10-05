@@ -50,6 +50,8 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::models::PermissionProfile;
@@ -167,29 +169,49 @@ impl BuilderDiagnostic {
         match &result {
             Ok(_) => self.returned(phase),
             Err(error) => {
-                let kind = error
-                    .chain()
-                    .find_map(|cause| cause.downcast_ref::<std::io::Error>())
-                    .map(std::io::Error::kind);
-                let class = match kind {
-                    None => "no_io_cause",
-                    Some(ErrorKind::NotFound) => "not_found",
-                    Some(ErrorKind::PermissionDenied) => "permission_denied",
-                    Some(ErrorKind::ConnectionRefused) => "connection_refused",
-                    Some(ErrorKind::ConnectionReset) => "connection_reset",
-                    Some(ErrorKind::BrokenPipe) => "broken_pipe",
-                    Some(ErrorKind::InvalidInput) => "invalid_input",
-                    Some(ErrorKind::InvalidData) => "invalid_data",
-                    Some(ErrorKind::TimedOut) => "timed_out",
-                    Some(ErrorKind::Interrupted) => "interrupted",
-                    Some(ErrorKind::UnexpectedEof) => "unexpected_eof",
-                    // ErrorKind is non-exhaustive; never format an unknown error.
-                    Some(_) => "unlisted_io_kind",
-                };
-                self.marker(phase, "error", class);
+                self.marker(phase, "error", Self::error_class(error));
             }
         }
         result
+    }
+
+    fn error_class(error: &anyhow::Error) -> &'static str {
+        let kind = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind);
+        match kind {
+            None => match error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<CodexErr>())
+                .map(CodexErrKind::from)
+            {
+                Some(CodexErrKind::Fatal) => "codex_fatal",
+                Some(CodexErrKind::InvalidRequest) => "codex_invalid_request",
+                Some(CodexErrKind::UnsupportedOperation) => "codex_unsupported_operation",
+                Some(CodexErrKind::Sandbox) => "codex_sandbox",
+                Some(CodexErrKind::LandlockSandboxExecutableNotProvided) => {
+                    "codex_sandbox_executable_not_provided"
+                }
+                Some(CodexErrKind::Json) => "codex_json",
+                Some(CodexErrKind::TokioJoin) => "codex_tokio_join",
+                Some(CodexErrKind::EnvVar) => "codex_env_var",
+                Some(_) => "unlisted_codex_kind",
+                None => "no_io_cause",
+            },
+            Some(ErrorKind::NotFound) => "not_found",
+            Some(ErrorKind::PermissionDenied) => "permission_denied",
+            Some(ErrorKind::ConnectionRefused) => "connection_refused",
+            Some(ErrorKind::ConnectionReset) => "connection_reset",
+            Some(ErrorKind::BrokenPipe) => "broken_pipe",
+            Some(ErrorKind::InvalidInput) => "invalid_input",
+            Some(ErrorKind::InvalidData) => "invalid_data",
+            Some(ErrorKind::TimedOut) => "timed_out",
+            Some(ErrorKind::Interrupted) => "interrupted",
+            Some(ErrorKind::UnexpectedEof) => "unexpected_eof",
+            // ErrorKind is non-exhaustive; never format an unknown error.
+            Some(_) => "unlisted_io_kind",
+        }
     }
 }
 
@@ -1701,6 +1723,43 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+
+    #[test]
+    fn builder_error_categories_never_include_error_payloads() {
+        use codex_protocol::error::CodexErrorDetails;
+
+        for (details, expected) in [
+            (
+                CodexErrorDetails::Fatal("private diagnostic canary".into()),
+                "codex_fatal",
+            ),
+            (
+                CodexErrorDetails::InvalidRequest("private diagnostic canary".into()),
+                "codex_invalid_request",
+            ),
+            (
+                CodexErrorDetails::UnsupportedOperation("private diagnostic canary".into()),
+                "codex_unsupported_operation",
+            ),
+            (
+                CodexErrorDetails::LandlockSandboxExecutableNotProvided,
+                "codex_sandbox_executable_not_provided",
+            ),
+            (CodexErrorDetails::TurnAborted, "unlisted_codex_kind"),
+        ] {
+            let error = anyhow::Error::new(CodexErr::from(details)).context("private outer canary");
+            assert_eq!(BuilderDiagnostic::error_class(&error), expected);
+        }
+        let io_error = anyhow::Error::new(CodexErr::from(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "private diagnostic canary",
+        )));
+        assert_eq!(BuilderDiagnostic::error_class(&io_error), "permission_denied");
+        assert_eq!(
+            BuilderDiagnostic::error_class(&anyhow!("private diagnostic canary")),
+            "no_io_cause"
+        );
+    }
 
     #[test]
     fn custom_tool_call_output_text_returns_output_text() {
