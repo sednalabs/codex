@@ -833,18 +833,20 @@ jobs:
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
         with:
           bazelisk-version: 1.28.1
+          token: ""
       - name: Update and verify only the exact computer-use module lock
         if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
         working-directory: product
         shell: bash
         run: |
           set -euo pipefail
+          unset BAZELISK_GITHUB_TOKEN
           [[ "$(cat .bazelversion)" == "9.0.0" ]] || {
             echo "module preparation requires the admitted Bazel 9.0.0" >&2
             exit 1
           }
           bazel_args=(--ignore_all_rc_files "--output_base=${RUNNER_TEMP}/computer-use-bazel")
-          [[ "$(bazel "${bazel_args[@]}" --version)" == "bazel 9.0.0" ]] || {
+          [[ "$(bazel "${bazel_args[@]}" version --gnu_format)" == "bazel 9.0.0" ]] || {
             echo "module resolver did not select Bazel 9.0.0" >&2
             exit 1
           }
