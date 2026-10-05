@@ -14,6 +14,11 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      diagnostic_only:
+        description: Run only the bounded helper-format diagnostic
+        required: false
+        type: boolean
+        default: false
       target_sha:
         description: Exact 40-character candidate SHA to prepare in a disposable checkout
         required: true
@@ -31,7 +36,50 @@ permissions:
   contents: read
 
 jobs:
+  source-style-diagnostic:
+    if: ${{ inputs.diagnostic_only == true }}
+    name: Report helper formatter diff for exact Python paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact diagnostic helper
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .workflow-src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        env:
+          HOME: ${{ runner.temp }}/control-plane-home
+        with:
+          version: "0.11.3"
+
+      - name: Report Ruff diff on exact helper files
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/control-plane-home
+        run: |
+          set -euo pipefail
+          set +e
+          uv run --frozen --project scripts ruff format --diff \
+            .github/scripts/prepare_control_plane.py \
+            .github/scripts/test_prepare_control_plane.py
+          formatter_status=$?
+          set -e
+          if (( formatter_status > 1 )); then
+            exit "${formatter_status}"
+          fi
+
   prepare:
+    if: ${{ inputs.diagnostic_only != true }}
     name: Prepare exact candidate on standard hosted runner
     runs-on: ubuntu-24.04
     timeout-minutes: 90
