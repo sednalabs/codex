@@ -762,8 +762,10 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
         data = (artifact / "diagnostic.json").read_bytes() if artifact.exists() else None
         if artifact.exists():
+            expected_files = {"diagnostic.json", "snapshots"} if body_bundle == "tracked" else (
+                {"diagnostic.json", "snapshots", "inline-review.json"} if body_bundle else {"diagnostic.json"})
             self.assertEqual({path.name for path in artifact.iterdir()},
-                             {"diagnostic.json", "snapshots", "inline-review.json"} if body_bundle else {"diagnostic.json"})
+                             expected_files)
         return data, stderr.getvalue()
 
     @staticmethod
@@ -1730,12 +1732,27 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
             with self.subTest(invalid_index=variants.index(invalid)), self.assertRaises(ValueError):
                 prepare_tui_snapshots._project_inline_pending(invalid, self.environment)
 
-    def test_body_inline_unknown_material_persists_only_coded_metadata(self):
+    def _assert_tracked_body_partial(self, data, stderr, code):
+        self._assert_body_gap(data, stderr, code)
+        public = json.loads(data)
+        self.assertEqual((public["diagnostic_body_status"], public["diagnostic_inline_status"]),
+                         ("partial", "unavailable"))
+        self.assertEqual({key: value["status"] for key, value in public["conservation"].items()},
+                         {"baselines": "verified", "locks": "verified", "workflow_host": "verified", "other_files": "failed"})
+        artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
+        expected = {"diagnostic.json": data, **{"snapshots/" + path: body for path, body in self.body_outputs.items()}}
+        self.assertEqual({path.relative_to(artifact).as_posix(): path.read_bytes()
+                          for path in artifact.rglob("*") if path.is_file()}, expected)
+        whole = b"\n".join(expected.values())
+        for canary in (b"PRIVATE", b"github_pat_", b"/home/runner/", self.body_inline_path.encode(), b'"snapshot_name"', b'"run_id"'):
+            self.assertNotIn(canary, whole)
+
+    def test_body_inline_unknown_material_keeps_independently_guarded_tracked_bodies(self):
         self._body_fixture()
         records = self._body_inline_records()
         records[0]["new"]["metadata"]["source"] = "/private/PRIVATE_SOURCE"
-        data, stderr = self._body_invoke(lambda: self._body_generate(records))
-        self._assert_body_gap(data, stderr, "diagnostic_body_inline_invalid")
+        data, stderr = self._body_invoke(lambda: self._body_generate(records), body_bundle="tracked")
+        self._assert_tracked_body_partial(data, stderr, "diagnostic_body_inline_invalid")
 
     def test_body_snapshot_fine_grained_token_publishes_no_partial_bundle(self):
         self._body_fixture()
@@ -1751,8 +1768,37 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
             self._body_generate(records)
             raw = ("\n".join(json.dumps(row) for row in records) + "\n").replace("/", "\\u002f").encode()
             self._pending(self.body_inline_path, raw)
+        data, stderr = self._body_invoke(action, body_bundle="tracked")
+        self._assert_tracked_body_partial(data, stderr, "diagnostic_body_privacy_failed")
+
+    def test_body_inline_malformed_batch_keeps_only_exact_guarded_tracked_set(self):
+        self._body_fixture()
+        def action():
+            self._body_generate()
+            self._pending(self.body_inline_path, b'{"PRIVATE_PAYLOAD": NaN}\n')
+        data, stderr = self._body_invoke(action, body_bundle="tracked")
+        self._assert_tracked_body_partial(data, stderr, "diagnostic_body_inline_invalid")
+
+    def test_body_inline_read_failure_keeps_tracked_set_without_exception_payload(self):
+        self._body_fixture()
+        original_read = prepare_tui_snapshots._read_diagnostic_body
+        def read(root, relative):
+            if relative == self.body_inline_path:
+                raise OSError("PRIVATE_INLINE_READ")
+            return original_read(root, relative)
+        with mock.patch.object(prepare_tui_snapshots, "_read_diagnostic_body", side_effect=read):
+            data, stderr = self._body_invoke(body_bundle="tracked")
+        self._assert_tracked_body_partial(data, stderr, "diagnostic_body_inline_invalid")
+
+    def test_body_bad_tracked_content_is_not_published_when_inline_is_also_invalid(self):
+        self._body_fixture()
+        self.body_outputs[next(reversed(self.body_outputs))] = b"github_pat_abcdefghijklmnopqrstuvwxyz123456\n"
+        def action():
+            self._body_generate()
+            self._pending(self.body_inline_path, b"PRIVATE_INVALID_INLINE\n")
         data, stderr = self._body_invoke(action)
         self._assert_body_gap(data, stderr, "diagnostic_body_privacy_failed")
+        self.assertNotIn("diagnostic_body_status", json.loads(data))
 
     def test_body_capture_requires_exact_inventory_and_prelaunch_inline_absence(self):
         self._body_fixture()
@@ -1814,12 +1860,12 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self._assert_body_gap(data, stderr, "diagnostic_body_size_limit")
         self.assertTrue(json.loads(data)["inventory"]["complete"])
 
-    def test_body_aggregate_limit_includes_projected_inline_and_never_publishes_partial(self):
+    def test_body_aggregate_limit_keeps_guarded_tracked_set_when_inline_would_exceed_it(self):
         self._body_fixture()
         limit = sum(len(body) for body in self.body_outputs.values())
         with mock.patch.object(prepare_tui_snapshots, "MAX_OUTPUT_BYTES", limit):
-            data, stderr = self._body_invoke()
-        self._assert_body_gap(data, stderr, "diagnostic_body_size_limit")
+            data, stderr = self._body_invoke(body_bundle="tracked")
+        self._assert_tracked_body_partial(data, stderr, "diagnostic_body_size_limit")
 
     def test_body_artifact_limit_retains_metadata_without_relaxing_existing_budget(self):
         self._body_fixture()
@@ -1842,6 +1888,26 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
             data, stderr = self._body_invoke()
         self.assertEqual(len(failed), 1)
         self._assert_body_gap(data, stderr, "diagnostic_body_persistence_failed")
+        self.assertFalse(staging.exists())
+
+    def test_body_tracked_only_persistence_failure_never_exposes_a_partial_tracked_set(self):
+        self._body_fixture()
+        original_write, failed = Path.write_bytes, []
+        staging = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_STAGING_DIRECTORY_NAME
+        def write(path, data):
+            if staging / "snapshots" in path.parents and not failed:
+                failed.append(path)
+                original_write(path, data)
+                raise OSError("PRIVATE_TRACKED_WRITE")
+            return original_write(path, data)
+        def action():
+            self._body_generate()
+            self._pending(self.body_inline_path, b"PRIVATE_INVALID_INLINE\n")
+        with mock.patch.object(Path, "write_bytes", write):
+            data, stderr = self._body_invoke(action)
+        self.assertEqual(len(failed), 1)
+        self._assert_body_gap(data, stderr, "diagnostic_body_persistence_failed")
+        self.assertEqual(json.loads(data)["diagnostic_body_status"], "unavailable")
         self.assertFalse(staging.exists())
 
     def test_invalid_identity_never_launches_or_persists_and_main_error_is_coded(self):

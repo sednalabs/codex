@@ -944,7 +944,7 @@ def _project_inline_pending(data: bytes, environment: dict[str, str]) -> bytes:
 
 
 def _capture_diagnostic_bodies(root: Path, diagnostic, attributed, catalogue, closed_eligible,
-                              inline_absent: bool, environment: dict[str, str]) -> dict[str, bytes]:
+                              inline_absent: bool, environment: dict[str, str]) -> tuple[dict[str, bytes], str | None]:
     expected = {source + ".new" for source in DIAGNOSTIC_BODY_SOURCES}
     inventory = diagnostic["inventory"]
     actual = {item.get("path", item.get("source_locator", "") + ".new") for item in inventory["paths"]}
@@ -983,33 +983,43 @@ def _capture_diagnostic_bodies(root: Path, diagnostic, attributed, catalogue, cl
         if total > MAX_OUTPUT_BYTES:
             raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic bodies exceed the aggregate limit")
         bodies["snapshots/" + source + ".new"] = data
-    source = Path(DIAGNOSTIC_BODY_INLINE_SOURCE)
-    if _observed_file_omission(root, source.as_posix()):
-        raise SnapshotPreparationError("diagnostic_body_file_invalid", "inline source is no longer eligible")
-    pending = source.with_name("." + source.name + ".pending-snap").as_posix()
-    raw_inline = _read_diagnostic_body(root, pending)
+    # The tracked body set is independently guarded above. An unavailable inline
+    # projection must not suppress those diagnostic bodies or weaken its guards.
     try:
+        source = Path(DIAGNOSTIC_BODY_INLINE_SOURCE)
+        if _observed_file_omission(root, source.as_posix()):
+            raise SnapshotPreparationError("diagnostic_body_file_invalid", "inline source is no longer eligible")
+        pending = source.with_name("." + source.name + ".pending-snap").as_posix()
+        raw_inline = _read_diagnostic_body(root, pending)
         projected = _project_inline_pending(raw_inline, environment)
-    except SnapshotPreparationError:
-        raise
-    except (ValueError, RecursionError) as error:
-        raise SnapshotPreparationError("diagnostic_body_inline_invalid", "inline pending data failed its source or public guard") from error
-    if total + len(projected) > MAX_OUTPUT_BYTES:
-        raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic bodies exceed the aggregate limit")
+        if total + len(projected) > MAX_OUTPUT_BYTES:
+            raise SnapshotPreparationError("diagnostic_body_size_limit", "diagnostic bodies exceed the aggregate limit")
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        code = error.code if isinstance(error, SnapshotPreparationError) else "diagnostic_body_inline_invalid"
+        return bodies, code
     bodies["inline-review.json"] = projected
-    return bodies
+    return bodies, None
 
 
 def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[str, object],
                                bodies: dict[str, bytes] | None = None) -> None:
-    expected = {"snapshots/" + source + ".new" for source in DIAGNOSTIC_BODY_SOURCES} | {"inline-review.json"}
+    tracked = {"snapshots/" + source + ".new" for source in DIAGNOSTIC_BODY_SOURCES}
+    inline_unavailable = (diagnostic.get("metadata_status") == "incomplete"
+        and diagnostic.get("diagnostic_body_status") == "partial"
+        and diagnostic.get("diagnostic_inline_status") == "unavailable"
+        and diagnostic.get("metadata_failure_code") in {
+            "diagnostic_body_file_invalid", "diagnostic_body_inline_invalid",
+            "diagnostic_body_privacy_failed", "diagnostic_body_size_limit"})
+    expected = tracked if inline_unavailable else tracked | {"inline-review.json"}
     if bodies is not None and (set(bodies) != expected or any(type(data) is not bytes or not 0 < len(data) <= MAX_FILE_BYTES
                                for data in bodies.values()) or sum(len(data) for data in bodies.values()) > MAX_OUTPUT_BYTES):
-        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit"}
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit",
+                      "diagnostic_body_status": "unavailable"}
         bodies = None
     encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if bodies is not None and len(encoded) + sum(len(data) for data in bodies.values()) > MAX_ARTIFACT_BYTES:
-        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit"}
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_size_limit",
+                      "diagnostic_body_status": "unavailable"}
         bodies = None
         encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES:
@@ -1028,12 +1038,12 @@ def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[s
                            complete=False, omission_reasons=omissions)
         other["evidence"] = evidence
         diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_metadata_overflow",
-                      "original_metadata_bytes": len(encoded), "inventory": inventory,
+                      "diagnostic_body_status": "unavailable", "original_metadata_bytes": len(encoded), "inventory": inventory,
                       "conservation": {**diagnostic["conservation"], "other_files": other}}
         encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
         raise SnapshotPreparationError("diagnostic_metadata_overflow", "diagnostic metadata exceeds its fixed limit")
-    # Never reuse accepted-output staging or make a partial body bundle visible.
+    # Never reuse accepted-output staging or expose a partially written body set.
     if any(path.exists() or path.is_symlink() for path in (staging, artifact)):
         raise SnapshotPreparationError("diagnostic_persistence_failed", "diagnostic output path is already occupied")
     staging.mkdir(mode=0o700)
@@ -1057,7 +1067,8 @@ def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[s
         for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
             if directory.exists():
                 directory.rmdir()
-        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_persistence_failed"}
+        diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_body_persistence_failed",
+                      "diagnostic_body_status": "unavailable"}
         encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
         if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
             raise SnapshotPreparationError("diagnostic_metadata_overflow", "body failure metadata exceeds its fixed limit")
@@ -1118,8 +1129,11 @@ def prepare(environment: dict[str, str]) -> int:
         bodies = None
         if _diagnostic_body_input(identity):
             try:
-                bodies = _capture_diagnostic_bodies(product_root, diagnostic, attributed, catalogue, closed_eligible,
-                                                    inline_absent, environment)
+                bodies, inline_code = _capture_diagnostic_bodies(product_root, diagnostic, attributed, catalogue, closed_eligible,
+                                                                 inline_absent, environment)
+                if inline_code is not None:
+                    diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": inline_code,
+                                  "diagnostic_body_status": "partial", "diagnostic_inline_status": "unavailable"}
             except (OSError, ValueError, TypeError, RecursionError) as capture_error:
                 capture_code = capture_error.code if isinstance(capture_error, SnapshotPreparationError) else "diagnostic_body_file_invalid"
                 diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": capture_code}
