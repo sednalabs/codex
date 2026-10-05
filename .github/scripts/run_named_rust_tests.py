@@ -110,12 +110,20 @@ CORE_DIAGNOSTIC_STARTUP_TESTS = (
     "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads",
 )
 CORE_DIAGNOSTIC_STARTUP_INVENTORY = (
-    "cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list",
+    "cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", "--", "--list",
 )
 CORE_DIAGNOSTIC_STARTUP_COMMANDS = tuple(
-    ("cargo", "test", "--locked", "-p", "codex-core", "--lib", name,
+    ("cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", name,
      "--", "--exact", "--test-threads=1") for name in CORE_DIAGNOSTIC_STARTUP_TESTS
 )
+CORE_STARTUP_COMPILER_TARGET = "01dea3e8e4eea53aca82c2f1cd4841fdabd323c7"
+MAX_COMPILER_RECORDS = 32
+MAX_COMPILER_SPANS = 8
+MAX_COMPILER_CAPTURE_BYTES = 256 * 1024
+MAX_COMPILER_PUBLIC_BYTES = 64 * 1024
+MAX_COMPILER_SOURCE_PATHS = 16
+COMPILER_PATH_RE = re.compile(r"codex-rs/[A-Za-z0-9_./-]{1,240}\.rs")
+COMPILER_TOKEN_RE = re.compile(r"github_pat_|gh[pousr]_|sk-", re.IGNORECASE)
 # Two fixed owning-lib consumers only; never selected by request data.
 CORE_DIAGNOSTIC_CONTROL_SPECS = {
     "producer_controls": (CORE_DIAGNOSTIC_PRODUCER_INVENTORY, CORE_DIAGNOSTIC_PRODUCER_TESTS,
@@ -255,14 +263,81 @@ def bounded_diagnostic(value: str | None) -> str:
     ]
 
 
+def _compiler_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate compiler JSON key")
+    return value
+
+
+def startup_cargo_output(stdout: str) -> tuple[str, dict[str, Any]]:
+    # Only Cargo's pre-libtest stdout is a compiler channel. Nothing here is public text.
+    capture: dict[str, Any] = {"lines": [], "compiler_message_count": 0, "error_message_count": 0,
+        "omitted_error_count": 0, "invalid_json_count": 0, "build_finished_count": 0,
+        "build_success": None, "prebuild_text_line_count": 0}
+    text = []
+    captured_bytes = 0
+    for line in stdout.splitlines():
+        if not line.startswith("{"):
+            if capture["build_finished_count"] == 1 and capture["build_success"] is True:
+                text.append(line)
+            elif line:
+                capture["prebuild_text_line_count"] += 1
+            continue
+        try:
+            if len(line.encode("utf-8")) > 64 * 1024:
+                raise ValueError("compiler JSON line exceeds bound")
+            item = json.loads(line, object_pairs_hook=_compiler_json_object)
+            if not isinstance(item, dict):
+                raise ValueError("compiler JSON is not an object")
+        except (ValueError, RecursionError):
+            capture["invalid_json_count"] += 1
+            continue
+        reason = item.get("reason")
+        if type(reason) is not str:
+            capture["invalid_json_count"] += 1
+            continue
+        if reason == "build-finished":
+            capture["build_finished_count"] += 1
+            capture["build_success"] = item.get("success") if type(item.get("success")) is bool else None
+        elif capture["build_finished_count"]:
+            capture["invalid_json_count"] += 1
+        elif reason == "compiler-message":
+            capture["compiler_message_count"] += 1
+            diagnostic = item.get("message")
+            if (not isinstance(diagnostic, dict) or type(diagnostic.get("level")) is not str
+                    or diagnostic["level"] not in {"error", "warning", "note", "help", "failure-note"}):
+                capture["invalid_json_count"] += 1
+            elif diagnostic["level"] == "error":
+                capture["error_message_count"] += 1
+                size = len(line.encode("utf-8"))
+                if len(capture["lines"]) < MAX_COMPILER_RECORDS and captured_bytes + size <= MAX_COMPILER_CAPTURE_BYTES:
+                    capture["lines"].append(line)
+                    captured_bytes += size
+                else:
+                    capture["omitted_error_count"] += 1
+        elif reason not in {"compiler-artifact", "build-script-executed"}:
+            capture["invalid_json_count"] += 1
+    return "\n".join(text), capture
+
+
+def startup_cargo_complete(capture: dict[str, Any]) -> bool:
+    return (capture["build_finished_count"] == 1 and capture["build_success"] is True
+            and capture["invalid_json_count"] == capture["error_message_count"] == capture["omitted_error_count"] == 0)
+
+
 def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
-    return {
+    result = {
         "exit_code": completed.returncode,
         "stdout_tail": bounded_diagnostic(completed.stdout),
         "stderr_tail": bounded_diagnostic(completed.stderr),
         "stdout_char_count": len(completed.stdout or ""),
         "stderr_char_count": len(completed.stderr or ""),
     }
+    if completed.args == list(CORE_DIAGNOSTIC_STARTUP_INVENTORY) or completed.args == list(CORE_DIAGNOSTIC_STARTUP_COMMANDS[0]):
+        _, capture = startup_cargo_output(completed.stdout or "")
+        result["compiler_capture"] = {**capture, "argv": completed.args}
+    return result
 
 
 def test_result_counts(output: str) -> dict[str, int] | None:
@@ -1257,8 +1332,13 @@ def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root:
         controls["inventory"].update(status="failure", argv=command, command_returned=False,
                                      command_matches=False, exit_code=None)
         return False
-    names = listed_tests(inventory.stdout or "")
+    inventory_stdout = inventory.stdout or ""
+    inventory_capture = None
+    if control_field == "startup_control":
+        inventory_stdout, inventory_capture = startup_cargo_output(inventory_stdout)
+    names = listed_tests(inventory_stdout)
     valid = (inventory.args == command and inventory.returncode == 0
+             and (inventory_capture is None or startup_cargo_complete(inventory_capture))
              and len(selected_tests) <= len(names) <= MAX_PUBLIC_INVENTORY_NAMES
              and len(set(names)) == len(names) and all(TEST_RE.fullmatch(name) for name in names)
              and all(names.count(name) == 1 for name in selected_tests))
@@ -1280,10 +1360,15 @@ def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root:
                                        capture_output=True, check=False, shell=False)
         except OSError:
             continue
-        output = "\n".join((completed.stdout or "", completed.stderr or ""))
+        execution_stdout = completed.stdout or ""
+        execution_capture = None
+        if control_field == "startup_control":
+            execution_stdout, execution_capture = startup_cargo_output(execution_stdout)
+        output = "\n".join((execution_stdout, completed.stderr or ""))
         counts = test_result_counts(output)
         outcomes = test_outcomes(output)
         success = (completed.args == command and completed.returncode == 0 and outcomes == {name: ["ok"]}
+                   and (execution_capture is None or startup_cargo_complete(execution_capture))
                    and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": len(names) - 1})
         record.update(status="success" if success else "failure", command_returned=True,
                       command_matches=completed.args == command, exit_code=completed.returncode,
@@ -1700,7 +1785,151 @@ def _safe_markers(value: Any) -> dict[str, Any]:
             "omitted_count": len(values) - len(markers), "truncated": len(values) > len(markers)}
 
 
-def _safe_diagnostics(value: Any) -> dict[str, Any]:
+def _compiler_git(argv: list[str], root: Path, limit: int) -> str | None:
+    try:
+        result = subprocess.run(argv, cwd=root, text=True, capture_output=True, check=False, shell=False)
+        if result.args == argv and result.returncode == 0 and len(result.stdout.encode("utf-8")) <= limit:
+            return result.stdout
+    except (OSError, UnicodeError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def _compiler_source_context(context: dict[str, Any]) -> str:
+    if "source_status" not in context:
+        context.update(source_status="target_identity_mismatch", catalogue={}, sources={}, source_bytes=0)
+        root = context["root"]
+        if context["target_matches"] and _compiler_git(["git", "rev-parse", "HEAD"], root, 128) == CORE_STARTUP_COMPILER_TARGET + "\n":
+            data = _compiler_git(["git", "ls-tree", "-rz", "--full-tree", CORE_STARTUP_COMPILER_TARGET, "--", "codex-rs"], root, 2 * 1024 * 1024)
+            context["source_status"] = "git_catalogue_failed"
+            if data is not None:
+                rows = data.split("\0")[:-1] if data.endswith("\0") else []
+                entries = {}
+                for row in rows[:20001]:
+                    match = re.fullmatch(r"(100644|100755|120000) blob ([0-9a-f]{40})\t(.+)", row)
+                    if not match or match[3] in entries:
+                        break
+                    entries[match[3]] = match[1]
+                else:
+                    if rows and len(rows) <= 20000:
+                        context.update(source_status="verified", catalogue=entries)
+    return context["source_status"]
+
+
+def _compiler_span(span: Any, context: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(span, dict) or type(span.get("file_name")) is not str:
+        return None, "span_invalid"
+    raw_path = span["file_name"]
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = context["root"] / "codex-rs" / path
+    try:
+        locator = path.relative_to(context["root"]).as_posix()
+    except ValueError:
+        return None, "source_path_ineligible"
+    if (not COMPILER_PATH_RE.fullmatch(locator) or ".." in locator.split("/") or "//" in locator
+            or COMPILER_TOKEN_RE.search(locator) or context["catalogue"].get(locator) not in {"100644", "100755"}):
+        return None, "source_path_ineligible"
+    keys = ("line_start", "line_end", "column_start", "column_end")
+    if any(type(span.get(key)) is not int or not 1 <= span[key] <= 10**6 for key in keys) or type(span.get("is_primary")) is not bool:
+        return None, "span_invalid"
+    sources = context["sources"]
+    if locator not in sources:
+        if len(sources) >= MAX_COMPILER_SOURCE_PATHS:
+            return None, "source_limit"
+        text = _compiler_git(["git", "show", CORE_STARTUP_COMPILER_TARGET + ":" + locator], context["root"], 1024 * 1024)
+        sources[locator] = None
+        if text is not None and context["source_bytes"] + len(text.encode("utf-8")) <= 8 * 1024 * 1024:
+            context["source_bytes"] += len(text.encode("utf-8"))
+            sources[locator] = text.splitlines() + ([""] if text.endswith("\n") else [])
+    lines = sources[locator]
+    start, end, left, right = (span[key] for key in keys)
+    if lines is None:
+        return None, "source_read_failed"
+    if not (start <= end <= len(lines) and left <= len(lines[start - 1]) + 1
+            and right <= len(lines[end - 1]) + 1 and (start != end or left <= right)):
+        return None, "span_invalid"
+    return {"source_locator": locator, **{key: span[key] for key in keys}, "is_primary": span["is_primary"]}, ""
+
+
+def _safe_startup_compiler(value: Any, parent: dict[str, Any], argv: tuple[str, ...], context: dict[str, Any]) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    lines = source.get("lines") if isinstance(source.get("lines"), list) else []
+    counts = {key: _safe_count(source.get(key)) for key in ("compiler_message_count", "error_message_count",
+        "omitted_error_count", "invalid_json_count", "build_finished_count", "prebuild_text_line_count")}
+    matches = (source.get("argv") == list(argv) == parent.get("argv") and parent.get("command_returned") is True
+               and parent.get("command_matches") is True and _safe_exit(parent.get("exit_code")) is not None
+               and _safe_exit(parent.get("exit_code")) == _safe_exit(context.get("diagnostic_exit")))
+    consistent = (all(value is not None for value in counts.values()) and len(lines) <= MAX_COMPILER_RECORDS
+                  and counts["error_message_count"] == len(lines) + counts["omitted_error_count"]
+                  and counts["compiler_message_count"] >= counts["error_message_count"])
+    gaps: dict[str, int] = {}
+    records = []
+    def gap(code: str) -> None:
+        gaps[code] = gaps.get(code, 0) + 1
+    if not matches or not consistent:
+        gap("input_mismatch")
+    elif lines:
+        status = _compiler_source_context(context)
+        if status != "verified":
+            gap(status)
+        else:
+            total_bytes = 0
+            for line in lines:
+                try:
+                    if type(line) is not str or len(line.encode("utf-8")) > 64 * 1024:
+                        raise ValueError("invalid compiler record")
+                    total_bytes += len(line.encode("utf-8"))
+                    if total_bytes > MAX_COMPILER_CAPTURE_BYTES:
+                        raise ValueError("compiler capture exceeds bound")
+                    item = json.loads(line, object_pairs_hook=_compiler_json_object)
+                    diagnostic, target = item.get("message"), item.get("target")
+                    if (item.get("reason") != "compiler-message" or not isinstance(diagnostic, dict)
+                            or diagnostic.get("level") != "error" or not isinstance(target, dict)
+                            or target.get("kind") != ["lib"] or target.get("name") != "codex_core" or target.get("test") is not True
+                            or target.get("src_path") != str(context["root"] / "codex-rs/core/src/lib.rs")
+                            or item.get("manifest_path") != str(context["root"] / "codex-rs/core/Cargo.toml")):
+                        raise ValueError("compiler target differs")
+                    raw_code = diagnostic.get("code")
+                    code = raw_code.get("code") if isinstance(raw_code, dict) else None
+                    code_status = "none" if raw_code is None else "present" if type(code) is str and re.fullmatch(r"E[0-9]{4}", code) else "unknown"
+                    spans = diagnostic.get("spans")
+                    if not isinstance(spans, list):
+                        raise ValueError("compiler spans are invalid")
+                    projected = []
+                    for span in spans[:MAX_COMPILER_SPANS]:
+                        safe_span, failure = _compiler_span(span, context)
+                        if safe_span is None:
+                            gap(failure)
+                        else:
+                            projected.append(safe_span)
+                    if len(spans) > MAX_COMPILER_SPANS:
+                        gap("span_limit")
+                    if not projected:
+                        gap("no_verified_span")
+                    if code_status == "unknown":
+                        gap("code_unknown")
+                    records.append({"code": code if code_status == "present" else None, "code_status": code_status,
+                        "spans": projected, "original_span_count": len(spans), "omitted_span_count": len(spans) - len(projected)})
+                except (ValueError, TypeError, AttributeError, RecursionError, UnicodeError):
+                    gap("compiler_record_invalid")
+    if counts["invalid_json_count"] or counts["omitted_error_count"]:
+        gap("capture_incomplete")
+    if len(json.dumps(records).encode("utf-8")) > MAX_COMPILER_PUBLIC_BYTES:
+        records = []
+        gap("projection_overflow")
+    complete = (matches and consistent and counts["build_finished_count"] == 1 and source.get("build_success") is True
+                and counts["invalid_json_count"] == counts["error_message_count"] == 0)
+    return {**counts, "command_matches": matches, "capture_complete": complete,
+        "build_success": source.get("build_success") if type(source.get("build_success")) is bool else None,
+        "records": records, "emitted_error_count": len(records),
+        "projection_omitted_error_count": counts["error_message_count"] - len(records) if consistent else None,
+        "source_join_status": context.get("source_status", "not-needed"), "gaps": gaps,
+        "designated_channel": "stdout", "scope": "captured_compiler_diagnostics_only", "writer_process_identity": "unknown"}
+
+
+def _safe_diagnostics(value: Any, compiler_parent: dict[str, Any] | None = None,
+                      compiler_argv: tuple[str, ...] = (), compiler_context: dict[str, Any] | None = None) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     safe: dict[str, Any] = {"exit_code": _safe_exit(source.get("exit_code"))}
     for stream in ("stdout", "stderr"):
@@ -1720,7 +1949,11 @@ def _safe_diagnostics(value: Any) -> dict[str, Any]:
             "captured_text_omitted": True,
             "truncated": original is None or original > MAX_DIAGNOSTIC_CHARS,
         }
-    safe["omitted_field_count"] = len(set(source) - {"exit_code", "stdout_tail", "stderr_tail", "stdout_char_count", "stderr_char_count"})
+    if compiler_parent is not None and compiler_context is not None:
+        compiler_context["diagnostic_exit"] = source.get("exit_code")
+        safe["compiler"] = _safe_startup_compiler(source.get("compiler_capture"), compiler_parent, compiler_argv, compiler_context)
+    handled = {"exit_code", "stdout_tail", "stderr_tail", "stdout_char_count", "stderr_char_count"}
+    safe["omitted_field_count"] = len(set(source) - handled - ({"compiler_capture"} if "compiler" in safe else set()))
     return safe
 
 
@@ -1956,7 +2189,8 @@ def _safe_core_samples(value: Any, inventory_count: Any = None) -> dict[str, Any
     return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
 
 
-def _safe_core_producer_controls(value: Any, control_field: str = "producer_controls") -> dict[str, Any]:
+def _safe_core_producer_controls(value: Any, control_field: str = "producer_controls",
+                                 compiler_context: dict[str, Any] | None = None) -> dict[str, Any]:
     # Publish only the fixed commands/names and typed counts, never other lib names.
     source = value if isinstance(value, dict) else {}
     inventory_argv, selected_tests, commands = CORE_DIAGNOSTIC_CONTROL_SPECS[control_field]
@@ -1975,13 +2209,16 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
                      missing_tests=[name for name in selected_tests if name not in names],
                      ambiguous_tests=[name for name in selected_tests if names.count(name) > 1])
     if "diagnostics" in raw_inventory:
-        inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"])
+        inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"],
+            raw_inventory if control_field == "startup_control" else None, inventory_argv, compiler_context)
     inventory_ok = (inventory.get("status") == "success" and inventory.get("command_returned") is True
                     and inventory["command_matches"] and inventory["exit_code"] == 0
                     and len(selected_tests) <= len(values) <= MAX_PUBLIC_INVENTORY_NAMES
                     and inventory.get("test_count") == len(values) == len(set(names))
                     and inventory["invalid_name_count"] == 0
                     and inventory["selected_tests"] == list(selected_tests))
+    if control_field == "startup_control":
+        inventory_ok = inventory_ok and inventory.get("diagnostics", {}).get("compiler", {}).get("capture_complete") is True
     values = source.get("tests") if isinstance(source.get("tests"), list) else []
     records = []
     known = set(selected_tests)
@@ -1994,6 +2231,8 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
         record.update(argv=command, command_returned=item.get("command_returned") is True,
                       command_matches=item.get("argv") == command and item.get("command_matches") is True,
                       unexpected_outcome_count=_safe_count(item.get("unexpected_outcome_count")))
+        if control_field == "startup_control" and "diagnostics" in item:
+            record["diagnostics"] = _safe_diagnostics(item["diagnostics"], item, tuple(command), compiler_context)
         record["omitted_field_count"] -= len(set(item) & {"argv", "command_returned", "command_matches", "unexpected_outcome_count"})
         records.append(record)
     reconciled = (source.get("status") == "success" and inventory_ok and len(values) == len(records) == len(selected_tests)
@@ -2005,14 +2244,16 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
                           and item["matched_lines_truncated"] is False
                           and item["unexpected_outcome_count"] == 0 and item["result_counts"] == {
                               "passed": 1, "failed": 0, "ignored": 0, "measured": 0,
-                              "filtered": inventory.get("test_count", 0) - 1} for item in records))
+                              "filtered": inventory.get("test_count", 0) - 1}
+                          and (control_field != "startup_control" or item.get("diagnostics", {}).get("compiler", {}).get("capture_complete") is True)
+                          for item in records))
     return {"status": "success" if reconciled else "not-run" if source.get("status") == "not-run" else "failure",
             "reconciled": reconciled, "inventory": inventory, "tests": records,
             "original_count": len(values), "omitted_count": len(values) - len(records),
             "omitted_field_count": len(set(source) - {"status", "inventory", "tests"})}
 
 
-def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
+def public_safe_result(result: dict[str, Any], repo_root: Path | None = None) -> dict[str, Any]:
     """Project every public field afresh; omitted raw content is never hashed."""
     inventory = _safe_inventory(result.get("inventory"))
     known = set(inventory["tests"])
@@ -2031,10 +2272,12 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     }
     if safe["result_kind"] == "core_runtime_diagnostic":
         samples = _safe_core_samples(result.get("diagnostic_samples"), inventory.get("test_count"))
+        compiler_context = {"root": (repo_root or Path.cwd()).resolve(),
+                            "target_matches": safe["candidate_sha"] == identity.get("target_sha") == CORE_STARTUP_COMPILER_TARGET}
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
                     diagnostic_samples=samples.pop("records"), sample_projection=samples,
                     producer_controls=_safe_core_producer_controls(result.get("producer_controls")),
-                    startup_control=_safe_core_producer_controls(result.get("startup_control"), "startup_control"))
+                    startup_control=_safe_core_producer_controls(result.get("startup_control"), "startup_control", compiler_context))
         safe["sampling_complete"] = (samples["original_count"] == 2 and samples["omitted_count"] == 0
                                      and all(item.get("command_returned") is True for item in safe["diagnostic_samples"]))
     if "runtime_preparation" in result:
@@ -2091,8 +2334,8 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def public_artifact_bytes(result: dict[str, Any]) -> bytes:
-    safe = public_safe_result(result)
+def public_artifact_bytes(result: dict[str, Any], repo_root: Path | None = None) -> bytes:
+    safe = public_safe_result(result, repo_root)
     encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
         safe = {"schema_version": SCHEMA_VERSION, "status": "failure", "failure_code": "public_result_overflow",
@@ -2141,7 +2384,7 @@ def main() -> int:
     result.setdefault("identity", {})
     result["identity"].update({key: os.environ.get(variable, "") for key, variable in VALIDATION_IDENTITY_ENV.items()})
     try:
-        data = public_artifact_bytes(result)
+        data = public_artifact_bytes(result, Path.cwd().resolve())
     except PublicResultError:
         data = _fixed_tiny_overflow_failure_bytes()
     Path("rust-tests-v1-results.json").write_bytes(data)

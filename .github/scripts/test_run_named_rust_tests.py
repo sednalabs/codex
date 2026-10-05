@@ -1204,8 +1204,8 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
 class CoreRuntimeDiagnosticTests(unittest.TestCase):
     startup_name = "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads"
-    startup_inventory_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"]
-    startup_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", startup_name,
+    startup_inventory_command = ["cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", "--", "--list"]
+    startup_command = ["cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", startup_name,
                        "--", "--exact", "--test-threads=1"]
     startup_sites = ("time_provider", "thread_persistence", "local_rollout_path", "agents_md_refresh",
                      "network_proxy", "hooks_new", "mcp_initial_install", "referenced_rollout_materialization")
@@ -1299,7 +1299,8 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         return subprocess.CompletedProcess(self.producer_commands[index], 101 if outcome == "FAILED" else 0, output, "")
 
     def _startup_control(self, outcome: str = "ok") -> subprocess.CompletedProcess[str]:
-        output = (f"test {self.startup_name} ... {outcome}\n"
+        output = ('{"reason":"build-finished","success":true}\n'
+                  f"test {self.startup_name} ... {outcome}\n"
                   f"test result: {'FAILED' if outcome == 'FAILED' else 'ok'}. {int(outcome == 'ok')} passed; "
                   f"{int(outcome == 'FAILED')} failed; {int(outcome == 'ignored')} ignored; 0 measured; 1 filtered out\n")
         return subprocess.CompletedProcess(self.startup_command, 101 if outcome == "FAILED" else 0, output, "")
@@ -1310,9 +1311,10 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
              producer_inventory_response: object | None = None,
              producer_controls: list[object] | None = None, startup_inventory: str | None = None,
              startup_inventory_response: object | None = None,
-             startup_control: object | None = None) -> tuple[dict[str, object], list[list[str]]]:
+             startup_control: object | None = None, target_sha: str = "a" * 40) -> tuple[dict[str, object], list[list[str]]]:
         request = self.request if request is None else request
-        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        identity = {**self.identity, "target_sha": target_sha}
+        env = {variable: identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
         env.update({named_tests.CORE_DIAGNOSTIC_ONLY_ENV: "true", named_tests.CORE_DIAGNOSTIC_CASE_ENV: "INHERITED_PRIVATE"})
         env.update(extra_env or {})
         record = named_tests.select_target(self.request, named_tests.load_manifest(self.root))
@@ -1339,7 +1341,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             self.assertEqual(kwargs["cwd"], self.root if index == 0 else self.root / "codex-rs")
             if index == 0:
                 self.assertNotIn("env", kwargs)
-                return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
+                return subprocess.CompletedProcess(argv, 0, target_sha + "\n", "")
             child_env = {key: value for key, value in env.items() if key not in
                          (named_tests.CORE_DIAGNOSTIC_ONLY_ENV, named_tests.CORE_DIAGNOSTIC_CASE_ENV, named_tests.RUNTIME_PREPARATION_ONLY_ENV)}
             child_env["RUST_MIN_STACK"] = "8388608"
@@ -1353,7 +1355,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, inventory_exit, inventory, "PRIVATE_INVENTORY")
             if index == 4:
                 returned = startup_inventory_response if startup_inventory_response is not None else subprocess.CompletedProcess(
-                    argv, 0, startup_inventory, "PRIVATE_STARTUP_INVENTORY")
+                    argv, 0, '{"reason":"build-finished","success":true}\n' + startup_inventory, "PRIVATE_STARTUP_INVENTORY")
             elif index == 5:
                 returned = startup_control
             elif index == 6:
@@ -1373,7 +1375,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                 patch.object(named_tests, "_core_runtime_binary_state", side_effect=states) as binary_state:
             result = named_tests.run_request(request, self.root)
         self.assertEqual([call.args[0] for call in binary_state.call_args_list], paths if calls else [])
-        result["identity"] = dict(self.identity)
+        result["identity"] = identity
         return result, calls
 
     def test_fixed_calls_and_positive_public_sample_are_not_whole_target(self) -> None:
@@ -1384,6 +1386,164 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                          tuple(public[key] for key in ("status", "result_kind", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "tests")))
         self.assertEqual([case for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES], [item["case"] for item in public["diagnostic_samples"]])
         self.assertTrue(all(item["stage_evidence"]["attribution_complete"] for item in public["diagnostic_samples"]))
+
+    def _compiler_fixture(self) -> dict[str, object]:
+        return {"reason": "compiler-message", "package_id": "file:///PRIVATE?token=secret",
+            "manifest_path": str(self.root / "codex-rs/core/Cargo.toml"),
+            "target": {"kind": ["lib"], "name": "codex_core", "test": True,
+                       "src_path": str(self.root / "codex-rs/core/src/lib.rs")},
+            "message": {"level": "error", "message": "PRIVATE prose https://private.invalid github_pat_PRIVATE",
+                "rendered": "PRIVATE rendered", "children": [{"message": "PRIVATE note"}],
+                "code": {"code": "E0277", "explanation": "PRIVATE explanation"},
+                "spans": [{"file_name": "core/src/session/startup_diagnostic.rs", "line_start": 2, "line_end": 2,
+                    "column_start": 5, "column_end": 17, "is_primary": True, "text": [{"text": "PRIVATE excerpt"}],
+                    "label": "PRIVATE label", "suggested_replacement": "PRIVATE replacement", "expansion": {"PRIVATE": True}}]}}
+
+    def _compile_failure(self, item: dict[str, object]) -> dict[str, object]:
+        stdout = json.dumps(item) + '\n{"reason":"build-finished","success":false}\n'
+        response = subprocess.CompletedProcess(self.startup_inventory_command, 101, stdout, "PRIVATE stderr")
+        result, calls = self._run(startup_inventory_response=response, target_sha=named_tests.CORE_STARTUP_COMPILER_TARGET)
+        self.assertEqual((5, [], [], "not-run"), (len(calls), result["diagnostic_samples"],
+            result["startup_control"]["tests"], result["producer_controls"]["status"]))
+        return result
+
+    def _compiler_bytes(self, result: dict[str, object], *, count: int = 3, responses: list[object] | None = None,
+                        catalogue: str | None = None, writer: bool = False) -> bytes:
+        sha = named_tests.CORE_STARTUP_COMPILER_TARGET
+        locator = "codex-rs/core/src/session/startup_diagnostic.rs"
+        expected = [["git", "rev-parse", "HEAD"], ["git", "ls-tree", "-rz", "--full-tree", sha, "--", "codex-rs"],
+                    ["git", "show", sha + ":" + locator]]
+        catalogue = f"100644 blob {'d' * 40}\t{locator}\0" if catalogue is None else catalogue
+        responses = [sha + "\n", catalogue, "pub enum StartupSite {\n    TimeProvider,\n}\n"] if responses is None else responses
+        calls = []
+        def git(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            index = len(calls)
+            self.assertLess(index, count, "unexpected compiler source query")
+            self.assertEqual(expected[index], argv)
+            self.assertEqual({"cwd": self.root, "text": True, "capture_output": True, "check": False, "shell": False}, kwargs)
+            calls.append(argv)
+            value = responses[index]
+            if isinstance(value, OSError):
+                raise value
+            return value if isinstance(value, subprocess.CompletedProcess) else subprocess.CompletedProcess(argv, 0, value, "PRIVATE Git stderr")
+        with patch.object(named_tests.subprocess, "run", side_effect=git):
+            if writer:
+                env = {variable: result["identity"][key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+                env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+                with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                        patch.object(Path, "cwd", return_value=self.root), \
+                        patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                        patch.object(named_tests, "run_request", return_value=result), \
+                        patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+                    self.assertEqual(1, named_tests.main())
+                write.assert_called_once()
+                data = write.call_args.args[0]
+                output.assert_called_once_with('{"failure_code": "core_diagnostic_producer_controls_failed", "status": "failure"}')
+            else:
+                data = named_tests.public_artifact_bytes(result, self.root)
+        self.assertEqual(count, len(calls))
+        for canary in (b"PRIVATE", b"https://", b"file://", b"github_pat_", b"rendered", b"explanation",
+                       b"suggested_replacement", b"expansion", b"excerpt", b"stdout_tail", b"stderr_tail", b"d" * 40):
+            self.assertNotIn(canary, data)
+        return data
+
+    def test_startup_compile_error_reaches_real_public_writer_as_code_and_verified_span_only(self) -> None:
+        result = self._compile_failure(self._compiler_fixture())
+        data = self._compiler_bytes(result)
+        public = json.loads(data)
+        compiler = public["startup_control"]["inventory"]["diagnostics"]["compiler"]
+        self.assertEqual([{"code": "E0277", "code_status": "present", "original_span_count": 1, "omitted_span_count": 0,
+            "spans": [{"source_locator": "codex-rs/core/src/session/startup_diagnostic.rs", "line_start": 2, "line_end": 2,
+                       "column_start": 5, "column_end": 17, "is_primary": True}]}], compiler["records"])
+        self.assertEqual((1, 1, 0, 1, 0, False, True, False, "verified", {}, "stdout", "unknown"),
+            tuple(compiler[key] for key in ("compiler_message_count", "error_message_count", "omitted_error_count",
+                "emitted_error_count", "projection_omitted_error_count", "build_success", "command_matches",
+                "capture_complete", "source_join_status", "gaps", "designated_channel", "writer_process_identity")))
+        self.assertEqual(("failure", False, "not_attempted", [], 101), (public["status"], public["full_target_execution"],
+            public["qualification_status"], public["diagnostic_samples"], public["startup_control"]["inventory"]["exit_code"]))
+        self.assertEqual(data, self._compiler_bytes(result, writer=True))
+        raw = result["startup_control"]["inventory"]["diagnostics"]["compiler_capture"]["lines"][0]
+        self.assertNotIn(hashlib.sha256(raw.encode()).hexdigest().encode(), data)
+        response = subprocess.CompletedProcess(self.startup_command, 101,
+            json.dumps(self._compiler_fixture()) + '\n{"reason":"build-finished","success":false}\n', "PRIVATE")
+        unit_failed, calls = self._run(startup_control=response, target_sha=named_tests.CORE_STARTUP_COMPILER_TARGET)
+        public = json.loads(self._compiler_bytes(unit_failed))
+        self.assertEqual((6, [], "not-run", "E0277"), (len(calls), public["diagnostic_samples"],
+            public["producer_controls"]["status"], public["startup_control"]["tests"][0]["diagnostics"]["compiler"]["records"][0]["code"]))
+
+    def test_startup_cargo_json_cannot_pollute_libtest_inventory_outcomes_or_counts(self) -> None:
+        warning = self._compiler_fixture()
+        warning["message"].update(level="warning", message="test PRIVATE ... FAILED\ntest result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\nPRIVATE: test")
+        prefix = json.dumps(warning) + "\n"
+        names = f"{self.startup_name}: test\nsession::tests::other: test\n"
+        inventory = subprocess.CompletedProcess(self.startup_inventory_command, 0, prefix + '{"reason":"build-finished","success":true}\n' + names, "")
+        control = self._startup_control()
+        control.stdout = prefix + control.stdout
+        result, calls = self._run(startup_inventory_response=inventory, startup_control=control)
+        self.assertEqual((11, "success"), (len(calls), json.loads(self._compiler_bytes(result, count=0))["status"]))
+        for frame in ("", '{"reason":"build-finished","success":true}\n' * 2,
+                      '{"reason":"build-finished","success":1}\n', '{"reason":[]}\n', '{bad}\n',
+                      '{"reason":"build-finished","reason":"compiler-message","success":true}\n'):
+            response = subprocess.CompletedProcess(self.startup_inventory_command, 0, frame + names, "PRIVATE")
+            failed, calls = self._run(startup_inventory_response=response)
+            self.assertEqual((5, "failure", []), (len(calls), failed["status"], failed["diagnostic_samples"]))
+            self._compiler_bytes(failed, count=0)
+
+    def test_startup_compiler_projection_rejoins_source_and_rejects_private_or_invalid_inputs(self) -> None:
+        baseline = self._compile_failure(self._compiler_fixture())
+        self.assertEqual(1, len(json.loads(self._compiler_bytes(baseline))["startup_control"]["inventory"]["diagnostics"]["compiler"]["records"]))
+        locator = "codex-rs/core/src/session/startup_diagnostic.rs"
+        sha = named_tests.CORE_STARTUP_COMPILER_TARGET
+        for responses, count in ((["a" * 40 + "\n"], 1), ([OSError("PRIVATE")], 1),
+            ([sha + "\n", OSError("PRIVATE")], 2), ([sha + "\n", "malformed\0"], 2),
+            ([sha + "\n", f"100644 blob {'d' * 40}\t{locator}\0", OSError("PRIVATE")], 3)):
+            compiler = json.loads(self._compiler_bytes(baseline, count=count, responses=responses))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertTrue(compiler["gaps"])
+            self.assertFalse(any(item["spans"] for item in compiler["records"]))
+        for path in ("../private/PRIVATE.rs", "/outside/PRIVATE.rs", "core/src/unknown.rs", "core/src/github_pat_" + "x" * 25 + ".rs"):
+            item = self._compiler_fixture()
+            item["message"]["spans"][0]["file_name"] = path
+            compiler = json.loads(self._compiler_bytes(self._compile_failure(item), count=2))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual(([], 1), (compiler["records"][0]["spans"], compiler["records"][0]["omitted_span_count"]))
+        for mode in ("120000", "100600"):
+            self._compiler_bytes(baseline, count=2, catalogue=f"{mode} blob {'d' * 40}\t{locator}\0")
+        mutations = [lambda value: value.update(candidate_sha="a" * 40),
+            lambda value: value["identity"].update(target_sha="a" * 40),
+            lambda value: value["startup_control"]["inventory"].update(command_matches=False),
+            lambda value: value["startup_control"]["inventory"]["diagnostics"].update(exit_code=0),
+            lambda value: value["startup_control"]["inventory"]["diagnostics"]["compiler_capture"].update(error_message_count=True)]
+        for mutate in mutations:
+            damaged = copy.deepcopy(baseline)
+            mutate(damaged)
+            compiler = json.loads(self._compiler_bytes(damaged, count=0))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual([], compiler["records"])
+            self.assertTrue(compiler["gaps"])
+        for code in (None, {"code": "PRIVATE"}):
+            item = self._compiler_fixture()
+            item["message"]["code"] = code
+            compiler = json.loads(self._compiler_bytes(self._compile_failure(item)))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual((None, "none" if code is None else "unknown"),
+                             (compiler["records"][0]["code"], compiler["records"][0]["code_status"]))
+        item = self._compiler_fixture()
+        item["message"]["spans"][0].update(line_start=True)
+        self._compiler_bytes(self._compile_failure(item), count=2)
+        for mutate in (lambda item: item.update(manifest_path="/PRIVATE/Cargo.toml"),
+                       lambda item: item["target"].update(kind=["test"]),
+                       lambda item: item["message"].update(spans=None),
+                       lambda item: item["message"]["spans"][0].update(line_end=9999)):
+            item = self._compiler_fixture()
+            mutate(item)
+            self._compiler_bytes(self._compile_failure(item), count=3 if item["message"].get("spans") and item["message"]["spans"][0].get("line_end") == 9999 else 2)
+        with patch.object(named_tests, "MAX_COMPILER_RECORDS", 0):
+            compiler = json.loads(self._compiler_bytes(self._compile_failure(self._compiler_fixture()), count=0))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual((1, 1, [], 1), (compiler["error_message_count"], compiler["omitted_error_count"], compiler["records"], compiler["gaps"]["capture_incomplete"]))
+        with patch.object(named_tests, "MAX_COMPILER_SPANS", 0):
+            self._compiler_bytes(baseline, count=2)
+        with patch.object(named_tests, "MAX_COMPILER_SOURCE_PATHS", 0):
+            self._compiler_bytes(baseline, count=2)
+        with patch.object(named_tests, "MAX_COMPILER_PUBLIC_BYTES", 1):
+            compiler = json.loads(self._compiler_bytes(baseline))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual(([], 1), (compiler["records"], compiler["gaps"]["projection_overflow"]))
 
     def test_producer_controls_use_owning_lib_inventory_and_exact_commands_before_samples(self) -> None:
         result, calls = self._run()
