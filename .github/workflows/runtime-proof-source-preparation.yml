@@ -7,6 +7,18 @@ on:
       - .github/workflows/runtime-proof-source-preparation.yml
       - .github/scripts/runtime-proof-hosted.py
       - .github/scripts/runtime-proof-source-inputs.json
+      - codex-rs/cli/tests/runtime_execution_proof/support.rs
+      - codex-rs/codex-mcp/src/protected_http_client_tests.rs
+      - codex-rs/core/src/client.rs
+      - codex-rs/core/src/mcp_tool_call.rs
+      - codex-rs/core/src/session/turn_tests.rs
+      - codex-rs/runtime-proof/Cargo.toml
+      - codex-rs/runtime-proof/src/auth.rs
+      - codex-rs/runtime-proof/src/signer.rs
+      - codex-rs/runtime-proof/src/signer_tests.rs
+      - codex-rs/runtime-proof/src/startup.rs
+      - codex-rs/runtime-proof/src/startup_tests.rs
+      - codex-rs/runtime-proof/src/wire.rs
 
 permissions:
   contents: read
