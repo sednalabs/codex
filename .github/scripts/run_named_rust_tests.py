@@ -266,31 +266,39 @@ def bounded_diagnostic(value: str | None) -> str:
     ]
 
 
-def _rust_core_source_path(value: Any) -> str:
+def _rust_core_source_path(value: Any, repo_root: Path | None = None) -> str:
     if not isinstance(value, str) or not value or len(value) > 2048:
         return ""
-    path = value.replace("\\", "/")
-    marker = "codex-rs/core/"
-    index = path.rfind(marker)
-    if index >= 0:
-        relative = path[index + len(marker):]
-    else:
-        marker = "core/"
-        index = path.rfind(marker)
-        if index >= 0:
-            relative = path[index + len(marker):]
-        elif path.startswith(("src/", "tests/", "build.rs")):
-            relative = path
+    if repo_root is None:
+        return ""
+    try:
+        root = repo_root.resolve(strict=True)
+        core_root = (root / "codex-rs" / "core").resolve(strict=True)
+        core_root.relative_to(root)
+        supplied = Path(value)
+        if supplied.is_absolute():
+            candidate = supplied
+        elif supplied.parts[:2] == ("codex-rs", "core"):
+            candidate = root / supplied
+        elif supplied.parts[:1] == ("core",):
+            candidate = root / "codex-rs" / supplied
+        elif supplied.parts[:1] in (("src",), ("tests",)) or supplied == Path("build.rs"):
+            candidate = core_root / supplied
         else:
             return ""
-    parts = relative.split("/")
-    if (not parts or (parts[0] not in {"src", "tests"} and relative != "build.rs")
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(core_root)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    parts = relative.parts
+    if (not resolved.is_file() or not parts
+            or (parts[0] not in {"src", "tests"} and relative != Path("build.rs"))
             or any(part in {"", ".", ".."} or not RUST_SOURCE_COMPONENT_RE.fullmatch(part) for part in parts)):
         return ""
-    return f"codex-rs/core/{relative}"
+    return (Path("codex-rs", "core") / relative).as_posix()
 
 
-def _rustc_failure_summary(stderr: str) -> dict[str, Any]:
+def _rustc_failure_summary(stderr: str, repo_root: Path | None = None) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     error_count = 0
     unlocated_count = 0
@@ -301,7 +309,7 @@ def _rustc_failure_summary(stderr: str) -> dict[str, Any]:
         if current is None:
             return
         error_count += 1
-        source_path = _rust_core_source_path(current.get("file"))
+        source_path = _rust_core_source_path(current.get("file"), repo_root)
         if not source_path:
             unlocated_count += 1
         if error_count > MAX_PUBLIC_RUSTC_ERRORS:
@@ -331,7 +339,7 @@ def _rustc_failure_summary(stderr: str) -> dict[str, Any]:
         if current is not None and not current["file"]:
             location = RUSTC_LOCATION_RE.fullmatch(line)
             if location:
-                source_path = _rust_core_source_path(location.group(1))
+                source_path = _rust_core_source_path(location.group(1), repo_root)
                 if source_path:
                     current.update(file=source_path, line=int(location.group(2)), column=int(location.group(3)))
     finish()
@@ -343,7 +351,8 @@ def _rustc_failure_summary(stderr: str) -> dict[str, Any]:
     }
 
 
-def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+def command_diagnostics(completed: subprocess.CompletedProcess[str],
+                        repo_root: Path | None = None) -> dict[str, Any]:
     diagnostics = {
         "exit_code": completed.returncode,
         "stdout_tail": bounded_diagnostic(completed.stdout),
@@ -352,7 +361,7 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str
         "stderr_char_count": len(completed.stderr or ""),
     }
     if isinstance(completed.args, (list, tuple)) and tuple(completed.args) == CORE_DIAGNOSTIC_STARTUP_INVENTORY:
-        diagnostics["rustc_failure_summary"] = _rustc_failure_summary(completed.stderr or "")
+        diagnostics["rustc_failure_summary"] = _rustc_failure_summary(completed.stderr or "", repo_root)
     return diagnostics
 
 
@@ -1356,7 +1365,7 @@ def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root:
     controls["inventory"] = {"status": "success" if valid else "failure", "tests": names,
         "test_count": len(names), "argv": command, "command_returned": True,
         "command_matches": inventory.args == command, "exit_code": inventory.returncode,
-        "diagnostics": command_diagnostics(inventory)}
+        "diagnostics": command_diagnostics(inventory, repo_root=manifest_root.parent)}
     if not valid:
         return False
     for name, argv in zip(selected_tests, commands):
@@ -1791,7 +1800,7 @@ def _safe_markers(value: Any) -> dict[str, Any]:
             "omitted_count": len(values) - len(markers), "truncated": len(values) > len(markers)}
 
 
-def _safe_diagnostics(value: Any) -> dict[str, Any]:
+def _safe_diagnostics(value: Any, repo_root: Path | None = None) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     safe: dict[str, Any] = {"exit_code": _safe_exit(source.get("exit_code"))}
     for stream in ("stdout", "stderr"):
@@ -1823,7 +1832,7 @@ def _safe_diagnostics(value: Any) -> dict[str, Any]:
             error_class = item.get("class")
             if not isinstance(error_class, str) or error_class not in RUSTC_ERROR_CLASSES:
                 error_class = "compiler_error"
-            source_path = _rust_core_source_path(item.get("file"))
+            source_path = _rust_core_source_path(item.get("file"), repo_root)
             line = item.get("line")
             column = item.get("column")
             if type(line) is not int or not 1 <= line <= 9_999_999:
@@ -1853,17 +1862,17 @@ def _safe_counts(value: Any) -> dict[str, int] | None:
     return {key: value[key] for key in keys}
 
 
-def _safe_inventory(value: Any) -> dict[str, Any]:
+def _safe_inventory(value: Any, repo_root: Path | None = None) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     safe = _safe_fields(source, counts=("test_count",), enums={"status": {"success", "failure", "not-run"}}, handled=("tests", "diagnostics"))
     names = _safe_names(source.get("tests"), None, MAX_PUBLIC_INVENTORY_NAMES)
     safe.update({"tests": names.pop("names"), **names})
     if "diagnostics" in source:
-        safe["diagnostics"] = _safe_diagnostics(source["diagnostics"])
+        safe["diagnostics"] = _safe_diagnostics(source["diagnostics"], repo_root)
     return safe
 
 
-def _safe_test_results(value: Any, known: set[str]) -> dict[str, Any]:
+def _safe_test_results(value: Any, known: set[str], repo_root: Path | None = None) -> dict[str, Any]:
     values = value if isinstance(value, list) else []
     tests = []
     for item in values:
@@ -1878,7 +1887,7 @@ def _safe_test_results(value: Any, known: set[str]) -> dict[str, Any]:
         safe.update({"observed_outcomes": accepted, "outcome_original_count": len(outcomes),
                      "outcome_omitted_count": len(outcomes) - len(accepted),
                      "matched_lines": [f"test {item['name']} ... {outcome}" for outcome in accepted],
-                     "diagnostics": _safe_diagnostics(item.get("diagnostics"))})
+                     "diagnostics": _safe_diagnostics(item.get("diagnostics"), repo_root)})
         safe["matched_lines_truncated"] = safe.get("matched_lines_truncated", True) or len(outcomes) > len(accepted) or (safe.get("matched_line_count", 0) > len(accepted))
         tests.append(safe)
         if len(tests) == MAX_TESTS:
@@ -1927,7 +1936,7 @@ def _safe_failure_evidence(value: Any, known: set[str]) -> dict[str, Any]:
     return safe
 
 
-def _safe_runtime_preparation(value: Any) -> dict[str, Any]:
+def _safe_runtime_preparation(value: Any, repo_root: Path | None = None) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     safe = _safe_fields(source, booleans=("source_identity_matches",), enums={
         "status": {"success", "failure"}, "target_dir_context": {"unsupported", "absolute_override", "workspace_default"},
@@ -1945,7 +1954,7 @@ def _safe_runtime_preparation(value: Any) -> dict[str, Any]:
                 projected.update(_safe_fields(item, enums={"status": {"success", "failure", "launch_failed"}}, handled=("name", "exit_code", "diagnostics")))
                 projected["exit_code"] = _safe_exit(item.get("exit_code"))
                 if "diagnostics" in item:
-                    projected["diagnostics"] = _safe_diagnostics(item["diagnostics"])
+                    projected["diagnostics"] = _safe_diagnostics(item["diagnostics"], repo_root)
             else:
                 for field in ("regular_file_before", "executable_before", "regular_file_after", "executable_after"):
                     projected[field] = item.get(field) if type(item.get(field)) is bool else None
@@ -2047,7 +2056,8 @@ def _safe_core_startup_evidence(case: str, value: Any) -> dict[str, Any]:
     return safe
 
 
-def _safe_core_samples(value: Any, inventory_count: Any = None) -> dict[str, Any]:
+def _safe_core_samples(value: Any, inventory_count: Any = None,
+                       repo_root: Path | None = None) -> dict[str, Any]:
     values = value if isinstance(value, list) else []
     samples = []
     selected = {key: name for key, name, _ in CORE_DIAGNOSTIC_CASES}
@@ -2073,12 +2083,13 @@ def _safe_core_samples(value: Any, inventory_count: Any = None) -> dict[str, Any
         if declared.get("execution_matches") is not startup["execution_matches"]:
             startup.update(observation_status="invalid", error_site="", execution_matches=False)
         if "diagnostics" in item:
-            safe["diagnostics"] = _safe_diagnostics(item["diagnostics"])
+            safe["diagnostics"] = _safe_diagnostics(item["diagnostics"], repo_root)
         samples.append(safe)
     return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
 
 
-def _safe_core_producer_controls(value: Any, control_field: str = "producer_controls") -> dict[str, Any]:
+def _safe_core_producer_controls(value: Any, control_field: str = "producer_controls",
+                                 repo_root: Path | None = None) -> dict[str, Any]:
     # Publish only the fixed commands/names and typed counts, never other lib names.
     source = value if isinstance(value, dict) else {}
     inventory_argv, selected_tests, commands = CORE_DIAGNOSTIC_CONTROL_SPECS[control_field]
@@ -2097,7 +2108,7 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
                      missing_tests=[name for name in selected_tests if name not in names],
                      ambiguous_tests=[name for name in selected_tests if names.count(name) > 1])
     if "diagnostics" in raw_inventory:
-        inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"])
+        inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"], repo_root)
     inventory_ok = (inventory.get("status") == "success" and inventory.get("command_returned") is True
                     and inventory["command_matches"] and inventory["exit_code"] == 0
                     and len(selected_tests) <= len(values) <= MAX_PUBLIC_INVENTORY_NAMES
@@ -2108,7 +2119,7 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
     records = []
     known = set(selected_tests)
     for item in values[:len(selected_tests)]:
-        projected = _safe_test_results([item], known)["records"]
+        projected = _safe_test_results([item], known, repo_root)["records"]
         if not projected:
             continue
         record = projected[0]
@@ -2134,13 +2145,13 @@ def _safe_core_producer_controls(value: Any, control_field: str = "producer_cont
             "omitted_field_count": len(set(source) - {"status", "inventory", "tests"})}
 
 
-def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
+def public_safe_result(result: dict[str, Any], repo_root: Path | None = None) -> dict[str, Any]:
     """Project every public field afresh; omitted raw content is never hashed."""
-    inventory = _safe_inventory(result.get("inventory"))
+    inventory = _safe_inventory(result.get("inventory"), repo_root)
     known = set(inventory["tests"])
     identity = _safe_identity(result.get("identity"))
     request = _safe_request(result.get("request"), known)
-    tests = _safe_test_results(result.get("tests"), known)
+    tests = _safe_test_results(result.get("tests"), known, repo_root)
     safe: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION, "status": "success" if result.get("status") == "success" else "failure",
         "failure_code": result.get("failure_code") if isinstance(result.get("failure_code"), str) and result["failure_code"] in PUBLIC_FAILURE_CODES else "",
@@ -2152,15 +2163,15 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
         "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples", "producer_controls", "startup_control"}),
     }
     if safe["result_kind"] == "core_runtime_diagnostic":
-        samples = _safe_core_samples(result.get("diagnostic_samples"), inventory.get("test_count"))
+        samples = _safe_core_samples(result.get("diagnostic_samples"), inventory.get("test_count"), repo_root)
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
                     diagnostic_samples=samples.pop("records"), sample_projection=samples,
-                    producer_controls=_safe_core_producer_controls(result.get("producer_controls")),
-                    startup_control=_safe_core_producer_controls(result.get("startup_control"), "startup_control"))
+                    producer_controls=_safe_core_producer_controls(result.get("producer_controls"), repo_root=repo_root),
+                    startup_control=_safe_core_producer_controls(result.get("startup_control"), "startup_control", repo_root))
         safe["sampling_complete"] = (samples["original_count"] == 2 and samples["omitted_count"] == 0
                                      and all(item.get("command_returned") is True for item in safe["diagnostic_samples"]))
     if "runtime_preparation" in result:
-        safe["runtime_preparation"] = _safe_runtime_preparation(result["runtime_preparation"])
+        safe["runtime_preparation"] = _safe_runtime_preparation(result["runtime_preparation"], repo_root)
     if "failure_evidence" in result:
         safe["failure_evidence"] = _safe_failure_evidence(result["failure_evidence"], known)
     if result.get("missing_tests") or result.get("ambiguous_tests"):
@@ -2213,8 +2224,8 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def public_artifact_bytes(result: dict[str, Any]) -> bytes:
-    safe = public_safe_result(result)
+def public_artifact_bytes(result: dict[str, Any], repo_root: Path | None = None) -> bytes:
+    safe = public_safe_result(result, repo_root)
     encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
         safe = {"schema_version": SCHEMA_VERSION, "status": "failure", "failure_code": "public_result_overflow",
@@ -2263,7 +2274,7 @@ def main() -> int:
     result.setdefault("identity", {})
     result["identity"].update({key: os.environ.get(variable, "") for key, variable in VALIDATION_IDENTITY_ENV.items()})
     try:
-        data = public_artifact_bytes(result)
+        data = public_artifact_bytes(result, Path.cwd().resolve())
     except PublicResultError:
         data = _fixed_tiny_overflow_failure_bytes()
     Path("rust-tests-v1-results.json").write_bytes(data)
