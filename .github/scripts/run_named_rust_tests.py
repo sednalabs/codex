@@ -121,7 +121,7 @@ CORE_DIAGNOSTIC_STARTUP_TESTS = (
     "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads",
 )
 CORE_DIAGNOSTIC_STARTUP_INVENTORY = (
-    "cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list",
+    "cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", "--", "--list",
 )
 CORE_DIAGNOSTIC_STARTUP_COMMANDS = tuple(
     ("cargo", "test", "--locked", "-p", "codex-core", "--lib", name,
@@ -298,7 +298,54 @@ def _rust_core_source_path(value: Any, repo_root: Path | None = None) -> str:
     return (Path("codex-rs", "core") / relative).as_posix()
 
 
-def _rustc_failure_summary(stderr: str, repo_root: Path | None = None) -> dict[str, Any]:
+def _empty_rustc_failure_summary() -> dict[str, Any]:
+    return {"error_count": 0, "errors": [], "omitted_count": 0, "unlocated_count": 0}
+
+
+def _record_rustc_error(summary: dict[str, Any], error_class: str, file: Any,
+                        line: Any, column: Any, repo_root: Path | None) -> None:
+    summary["error_count"] += 1
+    source_path = _rust_core_source_path(file, repo_root)
+    if not source_path:
+        summary["unlocated_count"] += 1
+    if len(summary["errors"]) >= MAX_PUBLIC_RUSTC_ERRORS:
+        summary["omitted_count"] += 1
+        return
+    summary["errors"].append({
+        "class": error_class if error_class in RUSTC_ERROR_CLASSES else "compiler_error",
+        "file": source_path or "unavailable",
+        "line": line if source_path and type(line) is int else None,
+        "column": column if source_path and type(column) is int else None,
+    })
+
+
+def _cargo_json_failure_summary(output: str, repo_root: Path | None = None) -> dict[str, Any]:
+    summary = _empty_rustc_failure_summary()
+    for line in output.splitlines():
+        if "compiler-message" not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(record, dict) or record.get("reason") != "compiler-message":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict) or message.get("level") != "error":
+            continue
+        error = message.get("code")
+        code = error.get("code") if isinstance(error, dict) else None
+        error_class = RUSTC_CODE_TO_CLASS.get(code, "compiler_error") if isinstance(code, str) else "uncoded_error"
+        spans = message.get("spans") if isinstance(message.get("spans"), list) else []
+        location = next((span for span in spans if isinstance(span, dict) and span.get("is_primary") is True), None)
+        if location is None:
+            location = next((span for span in spans if isinstance(span, dict)), {})
+        _record_rustc_error(summary, error_class, location.get("file_name"),
+                            location.get("line_start"), location.get("column_start"), repo_root)
+    return summary
+
+
+def _text_rustc_failure_summary(stderr: str, repo_root: Path | None = None) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     error_count = 0
     unlocated_count = 0
@@ -351,6 +398,11 @@ def _rustc_failure_summary(stderr: str, repo_root: Path | None = None) -> dict[s
     }
 
 
+def _rustc_failure_summary(stdout: str, stderr: str, repo_root: Path | None = None) -> dict[str, Any]:
+    structured = _cargo_json_failure_summary("\n".join((stdout, stderr)), repo_root)
+    return structured if structured["error_count"] else _text_rustc_failure_summary(stderr, repo_root)
+
+
 def command_diagnostics(completed: subprocess.CompletedProcess[str],
                         repo_root: Path | None = None) -> dict[str, Any]:
     diagnostics = {
@@ -361,7 +413,9 @@ def command_diagnostics(completed: subprocess.CompletedProcess[str],
         "stderr_char_count": len(completed.stderr or ""),
     }
     if isinstance(completed.args, (list, tuple)) and tuple(completed.args) == CORE_DIAGNOSTIC_STARTUP_INVENTORY:
-        diagnostics["rustc_failure_summary"] = _rustc_failure_summary(completed.stderr or "", repo_root)
+        diagnostics["rustc_failure_summary"] = _rustc_failure_summary(
+            completed.stdout or "", completed.stderr or "", repo_root
+        )
     return diagnostics
 
 

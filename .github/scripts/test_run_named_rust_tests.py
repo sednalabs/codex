@@ -1204,7 +1204,7 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
 class CoreRuntimeDiagnosticTests(unittest.TestCase):
     startup_name = "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads"
-    startup_inventory_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"]
+    startup_inventory_command = ["cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", "--", "--list"]
     startup_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", startup_name,
                        "--", "--exact", "--test-threads=1"]
     startup_sites = ("time_provider", "thread_persistence", "local_rollout_path", "agents_md_refresh",
@@ -1500,6 +1500,74 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         for private_value in ("PRIVATE_IMPORT_NAME", "PRIVATE_CRATE", "private_item", "PRIVATE_METHOD_NAME",
                               "PRIVATE_FIELD_NAME", "PRIVATE_TENANT_NAME", "/home/runner", ".cargo/registry",
                               "/tmp/private", "could not compile"):
+            self.assertNotIn(private_value.encode(), data)
+
+    def test_cargo_json_compiler_diagnostics_project_only_allowlisted_fields(self) -> None:
+        records = [
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0432", "explanation": "PRIVATE_EXPLANATION"},
+                    "message": "PRIVATE_IMPORT_AND_TOKEN token=secret",
+                    "rendered": "PRIVATE_RENDERED /home/runner/private.rs",
+                    "spans": [{
+                        "file_name": str(self.root / "codex-rs/core/src/lib.rs"),
+                        "line_start": 6,
+                        "column_start": 7,
+                        "is_primary": True,
+                    }],
+                },
+            },
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0599"},
+                    "message": "PRIVATE_DEPENDENCY_METHOD",
+                    "spans": [{
+                        "file_name": "/home/runner/.cargo/registry/private/src/lib.rs",
+                        "line_start": 9,
+                        "column_start": 2,
+                        "is_primary": True,
+                    }],
+                },
+            },
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0609"},
+                    "message": "PRIVATE_TENANT_NAME",
+                    "spans": [{
+                        "file_name": "/tmp/private/codex-rs/core/src/PRIVATE_TENANT_NAME.rs",
+                        "line_start": 11,
+                        "column_start": 4,
+                        "is_primary": True,
+                    }],
+                },
+            },
+        ]
+        stdout = "\n".join(json.dumps(record) for record in records)
+        response = subprocess.CompletedProcess(self.startup_inventory_command, 101, stdout, "PRIVATE_CARGO_SUMMARY")
+        result, _ = self._run(startup_inventory_response=response)
+        data = named_tests.public_artifact_bytes(result, self.root)
+        public = json.loads(data)
+        compiler = public["startup_control"]["inventory"]["diagnostics"]["compiler"]
+        self.assertEqual({
+            "error_count": 3,
+            "errors": [
+                {"class": "unresolved_import", "file": "codex-rs/core/src/lib.rs", "line": 6, "column": 7},
+                {"class": "missing_method", "file": "unavailable", "line": None, "column": None},
+                {"class": "missing_field", "file": "unavailable", "line": None, "column": None},
+            ],
+            "omitted_count": 0,
+            "unlocated_count": 2,
+        }, compiler)
+        for private_value in ("PRIVATE_EXPLANATION", "PRIVATE_IMPORT_AND_TOKEN", "token=secret",
+                              "PRIVATE_RENDERED", "/home/runner", ".cargo/registry",
+                              "PRIVATE_DEPENDENCY_METHOD", "PRIVATE_TENANT_NAME", "/tmp/private",
+                              "PRIVATE_CARGO_SUMMARY"):
             self.assertNotIn(private_value.encode(), data)
 
     def test_startup_sites_join_combined_producer_stderr_to_only_the_failed_result(self) -> None:
