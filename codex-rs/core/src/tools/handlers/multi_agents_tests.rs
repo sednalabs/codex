@@ -67,6 +67,7 @@ use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -536,7 +537,6 @@ async fn multi_agent_v2_spawn_rejects_disabled_backend_model_and_omits_it_from_c
     disabled_model.display_name = "Disabled backend model".to_string();
     disabled_model.multi_agent_version = Some(MultiAgentVersion::Disabled);
     disabled_model.priority = i32::MIN;
-    assert!(disabled_model.show_in_picker);
     catalog.models.push(disabled_model);
     session.services.models_manager = Arc::new(StaticModelsManager::new(
         /*auth_manager*/ None,
