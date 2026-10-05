@@ -272,15 +272,79 @@ jobs:
               pass
 
 
+          SAFE_STATUSES = {
+              "not_run",
+              "in_progress",
+              "passed",
+              "failed",
+              "unknown",
+              "complete",
+              "incomplete",
+              "emitted",
+              "not_emitted",
+              "expected_versions_and_installer_provenance_observed",
+          }
+          SAFE_PHASES = {
+              "source_style",
+              "self_tests",
+              "rust",
+              "rustfmt",
+              "clippy",
+              "just",
+              "uv",
+              "bazelisk",
+              "bazel",
+              "dotslash",
+              "workspace_update",
+              "fix",
+              "format",
+              "bazel_lock_update",
+              "metadata",
+              "format_check",
+              "bazel_lock_check",
+          }
+
+
+          def safe_value(value, path):
+              if value is None:
+                  return "null"
+              if isinstance(value, bool):
+                  return str(value).lower()
+              if isinstance(value, int) and (
+                  path.endswith("_count")
+                  or path.endswith(".exit_code")
+                  or path.endswith(".bytes")
+                  or path.endswith(".length")
+              ):
+                  return str(value)
+              if isinstance(value, str):
+                  if path.endswith(".status") and value in SAFE_STATUSES:
+                      return value
+                  if path.endswith(".current_phase") and value in SAFE_PHASES:
+                      return value
+                  if path.endswith(".failure_code"):
+                      return "unset" if value is None else "set"
+              return "<redacted>"
+
+
           def differing_paths(actual, expected, prefix="$", limit=64):
               if type(actual) is not type(expected):
-                  return [prefix]
+                  return [
+                      f"{prefix}={safe_value(actual, prefix)}"
+                      f"->{safe_value(expected, prefix)}"
+                  ]
               if isinstance(actual, dict):
                   result = []
                   for key in sorted(actual.keys() | expected.keys()):
                       child = f"{prefix}.{key}"
-                      if key not in actual or key not in expected:
-                          result.append(child)
+                      if key not in actual:
+                          result.append(
+                              f"{child}=<missing>->{safe_value(expected[key], child)}"
+                          )
+                      elif key not in expected:
+                          result.append(
+                              f"{child}={safe_value(actual[key], child)}-><missing>"
+                          )
                       else:
                           result.extend(
                               differing_paths(actual[key], expected[key], child, limit)
@@ -291,7 +355,9 @@ jobs:
               if isinstance(actual, list):
                   result = []
                   if len(actual) != len(expected):
-                      result.append(f"{prefix}.length")
+                      result.append(
+                          f"{prefix}.length={len(actual)}->{len(expected)}"
+                      )
                   for index, (left, right) in enumerate(zip(actual, expected)):
                       result.extend(
                           differing_paths(left, right, f"{prefix}[{index}]", limit)
@@ -299,7 +365,14 @@ jobs:
                       if len(result) >= limit:
                           return result[:limit]
                   return result[:limit]
-              return [] if actual == expected else [prefix]
+              return (
+                  []
+                  if actual == expected
+                  else [
+                      f"{prefix}={safe_value(actual, prefix)}"
+                      f"->{safe_value(expected, prefix)}"
+                  ]
+              )
 
 
           def bounded_assert_equal(self, actual, expected, msg=None):
