@@ -3,6 +3,8 @@ use super::mcp_refresh::McpRefresh;
 use super::retained_context::CodeModeMessageTasks;
 use super::step_context::StepContext;
 use super::step_settings::ModelInfoOverrides;
+use super::startup_diagnostic::StartupDiagnostic;
+use super::startup_diagnostic::StartupSite;
 use super::step_settings::StepSettings;
 use super::step_settings::StepSettingsConstraints;
 use super::step_settings::StepSettingsUpdate;
@@ -776,6 +778,14 @@ impl Session {
         git_enrichment_policy: GitEnrichmentPolicy,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
     ) -> anyhow::Result<Arc<Self>> {
+        let startup_diagnostic = if matches!(&initial_history, InitialHistory::New)
+            && !session_configuration.session_source.is_non_root_agent()
+            && session_configuration.user_shell_override.is_none()
+        {
+            StartupDiagnostic::from_process()
+        } else {
+            StartupDiagnostic::disabled()
+        };
         debug!(
             "Configuring session: model={}; provider={:?}",
             session_configuration
@@ -966,9 +976,12 @@ impl Session {
         local_agent_runtime
             .outcome_publisher(thread_id)
             .publish(crate::agent::api::AgentOutcomeSnapshot::default());
-        let time_provider = crate::current_time::resolve_time_provider(
-            config.current_time_reminder.as_ref(),
-            external_time_provider,
+        let time_provider = startup_diagnostic.result(
+            StartupSite::TimeProvider,
+            crate::current_time::resolve_time_provider(
+                config.current_time_reminder.as_ref(),
+                external_time_provider,
+            ),
         )?;
         let selected_capability_roots =
             match thread_extension_init.get::<Vec<SelectedCapabilityRoot>>() {
@@ -1191,10 +1204,13 @@ impl Session {
         let (thread_persistence_result, state_db_ctx, (auth, mcp_projection)) =
             tokio::join!(thread_persistence_fut, state_db_fut, auth_and_mcp_fut);
 
-        let (live_thread, mut live_thread_init) = thread_persistence_result.map_err(|e| {
-            error!("failed to initialize thread persistence: {e:#}");
-            e
-        })?;
+        let (live_thread, mut live_thread_init) = startup_diagnostic.result(
+            StartupSite::ThreadPersistence,
+            thread_persistence_result.map_err(|e| {
+                error!("failed to initialize thread persistence: {e:#}");
+                e
+            }),
+        )?;
         if let Some(state_db) = state_db_ctx.as_ref() {
             let lineage = UsageThreadRecord {
                 thread_id: thread_id.to_string(),
@@ -1210,7 +1226,10 @@ impl Session {
         }
         let session_result: anyhow::Result<Arc<Self>> = async {
             let rollout_path = if let Some(live_thread) = live_thread.as_ref() {
-                live_thread.local_rollout_path().await?
+                startup_diagnostic.result(
+                    StartupSite::LocalRolloutPath,
+                    live_thread.local_rollout_path().await,
+                )?
             } else {
                 None
             };
@@ -1496,7 +1515,7 @@ impl Session {
             );
             let (agents_md_result, instruction_warnings) = instruction_refresh;
             // TODO(anp): Present AGENTS.md discovery errors more clearly to the user.
-            agents_md_result?;
+            startup_diagnostic.result(StartupSite::AgentsMdRefresh, agents_md_result)?;
             post_session_configured_events.extend(
                 instruction_warnings.into_iter().map(|message| Event {
                     id: INITIAL_SUBMIT_ID.to_owned(),
@@ -1560,7 +1579,7 @@ impl Session {
                     .filter(|spec| spec.enabled())
                 {
                     let current_exec_policy = exec_policy.current();
-                    let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
+                    let network_proxy_result = Self::start_managed_network_proxy(
                         spec,
                         current_exec_policy.as_ref(),
                         config.permissions.permission_profile(),
@@ -1576,7 +1595,9 @@ impl Session {
                         session_init.managed_network_requirements_enabled =
                             managed_network_requirements_enabled,
                     ))
-                    .await?;
+                    .await;
+                    let (network_proxy, session_network_proxy) = startup_diagnostic
+                        .result(StartupSite::NetworkProxy, network_proxy_result)?;
                     (Some(network_proxy), Some(session_network_proxy))
                 } else {
                     (None, None)
@@ -1604,13 +1625,16 @@ impl Session {
                 &session_configuration.disabled_plugin_ids,
             )
             .await;
-            let (hooks, async_hook_results) = Hooks::new(
-                hooks_config,
-                thread_id,
-                Arc::new(CoreHookMcpExecutor {
-                    runtime: Arc::clone(&mcp_runtime),
+            let (hooks, async_hook_results) = startup_diagnostic.result(
+                StartupSite::HooksNew,
+                Hooks::new(
+                    hooks_config,
                     thread_id,
-                }),
+                    Arc::new(CoreHookMcpExecutor {
+                        runtime: Arc::clone(&mcp_runtime),
+                        thread_id,
+                    }),
+                ),
             )?;
             for warning in hooks.startup_warnings() {
                 post_session_configured_events.push(Event {
@@ -1910,14 +1934,16 @@ impl Session {
             } else {
                 mcp_projection
             };
-            sess.install_initial_mcp_runtime(
-                &session_configuration,
-                latest_auth,
-                mcp_projection,
-                &resolved_environments,
-                mcp_runtime_cwd,
-            )
-            .await?;
+            let mcp_install_result = sess
+                .install_initial_mcp_runtime(
+                    &session_configuration,
+                    latest_auth,
+                    mcp_projection,
+                    &resolved_environments,
+                    mcp_runtime_cwd,
+                )
+                .await;
+            startup_diagnostic.result(StartupSite::McpInitialInstall, mcp_install_result)?;
             sess.start_mcp_prewarm_worker(mcp_prewarm_rx, mcp_auth_changes);
             sess.follow_inherited_environment_configurations(
                 &inherited_environments,
@@ -1948,8 +1974,11 @@ impl Session {
             }
             if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {
                 // Keep the source reserved until the child's history reference is durable.
-                sess.try_ensure_rollout_materialized(PersistContext::Standard)
-                    .await?;
+                startup_diagnostic.result(
+                    StartupSite::ReferencedRolloutMaterialization,
+                    sess.try_ensure_rollout_materialized(PersistContext::Standard)
+                        .await,
+                )?;
             }
             {
                 let mut state = sess.state.lock().await;
