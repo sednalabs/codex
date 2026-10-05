@@ -16,7 +16,7 @@ In the codex-rs folder where the rust code lives:
 
 - Crate names are prefixed with `codex-`; `core` is `codex-core`.
 - Inline `format!` arguments. Prefer private modules, explicit public exports, exhaustive matches, method references, and APIs without ambiguous boolean/`Option` positional arguments.
-- Do not add or modify code for `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR` or `CODEX_SANDBOX_ENV_VAR`; tests use these environment markers to detect sandbox limitations.
+- Do not add or modify code for `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR`, `CODEX_SANDBOX_ENV_VAR`, or `CODEX_SANDBOX=seatbelt`; sandbox- and Seatbelt-aware tests depend on these markers.
 - For positional opaque literals, follow `argument_comment_lint`: use an exact `/*param_name*/` comment where required. Do not add comments to string/char literals without a clarity benefit.
 - New traits need role/usage docs. Prefer RPITIT traits with explicit `Send` bounds over `#[async_trait]` or `#[allow(async_fn_in_trait)]`.
 - Tests should compare whole objects where useful; do not test static values or removed logic. Put new test modules in sibling `*_tests.rs` files and avoid test-only production helpers.
@@ -84,7 +84,7 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
 ### Core Rules
 
-Add API surface in v2, not v1. Use `*Params`, `*Response`, and `*Notification` types; keep Rust/TypeScript wire names and tags aligned (camelCase, except config keys), and export v2 types to `v2/`. Preserve structured request semantics: optional request fields use `Option` with `#[ts(optional = nullable)]`; do not omit v2 payload fields with `skip_serializing_if`. Keep experimental gating on experimental API elements.
+Add API surface in v2, not v1. Use `*Params`, `*Response`, and `*Notification` types; keep Rust/TypeScript wire names and tags aligned (camelCase, except config keys), and export v2 types to `v2/`. Preserve structured request semantics: optional request fields use `Option` with `#[ts(optional = nullable)]`; do not omit v2 payload fields with `skip_serializing_if`. New list methods default to cursor pagination (`cursor`/`limit` request fields; `data`/`next_cursor` response fields). Keep experimental gating on experimental API elements.
 
 ### Development Workflow
 
