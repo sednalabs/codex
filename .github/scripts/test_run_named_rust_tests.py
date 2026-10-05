@@ -1399,17 +1399,18 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                     "column_start": 5, "column_end": 17, "is_primary": True, "text": [{"text": "PRIVATE excerpt"}],
                     "label": "PRIVATE label", "suggested_replacement": "PRIVATE replacement", "expansion": {"PRIVATE": True}}]}}
 
-    def _compile_failure(self, item: dict[str, object]) -> dict[str, object]:
+    def _compile_failure(self, item: dict[str, object], *, target_sha: str = "a" * 40) -> dict[str, object]:
         stdout = json.dumps(item) + '\n{"reason":"build-finished","success":false}\n'
         response = subprocess.CompletedProcess(self.startup_inventory_command, 101, stdout, "PRIVATE stderr")
-        result, calls = self._run(startup_inventory_response=response, target_sha=named_tests.CORE_STARTUP_COMPILER_TARGET)
+        result, calls = self._run(startup_inventory_response=response, target_sha=target_sha)
         self.assertEqual((5, [], [], "not-run"), (len(calls), result["diagnostic_samples"],
             result["startup_control"]["tests"], result["producer_controls"]["status"]))
         return result
 
     def _compiler_bytes(self, result: dict[str, object], *, count: int = 3, responses: list[object] | None = None,
-                        catalogue: str | None = None, writer: bool = False) -> bytes:
-        sha = named_tests.CORE_STARTUP_COMPILER_TARGET
+                        catalogue: str | None = None, writer: bool = False,
+                        provenance: dict[str, str] | None = None) -> bytes:
+        sha = result["identity"]["target_sha"]
         locator = "codex-rs/core/src/session/startup_diagnostic.rs"
         expected = [["git", "rev-parse", "HEAD"], ["git", "ls-tree", "-rz", "--full-tree", sha, "--", "codex-rs"],
                     ["git", "show", sha + ":" + locator]]
@@ -1426,11 +1427,12 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             if isinstance(value, OSError):
                 raise value
             return value if isinstance(value, subprocess.CompletedProcess) else subprocess.CompletedProcess(argv, 0, value, "PRIVATE Git stderr")
-        with patch.object(named_tests.subprocess, "run", side_effect=git):
+        env = {variable: result["identity"][key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env.update({"GITHUB_REPOSITORY": "sednalabs/codex", named_tests.CORE_DIAGNOSTIC_ONLY_ENV: "true"})
+        env.update(provenance or {})
+        with patch.dict(os.environ, env, clear=True), patch.object(named_tests.subprocess, "run", side_effect=git):
             if writer:
-                env = {variable: result["identity"][key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
-                env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
-                with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                with patch.object(sys, "argv", ["runner"]), \
                         patch.object(Path, "cwd", return_value=self.root), \
                         patch.object(named_tests, "load_request", return_value=(self.request, None)), \
                         patch.object(named_tests, "run_request", return_value=result), \
@@ -1466,10 +1468,18 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         self.assertNotIn(hashlib.sha256(raw.encode()).hexdigest().encode(), data)
         response = subprocess.CompletedProcess(self.startup_command, 101,
             json.dumps(self._compiler_fixture()) + '\n{"reason":"build-finished","success":false}\n', "PRIVATE")
-        unit_failed, calls = self._run(startup_control=response, target_sha=named_tests.CORE_STARTUP_COMPILER_TARGET)
+        unit_failed, calls = self._run(startup_control=response)
         public = json.loads(self._compiler_bytes(unit_failed))
         self.assertEqual((6, [], "not-run", "E0277"), (len(calls), public["diagnostic_samples"],
             public["producer_controls"]["status"], public["startup_control"]["tests"][0]["diagnostics"]["compiler"]["records"][0]["code"]))
+        successor = self._compile_failure(self._compiler_fixture(), target_sha="e" * 40)
+        successor_data = self._compiler_bytes(successor)
+        self.assertEqual(successor_data, self._compiler_bytes(successor, writer=True))
+        successor_public = json.loads(successor_data)
+        self.assertEqual("e" * 40, successor_public["candidate_sha"])
+        successor_compiler = successor_public["startup_control"]["inventory"]["diagnostics"]["compiler"]
+        self.assertEqual(("verified", compiler["records"], {}),
+                         (successor_compiler["source_join_status"], successor_compiler["records"], successor_compiler["gaps"]))
 
     def test_startup_cargo_json_cannot_pollute_libtest_inventory_outcomes_or_counts(self) -> None:
         warning = self._compiler_fixture()
@@ -1493,8 +1503,22 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         baseline = self._compile_failure(self._compiler_fixture())
         self.assertEqual(1, len(json.loads(self._compiler_bytes(baseline))["startup_control"]["inventory"]["diagnostics"]["compiler"]["records"]))
         locator = "codex-rs/core/src/session/startup_diagnostic.rs"
-        sha = named_tests.CORE_STARTUP_COMPILER_TARGET
-        for responses, count in ((["a" * 40 + "\n"], 1), ([OSError("PRIVATE")], 1),
+        sha = baseline["identity"]["target_sha"]
+        for provenance, code in (({"GITHUB_REPOSITORY": ""}, "public_provenance_unattested"),
+            ({"VALIDATION_TARGET_SHA": ""}, "public_provenance_unattested"),
+            ({"GITHUB_REPOSITORY": "private/PRIVATE"}, "public_provenance_mismatch"),
+            ({"VALIDATION_TARGET_SHA": "e" * 40}, "public_provenance_mismatch"),
+            ({"VALIDATION_TARGET_SHA": "PRIVATE"}, "public_provenance_mismatch")):
+            compiler = json.loads(self._compiler_bytes(baseline, count=0, provenance=provenance))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+            self.assertEqual(([], code, {code: 1}), (compiler["records"], compiler["source_join_status"], compiler["gaps"]))
+        substituted = copy.deepcopy(baseline)
+        substituted.update(candidate_sha="e" * 40)
+        substituted["identity"].update(target_sha="e" * 40)
+        compiler = json.loads(self._compiler_bytes(substituted, count=0,
+            provenance={"VALIDATION_TARGET_SHA": sha}))["startup_control"]["inventory"]["diagnostics"]["compiler"]
+        self.assertEqual(([], "public_provenance_mismatch", {"public_provenance_mismatch": 1}),
+                         (compiler["records"], compiler["source_join_status"], compiler["gaps"]))
+        for responses, count in ((["e" * 40 + "\n"], 1), ([OSError("PRIVATE")], 1),
             ([sha + "\n", OSError("PRIVATE")], 2), ([sha + "\n", "malformed\0"], 2),
             ([sha + "\n", f"100644 blob {'d' * 40}\t{locator}\0", OSError("PRIVATE")], 3)):
             compiler = json.loads(self._compiler_bytes(baseline, count=count, responses=responses))["startup_control"]["inventory"]["diagnostics"]["compiler"]
@@ -1507,8 +1531,10 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             self.assertEqual(([], 1), (compiler["records"][0]["spans"], compiler["records"][0]["omitted_span_count"]))
         for mode in ("120000", "100600"):
             self._compiler_bytes(baseline, count=2, catalogue=f"{mode} blob {'d' * 40}\t{locator}\0")
-        mutations = [lambda value: value.update(candidate_sha="a" * 40),
-            lambda value: value["identity"].update(target_sha="a" * 40),
+        mutations = [lambda value: value.update(candidate_sha="e" * 40),
+            lambda value: value["identity"].update(target_sha="e" * 40),
+            lambda value: value["identity"].update(target_sha="PRIVATE"),
+            lambda value: value["request"].update(package="PRIVATE"),
             lambda value: value["startup_control"]["inventory"].update(command_matches=False),
             lambda value: value["startup_control"]["inventory"]["diagnostics"].update(exit_code=0),
             lambda value: value["startup_control"]["inventory"]["diagnostics"]["compiler_capture"].update(error_message_count=True)]

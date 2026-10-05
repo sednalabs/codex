@@ -116,7 +116,6 @@ CORE_DIAGNOSTIC_STARTUP_COMMANDS = tuple(
     ("cargo", "test", "--locked", "--message-format=json", "-p", "codex-core", "--lib", name,
      "--", "--exact", "--test-threads=1") for name in CORE_DIAGNOSTIC_STARTUP_TESTS
 )
-CORE_STARTUP_COMPILER_TARGET = "01dea3e8e4eea53aca82c2f1cd4841fdabd323c7"
 MAX_COMPILER_RECORDS = 32
 MAX_COMPILER_SPANS = 8
 MAX_COMPILER_CAPTURE_BYTES = 256 * 1024
@@ -1799,8 +1798,21 @@ def _compiler_source_context(context: dict[str, Any]) -> str:
     if "source_status" not in context:
         context.update(source_status="target_identity_mismatch", catalogue={}, sources={}, source_bytes=0)
         root = context["root"]
-        if context["target_matches"] and _compiler_git(["git", "rev-parse", "HEAD"], root, 128) == CORE_STARTUP_COMPILER_TARGET + "\n":
-            data = _compiler_git(["git", "ls-tree", "-rz", "--full-tree", CORE_STARTUP_COMPILER_TARGET, "--", "codex-rs"], root, 2 * 1024 * 1024)
+        target_sha = context["target_sha"]
+        repository = os.environ.get("GITHUB_REPOSITORY", "")
+        expected_target = os.environ.get("VALIDATION_TARGET_SHA", "")
+        # The governed public-source boundary publishes T before dispatch; the
+        # fixed hosted materializer fetches it from origin, checks FETCH_HEAD,
+        # and verifies H/B/T. These existing inputs corroborate that boundary,
+        # not an independent public-visibility or compiler-writer attestation.
+        if not context["target_matches"]:
+            return context["source_status"]
+        if not repository or not expected_target:
+            context["source_status"] = "public_provenance_unattested"
+        elif repository != "sednalabs/codex" or expected_target != target_sha:
+            context["source_status"] = "public_provenance_mismatch"
+        elif _compiler_git(["git", "rev-parse", "HEAD"], root, 128) == target_sha + "\n":
+            data = _compiler_git(["git", "ls-tree", "-rz", "--full-tree", target_sha, "--", "codex-rs"], root, 2 * 1024 * 1024)
             context["source_status"] = "git_catalogue_failed"
             if data is not None:
                 rows = data.split("\0")[:-1] if data.endswith("\0") else []
@@ -1837,7 +1849,7 @@ def _compiler_span(span: Any, context: dict[str, Any]) -> tuple[dict[str, Any] |
     if locator not in sources:
         if len(sources) >= MAX_COMPILER_SOURCE_PATHS:
             return None, "source_limit"
-        text = _compiler_git(["git", "show", CORE_STARTUP_COMPILER_TARGET + ":" + locator], context["root"], 1024 * 1024)
+        text = _compiler_git(["git", "show", context["target_sha"] + ":" + locator], context["root"], 1024 * 1024)
         sources[locator] = None
         if text is not None and context["source_bytes"] + len(text.encode("utf-8")) <= 8 * 1024 * 1024:
             context["source_bytes"] += len(text.encode("utf-8"))
@@ -2272,8 +2284,11 @@ def public_safe_result(result: dict[str, Any], repo_root: Path | None = None) ->
     }
     if safe["result_kind"] == "core_runtime_diagnostic":
         samples = _safe_core_samples(result.get("diagnostic_samples"), inventory.get("test_count"))
+        target_sha = identity.get("target_sha", "")
         compiler_context = {"root": (repo_root or Path.cwd()).resolve(),
-                            "target_matches": safe["candidate_sha"] == identity.get("target_sha") == CORE_STARTUP_COMPILER_TARGET}
+                            "target_sha": target_sha,
+                            "target_matches": bool(target_sha) and safe["candidate_sha"] == target_sha
+                            and request["catalog_validated"]}
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
                     diagnostic_samples=samples.pop("records"), sample_projection=samples,
                     producer_controls=_safe_core_producer_controls(result.get("producer_controls")),
