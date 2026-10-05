@@ -31,6 +31,23 @@ FAILURE_CODES = frozenset({
     "helper_failed", "execution_interrupted", "unexpected_exception",
     "outputs_invalid", "witness_persist_failed",
 })
+# Only codes reachable through the existing checkout-preflight call closure.
+PREFLIGHT_PREPARATION_CODES = frozenset({
+    "unexpected_user_configuration", "unexpected_execution_environment",
+    "unexpected_product_bazel_configuration", "product_bazelrc_unreadable",
+    "active_remote_bazel_configuration", "active_bazel_config_import",
+    "unexpected_product_bazelrc_import", "unexpected_bazel_configuration_selection",
+    "trusted_execution_input_changed", "git_command_failed", "diff_inventory_invalid",
+    "candidate_delta_outside_allowlist", "candidate_delta_mode_change", "base_tree_mismatch",
+})
+PREFLIGHT_PHASES = frozenset({
+    "platform_context", "validate_request", "make_witness", "witness_initial_persistence",
+    "checkout_paths", "user_configuration", "trusted_inputs",
+    "helper_identity", "helper_identity_guard", "helper_cleanliness",
+    "base_identity", "base_identity_guard", "base_cleanliness",
+    "target_identity", "target_identity_guard", "target_cleanliness",
+    "candidate_delta", "witness_identity_persistence", "checkout_preflight",
+})
 DECLARATIONS = {
     "caller_job": "control_plane_preparation", "callee_path": CALLEE,
     "callee_job": "prepare", "preparation_step": "prepare",
@@ -120,24 +137,33 @@ def validate_request(args):
             "invalid_identity")
 
 
-def checkout_preflight(args):
+def checkout_preflight(args, diagnostic=None):
+    diagnostic = {} if diagnostic is None else diagnostic
+    diagnostic["phase"] = "validate_request"
     validate_request(args)
+    diagnostic["phase"] = "checkout_paths"
     product, base, helper = (Path(getattr(args, key)).resolve()
                              for key in ("product", "base", "helper"))
+    diagnostic["phase"] = "user_configuration"
     preparation.check_user_configuration(product)
+    diagnostic["phase"] = "trusted_inputs"
     preparation.check_trusted_inputs(product, base)
     actual = {}
-    for key, root, expected_sha, expected_tree in (
-        ("helper", helper, args.helper_sha, None),
-        ("base", base, BASE_SHA, BASE_TREE),
-        ("target", product, TARGET_SHA, TARGET_TREE),
+    for key, root, expected_sha, expected_tree, identity_phase, guard_phase, clean_phase in (
+        ("helper", helper, args.helper_sha, None, "helper_identity", "helper_identity_guard", "helper_cleanliness"),
+        ("base", base, BASE_SHA, BASE_TREE, "base_identity", "base_identity_guard", "base_cleanliness"),
+        ("target", product, TARGET_SHA, TARGET_TREE, "target_identity", "target_identity_guard", "target_cleanliness"),
     ):
+        diagnostic["phase"] = identity_phase
         sha, tree = preparation.identity(root)
+        diagnostic["phase"] = guard_phase
         require(sha == expected_sha and preparation.SHA_RE.fullmatch(tree) is not None,
                 "checkout_preflight_failed")
         require(expected_tree is None or tree == expected_tree, "checkout_preflight_failed")
+        diagnostic["phase"] = clean_phase
         require(preparation.clean_checkout(root), "checkout_preflight_failed")
         actual[key + "_sha"], actual[key + "_tree"] = sha, tree
+    diagnostic["phase"] = "candidate_delta"
     require(preparation.check_candidate_delta(product, args.base_sha, args.target_sha, BASE_TREE)
             == len(preparation.SOURCE_PATHS), "checkout_preflight_failed")
     return actual
@@ -304,13 +330,18 @@ def launch_helper(args, env):
 
 def execute(args, preflight_only=False):
     witness = None
+    diagnostic = {"phase": "platform_context"}
     try:
         context = platform_context(os.environ, args.helper_sha)
+        diagnostic["phase"] = "validate_request"
         validate_request(args)
+        diagnostic["phase"] = "make_witness"
         witness = make_witness(args, context)
         if preflight_only:
+            diagnostic["phase"] = "witness_initial_persistence"
             persist_witness(args, witness)
-            witness["identity"] = checkout_preflight(args)
+            witness["identity"] = checkout_preflight(args, diagnostic)
+            diagnostic["phase"] = "witness_identity_persistence"
             persist_witness(args, witness)
             return 0
         previous = strict_json(read_output(witness_path(args), MAX_WITNESS_BYTES), MAX_WITNESS_BYTES)
@@ -344,10 +375,25 @@ def execute(args, preflight_only=False):
         persist_witness(args, witness)
         return 0
     except BaseException as exc:
+        route_code = getattr(exc, "code", None) if isinstance(exc, RouteError) else None
+        if type(route_code) is not str or route_code not in FAILURE_CODES:
+            route_code = "unexpected_exception"
+        code = route_code if isinstance(exc, RouteError) else (
+            "checkout_preflight_failed" if isinstance(exc, preparation.PreparationError) else
+            "execution_interrupted" if isinstance(exc, KeyboardInterrupt) else "unexpected_exception")
+        if preflight_only:
+            detail = getattr(exc, "code", None) if isinstance(exc, preparation.PreparationError) else None
+            if type(detail) is not str or detail not in PREFLIGHT_PREPARATION_CODES:
+                detail = code
+            phase = diagnostic.get("phase")
+            if type(phase) is not str or phase not in PREFLIGHT_PHASES:
+                phase = "checkout_preflight"
+            try:
+                print(json.dumps({"code": detail, "phase": phase}, sort_keys=True,
+                                 separators=(",", ":")), file=sys.stderr)
+            except BaseException:
+                pass
         if witness is not None:
-            code = exc.code if isinstance(exc, RouteError) else (
-                "checkout_preflight_failed" if isinstance(exc, preparation.PreparationError) else
-                "execution_interrupted" if isinstance(exc, KeyboardInterrupt) else "unexpected_exception")
             witness.update(status="incomplete", complete=False, failure_code=code,
                            receipt=None, patch=None)
             try:

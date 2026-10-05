@@ -132,6 +132,50 @@ class RouteFlowTests(unittest.TestCase):
                 self.fake_helper(args, env, generate_path=generate_path, return_override=return_override)):
             return route.execute(self.args)
 
+    def preflight(self, args=None, fault=None):
+        args = self.args if args is None else args
+        real_run = self.preparation.run
+        roots = {str(self.fixture.helper), str(self.fixture.base), str(self.fixture.product)}
+        suffixes = {("rev-parse", "HEAD^{commit}"), ("rev-parse", "HEAD^{tree}"),
+                    ("status", "--porcelain=v1", "--untracked-files=all"),
+                    ("rev-parse", args.base_sha + "^{tree}"),
+                    ("diff", "--no-renames", "--raw", "-z", args.base_sha, args.target_sha)}
+        calls = []
+        def run(argv, cwd, env):
+            self.assertEqual(argv[:2], ("git", "-C"))
+            self.assertIn(argv[2], roots)
+            self.assertIn(argv[3:], suffixes, "unexpected preflight command")
+            self.assertEqual(cwd, Path(argv[2]))
+            self.assertEqual(env, self.preparation.minimal_env())
+            calls.append(argv)
+            replacement = None if fault is None else fault(argv)
+            return real_run(argv, cwd, env) if replacement is None else replacement
+        with mock.patch.object(self.preparation, "run", side_effect=run), \
+                mock.patch.object(route, "launch_helper", side_effect=AssertionError("must not launch")) as launch, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            result = route.execute(args, preflight_only=True)
+        launch.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "")
+        return result, stderr.getvalue(), calls
+
+    def assert_preflight_diagnostic(self, code, phase, args=None, fault=None, witness=True):
+        result, diagnostic, calls = self.preflight(args, fault)
+        self.assertEqual((result, diagnostic), (1, json.dumps({"code": code, "phase": phase},
+                         sort_keys=True, separators=(",", ":")) + "\n"))
+        self.assertNotIn(CANARY, diagnostic)
+        if witness:
+            persisted = route.witness_path(self.args if args is None else args).read_bytes()
+            self.assertNotIn(CANARY.encode(), persisted)
+            outer = json.loads(persisted)
+            outer_code = "checkout_preflight_failed" if code in route.PREFLIGHT_PREPARATION_CODES else code
+            self.assertEqual((outer["status"], outer["complete"], outer["failure_code"],
+                              outer["helper_exit"], outer["receipt"], outer["patch"]),
+                             ("incomplete", False, outer_code, None, None, None))
+            self.assertFalse(Path(self.args.receipt).exists())
+            self.assertFalse(Path(self.args.patch).exists())
+        return calls
+
     def members(self):
         return (Path(self.args.receipt).read_bytes(), route.witness_path(self.args).read_bytes(),
                 Path(self.args.patch).read_bytes())
@@ -356,8 +400,168 @@ class RouteFlowTests(unittest.TestCase):
         self.assertEqual(error.exception.code, expected_code)
         with mock.patch.object(route, "TARGET_SHA", target), mock.patch.object(route, "TARGET_TREE", tree), \
                 mock.patch.object(route, "launch_helper", side_effect=AssertionError("must not launch")) as launch:
-            self.assertEqual(route.execute(args, preflight_only=True), 1)
+            self.assert_preflight_diagnostic(expected_code, "candidate_delta", args)
         launch.assert_not_called()
+
+    def test_preflight_diagnostic_valid_baseline_preserves_real_call_order_and_witness(self):
+        result, diagnostic, calls = self.preflight()
+        self.assertEqual((result, diagnostic), (0, ""))
+        expected = []
+        for root in (self.fixture.helper, self.fixture.base, self.fixture.product):
+            expected.extend(("git", "-C", str(root), *suffix) for suffix in (
+                ("rev-parse", "HEAD^{commit}"), ("rev-parse", "HEAD^{tree}"),
+                ("status", "--porcelain=v1", "--untracked-files=all")))
+        expected.extend(("git", "-C", str(self.fixture.product), *suffix) for suffix in (
+            ("rev-parse", self.args.base_sha + "^{tree}"),
+            ("diff", "--no-renames", "--raw", "-z", self.args.base_sha, self.args.target_sha)))
+        self.assertEqual(calls, expected)
+        witness = route.make_witness(self.args, route.platform_context(self.env, self.args.helper_sha))
+        witness["identity"] = {"helper_sha": self.args.helper_sha, "helper_tree": self.fixture.helper_tree,
+            "base_sha": self.args.base_sha, "base_tree": route.BASE_TREE,
+            "target_sha": self.args.target_sha, "target_tree": route.TARGET_TREE}
+        self.assertEqual(route.witness_path(self.args).read_bytes(), route.encode_witness(witness))
+
+    def test_preflight_diagnostic_real_configuration_guards_are_closed_and_isolated(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        home = Path(self.env["RUNNER_TEMP"]) / "control-plane-home"
+        home.mkdir()
+        for path, code in ((home / ".bazelrc", "unexpected_user_configuration"),
+                           (self.fixture.product / "user.bazelrc", "unexpected_product_bazel_configuration")):
+            path.write_text(CANARY)
+            try:
+                self.assert_preflight_diagnostic(code, "user_configuration")
+            finally:
+                path.unlink()
+        with mock.patch.dict(os.environ, {"BAZELISK_GITHUB_TOKEN": CANARY}):
+            self.assert_preflight_diagnostic("unexpected_execution_environment", "user_configuration")
+        bazelrc = self.fixture.product / ".bazelrc"
+        original = bazelrc.read_bytes()
+        cases = ((None, "product_bazelrc_unreadable"),
+                 ("common --remote_cache=https://private.invalid\n", "active_remote_bazel_configuration"),
+                 ("common --config=private\n", "active_bazel_config_import"),
+                 ("import /private/internal/path\n", "unexpected_product_bazelrc_import"))
+        for contents, code in cases:
+            if contents is None:
+                bazelrc.unlink()
+            else:
+                bazelrc.write_text(contents)
+            try:
+                self.assert_preflight_diagnostic(code, "user_configuration")
+            finally:
+                bazelrc.write_bytes(original)
+        with mock.patch.object(self.preparation, "PHASES", (("isolated", "", ("bazel", "--config=private")),)):
+            self.assert_preflight_diagnostic("unexpected_bazel_configuration_selection", "user_configuration")
+        self.assertEqual(self.preflight()[:2], (0, ""))
+
+    def test_preflight_diagnostic_real_trusted_inputs_and_all_checkout_guards(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        trusted = self.fixture.product / "justfile"
+        original = trusted.read_bytes()
+        trusted.write_text(CANARY)
+        try:
+            self.assert_preflight_diagnostic("trusted_execution_input_changed", "trusted_inputs")
+        finally:
+            trusted.write_bytes(original)
+        for key, root in (("helper", self.fixture.helper), ("base", self.fixture.base), ("target", self.fixture.product)):
+            dirty = root / "unexpected.txt"
+            dirty.write_text(CANARY)
+            try:
+                self.assert_preflight_diagnostic("checkout_preflight_failed", key + "_cleanliness")
+            finally:
+                dirty.unlink()
+        for key in ("BASE_TREE", "TARGET_TREE"):
+            with mock.patch.object(route, key, "8" * 40):
+                self.assert_preflight_diagnostic("checkout_preflight_failed", "base_identity_guard" if key == "BASE_TREE" else "target_identity_guard")
+        args = argparse.Namespace(**dict(vars(self.args), helper_sha="8" * 40))
+        with mock.patch.dict(os.environ, {"GITHUB_SHA": args.helper_sha, "GITHUB_WORKFLOW_SHA": args.helper_sha}):
+            self.assert_preflight_diagnostic("checkout_preflight_failed", "helper_identity_guard", args)
+
+    def test_preflight_diagnostic_git_and_inventory_faults_keep_actual_fixed_phase(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        for key, root in (("helper", self.fixture.helper), ("base", self.fixture.base), ("target", self.fixture.product)):
+            for suffix, phase in ((("rev-parse", "HEAD^{commit}"), key + "_identity"),
+                                  (("status", "--porcelain=v1", "--untracked-files=all"), key + "_cleanliness")):
+                command = ("git", "-C", str(root), *suffix)
+                def fault(argv):
+                    return subprocess.CompletedProcess(argv, 9, CANARY.encode(), CANARY.encode()) if argv == command else None
+                calls = self.assert_preflight_diagnostic("git_command_failed", phase, fault=fault)
+                self.assertEqual(calls[-1], command)
+                def interrupted(argv):
+                    if argv == command:
+                        raise OSError(CANARY)
+                calls = self.assert_preflight_diagnostic("unexpected_exception", phase, fault=interrupted)
+                self.assertEqual(calls[-1], command)
+        for suffix, output, code in (
+            (("rev-parse", self.args.base_sha + "^{tree}"), b"8" * 40 + b"\n", "base_tree_mismatch"),
+            (("diff", "--no-renames", "--raw", "-z", self.args.base_sha, self.args.target_sha), b"invalid\0entry\0", "diff_inventory_invalid"),
+        ):
+            command = ("git", "-C", str(self.fixture.product), *suffix)
+            def fault(argv):
+                return subprocess.CompletedProcess(argv, 0, output, CANARY.encode()) if argv == command else None
+            calls = self.assert_preflight_diagnostic(code, "candidate_delta", fault=fault)
+            self.assertEqual(calls[-1], command)
+
+    def test_preflight_diagnostic_candidate_count_guard_still_rejects_allowed_extra_delta(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        lock = self.fixture.product / "codex-rs/Cargo.lock"
+        lock.write_bytes(lock.read_bytes() + b"\n# isolated allowed extra delta\n")
+        self.fixture.git(self.fixture.product, "add", "--", "codex-rs/Cargo.lock")
+        self.fixture.git(self.fixture.product, "commit", "--quiet", "-m", "extra allowed delta")
+        target = self.fixture.git(self.fixture.product, "rev-parse", "HEAD").decode().strip()
+        tree = self.fixture.git(self.fixture.product, "rev-parse", "HEAD^{tree}").decode().strip()
+        args = argparse.Namespace(**dict(vars(self.args), target_sha=target))
+        self.assertEqual(self.preparation.check_candidate_delta(self.fixture.product, args.base_sha, target, route.BASE_TREE), 26)
+        with mock.patch.object(route, "TARGET_SHA", target), mock.patch.object(route, "TARGET_TREE", tree):
+            self.assert_preflight_diagnostic("checkout_preflight_failed", "candidate_delta", args)
+
+    def test_preflight_diagnostic_unknown_malformed_codes_and_generic_canaries_never_echo(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        for value in (CANARY, None, True, 1, [], {}, "tool_version_mismatch_rust"):
+            error = self.preparation.PreparationError(value)
+            with mock.patch.object(self.preparation, "check_user_configuration", side_effect=error):
+                self.assert_preflight_diagnostic("checkout_preflight_failed", "user_configuration")
+            error = route.RouteError("outputs_invalid")
+            error.code = value
+            with mock.patch.object(self.preparation, "check_user_configuration", side_effect=error):
+                self.assert_preflight_diagnostic("unexpected_exception", "user_configuration")
+        for error, code in ((OSError(CANARY), "unexpected_exception"),
+                            (KeyboardInterrupt(CANARY), "execution_interrupted"),
+                            (route.RouteError("outputs_invalid"), "outputs_invalid")):
+            with mock.patch.object(self.preparation, "check_trusted_inputs", side_effect=error):
+                self.assert_preflight_diagnostic(code, "trusted_inputs")
+        for code in route.FAILURE_CODES:
+            with mock.patch.object(self.preparation, "check_user_configuration", side_effect=route.RouteError(code)):
+                self.assert_preflight_diagnostic(code, "user_configuration")
+
+    def test_preflight_diagnostic_early_operations_and_persistence_keep_original_red_result(self):
+        self.assertEqual(self.preflight()[:2], (0, ""))
+        for name, phase in (("platform_context", "platform_context"), ("validate_request", "validate_request"),
+                            ("make_witness", "make_witness")):
+            with mock.patch.object(route, name, side_effect=OSError(CANARY)):
+                self.assert_preflight_diagnostic("unexpected_exception", phase, witness=False)
+        real_resolve, resolves = Path.resolve, []
+        def resolve(path, *args, **kwargs):
+            if path == self.fixture.product:
+                resolves.append(path)
+                # Two existing request validations resolve the product first;
+                # the third call is checkout_preflight's explicit path resolution.
+                if len(resolves) == 3:
+                    raise OSError(CANARY)
+            return real_resolve(path, *args, **kwargs)
+        with mock.patch.object(Path, "resolve", resolve):
+            self.assert_preflight_diagnostic("unexpected_exception", "checkout_paths")
+        self.assertEqual(len(resolves), 3)
+        real_persist = route.persist_witness
+        for failed_call, phase in ((1, "witness_initial_persistence"), (2, "witness_identity_persistence")):
+            calls = []
+            def persist(args, witness):
+                calls.append(None)
+                if len(calls) == failed_call:
+                    raise route.RouteError("witness_persist_failed")
+                return real_persist(args, witness)
+            with mock.patch.object(route, "persist_witness", side_effect=persist):
+                self.assert_preflight_diagnostic("witness_persist_failed", phase)
+            self.assertEqual(len(calls), failed_call + 1)
 
     def test_preflight_reuses_real_outside_path_rejection_before_helper(self):
         self.rejected_delta("foreign.txt", lambda path: path.write_text("changed\n"),
