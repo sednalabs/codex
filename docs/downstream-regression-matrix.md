@@ -1101,6 +1101,18 @@ permission contract is documented in
 
 ## Native per-execution MCP proof
 
+Session shutdown pins default-turn creation in a heap-allocated future before
+awaiting it and SessionEnd hook processing. Keep the existing no-hook, root-only and
+hook-order behavior. The exact external-unload residency case is the core
+runtime control; the existing SessionEnd event tests remain separate hook
+behavior controls:
+`external_v2_unload_defers_for_pending_finalizers_and_submissions`,
+`session_end_matches_other_reason`, and `session_end_ignores_successful_output`.
+The current debugger frame identifies the SessionEnd coroutine poll path but
+not the specific faulting expression; this allocation change is a bounded
+hypothesis, not a claimed execution fix. Do not record the affected test as
+passing until it runs successfully in the hosted validation surface.
+
 The focused native proof suite must cover a fixed JCS operation/digest vector,
 safe integer rejection, omitted-versus-null and changed-parameter binding,
 certificate/key/artifact and fixed lease validation, per-request signature

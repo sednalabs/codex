@@ -3698,6 +3698,7 @@
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
         "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/hook_runtime.rs",
         "codex-rs/core/src/mcp_tool_call.rs",
         "codex-rs/exec/src/lib.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
@@ -3708,7 +3709,7 @@
         "codex-rs/rmcp-client/src/logging_client_handler.rs",
         "codex-rs/codex-mcp/src/server.rs"
       ],
-      "behavior": "A Linux CLI consumes bounded root-peer anonymous-FD proof and authentication bootstraps before other startup work, validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. Until the credential-bearing managed-cloud configuration consumer is admitted to the protected recipient contract, eligible business, enterprise and education protected accounts fail closed before credential import and cloud-loader startup; ordinary Codex cloud configuration behavior is unchanged. Synthetic fixtures use only a fixed public fake credential and loopback recipient. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
+      "behavior": "A Linux CLI consumes bounded root-peer anonymous-FD proof and authentication bootstraps before other startup work, validates immutable configuration and the effective built-in ChatGPT recipient, imports finite ChatGPT credentials into ephemeral storage, and retains process-scoped signing and selected MCP bearer capabilities. Each native Session contributes a fresh execution nonce, including delegated Sessions that share the MCP manager; a short-lived signature covers the exact final MCP claim request. Session shutdown pins default-turn creation in a heap-allocated future before awaiting it and running SessionEnd hooks, without changing hook selection or order. Resolved provider configuration is compared with the canonical built-in provider before auth resolution and again before HTTP or websocket transport construction, including provider overrides. Until the credential-bearing managed-cloud configuration consumer is admitted to the protected recipient contract, eligible business, enterprise and education protected accounts fail closed before credential import and cloud-loader startup; ordinary Codex cloud configuration behavior is unchanged. Synthetic fixtures use only a fixed public fake credential and loopback recipient. Ordinary invocations remain unconfigured when no protected bootstrap is present.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-runtime-surface-smoke; codex.mcp-safety-targeted; codex.downstream-docs-check",
@@ -3723,6 +3724,9 @@
         "signs_each_final_claim_request_with_native_context_and_fresh_nonce",
         "bootstrap_frame_is_bounded_and_descriptor_closes",
         "runtime_execution_nonce_is_per_session_even_with_a_shared_mcp_manager",
+        "external_v2_unload_defers_for_pending_finalizers_and_submissions",
+        "session_end_matches_other_reason",
+        "session_end_ignores_successful_output",
         "runtime_proof_metadata_preserves_trace_fields_and_rejects_collision",
         "protected_cli_root_and_delegate_calls_are_signed_and_redacted",
         "protected_trace_logging_does_not_echo_proof_or_bearer",
@@ -3745,6 +3749,7 @@
       "hotspot_files": [
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
+        "codex-rs/core/src/hook_runtime.rs",
         "codex-rs/core/src/session/session.rs",
         "codex-rs/core/src/mcp_tool_call.rs"
       ],

@@ -3760,6 +3760,15 @@ and the request path does not retry without proof after a protected-scope
 failure. Proof material is excluded from the rollout request trace and
 redacted from echoed result surfaces.
 
+Session shutdown pins default-turn creation in a heap-allocated future before
+awaiting it and running SessionEnd hooks. This is a bounded allocation
+hypothesis; it preserves the existing no-hook return,
+root-only check, and hook ordering. Keep the external-unload residency test as
+the exact core reproducer and the existing SessionEnd event tests as hook
+behavior controls. The debugger identified the SessionEnd coroutine poll path but not a specific
+faulting expression, so this source change does not claim a proven root cause
+or a passing execution.
+
 The runtime key is process-scoped and is erased if its protection checks drift.
 The issuer certificate binds the fixed execution-lease duration; an ordinary
 request or registration replay does not renew that lifetime. This client
