@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   source-style-diagnostic:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
+    if: ${{ github.ref == 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
     name: Report helper formatter diff for exact Python paths
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -74,7 +74,7 @@ jobs:
           fi
 
   prepare:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
+    if: ${{ github.ref != 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
     name: Prepare exact candidate on standard hosted runner
     runs-on: ubuntu-24.04
     timeout-minutes: 90
