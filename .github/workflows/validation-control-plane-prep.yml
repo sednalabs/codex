@@ -14,11 +14,6 @@ on:
         type: string
   workflow_dispatch:
     inputs:
-      diagnostic_only:
-        description: Run only the bounded helper-format diagnostic
-        required: false
-        type: boolean
-        default: false
       target_sha:
         description: Exact 40-character candidate SHA to prepare in a disposable checkout
         required: true
@@ -37,7 +32,7 @@ permissions:
 
 jobs:
   source-style-diagnostic:
-    if: ${{ inputs.diagnostic_only == true }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
     name: Report helper formatter diff for exact Python paths
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -79,7 +74,7 @@ jobs:
           fi
 
   prepare:
-    if: ${{ inputs.diagnostic_only != true }}
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/diagnostic/control-plane-source-style-20261006' }}
     name: Prepare exact candidate on standard hosted runner
     runs-on: ubuntu-24.04
     timeout-minutes: 90
