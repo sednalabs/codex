@@ -802,15 +802,6 @@ def runner_package_source_digest(
     ):
         refuse("Cargo runner package source is not admitted")
 
-    expected_digest = manifest["product_inputs"].get(source_relative)
-    if expected_digest is not None:
-        return expected_digest
-    if (
-        package != "codex-rmcp-client"
-        or source_relative != "codex-rs/rmcp-client/src/lib.rs"
-    ):
-        refuse("Cargo runner package source is not admitted")
-
     product_commit = manifest["product_source_commit"]
     if not re.fullmatch(r"[0-9a-f]{40}", product_commit):
         refuse("Cargo runner package source commit is invalid")
@@ -1072,13 +1063,16 @@ def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
         refuse("Cargo runner binding contract failed")
 
     if manifest["phase"] == "validate":
-        rmcp_source = "codex-rs/rmcp-client/src/lib.rs"
-        if rmcp_source in manifest["product_inputs"]:
-            refuse("Cargo runner source provenance contract failed")
-        if runner_package_source_digest(
-            "codex-rmcp-client", rmcp_source, manifest
-        ) != sha256_file(ROOT / rmcp_source):
-            refuse("Cargo runner source provenance contract failed")
+        for package, source in (
+            ("codex-rmcp-client", "codex-rs/rmcp-client/src/lib.rs"),
+            ("codex-core", "codex-rs/core/src/lib.rs"),
+        ):
+            if source in manifest["product_inputs"]:
+                refuse("Cargo runner source provenance contract failed")
+            if runner_package_source_digest(
+                package, source, manifest
+            ) != sha256_file(ROOT / source):
+                refuse("Cargo runner source provenance contract failed")
         try:
             runner_package_source_digest(
                 "codex-core", "codex-rs/core/src/not-admitted.rs", manifest
