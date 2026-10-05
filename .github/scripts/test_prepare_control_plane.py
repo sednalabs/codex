@@ -882,9 +882,9 @@ class PrepareFlowTests(unittest.TestCase):
             expected["source_style"] = {"status": "passed", "exit_code": 0}
             expected["self_tests"] = {"status": "passed", "exit_code": 0}
             complete = self.expected_complete_receipt(args, b"", 0)
-            expected["dependency_inventory"]["base"] = complete[
-                "dependency_inventory"
-            ]["base"]
+            expected["dependency_inventory"]["base"] = complete["dependency_inventory"][
+                "base"
+            ]
             expected["dependency_inventory"]["target_initial"] = complete[
                 "dependency_inventory"
             ]["target_initial"]
