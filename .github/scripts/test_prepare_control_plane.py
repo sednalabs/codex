@@ -158,8 +158,14 @@ class FixedContractTests(unittest.TestCase):
         )
         bad = {
             "uv prefix collision": ("uv", b"uv 0.11.30 (x86_64-unknown-linux-gnu)\n"),
-            "uv development suffix": ("uv", b"uv 0.11.3+1 (x86_64-unknown-linux-gnu)\n"),
-            "uv split metadata": ("uv", b"uv 0.11.3 (abc1234 2026-01-02) (x86_64-unknown-linux-gnu)\n"),
+            "uv development suffix": (
+                "uv",
+                b"uv 0.11.3+1 (x86_64-unknown-linux-gnu)\n",
+            ),
+            "uv split metadata": (
+                "uv",
+                b"uv 0.11.3 (abc1234 2026-01-02) (x86_64-unknown-linux-gnu)\n",
+            ),
             "uv arbitrary target": ("uv", b"uv 0.11.3 (not-a-target body-canary)\n"),
             "uv well-formed not-a-target": ("uv", b"uv 0.11.3 (not-a-target)\n"),
             "rust beta": ("rust", b"rustc 1.95.0-beta\n"),
@@ -237,8 +243,7 @@ class FixedContractTests(unittest.TestCase):
 
     def test_workflow_installs_the_exact_individual_dotslash_action(self):
         workflow = (
-            Path(__file__).parents[1]
-            / "workflows/validation-control-plane-prep.yml"
+            Path(__file__).parents[1] / "workflows/validation-control-plane-prep.yml"
         )
         contents = workflow.read_text(encoding="utf-8")
         self.assertIn(
@@ -279,15 +284,16 @@ class FixedContractTests(unittest.TestCase):
             "external_metadata_not_in_lock",
         ):
             prepare_control_plane.compare_metadata_to_lock(
-                {"packages": before["packages"] + [
-                    {"name": "unlocked", "version": "9", "source": "registry+index"}
-                ]},
+                {
+                    "packages": before["packages"]
+                    + [{"name": "unlocked", "version": "9", "source": "registry+index"}]
+                },
                 lock,
             )
 
     def test_lock_inventory_compares_workspace_and_external_records(self):
         package_data = (
-            'version = 4\n'
+            "version = 4\n"
             '[[package]]\nname = "workspace"\nversion = "1.0"\n\n'
             '[[package]]\nname = "dep"\nversion = "2.0"\n'
             'source = "registry+index"\nchecksum = "abc"\n'
@@ -299,7 +305,10 @@ class FixedContractTests(unittest.TestCase):
             self.assertEqual(before[0], frozenset({("workspace", "1.0")}))
             self.assertEqual(sum(before[1].values()), 1)
             prepare_control_plane.compare_lock_inventories(before, before, "changed")
-            lock.write_text(package_data.replace('checksum = "abc"', 'checksum = "def"'), encoding="utf-8")
+            lock.write_text(
+                package_data.replace('checksum = "abc"', 'checksum = "def"'),
+                encoding="utf-8",
+            )
             with self.assertRaisesRegex(
                 prepare_control_plane.PreparationError,
                 "input_external_package_records_changed",
@@ -376,10 +385,21 @@ class PatchInventoryTests(unittest.TestCase):
         (self.root / self.path).write_text("version = 1\n", encoding="utf-8")
         self.git("init", "--quiet")
         self.git("add", self.path)
-        self.git("-c", "user.name=Hosted Test", "-c", "user.email=hosted@example.invalid", "commit", "--quiet", "-m", "fixture")
+        self.git(
+            "-c",
+            "user.name=Hosted Test",
+            "-c",
+            "user.email=hosted@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        )
 
     def git(self, *args):
-        return subprocess.check_output(["git", "-C", str(self.root), *args], stderr=subprocess.DEVNULL)
+        return subprocess.check_output(
+            ["git", "-C", str(self.root), *args], stderr=subprocess.DEVNULL
+        )
 
     def test_noop_delta_is_a_complete_empty_patch(self):
         with tempfile.TemporaryDirectory() as tempdir:
@@ -415,7 +435,9 @@ class PatchInventoryTests(unittest.TestCase):
                 prepare_control_plane.PreparationError,
                 "candidate_delta_mode_change",
             ):
-                prepare_control_plane.changed_paths(self.root, Path(tempdir) / "mode-index")
+                prepare_control_plane.changed_paths(
+                    self.root, Path(tempdir) / "mode-index"
+                )
 
     def test_candidate_delta_accepts_admitted_change_and_rejects_foreign_path(self):
         base_sha = self.git("rev-parse", "HEAD").decode().strip()
@@ -453,12 +475,14 @@ class PatchInventoryTests(unittest.TestCase):
         )
         foreign_sha = self.git("rev-parse", "HEAD").decode().strip()
         with self.assertRaises(prepare_control_plane.PreparationError):
-                prepare_control_plane.check_candidate_delta(
-                    self.root, base_sha, foreign_sha, base_tree
-                )
+            prepare_control_plane.check_candidate_delta(
+                self.root, base_sha, foreign_sha, base_tree
+            )
 
     def test_patch_overflow_is_incomplete(self):
-        with self.assertRaisesRegex(prepare_control_plane.PreparationError, "patch_overflow"):
+        with self.assertRaisesRegex(
+            prepare_control_plane.PreparationError, "patch_overflow"
+        ):
             prepare_control_plane.validate_patch_size(
                 b"x" * (prepare_control_plane.MAX_PATCH_BYTES + 1)
             )
@@ -480,9 +504,14 @@ class PrepareFlowTests(unittest.TestCase):
         self.git(path, "add", "-A")
         self.git(
             path,
-            "-c", "user.name=Hosted Test",
-            "-c", "user.email=hosted@example.invalid",
-            "commit", "--quiet", "-m", "fixture",
+            "-c",
+            "user.name=Hosted Test",
+            "-c",
+            "user.email=hosted@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
         )
         return self.git(path, "rev-parse", "HEAD").decode().strip()
 
@@ -497,7 +526,7 @@ class PrepareFlowTests(unittest.TestCase):
             self.base,
             {
                 "codex-rs/Cargo.lock": (
-                    'version = 3\n\n'
+                    "version = 3\n\n"
                     '[[package]]\nname = "workspace"\nversion = "1.0"\n\n'
                     '[[package]]\nname = "dep"\nversion = "2.0"\n'
                     'source = "registry+index"\nchecksum = "checksum-a"\n\n'
@@ -514,12 +543,16 @@ class PrepareFlowTests(unittest.TestCase):
         self.git(self.product, "config", "user.name", "Hosted Test")
         self.git(self.product, "config", "user.email", "hosted@example.invalid")
         (self.product / "docs").mkdir()
-        (self.product / "docs/carry-divergence-ledger.md").write_text("candidate\n", encoding="utf-8")
+        (self.product / "docs/carry-divergence-ledger.md").write_text(
+            "candidate\n", encoding="utf-8"
+        )
         self.git(self.product, "add", "docs/carry-divergence-ledger.md")
         self.git(self.product, "commit", "--quiet", "-m", "candidate")
         self.target_sha = self.git(self.product, "rev-parse", "HEAD").decode().strip()
         self.helper_sha = self.repository(self.helper, {"helper.py": "trusted\n"})
-        self.helper_tree = self.git(self.helper, "rev-parse", "HEAD^{tree}").decode().strip()
+        self.helper_tree = (
+            self.git(self.helper, "rev-parse", "HEAD^{tree}").decode().strip()
+        )
 
     def args(self):
         return type(
@@ -552,7 +585,11 @@ class PrepareFlowTests(unittest.TestCase):
         versions = {
             ("rustc", "--version"): b"rustc 1.95.0 (59807616e1 2025-04-14)\n",
             ("rustfmt", "--version"): b"rustfmt 1.9.0-stable (59807616e1 2025-04-14)\n",
-            ("cargo", "clippy", "--version"): b"clippy 0.1.95 (59807616e1 2025-04-14)\n",
+            (
+                "cargo",
+                "clippy",
+                "--version",
+            ): b"clippy 0.1.95 (59807616e1 2025-04-14)\n",
             ("just", "--version"): b"just 1.51.0\n",
             ("uv", "--version"): b"uv 0.11.3 (x86_64-unknown-linux-gnu)\n",
             ("bazel", "version", "--gnu_format"): b"Bazelisk v1.28.1\nbazel 9.0.0\n",
@@ -567,11 +604,21 @@ class PrepareFlowTests(unittest.TestCase):
                 return actual_run(argv, cwd, env)
             if argv == interrupt_command:
                 raise OSError("credential-token-canary preflight detail")
-            if argv == prepare_control_plane.SOURCE_STYLE_ARGV or argv == prepare_control_plane.SELF_TEST_ARGV:
+            if (
+                argv == prepare_control_plane.SOURCE_STYLE_ARGV
+                or argv == prepare_control_plane.SELF_TEST_ARGV
+            ):
                 return subprocess.CompletedProcess(argv, 0, b"", b"")
             if argv in versions:
                 return subprocess.CompletedProcess(argv, 0, versions[argv], b"")
-            phase = next((name for name, _, phase_argv in prepare_control_plane.PHASES if argv == phase_argv), None)
+            phase = next(
+                (
+                    name
+                    for name, _, phase_argv in prepare_control_plane.PHASES
+                    if argv == phase_argv
+                ),
+                None,
+            )
             if phase == interrupt_phase:
                 raise OSError("credential-token-canary invocation detail")
             if phase == "metadata":
@@ -594,7 +641,9 @@ class PrepareFlowTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             if phase == fail_phase:
-                return subprocess.CompletedProcess(argv, 9, b"private output", b"credential-token-canary")
+                return subprocess.CompletedProcess(
+                    argv, 9, b"private output", b"credential-token-canary"
+                )
             if phase:
                 if phase == "format" and generate_path:
                     output = self.product / generate_path
@@ -646,22 +695,39 @@ class PrepareFlowTests(unittest.TestCase):
             "status": "complete",
             "failure_code": None,
             "identity": {
-                "repository": prepare_control_plane.os.environ.get("GITHUB_REPOSITORY", "unavailable"),
+                "repository": prepare_control_plane.os.environ.get(
+                    "GITHUB_REPOSITORY", "unavailable"
+                ),
                 "workflow_path": ".github/workflows/validation-control-plane-prep.yml",
-                "workflow_commit": prepare_control_plane.os.environ.get("GITHUB_SHA", "unavailable"),
+                "workflow_commit": prepare_control_plane.os.environ.get(
+                    "GITHUB_SHA", "unavailable"
+                ),
                 "helper_sha": args.helper_sha,
                 "base_sha": args.base_sha,
-                "base_tree": self.git(self.base, "rev-parse", "HEAD^{tree}").decode().strip(),
+                "base_tree": self.git(self.base, "rev-parse", "HEAD^{tree}")
+                .decode()
+                .strip(),
                 "target_sha": args.target_sha,
-                "target_tree": self.git(self.product, "rev-parse", "HEAD^{tree}").decode().strip(),
-                "workflow_ref": prepare_control_plane.os.environ.get("GITHUB_REF", "unavailable"),
+                "target_tree": self.git(self.product, "rev-parse", "HEAD^{tree}")
+                .decode()
+                .strip(),
+                "workflow_ref": prepare_control_plane.os.environ.get(
+                    "GITHUB_REF", "unavailable"
+                ),
                 "comparison_ref": args.base_ref,
                 "helper_tree": self.helper_tree,
-                "run_id": prepare_control_plane.os.environ.get("GITHUB_RUN_ID", "unavailable"),
-                "run_attempt": prepare_control_plane.os.environ.get("GITHUB_RUN_ATTEMPT", "unavailable"),
+                "run_id": prepare_control_plane.os.environ.get(
+                    "GITHUB_RUN_ID", "unavailable"
+                ),
+                "run_attempt": prepare_control_plane.os.environ.get(
+                    "GITHUB_RUN_ATTEMPT", "unavailable"
+                ),
             },
             "request_fingerprint": hashlib.sha256(
-                json.dumps([args.base_sha, args.target_sha, args.base_ref], separators=(",", ":")).encode()
+                json.dumps(
+                    [args.base_sha, args.target_sha, args.base_ref],
+                    separators=(",", ":"),
+                ).encode()
             ).hexdigest(),
             "catalog_fingerprint": hashlib.sha256(
                 "\n".join(sorted(prepare_control_plane.ALLOWED_PATHS)).encode()
@@ -670,19 +736,28 @@ class PrepareFlowTests(unittest.TestCase):
                 "status": "expected_versions_and_installer_provenance_observed",
                 "failure_code": None,
                 "observed": {
-                "rust": "1.95.0",
-                "rustfmt": "1.9.0-stable",
-                "clippy": "0.1.95",
-                "just": "1.51.0",
-                "uv": "0.11.3",
-                "bazelisk": "1.28.1",
-                "bazel": "9.0.0",
-                "bazel_from_version_pair": "9.0.0",
-                "dotslash": "0.5.8",
+                    "rust": "1.95.0",
+                    "rustfmt": "1.9.0-stable",
+                    "clippy": "0.1.95",
+                    "just": "1.51.0",
+                    "uv": "0.11.3",
+                    "bazelisk": "1.28.1",
+                    "bazel": "9.0.0",
+                    "bazel_from_version_pair": "9.0.0",
+                    "dotslash": "0.5.8",
                 },
                 "commands": {
                     name: {"status": "passed", "exit_code": 0}
-                    for name in ("rust", "rustfmt", "clippy", "just", "uv", "bazelisk", "bazel", "dotslash")
+                    for name in (
+                        "rust",
+                        "rustfmt",
+                        "clippy",
+                        "just",
+                        "uv",
+                        "bazelisk",
+                        "bazel",
+                        "dotslash",
+                    )
                 },
                 "current_phase": None,
                 "rust": "1.95.0",
@@ -698,27 +773,59 @@ class PrepareFlowTests(unittest.TestCase):
                 "dotslash_binary_pin_verified": False,
             },
             "fixed_commands": [
-                {"phase": "source_style", "cwd": "workflow", "argv": list(prepare_control_plane.SOURCE_STYLE_ARGV)},
-                {"phase": "self_tests", "cwd": "workflow", "argv": list(prepare_control_plane.SELF_TEST_ARGV)},
-                *[{"phase": name, "cwd": cwd, "argv": list(argv)} for name, cwd, argv in prepare_control_plane.PHASES],
+                {
+                    "phase": "source_style",
+                    "cwd": "workflow",
+                    "argv": list(prepare_control_plane.SOURCE_STYLE_ARGV),
+                },
+                {
+                    "phase": "self_tests",
+                    "cwd": "workflow",
+                    "argv": list(prepare_control_plane.SELF_TEST_ARGV),
+                },
+                *[
+                    {"phase": name, "cwd": cwd, "argv": list(argv)}
+                    for name, cwd, argv in prepare_control_plane.PHASES
+                ],
             ],
             "self_tests": {"status": "passed", "exit_code": 0},
             "source_style": {"status": "passed", "exit_code": 0},
             "preflight_current_phase": None,
-            "phases": {name: {"status": "passed", "exit_code": 0} for name, _, _ in prepare_control_plane.PHASES},
-            "inventory": {"candidate_path_count": 1, "changed_path_count": changed_path_count, "omitted_path_count": 0},
+            "phases": {
+                name: {"status": "passed", "exit_code": 0}
+                for name, _, _ in prepare_control_plane.PHASES
+            },
+            "inventory": {
+                "candidate_path_count": 1,
+                "changed_path_count": changed_path_count,
+                "omitted_path_count": 0,
+            },
             "workspace_package_count": 1,
             "external_package_record_count": 1,
-            "dependency_inventory": {name: lock_fingerprint for name in ("base", "target_initial", "target_after_update", "target_final")},
+            "dependency_inventory": {
+                name: lock_fingerprint
+                for name in (
+                    "base",
+                    "target_initial",
+                    "target_after_update",
+                    "target_final",
+                )
+            },
             "metadata_coverage": {
                 "coverage_scope": "selected_resolved_external_packages_only",
                 "workspace_package_count": 1,
                 "external_package_count": 1,
                 "locked_external_record_count": 2,
-                "selected_external_identity_sha256": hashlib.sha256(b'[["dep","2.0","registry+index",1]]').hexdigest(),
+                "selected_external_identity_sha256": hashlib.sha256(
+                    b'[["dep","2.0","registry+index",1]]'
+                ).hexdigest(),
                 "unselected_locked_external_record_count": 1,
             },
-            "patch": {"status": "emitted", "bytes": len(known_patch), "sha256": hashlib.sha256(known_patch).hexdigest()},
+            "patch": {
+                "status": "emitted",
+                "bytes": len(known_patch),
+                "sha256": hashlib.sha256(known_patch).hexdigest(),
+            },
             "omissions": [],
         }
         return expected
@@ -727,7 +834,11 @@ class PrepareFlowTests(unittest.TestCase):
         expected = self.expected_complete_receipt(args, b"", 0)
         expected.update(status="incomplete", failure_code=code)
         expected["identity"]["helper_tree"] = None
-        expected["inventory"] = {"candidate_path_count": 0, "changed_path_count": 0, "omitted_path_count": 0}
+        expected["inventory"] = {
+            "candidate_path_count": 0,
+            "changed_path_count": 0,
+            "omitted_path_count": 0,
+        }
         expected["source_style"] = {"status": "not_run", "exit_code": None}
         expected["self_tests"] = {"status": "not_run", "exit_code": None}
         expected["preflight_current_phase"] = None
@@ -744,7 +855,12 @@ class PrepareFlowTests(unittest.TestCase):
         }
         expected["dependency_inventory"] = {
             name: None
-            for name in ("base", "target_initial", "target_after_update", "target_final")
+            for name in (
+                "base",
+                "target_initial",
+                "target_after_update",
+                "target_final",
+            )
         }
         expected["metadata_coverage"] = None
         expected["workspace_package_count"] = None
@@ -801,11 +917,17 @@ class PrepareFlowTests(unittest.TestCase):
 
     @staticmethod
     def serialize_expected(receipt):
-        return (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return (
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
 
     def run_success(self, generate_path=None):
         calls = []
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -819,12 +941,34 @@ class PrepareFlowTests(unittest.TestCase):
         expected = self.expected_complete_receipt(
             args, patch, 1 if generate_path else 0
         )
-        expected_bytes = (json.dumps(expected, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        expected_bytes = (
+            json.dumps(expected, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
         self.assertEqual((self.root / "receipt.json").read_bytes(), expected_bytes)
-        phase_calls = [(argv, cwd) for argv, cwd in calls if argv in {phase[2] for phase in prepare_control_plane.PHASES}]
-        self.assertEqual([argv for argv, _ in phase_calls], [phase[2] for phase in prepare_control_plane.PHASES])
-        self.assertEqual([cwd for _, cwd in phase_calls], [prepare_control_plane.phase_cwd(self.product, cwd) for _, cwd, _ in prepare_control_plane.PHASES])
-        names = ["metadata" if argv[0] == "cargo" and argv[1] == "metadata" else "workspace_update" if argv[0:2] == ("cargo", "update") else None for argv, _ in calls]
+        phase_calls = [
+            (argv, cwd)
+            for argv, cwd in calls
+            if argv in {phase[2] for phase in prepare_control_plane.PHASES}
+        ]
+        self.assertEqual(
+            [argv for argv, _ in phase_calls],
+            [phase[2] for phase in prepare_control_plane.PHASES],
+        )
+        self.assertEqual(
+            [cwd for _, cwd in phase_calls],
+            [
+                prepare_control_plane.phase_cwd(self.product, cwd)
+                for _, cwd, _ in prepare_control_plane.PHASES
+            ],
+        )
+        names = [
+            "metadata"
+            if argv[0] == "cargo" and argv[1] == "metadata"
+            else "workspace_update"
+            if argv[0:2] == ("cargo", "update")
+            else None
+            for argv, _ in calls
+        ]
         self.assertGreater(names.index("metadata"), names.index("workspace_update"))
         return receipt, patch
 
@@ -852,7 +996,11 @@ class PrepareFlowTests(unittest.TestCase):
         )
         self.change_candidate_lock(changed)
         calls = []
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -894,11 +1042,20 @@ class PrepareFlowTests(unittest.TestCase):
         self.assertEqual(
             receipt["dependency_inventory"]["base"]["external_record_count"], 2
         )
-        self.assertTrue(all(argv not in {phase[2] for phase in prepare_control_plane.PHASES} for argv, _ in calls))
+        self.assertTrue(
+            all(
+                argv not in {phase[2] for phase in prepare_control_plane.PHASES}
+                for argv, _ in calls
+            )
+        )
         self.assertFalse((self.root / "candidate.patch").exists())
 
     def test_prepare_rejects_generated_lock_change_and_records_both_snapshots(self):
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -942,7 +1099,11 @@ class PrepareFlowTests(unittest.TestCase):
         self.assertFalse((self.root / "candidate.patch").exists())
 
     def test_prepare_rejects_unexpected_generated_path_without_partial_patch(self):
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -965,7 +1126,11 @@ class PrepareFlowTests(unittest.TestCase):
         args = self.args()
         args.target_sha = "f" * 40
         calls = []
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -974,20 +1139,31 @@ class PrepareFlowTests(unittest.TestCase):
                 result = prepare_control_plane.prepare(args)
         receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
         self.assertEqual(result, 1)
-        expected = self.expected_before_preflight_failure(args, "checkout_identity_mismatch")
-        expected["identity"]["target_tree"] = self.git(
-            self.product, "rev-parse", "HEAD^{tree}"
-        ).decode().strip()
+        expected = self.expected_before_preflight_failure(
+            args, "checkout_identity_mismatch"
+        )
+        expected["identity"]["target_tree"] = (
+            self.git(self.product, "rev-parse", "HEAD^{tree}").decode().strip()
+        )
         self.assertEqual(
             (self.root / "receipt.json").read_bytes(), self.serialize_expected(expected)
         )
-        self.assertTrue(all(argv not in {phase[2] for phase in prepare_control_plane.PHASES} for argv, _ in calls))
+        self.assertTrue(
+            all(
+                argv not in {phase[2] for phase in prepare_control_plane.PHASES}
+                for argv, _ in calls
+            )
+        )
 
     def test_prepare_rejects_wrong_helper_sha_before_fixed_phases(self):
         args = self.args()
         args.helper_sha = "e" * 40
         calls = []
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -997,11 +1173,22 @@ class PrepareFlowTests(unittest.TestCase):
         receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
         self.assertEqual(result, 1)
         self.assertEqual(receipt["failure_code"], "helper_checkout_missing")
-        self.assertTrue(all(argv not in {phase[2] for phase in prepare_control_plane.PHASES} for argv, _ in calls))
+        self.assertTrue(
+            all(
+                argv not in {phase[2] for phase in prepare_control_plane.PHASES}
+                for argv, _ in calls
+            )
+        )
 
     def test_prepare_rejects_dirty_candidate_checkout(self):
-        (self.product / "dirty-canary.txt").write_text("not trusted\n", encoding="utf-8")
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        (self.product / "dirty-canary.txt").write_text(
+            "not trusted\n", encoding="utf-8"
+        )
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -1014,7 +1201,11 @@ class PrepareFlowTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "incomplete")
 
     def test_interrupted_phase_is_checkpointed_unknown_with_coded_error(self):
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
             with mock.patch.object(
                 prepare_control_plane,
                 "run",
@@ -1071,8 +1262,14 @@ class PrepareFlowTests(unittest.TestCase):
                 raise OSError("/private/credential-token-canary")
             return atomic_write(path, data)
 
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
-            with mock.patch.object(prepare_control_plane, "atomic_write", side_effect=fail_once):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
+            with mock.patch.object(
+                prepare_control_plane, "atomic_write", side_effect=fail_once
+            ):
                 result = prepare_control_plane.prepare(self.args())
         receipt_bytes = receipt_path.read_bytes()
         expected = self.expected_before_preflight_failure(
@@ -1094,7 +1291,11 @@ class PrepareFlowTests(unittest.TestCase):
 
         def write_then_report_failure(path, data):
             nonlocal failed_complete
-            if path == receipt_path and json.loads(data)["status"] == "complete" and not failed_complete:
+            if (
+                path == receipt_path
+                and json.loads(data)["status"] == "complete"
+                and not failed_complete
+            ):
                 failed_complete = True
                 atomic_write(path, data)
                 raise OSError("credential-token-canary final receipt write")
@@ -1105,8 +1306,16 @@ class PrepareFlowTests(unittest.TestCase):
                 raise OSError("/private/credential-token-canary cleanup")
             return unlink(path, *args, **kwargs)
 
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
-            with mock.patch.object(prepare_control_plane, "atomic_write", side_effect=write_then_report_failure):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
+            with mock.patch.object(
+                prepare_control_plane,
+                "atomic_write",
+                side_effect=write_then_report_failure,
+            ):
                 with mock.patch.object(Path, "unlink", fail_patch_cleanup):
                     result = prepare_control_plane.prepare(self.args())
         receipt_bytes = receipt_path.read_bytes()
@@ -1120,7 +1329,9 @@ class PrepareFlowTests(unittest.TestCase):
         # cannot publish it because the workflow uploads patches only on success.
         self.assertTrue(patch_path.exists())
 
-    def test_permanent_final_persistence_loss_leaves_external_outcome_unreconciled(self):
+    def test_permanent_final_persistence_loss_leaves_external_outcome_unreconciled(
+        self,
+    ):
         atomic_write = prepare_control_plane.atomic_write
         receipt_path = self.root / "receipt.json"
         failed_complete = False
@@ -1153,8 +1364,16 @@ class PrepareFlowTests(unittest.TestCase):
         self.assertTrue((self.root / "candidate.patch").exists())
 
     def test_prepare_flow_failure_keeps_checkpoint_and_never_emits_partial_patch(self):
-        with mock.patch.dict(prepare_control_plane.os.environ, {"RUNNER_TEMP": str(self.root)}, clear=False):
-            with mock.patch.object(prepare_control_plane, "run", side_effect=self.mocked_run(fail_phase="fix")):
+        with mock.patch.dict(
+            prepare_control_plane.os.environ,
+            {"RUNNER_TEMP": str(self.root)},
+            clear=False,
+        ):
+            with mock.patch.object(
+                prepare_control_plane,
+                "run",
+                side_effect=self.mocked_run(fail_phase="fix"),
+            ):
                 result = prepare_control_plane.prepare(self.args())
         self.assertEqual(result, 1)
         receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
@@ -1226,7 +1445,9 @@ class ExecutionBoundaryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             prepare_control_plane.check_product_bazelrc(product)
-            bazelrc.write_text("common --remote_executor=grpcs://active.invalid\n", encoding="utf-8")
+            bazelrc.write_text(
+                "common --remote_executor=grpcs://active.invalid\n", encoding="utf-8"
+            )
             with self.assertRaisesRegex(
                 prepare_control_plane.PreparationError,
                 "active_remote_bazel_configuration",
@@ -1293,7 +1514,9 @@ class PublicArtifactTests(unittest.TestCase):
 
     def test_receipt_limit_rejects_overflow(self):
         with self.assertRaises(prepare_control_plane.PreparationError):
-            prepare_control_plane.safe_receipt({"x": "y" * prepare_control_plane.MAX_RECEIPT_BYTES})
+            prepare_control_plane.safe_receipt(
+                {"x": "y" * prepare_control_plane.MAX_RECEIPT_BYTES}
+            )
 
 
 if __name__ == "__main__":

@@ -584,7 +584,9 @@ def check_toolchain(
         "status": "passed",
         "exit_code": dotslash.returncode,
     }
-    receipt["toolchain"]["status"] = "expected_versions_and_installer_provenance_observed"
+    receipt["toolchain"]["status"] = (
+        "expected_versions_and_installer_provenance_observed"
+    )
     receipt["toolchain"]["current_phase"] = None
     persist_receipt(receipt_path, receipt)
 
@@ -750,8 +752,7 @@ def make_receipt(args: argparse.Namespace) -> dict:
         "source_style": {"status": "not_run", "exit_code": None},
         "preflight_current_phase": None,
         "phases": {
-            name: {"status": "not_run", "exit_code": None}
-            for name, _, _ in PHASES
+            name: {"status": "not_run", "exit_code": None} for name, _, _ in PHASES
         },
         "inventory": {"changed_path_count": 0, "omitted_path_count": 0},
         "workspace_package_count": None,
