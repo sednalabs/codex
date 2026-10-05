@@ -355,8 +355,9 @@ class RouteFlowTests(unittest.TestCase):
             self.preparation.check_candidate_delta(self.fixture.product, args.base_sha, target, route.BASE_TREE)
         self.assertEqual(error.exception.code, expected_code)
         with mock.patch.object(route, "TARGET_SHA", target), mock.patch.object(route, "TARGET_TREE", tree), \
-                mock.patch.object(route, "launch_helper", side_effect=AssertionError("must not launch")):
+                mock.patch.object(route, "launch_helper", side_effect=AssertionError("must not launch")) as launch:
             self.assertEqual(route.execute(args, preflight_only=True), 1)
+        launch.assert_not_called()
 
     def test_preflight_reuses_real_outside_path_rejection_before_helper(self):
         self.rejected_delta("foreign.txt", lambda path: path.write_text("changed\n"),
@@ -371,8 +372,22 @@ class RouteFlowTests(unittest.TestCase):
                             "candidate_delta_mode_change")
 
     def test_preflight_reuses_real_deletion_rejection_before_helper(self):
-        self.rejected_delta("docs/carry-divergence-ledger.md", lambda path: path.unlink(),
-                            "candidate_delta_outside_allowlist")
+        relative = "codex-rs/Cargo.lock"
+        self.assertIn(relative, self.preparation.ALLOWED_PATHS)
+        self.assertEqual(self.fixture.git(self.fixture.product, "show", self.args.base_sha + ":" + relative),
+                         (self.fixture.product / relative).read_bytes())
+        def delete_modified_tracked_file(path):
+            path.write_bytes(path.read_bytes() + b"\n# modified candidate fixture\n")
+            self.fixture.git(self.fixture.product, "add", "--", relative)
+            self.fixture.git(self.fixture.product, "commit", "--quiet", "-m", "modified deletion fixture")
+            self.assertEqual(self.fixture.git(self.fixture.product, "diff", "--no-renames", "--name-status",
+                                             self.args.base_sha, "HEAD", "--", relative),
+                             ("M\t" + relative + "\n").encode())
+            path.unlink()
+        self.rejected_delta(relative, delete_modified_tracked_file, "candidate_delta_outside_allowlist")
+        self.assertEqual(self.fixture.git(self.fixture.product, "diff", "--no-renames", "--name-status",
+                                         self.args.base_sha, "HEAD", "--", relative),
+                         ("D\t" + relative + "\n").encode())
 
     def test_preflight_reuses_real_rename_rejection_before_helper(self):
         self.rejected_delta("docs/carry-divergence-ledger.md", lambda path: path.rename(path.with_name("foreign.md")),
