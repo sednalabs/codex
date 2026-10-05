@@ -30,6 +30,13 @@ SAFE_PENDING_PATH = re.compile(
     r"codex-rs/tui/src/(?:[A-Za-z0-9_-]{1,64}/)*"
     r"codex_tui__[A-Za-z0-9_]{1,240}(?:@(windows|macos|linux))?\.snap\.new"
 )
+SAFE_SOURCE_PATH = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+")
+CREDENTIAL_PATH = re.compile(r"(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_]{20,}")
+OMISSION_REASONS = (
+    "credential_shaped", "path_limit", "unsafe_syntax", "attribution_unavailable",
+    "not_prelaunch_tracked", "prelaunch_ineligible", "path_validation_failed",
+    "not_regular", "hardlinked", "observation_failed", "metadata_budget",
+)
 FAILURE_CODES = {
     "input_identity_invalid", "prelaunch_failed", "generator_launch_failed",
     "generator_result_invalid", "outputs_validation_failed", "output_count_exceeded",
@@ -473,10 +480,10 @@ def _write_artifact(
     (artifact_root / "identity.json").write_bytes(metadata)
 
 
-def _diagnostic_attribution(root: Path) -> set[str]:
+def _diagnostic_attribution(root: Path, catalogue: set[str]) -> set[str]:
     """Bind public pending names to regular tracked snapshots before generation."""
     attributed = set()
-    for relative in _tracked_path_set(root):
+    for relative in catalogue:
         if not SAFE_PENDING_PATH.fullmatch(relative + ".new"):
             continue
         path = _relative_path(root, relative)
@@ -486,10 +493,35 @@ def _diagnostic_attribution(root: Path) -> set[str]:
     return attributed
 
 
-def _diagnostic_inventory(root: Path, attributed: set[str] | None) -> tuple[dict[str, object], set[str]]:
+def _omission_counts(catalogue: set[str] | None) -> dict[str, dict[str, int | None]]:
+    return {reason: {"count": 0, "prelaunch_tracked_count": 0 if catalogue is not None else None}
+            for reason in OMISSION_REASONS}
+
+
+def _path_omission(relative: str, source: str, catalogue: set[str] | None, syntax) -> str:
+    if CREDENTIAL_PATH.search(relative):
+        return "credential_shaped"
+    if len(relative) > 1024:
+        return "path_limit"
+    if not syntax.fullmatch(relative) or any(part in (".", "..") for part in relative.split("/")):
+        return "unsafe_syntax"
+    if catalogue is None:
+        return "attribution_unavailable"
+    return "" if source in catalogue else "not_prelaunch_tracked"
+
+
+def _record_omission(counts, reason: str, source: str, catalogue: set[str] | None) -> None:
+    counts[reason]["count"] += 1
+    if catalogue is not None:
+        counts[reason]["prelaunch_tracked_count"] += int(source in catalogue)
+
+
+def _diagnostic_inventory(root: Path, attributed: set[str] | None,
+                          catalogue: set[str] | None) -> tuple[dict[str, object], set[str]]:
     """Count entries and expose attributable names, never pending file bodies."""
     observed: set[str] = set()
     paths = []
+    omissions = _omission_counts(catalogue)
     traversal_complete = True
 
     def walk_error(_error):
@@ -513,16 +545,27 @@ def _diagnostic_inventory(root: Path, attributed: set[str] | None) -> tuple[dict
                 if not name.endswith(".snap.new"):
                     continue
                 relative = (directory_path / name).relative_to(root).as_posix()
-                observed.add(relative)
-                if (attributed is None or relative not in attributed
-                        or len(relative) > 1024 or not SAFE_PENDING_PATH.fullmatch(relative)
-                        or re.search(r"(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_]{20,}", relative)):
+                if relative in observed:
                     continue
-                try:
-                    info = _relative_path(root, relative).lstat()
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        continue
-                except (OSError, ValueError):
+                observed.add(relative)
+                original = relative.removesuffix(".new")
+                reason = _path_omission(relative, original, catalogue if attributed is not None else None,
+                                        SAFE_PENDING_PATH)
+                if not reason and relative not in attributed:
+                    reason = "prelaunch_ineligible"
+                if not reason:
+                    try:
+                        info = _relative_path(root, relative).lstat()
+                        if not stat.S_ISREG(info.st_mode):
+                            reason = "not_regular"
+                        elif info.st_nlink != 1:
+                            reason = "hardlinked"
+                    except ValueError:
+                        reason = "path_validation_failed"
+                    except OSError:
+                        reason = "observation_failed"
+                if reason:
+                    _record_omission(omissions, reason, original, catalogue)
                     continue
                 paths.append({"path": relative, "origin": "historical69" if relative.removesuffix(".new") in SNAPSHOT_PATHS else "additional_tracked_snapshot",
                               "classification": "historical_allowed" if relative.removesuffix(".new") in SNAPSHOT_PATHS else "pending_source_owner"})
@@ -533,7 +576,8 @@ def _diagnostic_inventory(root: Path, attributed: set[str] | None) -> tuple[dict
             "emitted_count": len(paths), "omitted_count": len(observed) - len(paths),
             "unobserved_count": 0 if traversal_complete else None,
             "complete": complete, "traversal_complete": traversal_complete,
-            "attribution_available": attributed is not None}, observed
+            "attribution_available": attributed is not None,
+            "omission_reasons": omissions, "omission_reasons_complete": True}, observed
 
 
 def _observe_check(operation) -> dict[str, object]:
@@ -547,33 +591,86 @@ def _observe_check(operation) -> dict[str, object]:
         return {"status": "unknown", "actual_matches": None, "failure_code": "observation_failed"}
 
 
-def _other_files_unchanged(root: Path, pending: set[str]) -> bool:
+def _other_files_unchanged(root: Path, pending: set[str], pending_complete: bool,
+                           catalogue: set[str] | None) -> dict[str, object]:
+    """Observe both existing queries; name only immutable, public source paths."""
     independently_checked = set(SNAPSHOT_PATHS) | set(LOCK_PATHS)
-    for state, relative in _parse_status(root):
-        if relative in independently_checked or (state == "??" and relative in pending):
-            continue
-        return False
-    untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z").decode("utf-8", errors="strict").split("\0")
-    return {path for path in untracked if path}.issubset(pending)
+    records = {}
+    uncertain_pending = set()
+    queries = {}
+    for query in ("status", "nonignored_untracked"):
+        seen = 0
+        try:
+            if query == "status":
+                entries = _parse_status(root)
+            else:
+                listed = _git(root, "ls-files", "--others", "--exclude-standard", "-z").decode("utf-8", errors="strict")
+                entries = [(None, relative) for relative in listed.split("\0") if relative]
+            for state, relative in entries:
+                if state is not None and (state != "??" and
+                        (len(state) != 2 or state == "  " or any(char not in " MTADU" for char in state))):
+                    raise ValueError("unrecognized status state")
+                seen += 1
+                if relative in independently_checked or ((state is None or state == "??") and relative in pending):
+                    continue
+                if (not pending_complete and (state is None or state == "??")
+                        and relative.startswith(TUI_SOURCE_ROOT + "/") and relative.endswith(".snap.new")):
+                    uncertain_pending.add(relative)
+                    continue
+                record = records.setdefault(relative, {"git_status": None, "observed_via": set()})
+                if state is not None:
+                    if record["git_status"] not in (None, state):
+                        raise ValueError("conflicting status states")
+                    record["git_status"] = state
+                record["observed_via"].add(query)
+            queries[query] = {"status": "complete", "failure_code": "", "observed_count": seen,
+                              "observed_entry_count": seen}
+        except (OSError, ValueError, subprocess.CalledProcessError):
+            queries[query] = {"status": "unknown", "failure_code": "observation_failed",
+                              "observed_count": None, "observed_entry_count": seen}
+    paths = []
+    omissions = _omission_counts(catalogue)
+    for relative, record in sorted(records.items()):
+        reason = _path_omission(relative, relative, catalogue, SAFE_SOURCE_PATH)
+        if reason:
+            _record_omission(omissions, reason, relative, catalogue)
+        else:
+            paths.append({"path": relative, "git_status": record["git_status"],
+                          "observed_via": sorted(record["observed_via"])})
+    queries_complete = all(item["status"] == "complete" for item in queries.values())
+    observations_complete = queries_complete and pending_complete and not uncertain_pending
+    complete = observations_complete and len(paths) == len(records)
+    matches = False if records else True if observations_complete else None
+    return {"status": "failed" if matches is False else "verified" if matches is True else "unknown",
+            "actual_matches": matches,
+            "failure_code": "conservation_mismatch" if matches is False else "" if matches is True else "observation_failed",
+            "evidence": {"status": "complete" if complete else "partial" if records else "unknown",
+                "observed_count": len(records) if observations_complete else None,
+                "observed_entry_count": len(records), "emitted_count": len(paths),
+                "omitted_count": len(records) - len(paths), "paths": paths, "complete": complete,
+                "queries": queries, "pending_inventory_complete": pending_complete,
+                "unclassified_pending_count": len(uncertain_pending), "attribution_available": catalogue is not None,
+                "omission_reasons": omissions}}
 
 
 def _rejection_diagnostic(
-    workspace: Path, identity: dict[str, str], baseline, locks, attributed,
+    workspace: Path, identity: dict[str, str], baseline, locks, attributed, catalogue,
     phase: str, code: str, exit_code: int | None, generation_attempted: bool,
 ) -> dict[str, object]:
     product = workspace / "product"
     try:
-        inventory, observed = _diagnostic_inventory(product, attributed)
+        inventory, observed = _diagnostic_inventory(product, attributed, catalogue)
     except (OSError, ValueError, subprocess.CalledProcessError):
         inventory = {"status": "unknown", "observed_count": None, "observed_entry_count": 0, "paths": [],
                      "emitted_count": 0, "omitted_count": None, "unobserved_count": None,
-                     "complete": False, "traversal_complete": False, "attribution_available": attributed is not None}
+                     "complete": False, "traversal_complete": False, "attribution_available": attributed is not None,
+                     "omission_reasons": _omission_counts(catalogue), "omission_reasons_complete": False}
         observed = set()
     not_run = {"status": "not-run", "actual_matches": None, "failure_code": "expected_identity_unavailable"}
     conservation = {
         "baselines": {**(_observe_check(lambda: _capture_baseline(product) == baseline) if baseline is not None else not_run), "expected": baseline},
         "locks": {**(_observe_check(lambda: _capture_locks(product) == locks) if locks is not None else not_run), "expected": locks},
-        "other_files": _observe_check(lambda: _other_files_unchanged(product, observed)),
+        "other_files": _other_files_unchanged(product, observed, inventory["traversal_complete"], catalogue),
         "workflow_host": _observe_check(lambda: not _git(workspace / ".workflow-src", "status", "--porcelain=v1", "-z", "--untracked-files=all")),
     }
     return {"schema_version": DIAGNOSTIC_SCHEMA, "status": "failure", "artifact_kind": "diagnostic-only",
@@ -583,16 +680,29 @@ def _rejection_diagnostic(
                          "runner_label": "ubuntu-24.04", "architecture": "x86_64"},
             "historical_candidate_count": len(SNAPSHOT_PATHS), "accepted_output_limit": MAX_OUTPUTS,
             "inventory": inventory, "conservation": conservation,
-            "metadata_status": "complete" if inventory["complete"] and all(item["status"] != "unknown" for item in conservation.values()) else "incomplete"}
+            "metadata_status": "complete" if inventory["complete"] and conservation["other_files"]["evidence"]["complete"]
+                and all(item["status"] != "unknown" for item in conservation.values()) else "incomplete"}
 
 
 def _write_diagnostic_artifact(staging: Path, artifact: Path, diagnostic: dict[str, object]) -> None:
     encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES:
+        inventory = dict(diagnostic["inventory"])
+        other = dict(diagnostic["conservation"]["other_files"])
+        evidence = dict(other["evidence"])
+        for section in (inventory, evidence):
+            omissions = {reason: dict(counts) for reason, counts in section["omission_reasons"].items()}
+            dropped = section["emitted_count"]
+            omissions["metadata_budget"]["count"] += dropped
+            if omissions["metadata_budget"]["prelaunch_tracked_count"] is not None:
+                omissions["metadata_budget"]["prelaunch_tracked_count"] += dropped
+            section.update(status="partial", paths=[], emitted_count=0,
+                           omitted_count=None if section["omitted_count"] is None else section["omitted_count"] + dropped,
+                           complete=False, omission_reasons=omissions)
+        other["evidence"] = evidence
         diagnostic = {**diagnostic, "metadata_status": "incomplete", "metadata_failure_code": "diagnostic_metadata_overflow",
-                      "original_metadata_bytes": len(encoded), "inventory": {**diagnostic["inventory"],
-                          "status": "partial", "paths": [], "emitted_count": 0,
-                          "omitted_count": diagnostic["inventory"]["observed_count"], "complete": False}}
+                      "original_metadata_bytes": len(encoded), "inventory": inventory,
+                      "conservation": {**diagnostic["conservation"], "other_files": other}}
         encoded = (json.dumps(diagnostic, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_METADATA_BYTES or len(encoded) > MAX_ARTIFACT_BYTES:
         raise SnapshotPreparationError("diagnostic_metadata_overflow", "diagnostic metadata exceeds its fixed limit")
@@ -617,7 +727,7 @@ def prepare(environment: dict[str, str]) -> int:
     _check_clean_checkout(workspace / ".workflow-src", "workflow host")
     _check_clean_checkout(product_root, "product")
 
-    baseline = locks_before = attributed = None
+    baseline = locks_before = attributed = catalogue = None
     phase = "prelaunch"
     fallback_code = "prelaunch_failed"
     actual_exit = None
@@ -626,7 +736,8 @@ def prepare(environment: dict[str, str]) -> int:
         baseline = _capture_baseline(product_root)
         locks_before = _capture_locks(product_root)
         validate_no_preexisting_pending(product_root)
-        attributed = _diagnostic_attribution(product_root)
+        catalogue = _tracked_path_set(product_root)
+        attributed = _diagnostic_attribution(product_root, catalogue)
         target_dir.mkdir(mode=0o700)
         output_env = dict(environment)
         output_env["INSTA_UPDATE"] = "new"
@@ -646,7 +757,7 @@ def prepare(environment: dict[str, str]) -> int:
         _check_clean_checkout(workspace / ".workflow-src", "workflow host")
     except (KeyError, OSError, subprocess.CalledProcessError, ValueError) as error:
         code = error.code if isinstance(error, SnapshotPreparationError) else fallback_code
-        diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed,
+        diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed, catalogue,
                                             phase, code, actual_exit, generation_attempted)
         try:
             _write_diagnostic_artifact(staging_dir, artifact_dir, diagnostic)

@@ -697,6 +697,7 @@ class PrepareExecutionTests(IdentityFixture):
 class RejectedGenerationDiagnosticTests(IdentityFixture):
     def _additional_snapshot(self, relative="codex-rs/tui/src/chatwidget/snapshots/codex_tui__diagnostic_extra.snap"):
         path = self.product_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"tracked public fixture\n")
         self._git(self.product_root, "add", "--", relative)
         self._commit(self.product_root, "additional tracked fixture")
@@ -709,7 +710,7 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(contents)
 
-    def _invoke(self, action, exit_code=101, generator_count=1):
+    def _invoke(self, action, exit_code=101, generator_count=1, post_generator_git=None):
         original_run = subprocess.run
         calls, generators = [], []
         roots = {str(self.workflow_root), str(self.product_root)}
@@ -736,6 +737,13 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
             self.assertIn(argv[2], roots)
             self.assertIn(argv[3:], suffixes)
             self.assertFalse(args)
+            if post_generator_git is not None and generators and argv[2] == str(self.product_root):
+                self.assertEqual({key: value for key, value in kwargs.items() if key != "timeout"},
+                                 {"stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL, "check": True})
+                self.assertIsNone(kwargs.get("timeout"))
+                replacement = post_generator_git(argv[3:])
+                if replacement is not None:
+                    return subprocess.CompletedProcess(command, 0, stdout=replacement)
             return original_run(command, **kwargs)
 
         with mock.patch.object(subprocess, "run", side_effect=run) as intercepted, \
@@ -744,12 +752,21 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertEqual(result, 1)
         self.assertEqual(generators, [tuple(prepare_tui_snapshots.COMMAND)] * generator_count)
         self.assertEqual(intercepted.call_count, len(calls))
+        self.invoked_commands = calls
         self.assertTrue(any(command[3:] == ("rev-parse", "FETCH_HEAD^{commit}") for command in calls if command[0] == "git"))
         artifact = Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME
         data = (artifact / "diagnostic.json").read_bytes() if artifact.exists() else None
         if artifact.exists():
             self.assertEqual({path.name for path in artifact.iterdir()}, {"diagnostic.json"})
         return data, stderr.getvalue()
+
+    @staticmethod
+    def _omissions(**changed):
+        reasons = ("credential_shaped", "path_limit", "unsafe_syntax", "attribution_unavailable",
+                   "not_prelaunch_tracked", "prelaunch_ineligible", "path_validation_failed",
+                   "not_regular", "hardlinked", "observation_failed", "metadata_budget")
+        return {reason: {"count": changed.get(reason, (0, 0))[0],
+                         "prelaunch_tracked_count": changed.get(reason, (0, 0))[1]} for reason in reasons}
 
     def _expected(self, pending, code="output_count_exceeded", exit_code=101):
         def states(paths):
@@ -768,15 +785,23 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         }
         paths = [{"path": relative, "origin": "historical69" if relative.removesuffix(".new") in prepare_tui_snapshots.SNAPSHOT_PATHS else "additional_tracked_snapshot",
                   "classification": "historical_allowed" if relative.removesuffix(".new") in prepare_tui_snapshots.SNAPSHOT_PATHS else "pending_source_owner"} for relative in sorted(pending)]
+        evidence = {"status": "complete", "observed_count": 0, "observed_entry_count": 0,
+                    "emitted_count": 0, "omitted_count": 0, "paths": [], "complete": True,
+                    "queries": {query: {"status": "complete", "failure_code": "",
+                        "observed_count": len(pending), "observed_entry_count": len(pending)}
+                        for query in ("status", "nonignored_untracked")},
+                    "pending_inventory_complete": True, "unclassified_pending_count": 0,
+                    "attribution_available": True, "omission_reasons": self._omissions()}
         return {"schema_version": "sedna-tui-snapshot-diagnostic-v1", "status": "failure", "artifact_kind": "diagnostic-only",
                 "generated_output_acceptance": False, "phase": "outputs-validation", "failure_code": code,
                 "generator_exit_code": exit_code, "generation_attempted": True, "identity": identity,
                 "historical_candidate_count": 69, "accepted_output_limit": 69,
                 "inventory": {"status": "complete", "observed_count": len(paths), "observed_entry_count": len(paths), "paths": paths,
-                    "emitted_count": len(paths), "omitted_count": 0, "unobserved_count": 0, "complete": True, "traversal_complete": True, "attribution_available": True},
+                    "emitted_count": len(paths), "omitted_count": 0, "unobserved_count": 0, "complete": True, "traversal_complete": True, "attribution_available": True,
+                    "omission_reasons": self._omissions(), "omission_reasons_complete": True},
                 "conservation": {"baselines": {**verified, "expected": states(prepare_tui_snapshots.SNAPSHOT_PATHS)},
                     "locks": {**verified, "expected": states(prepare_tui_snapshots.LOCK_PATHS)},
-                    "other_files": dict(verified), "workflow_host": dict(verified)}, "metadata_status": "complete"}
+                    "other_files": {**verified, "evidence": evidence}, "workflow_host": dict(verified)}, "metadata_status": "complete"}
 
     def test_actual_70_outputs_persist_exact_safe_bytes_without_reading_bodies(self):
         extra = self._additional_snapshot()
@@ -803,6 +828,218 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         data, _ = self._invoke(lambda: self._pending(extra))
         self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
 
+    def test_actual_80_outputs_and_complete_status_union_preserve_private_omissions(self):
+        historical = [path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS[:25]]
+        additional = [f"codex-rs/tui/src/chatwidget/snapshots/codex_tui__inventory_{index}.snap.new" for index in range(54)]
+        hidden = "codex-rs/tui/src/chatwidget/snapshots/codex_tui__github_pat_" + "x" * 20 + ".snap.new"
+        sources = ["codex-rs/tui/src/diagnostic_fixture.rs", "codex-rs/tui/src/deleted_fixture.rs"]
+        tracked = [path.removesuffix(".new") for path in [*additional, hidden]] + sources
+        for relative in tracked:
+            (self.product_root / relative).write_bytes(b"public fixture source\n")
+        self._git(self.product_root, "add", "--", *tracked)
+        self._commit(self.product_root, "inventory and status fixture")
+        self.target_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
+        self.environment["TARGET_SHA"] = self.target_sha
+        expected = self._expected([*historical, *additional], exit_code=100)
+        expected["inventory"].update(status="partial", observed_count=80, observed_entry_count=80,
+            omitted_count=1, complete=False, omission_reasons=self._omissions(credential_shaped=(1, 1)))
+        paths = [{"path": sources[1], "git_status": " D", "observed_via": ["status"]},
+                 {"path": sources[0], "git_status": " M", "observed_via": ["status"]}]
+        evidence = expected["conservation"]["other_files"]["evidence"]
+        evidence.update(status="partial", observed_count=3, observed_entry_count=3, emitted_count=2,
+            omitted_count=1, paths=paths, complete=False, omission_reasons=self._omissions(unsafe_syntax=(1, 0)))
+        for query, count in (("status", 83), ("nonignored_untracked", 81)):
+            evidence["queries"][query].update(observed_count=count, observed_entry_count=count)
+        expected["conservation"]["other_files"].update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        expected["metadata_status"] = "incomplete"
+        def action():
+            for relative in [*historical, *additional, hidden]:
+                self._pending(relative)
+            (self.product_root / sources[0]).write_bytes(b"PRIVATE_STATUS_BODY\n")
+            (self.product_root / sources[1]).unlink()
+            (self.product_root / "PRIVATE_STATUS credential-token").write_bytes(b"PRIVATE_UNTRACKED_BODY\n")
+        original_read = Path.read_bytes
+        def read(path):
+            self.assertFalse(str(path).endswith(".snap.new"))
+            self.assertNotIn(path, [self.product_root / relative for relative in sources])
+            return original_read(path)
+        with mock.patch.object(Path, "read_bytes", read):
+            data, stderr = self._invoke(action, exit_code=100)
+        generator_index = self.invoked_commands.index(tuple(prepare_tui_snapshots.COMMAND))
+        # One baseline tracking query and one retained attribution catalogue query.
+        self.assertEqual(sum(command == ("git", "-C", str(self.product_root), "ls-files", "-z")
+                             for command in self.invoked_commands[:generator_index]), 2)
+        after = [command[3:] for command in self.invoked_commands[generator_index + 1:]
+                 if command[:3] == ("git", "-C", str(self.product_root)) and command[3:] in (
+                     ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                     ("ls-files", "--others", "--exclude-standard", "-z"))]
+        self.assertEqual(after, [("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                                 ("ls-files", "--others", "--exclude-standard", "-z")])
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+        for value in (hidden.encode(), b"github_pat_", b"PRIVATE_STATUS", b"credential-token",
+                      b"PRIVATE_BODY", b"/home/runner", b"https://", hashlib.sha256(b"PRIVATE_STATUS_BODY\n").hexdigest().encode()):
+            self.assertNotIn(value, data)
+        self.assertEqual(sum(item["count"] for item in expected["inventory"]["omission_reasons"].values()), 1)
+
+    def test_long_tracked_path_is_counted_before_syntax_or_attribution(self):
+        relative = "codex-rs/tui/src/" + ("x" * 64 + "/") * 16 + "codex_tui__long.snap"
+        pending = self._additional_snapshot(relative)
+        data, _ = self._invoke(lambda: self._pending(pending))
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(path_limit=(1, 1)))
+        self.assertEqual((public["inventory"]["observed_count"], public["inventory"]["omitted_count"]), (1, 1))
+        self.assertNotIn(pending.encode(), data)
+
+    def test_prelaunch_rejection_keeps_missing_catalogue_and_known_omission_count(self):
+        (self.product_root / ".git/info/exclude").write_text("*.snap.new\n", encoding="utf-8")
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        self._pending(pending)
+        data, _ = self._invoke(lambda: self.fail("preexisting output must prevent generation"), generator_count=0)
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"],
+            {reason: {"count": int(reason == "attribution_unavailable"), "prelaunch_tracked_count": None}
+             for reason in self._omissions()})
+        self.assertEqual((public["inventory"]["observed_count"], public["inventory"]["complete"], public["generator_exit_code"]), (1, False, None))
+        self.assertNotIn(pending.encode(), data)
+
+    def test_tracked_but_prelaunch_ineligible_source_is_not_named(self):
+        pending = self._additional_snapshot()
+        os.link(self.product_root / pending.removesuffix(".new"), self.product_root / ".git/private-source-link")
+        data, _ = self._invoke(lambda: self._pending(pending))
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(prelaunch_ineligible=(1, 1)))
+        self.assertFalse(public["inventory"]["complete"])
+        self.assertNotIn(pending.encode(), data)
+
+    def test_special_pending_file_is_counted_without_opening_it(self):
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        data, _ = self._invoke(lambda: os.mkfifo(self.product_root / pending))
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(not_regular=(1, 1)))
+        self.assertEqual((public["inventory"]["emitted_count"], public["inventory"]["omitted_count"]), (0, 1))
+        self.assertNotIn(pending.encode(), data)
+
+    def test_pending_observation_error_is_coded_and_counted_without_raw_exception(self):
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        original_path = prepare_tui_snapshots._relative_path
+        observed = []
+        def relative_path(root, relative):
+            self.assertEqual(root, self.product_root)
+            if relative == pending:
+                observed.append(relative)
+                raise OSError("PRIVATE_STAT https://private.invalid")
+            self.assertIn(relative, (*prepare_tui_snapshots.SNAPSHOT_PATHS, *prepare_tui_snapshots.LOCK_PATHS))
+            return original_path(root, relative)
+        with mock.patch.object(prepare_tui_snapshots, "_relative_path", side_effect=relative_path):
+            data, _ = self._invoke(lambda: self._pending(pending))
+        self.assertEqual(observed, [pending, pending])
+        self.assertEqual(json.loads(data)["inventory"]["omission_reasons"], self._omissions(observation_failed=(1, 1)))
+        self.assertNotIn(b"PRIVATE_STAT", data)
+        self.assertNotIn(b"https://", data)
+
+    def test_credential_precedence_suppresses_tracked_unsafe_and_untracked_names(self):
+        tracked = self._additional_snapshot("codex-rs/tui/src/chatwidget/snapshots/codex_tui__github_pat_" + "x" * 20 + " PRIVATE_NAME.snap")
+        untracked = "codex-rs/tui/src/chatwidget/codex_tui__sk-" + "y" * 20 + ".snap.new"
+        data, _ = self._invoke(lambda: [self._pending(path) for path in (tracked, untracked)])
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(credential_shaped=(2, 1)))
+        self.assertEqual((public["inventory"]["observed_count"], public["inventory"]["emitted_count"], public["inventory"]["omitted_count"]), (2, 0, 2))
+        for value in (tracked.encode(), untracked.encode(), b"PRIVATE_NAME", b"github_pat_", b"sk-"):
+            self.assertNotIn(value, data)
+
+    def test_known_status_mismatch_survives_second_query_failure(self):
+        pending = self._additional_snapshot()
+        failed_calls = []
+        def fault(arguments):
+            if arguments == ("ls-files", "--others", "--exclude-standard", "-z"):
+                failed_calls.append(arguments)
+                raise OSError("PRIVATE_QUERY /private https://private.invalid")
+        def action():
+            self._pending(pending)
+            (self.product_root / "new_status_file.rs").write_bytes(b"PRIVATE_STATUS_BODY\n")
+        data, _ = self._invoke(action, post_generator_git=fault)
+        self.assertEqual(failed_calls, [("ls-files", "--others", "--exclude-standard", "-z")])
+        public = json.loads(data)
+        other = public["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["observed_count"], other["evidence"]["observed_entry_count"]), ("failed", False, None, 1))
+        self.assertEqual(other["evidence"]["queries"]["nonignored_untracked"]["status"], "unknown")
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(not_prelaunch_tracked=(1, 0)))
+        self.assertEqual(public["metadata_status"], "incomplete")
+        for value in (b"PRIVATE_QUERY", b"new_status_file.rs", b"PRIVATE_STATUS_BODY", b"https://"):
+            self.assertNotIn(value, data)
+
+    def test_list_only_record_has_null_status_and_duplicate_rows_count_once(self):
+        pending = self._additional_snapshot()
+        source = pending.removesuffix(".new")
+        selected = []
+        def observation(arguments):
+            if arguments == ("ls-files", "--others", "--exclude-standard", "-z"):
+                selected.append(arguments)
+                return (pending + "\0" + source + "\0" + source + "\0").encode()
+        data, _ = self._invoke(lambda: self._pending(pending), post_generator_git=observation)
+        self.assertEqual(selected, [("ls-files", "--others", "--exclude-standard", "-z")])
+        evidence = json.loads(data)["conservation"]["other_files"]["evidence"]
+        self.assertEqual(evidence["paths"], [{"path": source, "git_status": None, "observed_via": ["nonignored_untracked"]}])
+        self.assertEqual((evidence["observed_count"], evidence["emitted_count"], evidence["omitted_count"], evidence["complete"]), (1, 1, 0, True))
+        self.assertEqual(evidence["queries"]["nonignored_untracked"]["observed_count"], 3)
+        expected = self._expected([pending], code="output_outside_allowlist")
+        expected["conservation"]["other_files"].update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        expected["conservation"]["other_files"]["evidence"].update(observed_count=1, observed_entry_count=1,
+            emitted_count=1, paths=[{"path": source, "git_status": None, "observed_via": ["nonignored_untracked"]}])
+        expected["conservation"]["other_files"]["evidence"]["queries"]["nonignored_untracked"].update(observed_count=3, observed_entry_count=3)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+
+    def test_malformed_status_state_remains_unknown_and_second_query_runs(self):
+        pending = self._additional_snapshot()
+        selected = []
+        def observation(arguments):
+            if arguments == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+                selected.append(arguments)
+                return b"ZZ PRIVATE_STATUS_NAME\0"
+        data, _ = self._invoke(lambda: self._pending(pending), post_generator_git=observation)
+        self.assertEqual(len(selected), 1)
+        evidence = json.loads(data)["conservation"]["other_files"]["evidence"]
+        self.assertEqual(evidence["queries"]["status"]["status"], "unknown")
+        self.assertEqual(evidence["queries"]["nonignored_untracked"]["status"], "complete")
+        self.assertEqual((evidence["observed_count"], evidence["paths"], evidence["complete"]), (None, [], False))
+        self.assertEqual(json.loads(data)["conservation"]["other_files"]["status"], "unknown")
+        self.assertEqual(json.loads(data)["metadata_status"], "incomplete")
+        self.assertNotIn(b"PRIVATE_STATUS_NAME", data)
+
+    def test_rename_and_undecodable_query_material_never_becomes_public_evidence(self):
+        pending = self._additional_snapshot()
+        selected = []
+        def observation(arguments):
+            if arguments == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+                selected.append("status")
+                return b"R  PRIVATE_RENAME\0PRIVATE_OLD\0"
+            if arguments == ("ls-files", "--others", "--exclude-standard", "-z"):
+                selected.append("nonignored_untracked")
+                return b"PRIVATE_UNDECODABLE\xff\0"
+        data, _ = self._invoke(lambda: self._pending(pending), post_generator_git=observation)
+        self.assertEqual(selected, ["status", "nonignored_untracked"])
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["observed_count"]), ("unknown", None, None))
+        self.assertFalse(other["evidence"]["complete"])
+        for value in (b"PRIVATE_RENAME", b"PRIVATE_OLD", b"PRIVATE_UNDECODABLE"):
+            self.assertNotIn(value, data)
+
+    def test_conflicting_duplicate_status_does_not_claim_complete_last_state(self):
+        pending = self._additional_snapshot()
+        source = pending.removesuffix(".new")
+        selected = []
+        def observation(arguments):
+            if arguments == ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+                selected.append(arguments)
+                return (" M " + source + "\0 D " + source + "\0").encode()
+        data, _ = self._invoke(lambda: self._pending(pending), post_generator_git=observation)
+        self.assertEqual(len(selected), 1)
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["observed_count"]), ("failed", False, None))
+        self.assertEqual(other["evidence"]["paths"], [{"path": source, "git_status": " M", "observed_via": ["status"]}])
+        self.assertFalse(other["evidence"]["complete"])
+
     def test_unsafe_unattributed_names_are_omitted_with_actual_count(self):
         pending = [prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new",
                    "codex-rs/tui/src/chatwidget/PRIVATE_FILENAME credential-token.snap.new",
@@ -813,6 +1050,7 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertNotIn(b"PRIVATE_FILENAME", data)
         self.assertNotIn(b"credential-token", data)
         self.assertNotIn(b"unattributed", data)
+        self.assertEqual(inventory["omission_reasons"], self._omissions(unsafe_syntax=(1, 0), not_prelaunch_tracked=(1, 0)))
         self.assertEqual(json.loads(data)["metadata_status"], "incomplete")
 
     def test_token_like_tracked_name_is_omitted_not_trusted_for_publication(self):
@@ -821,13 +1059,17 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         inventory = json.loads(data)["inventory"]
         self.assertEqual((inventory["observed_count"], inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (1, 0, 1, False))
         self.assertNotIn(b"ghp_", data)
+        self.assertEqual(inventory["omission_reasons"], self._omissions(credential_shaped=(1, 1)))
 
     def test_fine_grained_token_tracked_name_persists_exact_omitted_incomplete_bytes(self):
         token_shape = "github_pat_" + "x" * 20
         pending = self._additional_snapshot(f"codex-rs/tui/src/chatwidget/snapshots/codex_tui__{token_shape}.snap")
         expected = self._expected([], code="output_outside_allowlist")
         expected["inventory"].update(status="partial", observed_count=1, observed_entry_count=1,
-                                     omitted_count=1, complete=False)
+                                     omitted_count=1, complete=False,
+                                     omission_reasons=self._omissions(credential_shaped=(1, 1)))
+        for query in expected["conservation"]["other_files"]["evidence"]["queries"].values():
+            query.update(observed_count=1, observed_entry_count=1)
         expected["metadata_status"] = "incomplete"
         body = b"PRIVATE_FINE_GRAINED_BODY https://private.invalid /home/runner/private\n"
         data, stderr = self._invoke(lambda: self._pending(pending, contents=body))
@@ -846,6 +1088,7 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertIsNone(inventory["observed_count"])
         self.assertFalse(inventory["complete"])
         self.assertEqual(inventory["omitted_count"], 1)
+        self.assertEqual(inventory["omission_reasons"], self._omissions(path_validation_failed=(1, 1)))
 
     def test_conservation_checks_all_continue_after_first_baseline_rejection(self):
         pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
@@ -891,6 +1134,7 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertEqual((public["inventory"]["observed_count"], public["inventory"]["emitted_count"],
                           public["inventory"]["omitted_count"], public["inventory"]["complete"]), (1, 0, 1, False))
         self.assertEqual(public["conservation"]["other_files"]["status"], "failed")
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(hardlinked=(1, 1)))
         self.assertNotIn(b"private-hardlink", data)
 
     def test_prelaunch_capture_failure_records_not_run_without_generator(self):
@@ -936,6 +1180,9 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertEqual(public["conservation"]["locks"]["status"], "verified")
         self.assertEqual(public["conservation"]["workflow_host"]["status"], "verified")
         self.assertNotIn(b"PRIVATE_COLLECTOR", data)
+        other = public["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["unclassified_pending_count"]),
+                         ("unknown", None, 1))
 
     def test_diagnostic_persistence_failure_is_unknown_with_no_retry(self):
         extra = self._additional_snapshot()
@@ -964,6 +1211,10 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         diagnostic = self._expected([])
         paths = [{"path": f"codex-rs/tui/src/snapshots/codex_tui__{'x' * 180}{index}.snap.new", "origin": "additional_tracked_snapshot", "classification": "pending_source_owner"} for index in range(2000)]
         diagnostic["inventory"].update(paths=paths, observed_count=2000, observed_entry_count=2000, emitted_count=2000)
+        other_paths = [{"path": f"codex-rs/tui/src/{'x' * 180}{index}.rs", "git_status": " M", "observed_via": ["status"]} for index in range(2000)]
+        diagnostic["conservation"]["other_files"].update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        diagnostic["conservation"]["other_files"]["evidence"].update(paths=other_paths, observed_count=2000,
+            observed_entry_count=2000, emitted_count=2000)
         runner = Path(self.environment["RUNNER_TEMP"])
         staging, artifact = runner / "overflow-staging", runner / "overflow-artifact"
         prepare_tui_snapshots._write_diagnostic_artifact(staging, artifact, diagnostic)
@@ -972,11 +1223,31 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertLessEqual(len(data), prepare_tui_snapshots.MAX_METADATA_BYTES)
         self.assertEqual((public["status"], public["metadata_status"], public["inventory"]["complete"]), ("failure", "incomplete", False))
         self.assertEqual((public["inventory"]["paths"], public["inventory"]["omitted_count"]), ([], 2000))
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(metadata_budget=(2000, 2000)))
+        other = public["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["paths"], other["evidence"]["omitted_count"]),
+                         ("failed", False, [], 2000))
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(metadata_budget=(2000, 2000)))
+        self.assertFalse(other["evidence"]["complete"])
         self.assertGreater(public["original_metadata_bytes"], prepare_tui_snapshots.MAX_METADATA_BYTES)
         with mock.patch.object(prepare_tui_snapshots, "MAX_METADATA_BYTES", 1):
             with self.assertRaises(prepare_tui_snapshots.SnapshotPreparationError):
                 prepare_tui_snapshots._write_diagnostic_artifact(runner / "tiny-staging", runner / "tiny-artifact", diagnostic)
             self.assertFalse((runner / "tiny-staging").exists())
+
+    def test_overflow_retains_known_seen_count_without_inventing_complete_total(self):
+        diagnostic = self._expected([])
+        paths = [{"path": f"codex-rs/tui/src/snapshots/codex_tui__{'x' * 180}{index}.snap.new", "origin": "additional_tracked_snapshot", "classification": "pending_source_owner"} for index in range(2000)]
+        diagnostic["inventory"].update(paths=paths, observed_count=None, observed_entry_count=2000,
+            emitted_count=2000, traversal_complete=False, unobserved_count=None, complete=False)
+        runner = Path(self.environment["RUNNER_TEMP"])
+        prepare_tui_snapshots._write_diagnostic_artifact(runner / "partial-staging", runner / "partial-artifact", diagnostic)
+        data = (runner / "partial-artifact/diagnostic.json").read_bytes()
+        inventory = json.loads(data)["inventory"]
+        self.assertLessEqual(len(data), prepare_tui_snapshots.MAX_METADATA_BYTES)
+        self.assertEqual((inventory["observed_count"], inventory["observed_entry_count"], inventory["omitted_count"], inventory["complete"]),
+                         (None, 2000, 2000, False))
+        self.assertEqual(inventory["omission_reasons"], self._omissions(metadata_budget=(2000, 2000)))
 
     def test_invalid_identity_never_launches_or_persists_and_main_error_is_coded(self):
         with mock.patch.dict(os.environ, {**self.environment, "TARGET_SHA": "PRIVATE_IDENTITY"}, clear=True), \
