@@ -1,8 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/guardian.rs
+assertion_line: 837
 expression: normalize_snapshot_paths(rendered)
 ---
-• Reviewing approval request (0s • esc to interrupt)
+• Reviewing approval request (0s • esc esc to interrupt)
   └ rm -rf '/tmp/current-review'
 
 

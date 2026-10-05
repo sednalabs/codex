@@ -1,7 +1,7 @@
 ---
 source: tui/src/app/turn_tips_tests.rs
-assertion_line: 422
-expression: screen
+assertion_line: 441
+expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(screen)"
 ---
 Response row 0
 Response row 1
@@ -19,7 +19,7 @@ Response row 9
 
 
 
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
   └ Tip: Try /help.
 
 

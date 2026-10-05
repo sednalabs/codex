@@ -1,5 +1,6 @@
 ---
 source: tui/src/app/composer_hints_tests.rs
+assertion_line: 120
 expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join(\"\\n\\n\"))"
 ---
 80 columns, 10 rows, running=false, queued=false
@@ -19,7 +20,7 @@ Conversation
 ⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a
   breakdown.
 
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
                                              ⚠ 5h limit: only 2% left · /status
 
@@ -31,7 +32,7 @@ Conversation
 32 columns, 10 rows, running=true, queued=false
   Run /status for a breakdown.
 
-• Working (0s • esc to interrup…
+• Working (0s • esc esc to inte…
 
                   ⚠ 5h <1% left
 
@@ -59,7 +60,7 @@ Conversation row 19
 ⚠ Heads up, you have less than 5% of your 5h limit left. Run /status for a
   breakdown.
 
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
 • Queued follow-up inputs
   ↳ queued follow-up
@@ -73,7 +74,7 @@ Conversation row 19
   tab to queue message
 
 80 columns, 11 rows, running=true, queued=true
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
 • Queued follow-up inputs
   ↳ queued follow-up
@@ -86,7 +87,7 @@ Conversation row 19
   tab to queue message
 
 80 columns, 6 rows, running=true, queued=false
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
 › draft stays
 

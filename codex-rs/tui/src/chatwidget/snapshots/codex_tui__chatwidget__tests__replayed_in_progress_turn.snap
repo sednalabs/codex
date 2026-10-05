@@ -1,8 +1,9 @@
 ---
 source: tui/src/chatwidget/tests/history_replay.rs
-expression: "normalize_completion_timestamps(& (render_bottom_popup(&chat, 80)))"
+assertion_line: 1672
+expression: "normalize_snapshot_paths(render_bottom_popup(&chat, 80))"
 ---
-• Working (0s • esc to interrupt)
+• Working (0s • esc esc to interrupt)
 
 
 › Ask Codex to do anything
