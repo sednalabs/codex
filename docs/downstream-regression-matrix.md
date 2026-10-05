@@ -1101,20 +1101,16 @@ permission contract is documented in
 
 ## Native per-execution MCP proof
 
-Session shutdown boxes the complete SessionEnd-hook future at its existing
-teardown call site before awaiting it. Keep the existing no-hook, root-only,
-teardown-order, and hook behavior. The earlier inner allocation was insufficient;
-this replacement remains a hypothesis because the first debugger frame did not
-identify a faulting expression. The exact external-unload residency case is the core
-runtime control; these existing core shutdown-consumer tests are also
-controls:
+The exact external-unload residency case remains the core runtime control;
+these existing core shutdown-consumer tests are also controls:
 `external_v2_unload_defers_for_pending_finalizers_and_submissions`,
 `session_end_flushes_transcript_and_ignores_control_output`, and
 `session_end_skips_subagents`.
-The current debugger frame identifies the SessionEnd coroutine poll path but
-not the specific faulting expression; this allocation change is a bounded
-hypothesis, not a claimed execution fix. Do not record the affected test as
-passing until it runs successfully in the hosted validation surface.
+Earlier SessionEnd allocation hypotheses were reverted after hosted core
+validation still failed; the available traces do not establish a hook-specific
+cause. The native Linux qualification uses the repository's existing
+`RUST_MIN_STACK` value. Do not record the affected test as passing until it
+runs successfully in the hosted validation surface.
 
 The focused native proof suite must cover a fixed JCS operation/digest vector,
 safe integer rejection, omitted-versus-null and changed-parameter binding,
