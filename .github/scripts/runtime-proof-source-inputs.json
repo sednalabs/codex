@@ -30,6 +30,7 @@
     "codex-rs/codex-mcp/src/server.rs",
     "codex-rs/core/src/client.rs",
     "codex-rs/core/src/client_tests.rs",
+    "codex-rs/core/src/hook_runtime.rs",
     "codex-rs/core/src/mcp_tool_call.rs",
     "codex-rs/core/src/mcp_tool_call_tests.rs",
     "codex-rs/core/src/session/session.rs",
@@ -103,6 +104,7 @@
     "codex-rs/core/Cargo.toml": "8dd6218698f63e22f2a2404a91f1b5ad276f3fb55e8d2d022c9f38fb25de703f",
     "codex-rs/core/src/client.rs": "5f602408e546be0d7ece7d54e50d4d2d52346d0258eb3dd2b51b1a05dee8039c",
     "codex-rs/core/src/client_tests.rs": "8adf49aa6823d8e72b90dfedc5cbc580aa6f39fae55c3d24a55cadbb8ee37569",
+    "codex-rs/core/src/hook_runtime.rs": "5177da52fd1443e33f066b370b57c3651c054a839888bf612146653997dee0d1",
     "codex-rs/core/src/mcp_tool_call.rs": "4c9548cb9d9302cc44bdef3d921719f634fa132cdb7c17094b94eb1976271242",
     "codex-rs/core/src/mcp_tool_call_tests.rs": "7ca5ad3bbb0e0e788ec46f6631ae643ddcc56d9f402eaf168e5d6a30f5bcdf91",
     "codex-rs/core/src/session/session.rs": "6827a4e52a54a4e826b7efc4d7e411f87e0f8d6a9623ab54d98d5620aab1e2cf",
@@ -124,11 +126,11 @@
     "codex-rs/runtime-proof/src/startup_tests.rs": "fdcc1782a7a847f9c2f673200a4fd6cedc206a317c0cda86898e25a403c21495",
     "codex-rs/runtime-proof/src/tests.rs": "8db5acad101362a856db68e3e864da2647ebc0003cdae381ba99f708b8b4e972",
     "codex-rs/runtime-proof/src/wire.rs": "86489323a0ad6ca26af1c5d6efab776bfded2d1b2195f7b3580936eb0e2c2bbb",
-    "docs/carry-divergence-ledger.md": "390b786d370b0899fe8512625e3761617fe8453b09082662a69c78e5407310c3",
-    "docs/divergences/index.yaml": "93c8e174e5d89262d558efe601869b21d4cd91940b47af06a605512eaf96b049",
-    "docs/downstream-regression-matrix.md": "8669997a20a309b5e07e661fc5d8ad47a55c340b2c75cf642af4e748e78ac6da"
+    "docs/carry-divergence-ledger.md": "dd6805c63fa67e877004320b3a73f9b1ebfcdec7bab9ce3d3a4d98d8135bbf98",
+    "docs/divergences/index.yaml": "13b8e21872ac97d5d8819035e3e8b6d5d502486ff38bf16192a79586c9d41d15",
+    "docs/downstream-regression-matrix.md": "e3230f71c3ea325d26441d4e2f7944431c14555017b6f4c7e108a77ece16f718"
   },
-  "product_source_commit": "64b2e4deae90182d39b7f56b4670eb91f1f9064e",
+  "product_source_commit": "0557a152cb9a57217c4a586c76f5cbeeaae20943",
   "repository": "sednalabs/codex",
   "schema_version": 1,
   "toolchains": {
