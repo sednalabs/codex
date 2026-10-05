@@ -130,7 +130,7 @@ enum BuilderPhase {
 }
 
 impl BuilderDiagnostic {
-    fn marker(self, phase: BuilderPhase, state: &'static str, class: &'static str) {
+    fn marker(self, phase: BuilderPhase, state: &'static str, class: &str) {
         let case = match self {
             Self::Disabled => return,
             Self::Restricted => "restricted",
