@@ -19,6 +19,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_named_rust_tests as named_tests
 
 
+def publication_catalogue_readbacks(test: unittest.TestCase, root: Path, *, sha: str = "a" * 40,
+                                   text: str | None = None) -> tuple[object, object, list[list[str]]]:
+    text = (Path(named_tests.__file__).resolve().parents[2] / ".github" / named_tests.MANIFEST_NAME).read_text() if text is None else text
+    expected = [["git", "rev-parse", "HEAD"], ["git", "show", f"{sha}:.github/{named_tests.MANIFEST_NAME}"]]
+    calls = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        index = len(calls)
+        test.assertLess(index, len(expected), "unexpected publication subprocess call")
+        test.assertEqual(argv, expected[index])
+        test.assertEqual(kwargs, {"cwd": root, "text": True, "capture_output": True, "check": False,
+                                 **({"shell": False} if index else {})})
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, sha + "\n" if index == 0 else text, "")
+
+    def read(path: Path) -> bytes:
+        test.assertEqual(path, root / ".github" / named_tests.MANIFEST_NAME)
+        return text.encode()
+
+    return run, read, calls
+
+
 class NamedTestOutcomeEvidenceTests(unittest.TestCase):
     def test_unique_pass_retains_exact_selector_line(self) -> None:
         output = "test browser::visual_flow ... ok\n"
@@ -976,7 +998,7 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
     def test_selected_ok_does_not_pass_a_red_full_target(self) -> None:
         selected = "suite::selected_ok"
         inventory = subprocess.CompletedProcess(
-            ["cargo", "test", "--list"], 0, stdout=f"{selected}: test\n", stderr=""
+            ["cargo", "test", "--list"], 0, stdout=f"{selected}: test\nsuite::other: test\n", stderr=""
         )
         execution = subprocess.CompletedProcess(
             ["cargo", "test"],
@@ -1744,6 +1766,10 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                 "request": dict(self.request), "request_fingerprint": hashlib.sha256(
                     json.dumps(self.request, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
                 "inventory": {"status": "success", "test_count": 1, "tests": ["suite::selected"]},
+                "whole_target_summary": {"channels": {
+                    "stdout": {"match_count": 1, "summaries": [{"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}],
+                               "omitted_count": 0, "truncated": False},
+                    "stderr": {"match_count": 0, "summaries": [], "omitted_count": 0, "truncated": False}}},
                 "tests": [{"name": "suite::selected", "status": "success", "exit_code": 0,
                            "execution_reconciled": True, "observed_outcomes": ["ok"],
                            "matched_line_count": 1, "matched_lines": ["test suite::selected ... ok"],
@@ -1766,36 +1792,48 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                                      diagnostics={"exit_code": None, "stdout": copy.deepcopy(diagnostic),
                                                   "stderr": copy.deepcopy(diagnostic), "omitted_field_count": 0})
         expected["test_projection"] = {"original_count": 1, "omitted_count": 0, "truncated": False}
+        for channel in expected["whole_target_summary"]["channels"].values():
+            channel["projection_omitted_count"] = 0
+        expected["whole_target_summary"].update(scope="whole_target_command_channel_capture", inventory_count=1,
+            selection_status="unique", candidate_count=1, inconsistent_whole_count=0,
+            selected={"channel": "stdout", "summary_index": 0,
+                      "counts": {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0}},
+            auxiliary_summaries=[], auxiliary_original_count=0, writer_process_identity="unknown", cross_stream_chronology="unknown")
         return expected
 
     def _bytes(self, value: dict[str, object]) -> bytes:
         return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
-    def _run(self, request: dict[str, object], inventory_text: str, output: str, exit_code: int = 0, inventory_exit: int = 0) -> dict[str, object]:
-        record = named_tests.select_target(request, named_tests.load_manifest(self.root))
+    def _run(self, request: dict[str, object], inventory_text: str, output: str, exit_code: int = 0,
+             inventory_exit: int = 0, stderr: str = "", repo_root: Path | None = None,
+             source_sha: str = "a" * 40) -> dict[str, object]:
+        root = self.root if repo_root is None else repo_root
+        record = named_tests.select_target(request, named_tests.load_manifest(root))
         expected_calls = [list(record["inventory_argv"]), ["git", "rev-parse", "HEAD"], list(record["execution_argv"])]
         calls = []
 
         def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            self.assertLess(len(calls), len(expected_calls), "unexpected subprocess call")
+            self.assertEqual(argv, expected_calls[len(calls)])
             calls.append(argv)
             if argv == ["git", "rev-parse", "HEAD"]:
-                self.assertEqual(kwargs["cwd"], self.root)
-                return subprocess.CompletedProcess(argv, 0, "a" * 40 + "\n", "")
-            self.assertEqual(kwargs["cwd"], self.root / "codex-rs")
+                self.assertEqual(kwargs["cwd"], root)
+                return subprocess.CompletedProcess(argv, 0, source_sha + "\n", "")
+            self.assertEqual(kwargs["cwd"], root / "codex-rs")
             self.assertEqual({key: kwargs[key] for key in ("text", "capture_output", "check", "shell")},
                              {"text": True, "capture_output": True, "check": False, "shell": False})
             self.assertEqual(kwargs["env"], {"RUST_MIN_STACK": "8388608"})
             if argv == expected_calls[0]:
                 return subprocess.CompletedProcess(argv, inventory_exit, inventory_text, "")
             self.assertEqual(argv, expected_calls[2])
-            return subprocess.CompletedProcess(argv, exit_code, output, "")
+            return subprocess.CompletedProcess(argv, exit_code, output, stderr)
 
         with patch.dict(os.environ, {}, clear=True), patch.object(named_tests.subprocess, "run", side_effect=fake_run):
-            result = named_tests.run_request(request, self.root)
+            result = named_tests.run_request(request, root)
         expected_count = 1 if inventory_exit else 2 if result.get("failure_code") == "inventory_reconciliation_failed" else 3
         self.assertEqual(calls, expected_calls[:expected_count])
         self.assertTrue(all("suite::selected" not in argv for argv in calls))
-        result["identity"] = dict(self.identity)
+        result["identity"] = {**self.identity, "target_sha": source_sha}
         return result
 
     def test_complete_positive_and_critical_failure_bytes(self) -> None:
@@ -1829,6 +1867,7 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
             request={"tests": [], "selectors": {"original_count": 0, "omitted_count": 0, "truncated": False}, "catalog_validated": False, "request_fingerprint": "", "omitted_field_count": 0},
             inventory={"status": "failure", "tests": [], "original_count": 0, "omitted_count": 0, "truncated": False, "omitted_field_count": 0, "diagnostics": diagnostic},
             tests=[], test_projection={"original_count": 0, "omitted_count": 0, "truncated": False})
+        expected.pop("whole_target_summary")
         self.assertEqual(named_tests.public_artifact_bytes(source), self._bytes(expected))
         source, expected = self._minimal(), self._expected()
         source["request"]["tests"] = ["suite::absent"]
@@ -1913,6 +1952,269 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                     self.assertFalse(public["tests"][0]["execution_reconciled"])
                 if "suite::other ... FAILED" in output:
                     self.assertEqual(public["failure_evidence"]["failed_names"]["names"], ["suite::other"])
+
+    def test_whole_target_selects_inventory_bound_report_and_retains_auxiliary_channels(self) -> None:
+        names = ["suite::selected", *(f"suite::other_{index}" for index in range(237))]
+        inventory = "\n".join(f"{name}: test" for name in names)
+        outcome = "test suite::selected ... ok\n"
+        filtered = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 237 filtered out\n"
+        whole = "test result: ok. 237 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+        counts = {"passed": 237, "failed": 0, "ignored": 1, "measured": 0, "filtered": 0}
+        for stdout, stderr, channel, index, auxiliary_channel in (
+                (outcome + filtered + whole, "", "stdout", 1, "stdout"),
+                (outcome + whole + filtered, "", "stdout", 0, "stdout"),
+                (outcome + filtered, whole, "stderr", 0, "stdout"),
+                (outcome + whole, filtered, "stdout", 0, "stderr")):
+            with self.subTest(channel=channel, index=index, auxiliary_channel=auxiliary_channel):
+                result = self._run(self.request, inventory, stdout, stderr=stderr)
+                data = named_tests.public_artifact_bytes(result)
+                public = json.loads(data)
+                self.assertEqual(("success", True, counts), (public["status"], public["tests"][0]["execution_reconciled"],
+                                 public["tests"][0]["result_counts"]))
+                summary = public["whole_target_summary"]
+                self.assertEqual(("unique", 1, 0, 238, "unknown", "unknown"), tuple(summary[key] for key in
+                                 ("selection_status", "candidate_count", "inconsistent_whole_count", "inventory_count",
+                                  "writer_process_identity", "cross_stream_chronology")))
+                self.assertEqual({"channel": channel, "summary_index": index, "counts": counts}, summary["selected"])
+                self.assertEqual([{"channel": auxiliary_channel, "summary_index": 0 if channel != auxiliary_channel or index else 1,
+                    "counts": {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 237}}], summary["auxiliary_summaries"])
+                # The strict filtered parser used by native samples remains unchanged.
+                self.assertIsNone(named_tests.test_result_counts(stdout + stderr))
+                self.assertEqual({"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 237},
+                                 named_tests.test_result_counts(filtered))
+
+    def test_whole_summary_negatives_are_isolated_from_valid_request_and_inventory(self) -> None:
+        inventory = "suite::selected: test\nsuite::other: test\n"
+        outcome = "test suite::selected ... ok\n"
+        whole = "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        filtered = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out\n"
+        baseline = json.loads(named_tests.public_artifact_bytes(self._run(self.request, inventory, outcome + filtered + whole)))
+        self.assertEqual(("success", "unique", True), (baseline["status"], baseline["whole_target_summary"]["selection_status"],
+                         baseline["tests"][0]["execution_reconciled"]))
+        variants = [(outcome, "", 0, "missing"), (outcome + filtered, "", 0, "missing"),
+                    (outcome + whole * 2, "", 0, "ambiguous"), (outcome + whole, whole, 0, "ambiguous"),
+                    (outcome + whole.replace("2 passed", "1 passed"), "", 0, "inconsistent"),
+                    (outcome + whole + whole.replace("2 passed", "1 passed"), "", 0, "inconsistent"),
+                    (outcome + whole, whole.replace("2 passed", "1 passed"), 0, "inconsistent"),
+                    (outcome + whole.replace("2 passed; 0 failed", "1 passed; 1 failed"), "", 0, "unique"),
+                    (outcome + whole.replace("2 passed; 0 failed; 0 ignored", "0 passed; 0 failed; 2 ignored"), "", 0, "unique"),
+                    (outcome + whole, "", 101, "unique"),
+                    (outcome + whole + filtered * named_tests.MAX_CARGO_SUMMARIES_PER_CHANNEL, "", 0, "incomplete"),
+                    (outcome + whole + filtered.replace("1 passed", "9" * 5000 + " passed"), "", 0, "incomplete")]
+        for stdout, stderr, exit_code, selection in variants:
+            with self.subTest(selection=selection, exit_code=exit_code):
+                public = json.loads(named_tests.public_artifact_bytes(self._run(self.request, inventory, stdout, exit_code, stderr=stderr)))
+                self.assertEqual(("failure", selection, False), (public["status"], public["whole_target_summary"]["selection_status"],
+                                 public["tests"][0]["execution_reconciled"]))
+        for count in (0, None, True):
+            evidence = named_tests.whole_target_summary_evidence({"stdout": named_tests.cargo_summary_channel_evidence(whole),
+                "stderr": named_tests.cargo_summary_channel_evidence("")}, count)
+            self.assertEqual(("incomplete", None), (evidence["selection_status"], evidence["selected"]))
+        request = {**self.request, "tests": ["suite::selected", "suite::other"]}
+        both_ok = outcome + "test suite::other ... ok\n"
+        self.assertEqual("success", json.loads(named_tests.public_artifact_bytes(self._run(request, inventory, both_ok + whole)))["status"])
+        inconsistent = self._run(request, inventory, both_ok + whole.replace("2 passed; 0 failed; 0 ignored", "1 passed; 0 failed; 1 ignored"))
+        self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(inconsistent))["status"])
+
+    def test_whole_summary_public_bytes_revalidate_numeric_evidence_and_omit_payloads(self) -> None:
+        output = "test suite::selected ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        result = self._run(self.request, "suite::selected: test\n", output)
+        self.assertEqual("success", json.loads(named_tests.public_artifact_bytes(result))["status"])
+        mutations = [lambda value: value.pop("whole_target_summary"),
+                     lambda value: value.update(whole_target_summary="PRIVATE_SUMMARY"),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"].update(match_count=True),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"].update(match_count=2),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"].update(omitted_count=1),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"].update(truncated=True),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"]["summaries"].append(value["tests"][0]["result_counts"]),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"]["summaries"][0].update(filtered=1),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"]["summaries"][0].update(passed=2),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"]["summaries"][0].update(ignored=True),
+                     lambda value: value["whole_target_summary"]["channels"]["stdout"]["summaries"][0].update(passed="PRIVATE_COUNT"),
+                     lambda value: value["tests"][0].update(result_counts={**value["tests"][0]["result_counts"], "filtered": 1})]
+        for mutate in mutations:
+            damaged = copy.deepcopy(result)
+            mutate(damaged)
+            data = named_tests.public_artifact_bytes(damaged)
+            self.assertEqual(("failure", "public_projection_incomplete"), tuple(json.loads(data)[key] for key in ("status", "failure_code")))
+            self.assertNotIn(b"PRIVATE", data)
+        private = "PRIVATE_BODY /private/path https://private.invalid github_pat_PRIVATE_TOKEN"
+        result["whole_target_summary"].update(selected=private, auxiliary_summaries=[private], writer_process_identity=private,
+                                             cross_stream_chronology=private, body=private)
+        result["whole_target_summary"]["channels"]["stdout"].update(stdout_tail=private, exception=private)
+        result["whole_target_summary"]["channels"]["stdout"]["summaries"][0]["body"] = private
+        data = named_tests.public_artifact_bytes(result)
+        public = json.loads(data)
+        self.assertEqual(("success", "unknown", "unknown"), (public["status"], public["whole_target_summary"]["writer_process_identity"],
+                         public["whole_target_summary"]["cross_stream_chronology"]))
+        for canary in (b"PRIVATE", b"/private", b"https://", b"github_pat_", b"stdout_tail", b"exception",
+                       hashlib.sha256(private.encode()).hexdigest().encode()):
+            self.assertNotIn(canary, data)
+
+    def test_device_producer_shaped_candidate_catalogue_and_ten_selectors_reach_only_safe_write(self) -> None:
+        selectors = [
+            "perform_oauth_device_login::tests::device_login_requires_a_nonempty_issuer_and_matching_endpoint_origins",
+            "perform_oauth_device_login::tests::extreme_provider_interval_and_slow_down_are_bounded_by_expiry",
+            "perform_oauth_device_login::tests::device_login_polls_pending_then_saves_issuer_bound_tokens",
+            "perform_oauth_device_login::tests::device_login_fails_closed_on_denial_and_expiry",
+            "perform_oauth_device_login::tests::device_login_does_not_poll_before_an_extreme_provider_interval",
+            "perform_oauth_device_login::tests::unknown_provider_error_is_not_echoed_to_terminal",
+            "perform_oauth_device_login::tests::malformed_device_response_is_rejected_without_echoing_payload",
+            "auth_status::tests::discover_streamable_http_oauth_returns_normalized_scopes",
+            "auth_status::tests::malformed_device_metadata_is_not_advertised_as_usable",
+            "auth_status::tests::malformed_registration_metadata_is_not_advertised_as_usable",
+        ]
+        request = {"schema_version": "rust-tests-v1", "profile": "rust_minimal", "package": "codex-rmcp-client",
+                   "target_kind": "lib", "target": "", "tests": selectors}
+        catalogue = {"schema_version": "rust-tests-command-manifest-v1", "targets": [{
+            "package": "codex-rmcp-client", "target_kind": "lib", "target": "", "profiles": ["rust_minimal", "rust_integration"],
+            "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--list"],
+            "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--test-threads=1"]}]}
+        text = json.dumps(catalogue)
+        inventory = "\n".join(f"{name}: test" for name in [*selectors, *(f"suite::other_{index}" for index in range(228))])
+        output = "\n".join(f"test {name} ... ok" for name in selectors) + "\n" + (
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 237 filtered out\n"
+            "test result: ok. 237 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / ".github" / named_tests.MANIFEST_NAME
+            file.parent.mkdir()
+            file.write_text(text)
+            # Hosted-only fixture: the catalogue belongs to a real synthetic Git
+            # target. Do not pretend its one-row postimage has public T945's SHA.
+            for argv in (["git", "init", "-q"], ["git", "add", ".github/validation-named-tests.json"],
+                         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                          "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                          "commit", "-qm", "Synthetic candidate catalogue"]):
+                completed = subprocess.run(argv, cwd=root, text=True, capture_output=True, check=False, shell=False)
+                self.assertEqual(0, completed.returncode)
+            actual_run = subprocess.run
+            target_sha = actual_run(["git", "rev-parse", "HEAD"], cwd=root, text=True, capture_output=True, check=False).stdout.strip()
+            self.assertRegex(target_sha, r"^[0-9a-f]{40}$")
+            result = self._run(request, inventory, output, repo_root=root, source_sha=target_sha)
+            self.assertEqual("success", result["status"])
+            # The unchanged helper catalogue lacks this admitted target row.
+            self.assertEqual("public_projection_incomplete", json.loads(named_tests.public_artifact_bytes(result))["failure_code"])
+            calls = []
+
+            def git_readback(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                expected = [["git", "rev-parse", "HEAD"], ["git", "show", f"{target_sha}:.github/{named_tests.MANIFEST_NAME}"]]
+                index = len(calls)
+                self.assertLess(index, len(expected), "unexpected publication subprocess call")
+                self.assertEqual(argv, expected[index])
+                self.assertEqual(kwargs, {"cwd": root, "text": True, "capture_output": True, "check": False,
+                                         **({"shell": False} if index else {})})
+                calls.append(argv)
+                return actual_run(argv, **kwargs)
+
+            with patch.object(named_tests.subprocess, "run", side_effect=git_readback):
+                data = named_tests.public_artifact_bytes(result, root)
+            public = json.loads(data)
+            self.assertEqual((2, "success", 238, target_sha, True),
+                             (len(calls), public["status"], public["inventory"]["test_count"],
+                              public["request"]["catalogue_source_sha"], public["request"]["catalogue_source_matches"]))
+            self.assertEqual(selectors, [item["name"] for item in public["tests"]])
+            self.assertTrue(all(item["execution_reconciled"] and item["observed_outcomes"] == ["ok"]
+                                and item["matched_line_count"] == 1 and item["result_counts"] == {
+                                    "passed": 237, "failed": 0, "ignored": 1, "measured": 0, "filtered": 0} for item in public["tests"]))
+            self.assertEqual("86c7ddcf6335253a19253391da86d22c686c75ed29f49cf6f701c8e41b18c069", public["request_fingerprint"])
+            calls.clear()
+            env = {variable: result["identity"][key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+            with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                    patch.object(Path, "cwd", return_value=root), patch.object(named_tests, "load_request", return_value=(request, None)), \
+                    patch.object(named_tests, "run_request", return_value=result) as run, \
+                    patch.object(named_tests.subprocess, "run", side_effect=git_readback), \
+                    patch.object(Path, "write_bytes") as write, patch("builtins.print") as printed:
+                self.assertEqual(0, named_tests.main())
+            self.assertEqual(2, len(calls))
+            run.assert_called_once_with(request, root.resolve())
+            write.assert_called_once_with(data)
+            printed.assert_called_once_with('{"failure_code": "", "status": "success"}')
+
+    def test_candidate_catalogue_join_rejects_identity_substitution_tamper_and_read_failures(self) -> None:
+        text = (self.root / ".github" / named_tests.MANIFEST_NAME).read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            file = root / ".github" / named_tests.MANIFEST_NAME
+            file.parent.mkdir()
+            file.write_text(text)
+            baseline = self._minimal()
+            git_readback, _, calls = publication_catalogue_readbacks(self, root, text=text)
+            with patch.object(named_tests.subprocess, "run", side_effect=git_readback):
+                self.assertEqual("success", json.loads(named_tests.public_artifact_bytes(baseline, root))["status"])
+            self.assertEqual(2, len(calls))
+            variants = [("head_mismatch", 1), ("head_failure", 1), ("head_launch", 1),
+                        ("show_failure", 2), ("show_launch", 2), ("show_argv", 2), ("show_type", 2),
+                        ("tracked_substitution", 2), ("file_tamper", 2), ("malformed_catalogue", 2),
+                        ("missing_target_row", 2), ("file_absent", 2)]
+            for kind, expected_count in variants:
+                with self.subTest(kind=kind):
+                    current = "PRIVATE_CATALOGUE github_pat_PRIVATE" if kind == "malformed_catalogue" else text
+                    if kind == "missing_target_row":
+                        parsed = json.loads(text)
+                        parsed["targets"] = [row for row in parsed["targets"] if row["package"] != "codex-cli"]
+                        current = json.dumps(parsed)
+                    file.write_text(current)
+                    result = copy.deepcopy(baseline)
+                    result["request"].update(catalogue_source_sha="a" * 40, catalogue_source_matches=True)
+                    git_readback, _, calls = publication_catalogue_readbacks(self, root, text=current)
+
+                    def fault(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                        completed = git_readback(argv, **kwargs)
+                        index = len(calls) - 1
+                        if index == 0:
+                            if kind == "head_mismatch":
+                                completed.stdout = "d" * 40
+                            elif kind == "head_failure":
+                                completed.returncode = 101
+                            elif kind == "head_launch":
+                                raise OSError("PRIVATE_HEAD")
+                        elif kind == "show_failure":
+                            completed.returncode = 101
+                        elif kind == "show_launch":
+                            raise OSError("PRIVATE_SHOW")
+                        elif kind == "show_argv":
+                            completed.args = ["PRIVATE_ARGV"]
+                        elif kind == "show_type":
+                            completed.stdout = {"private": "PRIVATE_BODY"}
+                        elif kind == "tracked_substitution":
+                            completed.stdout = "PRIVATE_TRACKED_SUBSTITUTION"
+                        return completed
+
+                    real_read = Path.read_bytes
+                    reads = []
+
+                    def read(path: Path) -> bytes:
+                        self.assertEqual(path, file)
+                        reads.append(path)
+                        if kind == "file_tamper":
+                            return b"PRIVATE_WORKTREE_TAMPER"
+                        if kind == "file_absent":
+                            raise OSError("PRIVATE_ABSENCE")
+                        return real_read(path)
+
+                    with patch.object(Path, "read_bytes", autospec=True, side_effect=read), \
+                            patch.object(named_tests.subprocess, "run", side_effect=fault):
+                        data = named_tests.public_artifact_bytes(result, root)
+                    public = json.loads(data)
+                    self.assertEqual((expected_count, "failure", "public_projection_incomplete", False),
+                                     (len(calls), public["status"], public["failure_code"], public["request"]["catalog_validated"]))
+                    for canary in (b"PRIVATE", b"github_pat_", str(root).encode(), b"stdout_tail", b"exception"):
+                        self.assertNotIn(canary, data)
+                    self.assertEqual(int(kind in {"tracked_substitution", "file_tamper", "malformed_catalogue", "missing_target_row", "file_absent"}), len(reads))
+                    if kind == "file_tamper":
+                        git_readback, _, calls = publication_catalogue_readbacks(self, root, text=current)
+                        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+                        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                                patch.object(Path, "cwd", return_value=root), patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                                patch.object(named_tests, "run_request", return_value=result), \
+                                patch.object(named_tests.subprocess, "run", side_effect=fault), \
+                                patch.object(Path, "read_bytes", autospec=True, side_effect=read), \
+                                patch.object(Path, "write_bytes") as write, patch("builtins.print") as printed:
+                            self.assertEqual(1, named_tests.main())
+                        self.assertEqual(2, len(calls))
+                        write.assert_called_once_with(data)
+                        printed.assert_called_once_with('{"failure_code": "public_projection_incomplete", "status": "failure"}')
 
     def test_whole_bytes_omit_canaries_on_every_nested_surface(self) -> None:
         private = "PRIVATE_BODY credential-token /home/private/file https://private.invalid/secret"
@@ -2029,7 +2331,8 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
         expected = {"schema_version": named_tests.SCHEMA_VERSION, "status": "failure",
             "failure_code": "runner_unexpected_exception", "result_kind": "named_tests", "omitted_field_count": 1,
             "request_fingerprint": "", "candidate_sha": "", "identity": {**self.identity, "omitted_field_count": 0},
-            "request": {"tests": [], "selectors": {"original_count": 0, "omitted_count": 0, "truncated": False}, "catalog_validated": False, "request_fingerprint": "", "omitted_field_count": 0},
+            "request": {"tests": [], "selectors": {"original_count": 0, "omitted_count": 0, "truncated": False}, "catalog_validated": False,
+                        "catalogue_source_sha": "", "catalogue_source_matches": False, "request_fingerprint": "", "omitted_field_count": 0},
             "inventory": {"status": "not-run", "tests": [], "omitted_field_count": 0, "original_count": 0, "omitted_count": 0, "truncated": False},
             "tests": [], "test_projection": {"original_count": 0, "omitted_count": 0, "truncated": False}}
         with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
@@ -2046,10 +2349,14 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                "VALIDATION_BASE_SHA": "c" * 40, "VALIDATION_TARGET_SHA": "a" * 40,
                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
         for cap, exit_code in ((named_tests.MAX_PUBLIC_RESULT_BYTES, 0), (200, 1), (1, None)):
+            root = Path.cwd().resolve()
+            git_readback, file_readback, calls = publication_catalogue_readbacks(self, root)
             with self.subTest(cap=cap), patch.dict(os.environ, env, clear=True), \
                     patch.object(sys, "argv", ["runner"]), patch.object(named_tests, "MAX_PUBLIC_RESULT_BYTES", cap), \
                     patch.object(named_tests, "load_request", return_value=(self.request, None)), \
                     patch.object(named_tests, "run_request", return_value=self._minimal()), \
+                    patch.object(named_tests.subprocess, "run", side_effect=git_readback), \
+                    patch.object(Path, "read_bytes", autospec=True, side_effect=file_readback), \
                     patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
                 if exit_code is None:
                     with self.assertRaises(named_tests.PublicResultError):
@@ -2059,10 +2366,15 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                 else:
                     self.assertEqual(named_tests.main(), exit_code)
                     expected = self._bytes(self._expected()) if exit_code == 0 else named_tests._fixed_tiny_overflow_failure_bytes()
+                    if exit_code == 0:
+                        projected = json.loads(expected)
+                        projected["request"].update(catalogue_source_sha="a" * 40, catalogue_source_matches=True)
+                        expected = self._bytes(projected)
                     write.assert_called_once_with(expected)
                     public = json.loads(expected)
                     output.assert_called_once_with(json.dumps({"status": public["status"], "failure_code": public["failure_code"]}, sort_keys=True))
                     self.assertLessEqual(len(expected), cap)
+            self.assertEqual(2, len(calls))
 
 
 if __name__ == "__main__":

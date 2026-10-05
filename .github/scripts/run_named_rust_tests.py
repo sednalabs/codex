@@ -252,6 +252,48 @@ def cargo_summary_channel_evidence(output: str) -> dict[str, Any]:
     }
 
 
+def whole_target_summary_evidence(value: Any, inventory_count: Any) -> dict[str, Any]:
+    """Join only a unique unfiltered report to the complete target inventory.
+
+    Channels frame one Cargo command's captured streams, not the process that
+    wrote each report. Filtered auxiliary reports never qualify the full target.
+    """
+    source = value if isinstance(value, dict) else {}
+    inventory_count = _safe_count(inventory_count)
+    channels = {}
+    candidates = []
+    auxiliary = []
+    inconsistent_count = 0
+    complete = inventory_count is not None and inventory_count > 0
+    for channel in ("stdout", "stderr"):
+        raw = source.get(channel) if isinstance(source.get(channel), dict) else {}
+        values = raw.get("summaries") if isinstance(raw.get("summaries"), list) else []
+        summaries = [counts for item in values[:MAX_CARGO_SUMMARIES_PER_CHANNEL]
+                     if (counts := _safe_counts(item)) is not None]
+        match_count, omitted_count = _safe_count(raw.get("match_count")), _safe_count(raw.get("omitted_count"))
+        channels[channel] = {"match_count": match_count, "summaries": summaries,
+                             "omitted_count": omitted_count, "truncated": raw.get("truncated") is not False,
+                             "projection_omitted_count": len(values) - len(summaries)}
+        complete = complete and (match_count == len(values) == len(summaries)
+                                 and omitted_count == 0 and raw.get("truncated") is False)
+        for index, counts in enumerate(summaries):
+            record = {"channel": channel, "summary_index": index, "counts": counts}
+            if counts["filtered"]:
+                auxiliary.append(record)
+            elif sum(counts[key] for key in ("passed", "failed", "ignored", "measured")) == inventory_count:
+                candidates.append(record)
+            else:
+                inconsistent_count += 1
+    status = ("incomplete" if not complete else "inconsistent" if inconsistent_count else
+              "missing" if not candidates else "ambiguous" if len(candidates) != 1 else "unique")
+    return {"scope": "whole_target_command_channel_capture", "inventory_count": inventory_count,
+            "selection_status": status, "candidate_count": len(candidates),
+            "inconsistent_whole_count": inconsistent_count, "channels": channels,
+            "selected": candidates[0] if status == "unique" else None,
+            "auxiliary_summaries": auxiliary, "auxiliary_original_count": len(auxiliary),
+            "writer_process_identity": "unknown", "cross_stream_chronology": "unknown"}
+
+
 def fail(code: str, message: str) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -297,11 +339,11 @@ def expected_commands(
     return inventory, execution
 
 
-def load_manifest(repo_root: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+def load_manifest(repo_root: Path, *, manifest_text: str | None = None) -> dict[tuple[str, str, str], dict[str, Any]]:
     """Load and validate the closed target/argv manifest before any Cargo call."""
 
     try:
-        payload = json.loads(manifest_path(repo_root).read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path(repo_root).read_text(encoding="utf-8") if manifest_text is None else manifest_text)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"named-test command manifest is unavailable: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
@@ -1374,7 +1416,10 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     output = "\n".join(
         value for value in (completed.stdout, completed.stderr) if value
     )
-    counts = test_result_counts(output)
+    summary = whole_target_summary_evidence({"stdout": cargo_summary_channel_evidence(completed.stdout),
+                                            "stderr": cargo_summary_channel_evidence(completed.stderr)}, len(names))
+    result["whole_target_summary"] = summary
+    counts = summary["selected"]["counts"] if summary["selected"] is not None else None
     outcomes = test_outcomes(output)
     outcome_lines = test_outcome_lines(output)
     result["failure_evidence"] = failure_evidence(
@@ -1392,6 +1437,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         execution_reconciled = (
             completed.returncode == 0
             and counts is not None
+            and counts["failed"] == 0 and counts["passed"] > 0 and counts["passed"] >= len(request["tests"])
             and len(observed) == 1
             and outcome == "ok"
         )
@@ -1401,9 +1447,9 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             failure_code = "execution_reconciliation_failed"
         elif outcome == "ignored":
             failure_code = "named_test_ignored"
-        elif completed.returncode != 0 or outcome == "FAILED":
+        elif completed.returncode != 0 or outcome == "FAILED" or (counts is not None and (counts["failed"] or not counts["passed"])):
             failure_code = "named_test_failed"
-        elif counts is None:
+        elif counts is None or counts["passed"] < len(request["tests"]):
             failure_code = "execution_reconciliation_failed"
         result["tests"].append(
             {
@@ -1495,8 +1541,11 @@ def _safe_identity(value: Any) -> dict[str, Any]:
     return safe
 
 
-def _safe_request(value: Any, known: set[str]) -> dict[str, Any]:
+def _safe_request(value: Any, known: set[str], repo_root: Path | None = None,
+                  target_sha: str = "") -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
+    catalogue_source_sha = ""
+    catalogue_source_matches = False
     # Revalidate the typed request and the trusted closed catalog, not arbitrary
     # output text. The existing canonical normalized-request digest is retained.
     try:
@@ -1504,13 +1553,31 @@ def _safe_request(value: Any, known: set[str]) -> dict[str, Any]:
         normalized, error = parse_request(raw, "")
         if error or normalized is None:
             raise ValueError("invalid request")
-        select_target(normalized, load_manifest(Path(__file__).resolve().parents[2]))
+        if repo_root is None:
+            manifest = load_manifest(Path(__file__).resolve().parents[2])
+        else:
+            # The sole persistent writer supplies the same actual target root as
+            # execution. Verify its tracked catalogue rather than trusting result
+            # fields or substituting the helper checkout's different catalogue.
+            catalogue_source_sha = _safe_token(git_sha(repo_root), GIT_SHA_RE)
+            if not catalogue_source_sha or catalogue_source_sha != target_sha:
+                raise ValueError("catalogue source identity mismatch")
+            command = ["git", "show", f"{catalogue_source_sha}:.github/{MANIFEST_NAME}"]
+            tracked = subprocess.run(command, cwd=repo_root, text=True, capture_output=True, check=False, shell=False)
+            if (tracked.returncode != 0 or tracked.args != command or type(tracked.stdout) is not str
+                    or tracked.stdout.encode("utf-8") != manifest_path(repo_root).read_bytes()):
+                raise ValueError("catalogue source postimage mismatch")
+            manifest = load_manifest(repo_root, manifest_text=tracked.stdout)
+            catalogue_source_matches = True
+        select_target(normalized, manifest)
     except (ValueError, TypeError, OSError):
         normalized = None
     safe = {key: normalized[key] for key in ("schema_version", "profile", "package", "target_kind", "target")} if normalized else {}
     selectors = _safe_names(source.get("tests"), known, MAX_TESTS)
     safe.update({"tests": selectors.pop("names"), "selectors": selectors})
     safe["catalog_validated"] = normalized is not None
+    if repo_root is not None:
+        safe.update(catalogue_source_sha=catalogue_source_sha, catalogue_source_matches=catalogue_source_matches)
     safe["request_fingerprint"] = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest() if normalized else ""
     safe["omitted_field_count"] = len(set(source) - set(safe) - {"tests"})
     return safe
@@ -1768,23 +1835,30 @@ def _safe_core_samples(value: Any) -> dict[str, Any]:
     return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
 
 
-def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
+def public_safe_result(result: dict[str, Any], repo_root: Path | None = None) -> dict[str, Any]:
     """Project every public field afresh; omitted raw content is never hashed."""
     inventory = _safe_inventory(result.get("inventory"))
     known = set(inventory["tests"])
     identity = _safe_identity(result.get("identity"))
-    request = _safe_request(result.get("request"), known)
+    result_kind = result["result_kind"] if result.get("result_kind") in ("runtime_preflight", "core_runtime_diagnostic") else "named_tests"
+    # This receiving repair is only for ordinary whole-target publication; the
+    # separately qualified preflight and filtered diagnostic consumers stay intact.
+    source_root = repo_root if result_kind == "named_tests" else None
+    request = _safe_request(result.get("request"), known, source_root, identity.get("target_sha", ""))
     tests = _safe_test_results(result.get("tests"), known)
     safe: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION, "status": "success" if result.get("status") == "success" else "failure",
         "failure_code": result.get("failure_code") if isinstance(result.get("failure_code"), str) and result["failure_code"] in PUBLIC_FAILURE_CODES else "",
-        "result_kind": result["result_kind"] if result.get("result_kind") in ("runtime_preflight", "core_runtime_diagnostic") else "named_tests",
+        "result_kind": result_kind,
         "request_fingerprint": _safe_token(result.get("request_fingerprint"), SHA256_RE),
         "candidate_sha": _safe_token(result.get("candidate_sha"), GIT_SHA_RE),
         "identity": identity, "request": request, "inventory": inventory,
         "tests": tests.pop("records"), "test_projection": tests,
-        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples"}),
+        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples", "whole_target_summary"}),
     }
+    if "whole_target_summary" in result and safe["result_kind"] == "named_tests":
+        summary = result["whole_target_summary"] if isinstance(result["whole_target_summary"], dict) else {}
+        safe["whole_target_summary"] = whole_target_summary_evidence(summary.get("channels"), inventory.get("test_count"))
     if safe["result_kind"] == "core_runtime_diagnostic":
         samples = _safe_core_samples(result.get("diagnostic_samples"))
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
@@ -1802,6 +1876,9 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                     and all(identity.get(key) for key in ("harness_sha", "base_ref", "base_sha", "target_sha", "run_id", "run_attempt"))
                     and safe["candidate_sha"] == identity.get("target_sha") and bool(safe["request_fingerprint"]))
         complete = complete and request["request_fingerprint"] == safe["request_fingerprint"]
+        if source_root is not None:
+            complete = complete and (request.get("catalogue_source_matches") is True
+                                     and request.get("catalogue_source_sha") == safe["candidate_sha"] == identity.get("target_sha"))
         if safe["result_kind"] == "core_runtime_diagnostic":
             complete = complete and (result.get("diagnostic_only") is True and result.get("full_target_execution") is False
                         and result.get("qualification_status") == "not_attempted" and result.get("sampling_complete") is True
@@ -1821,9 +1898,13 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                         and item["stage_evidence"]["attribution_complete"]
                         and item["builder_evidence"]["completed_path"] for item in safe["diagnostic_samples"])
         elif safe["result_kind"] == "named_tests":
+            summary = safe.get("whole_target_summary", {})
+            selected = summary.get("selected") or {}
+            counts = selected.get("counts") or {}
+            complete = complete and summary.get("selection_status") == "unique" and counts.get("failed") == 0 and counts.get("passed", 0) >= len(request["tests"]) > 0
             complete = complete and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"] and not inventory["omitted_count"] and not request["selectors"]["omitted_count"] and not tests["omitted_count"]
             complete = complete and [item["name"] for item in safe["tests"]] == request["tests"] and bool(safe["tests"])
-            complete = complete and all(inventory["tests"].count(item["name"]) == 1 and item.get("status") == "success" and item["exit_code"] == 0 and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1 and item.get("matched_line_count") == 1 and item["result_counts"] is not None for item in safe["tests"])
+            complete = complete and all(inventory["tests"].count(item["name"]) == 1 and item.get("status") == "success" and item["exit_code"] == 0 and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1 and item.get("matched_line_count") == 1 and item["result_counts"] == counts for item in safe["tests"])
         else:
             complete = complete and tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET and inventory.get("status") == "not-run" and not safe["tests"] and tests["original_count"] == 0
         if safe["result_kind"] != "core_runtime_diagnostic":
@@ -1842,8 +1923,8 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
-def public_artifact_bytes(result: dict[str, Any]) -> bytes:
-    safe = public_safe_result(result)
+def public_artifact_bytes(result: dict[str, Any], repo_root: Path | None = None) -> bytes:
+    safe = public_safe_result(result, repo_root)
     encoded = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(encoded) > MAX_PUBLIC_RESULT_BYTES:
         safe = {"schema_version": SCHEMA_VERSION, "status": "failure", "failure_code": "public_result_overflow",
@@ -1866,6 +1947,7 @@ def _fixed_tiny_overflow_failure_bytes() -> bytes:
 
 
 def main() -> int:
+    repo_root = None
     if sys.argv[1:] == ["--requires-core-runtime"]:
         try:
             manifest = load_manifest(Path.cwd().resolve())
@@ -1882,8 +1964,9 @@ def main() -> int:
         )
         return 0
     try:
+        repo_root = Path.cwd().resolve()
         request, error = load_request()
-        result = error or run_request(request or {}, Path.cwd().resolve())
+        result = error or run_request(request or {}, repo_root)
     except Exception:
         result = fail("runner_unexpected_exception", "runner execution failed")
     if os.environ.get(CORE_DIAGNOSTIC_ONLY_ENV, "false") != "false" and result.get("result_kind") != "core_runtime_diagnostic":
@@ -1892,7 +1975,7 @@ def main() -> int:
     result.setdefault("identity", {})
     result["identity"].update({key: os.environ.get(variable, "") for key, variable in VALIDATION_IDENTITY_ENV.items()})
     try:
-        data = public_artifact_bytes(result)
+        data = public_artifact_bytes(result, repo_root)
     except PublicResultError:
         data = _fixed_tiny_overflow_failure_bytes()
     Path("rust-tests-v1-results.json").write_bytes(data)
