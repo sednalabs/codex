@@ -954,7 +954,9 @@ impl TestCodexBuilder {
         diagnostic.entered(BuilderPhase::InstallationIdResolution);
         let installation_id = diagnostic.result(
             BuilderPhase::InstallationIdResolution,
-            resolve_installation_id(&config.codex_home).await,
+            resolve_installation_id(&config.codex_home)
+                .await
+                .map_err(Into::into),
         )?;
         let user_instructions_provider =
             self.user_instructions_provider.clone().unwrap_or_else(|| {
