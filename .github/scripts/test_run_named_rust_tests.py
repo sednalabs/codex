@@ -1468,6 +1468,37 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         output.assert_called_once_with('{"failure_code": "core_diagnostic_producer_controls_failed", "status": "failure"}')
         self.assertNotIn(b"PRIVATE", data)
 
+    def test_startup_inventory_publishes_only_safe_compiler_classes_and_locations(self) -> None:
+        stderr = "\n".join((
+            "error[E0432]: unresolved import `PRIVATE_IMPORT_NAME`",
+            "  --> /home/runner/work/codex/codex/validation-target/codex-rs/core/src/session/startup_diagnostic_tests.rs:4:5",
+            "   |",
+            "4  | use PRIVATE_CRATE::private_item;",
+            "   |     ^^^^^^^^^^^^^^^^^^^^^^^^^",
+            "error[E0599]: no method named `PRIVATE_METHOD_NAME` found",
+            "  --> /home/runner/.cargo/registry/src/private-dependency/src/lib.rs:9:2",
+            "error: could not compile `codex-core` (lib test) due to 2 previous errors",
+        ))
+        response = subprocess.CompletedProcess(self.startup_inventory_command, 101, "", stderr)
+        result, _ = self._run(startup_inventory_response=response)
+        data = named_tests.public_artifact_bytes(result)
+        public = json.loads(data)
+        compiler = public["startup_control"]["inventory"]["diagnostics"]["compiler"]
+        self.assertEqual({
+            "error_count": 2,
+            "errors": [
+                {"class": "unresolved_import", "file": "codex-rs/core/src/session/startup_diagnostic_tests.rs",
+                 "line": 4, "column": 5},
+                {"class": "missing_method", "file": "unavailable",
+                 "line": None, "column": None},
+            ],
+            "omitted_count": 0,
+            "unlocated_count": 1,
+        }, compiler)
+        for private_value in ("PRIVATE_IMPORT_NAME", "PRIVATE_CRATE", "private_item", "PRIVATE_METHOD_NAME",
+                              "/home/runner", ".cargo/registry", "could not compile"):
+            self.assertNotIn(private_value.encode(), data)
+
     def test_startup_sites_join_combined_producer_stderr_to_only_the_failed_result(self) -> None:
         result, _ = self._run()
         baseline = json.loads(named_tests.public_artifact_bytes(result))

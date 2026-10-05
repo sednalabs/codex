@@ -43,9 +43,20 @@ MAX_CARGO_SUMMARIES_PER_CHANNEL = 4
 MAX_CARGO_SUMMARY_COUNT_DIGITS = 12
 MAX_PUBLIC_RESULT_BYTES = 1024 * 1024
 MAX_PUBLIC_INVENTORY_NAMES = 8192
+MAX_PUBLIC_RUSTC_ERRORS = 8
 GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+RUSTC_ERROR_HEADER_RE = re.compile(r"^error(?:\[(E[0-9]{4})\])?:")
+RUSTC_LOCATION_RE = re.compile(r"^\s*-->\s*(.+):([0-9]{1,7}):([0-9]{1,7})\s*$")
+RUST_SOURCE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+RUSTC_CODE_TO_CLASS = {
+    "E0004": "non_exhaustive_match", "E0061": "argument_count", "E0277": "trait_bound",
+    "E0308": "type_mismatch", "E0382": "moved_value", "E0412": "unresolved_type",
+    "E0425": "unresolved_symbol", "E0432": "unresolved_import", "E0433": "unresolved_path",
+    "E0502": "borrow_conflict", "E0599": "missing_method", "E0609": "missing_field",
+}
+RUSTC_ERROR_CLASSES = frozenset((*RUSTC_CODE_TO_CLASS.values(), "compiler_error", "uncoded_error"))
 PUBLIC_FAILURE_CODES = {
     "request_too_large", "request_invalid_json", "request_not_object",
     "request_schema_unsupported", "package_invalid", "target_kind_invalid",
@@ -255,14 +266,94 @@ def bounded_diagnostic(value: str | None) -> str:
     ]
 
 
-def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+def _rust_core_source_path(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 2048:
+        return ""
+    path = value.replace("\\", "/")
+    marker = "codex-rs/core/"
+    index = path.rfind(marker)
+    if index >= 0:
+        relative = path[index + len(marker):]
+    else:
+        marker = "core/"
+        index = path.rfind(marker)
+        if index >= 0:
+            relative = path[index + len(marker):]
+        elif path.startswith(("src/", "tests/", "build.rs")):
+            relative = path
+        else:
+            return ""
+    parts = relative.split("/")
+    if (not parts or (parts[0] not in {"src", "tests"} and relative != "build.rs")
+            or any(part in {"", ".", ".."} or not RUST_SOURCE_COMPONENT_RE.fullmatch(part) for part in parts)):
+        return ""
+    return f"codex-rs/core/{relative}"
+
+
+def _rustc_failure_summary(stderr: str) -> dict[str, Any]:
+    errors: list[dict[str, Any]] = []
+    error_count = 0
+    unlocated_count = 0
+    current: dict[str, Any] | None = None
+
+    def finish() -> None:
+        nonlocal error_count, unlocated_count
+        if current is None:
+            return
+        error_count += 1
+        source_path = _rust_core_source_path(current.get("file"))
+        if not source_path:
+            unlocated_count += 1
+        if error_count > MAX_PUBLIC_RUSTC_ERRORS:
+            return
+        errors.append({
+            "class": current["class"],
+            "file": source_path or "unavailable",
+            "line": current.get("line") if source_path else None,
+            "column": current.get("column") if source_path else None,
+        })
+
+    for line in stderr.splitlines():
+        header = RUSTC_ERROR_HEADER_RE.match(line)
+        if header:
+            finish()
+            code = header.group(1) or "uncoded"
+            if code == "uncoded" and line.startswith(("error: could not compile", "error: aborting due to")):
+                current = None
+                continue
+            current = {
+                "class": RUSTC_CODE_TO_CLASS.get(code, "uncoded_error" if code == "uncoded" else "compiler_error"),
+                "file": "",
+                "line": None,
+                "column": None,
+            }
+            continue
+        if current is not None and not current["file"]:
+            location = RUSTC_LOCATION_RE.fullmatch(line)
+            if location:
+                source_path = _rust_core_source_path(location.group(1))
+                if source_path:
+                    current.update(file=source_path, line=int(location.group(2)), column=int(location.group(3)))
+    finish()
     return {
+        "error_count": error_count,
+        "errors": errors,
+        "omitted_count": max(0, error_count - len(errors)),
+        "unlocated_count": unlocated_count,
+    }
+
+
+def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    diagnostics = {
         "exit_code": completed.returncode,
         "stdout_tail": bounded_diagnostic(completed.stdout),
         "stderr_tail": bounded_diagnostic(completed.stderr),
         "stdout_char_count": len(completed.stdout or ""),
         "stderr_char_count": len(completed.stderr or ""),
     }
+    if isinstance(completed.args, (list, tuple)) and tuple(completed.args) == CORE_DIAGNOSTIC_STARTUP_INVENTORY:
+        diagnostics["rustc_failure_summary"] = _rustc_failure_summary(completed.stderr or "")
+    return diagnostics
 
 
 def test_result_counts(output: str) -> dict[str, int] | None:
@@ -1720,7 +1811,38 @@ def _safe_diagnostics(value: Any) -> dict[str, Any]:
             "captured_text_omitted": True,
             "truncated": original is None or original > MAX_DIAGNOSTIC_CHARS,
         }
-    safe["omitted_field_count"] = len(set(source) - {"exit_code", "stdout_tail", "stderr_tail", "stdout_char_count", "stderr_char_count"})
+    if "rustc_failure_summary" in source:
+        summary = source.get("rustc_failure_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        raw_errors = summary.get("errors") if isinstance(summary.get("errors"), list) else []
+        error_count = _safe_count(summary.get("error_count"))
+        errors: list[dict[str, Any]] = []
+        for item in raw_errors[:MAX_PUBLIC_RUSTC_ERRORS]:
+            if not isinstance(item, dict):
+                continue
+            error_class = item.get("class")
+            if not isinstance(error_class, str) or error_class not in RUSTC_ERROR_CLASSES:
+                error_class = "compiler_error"
+            source_path = _rust_core_source_path(item.get("file"))
+            line = item.get("line")
+            column = item.get("column")
+            if type(line) is not int or not 1 <= line <= 9_999_999:
+                line = None
+            if type(column) is not int or not 1 <= column <= 9_999_999:
+                column = None
+            errors.append({"class": error_class, "file": source_path or "unavailable",
+                           "line": line if source_path else None, "column": column if source_path else None})
+        error_count = error_count if error_count is not None else len(errors)
+        unlocated_count = _safe_count(summary.get("unlocated_count"))
+        safe["compiler"] = {
+            "error_count": error_count,
+            "errors": errors,
+            "omitted_count": max(0, error_count - len(errors)),
+            "unlocated_count": unlocated_count if unlocated_count is not None else sum(
+                item["file"] == "unavailable" for item in errors
+            ),
+        }
+    safe["omitted_field_count"] = len(set(source) - {"exit_code", "stdout_tail", "stderr_tail", "stdout_char_count", "stderr_char_count", "rustc_failure_summary"})
     return safe
 
 
