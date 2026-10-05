@@ -323,7 +323,7 @@ def verify_inputs(manifest: dict[str, Any]) -> tuple[str, str]:
     head, workflow_sha = verify_commit_binding(manifest)
     verify_hash_map(manifest["product_inputs"], "product source")
     verify_hash_map(manifest["local_helpers"], "host helper/toolchain")
-    verify_test_summary_parser_contract()
+    verify_test_summary_parser_contract(manifest)
     return head, workflow_sha
 
 
@@ -792,6 +792,52 @@ def runner_binding_path(path_value: str) -> tuple[Path, dict[str, Any]]:
     return path, record
 
 
+def runner_package_source_digest(
+    package: str, source_relative: str, manifest: dict[str, Any]
+) -> str:
+    expected_target = LIBRARY_TEST_TARGETS.get(package)
+    if (
+        expected_target is None
+        or source_relative != f"codex-rs/{expected_target[1]}"
+    ):
+        refuse("Cargo runner package source is not admitted")
+
+    expected_digest = manifest["product_inputs"].get(source_relative)
+    if expected_digest is not None:
+        return expected_digest
+    if (
+        package != "codex-rmcp-client"
+        or source_relative != "codex-rs/rmcp-client/src/lib.rs"
+    ):
+        refuse("Cargo runner package source is not admitted")
+
+    product_commit = manifest["product_source_commit"]
+    if not re.fullmatch(r"[0-9a-f]{40}", product_commit):
+        refuse("Cargo runner package source commit is invalid")
+    entry = run_git("ls-tree", "-z", product_commit, "--", source_relative)
+    entry = entry[:-1] if entry.endswith("\0") else entry
+    metadata, separator, tracked_path = entry.partition("\t")
+    fields = metadata.split()
+    if (
+        not separator
+        or tracked_path != source_relative
+        or len(fields) != 3
+        or fields[0] not in {"100644", "100755"}
+        or fields[1] != "blob"
+    ):
+        refuse("Cargo runner package source is not admitted")
+    committed_source = run_git("show", f"{product_commit}:{source_relative}").encode()
+    digest = sha256_bytes(committed_source)
+    source_path = ROOT / source_relative
+    if (
+        source_path.is_symlink()
+        or not source_path.is_file()
+        or sha256_file(source_path) != digest
+    ):
+        refuse("Cargo runner package source binding changed")
+    return digest
+
+
 def check_runner_binary(binding: dict[str, Any], binary_arg: str) -> Path:
     package = binding["package"]
     target_name, _ = LIBRARY_TEST_TARGETS[package]
@@ -803,7 +849,9 @@ def check_runner_binary(binding: dict[str, Any], binary_arg: str) -> Path:
     if sha256_file(Path(__file__).resolve(strict=True)) != binding["script_sha256"]:
         refuse("Cargo runner script digest changed")
     source_relative = f"codex-rs/{source_relative}"
-    expected_source_hash = manifest["product_inputs"].get(source_relative)
+    expected_source_hash = runner_package_source_digest(
+        package, source_relative, manifest
+    )
     source_path = ROOT / source_relative
     if (
         expected_source_hash is None
@@ -978,7 +1026,7 @@ def cargo_library_process_result(
     }
 
 
-def verify_test_summary_parser_contract() -> None:
+def verify_test_summary_parser_contract(manifest: dict[str, Any]) -> None:
     single_summary = "test result: ok. 1 passed; 0 failed; 0 ignored;"
     expected_single = [
         {"status": "ok", "passed": 1, "failed": 0, "ignored": 0}
@@ -1022,6 +1070,24 @@ def verify_test_summary_parser_contract() -> None:
         refuse("Cargo runner binding contract failed")
     if valid_runner_binding({**binding, "unknown": True}):
         refuse("Cargo runner binding contract failed")
+
+    if manifest["phase"] == "validate":
+        rmcp_source = "codex-rs/rmcp-client/src/lib.rs"
+        if rmcp_source in manifest["product_inputs"]:
+            refuse("Cargo runner source provenance contract failed")
+        if runner_package_source_digest(
+            "codex-rmcp-client", rmcp_source, manifest
+        ) != sha256_file(ROOT / rmcp_source):
+            refuse("Cargo runner source provenance contract failed")
+        try:
+            runner_package_source_digest(
+                "codex-core", "codex-rs/core/src/not-admitted.rs", manifest
+            )
+        except SystemExit as error:
+            if error.code != "Cargo runner package source is not admitted":
+                refuse("Cargo runner source provenance contract failed")
+        else:
+            refuse("Cargo runner source provenance contract failed")
     runner_summaries = [{"status": "ok", "passed": 1, "failed": 0, "ignored": 0}]
     runner_process = {
         **cargo_library_process_result(0, runner_summaries, "5" * 64),
