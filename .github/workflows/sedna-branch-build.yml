@@ -66,6 +66,7 @@ on:
           - cargo-schema
           - config-schema
           - tui-snapshots
+          - control-plane
         default: cargo-schema
 
 concurrency:
@@ -110,7 +111,7 @@ jobs:
             *) echo "unsupported workflow mode" >&2; exit 1 ;;
           esac
           case "${PREPARATION_PROFILE}" in
-            cargo-schema|config-schema|tui-snapshots) ;;
+            cargo-schema|config-schema|tui-snapshots|control-plane) ;;
             *) echo "unsupported preparation profile" >&2; exit 1 ;;
           esac
           if [[ "${MODE}" != "prepare-only" && "${PREPARATION_PROFILE}" != "cargo-schema" ]]; then
@@ -176,6 +177,15 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
+          FIXTURE_SHA: ${{ inputs.fixture_sha }}
+          SDK_SHA: ${{ inputs.sdk_sha }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          PYTHONDONTWRITEBYTECODE: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -186,12 +196,21 @@ jobs:
             tui-snapshots)
               python3 .github/scripts/prepare_tui_snapshots.py --validate-profile
               ;;
+            control-plane)
+              python3 .github/scripts/control_plane_preparation_route.py --validate-profile
+              ;;
             *) echo "unsupported preparation profile" >&2; exit 1 ;;
           esac
       - name: Test config-schema preparation controls
         if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'config-schema' }}
         working-directory: .workflow-src
         run: python3 .github/scripts/test_prepare_config_schema.py -v
+      - name: Test the closed control-plane preparation route
+        if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'control-plane' }}
+        working-directory: .workflow-src
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 .github/scripts/test_control_plane_preparation_route.py -v
       - name: Test TUI snapshot preparation controls
         if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'tui-snapshots' }}
         working-directory: .workflow-src
@@ -253,6 +272,7 @@ jobs:
         shell: bash
         run: python3 .github/scripts/test_standard_runner_graph.py
       - name: Test the exact package provenance verifier fixtures
+        if: ${{ !(inputs.mode == 'prepare-only' && inputs.preparation_profile == 'control-plane') }}
         working-directory: .workflow-src
         shell: bash
         run: python3 .github/scripts/test_verify_existing_first_binary_producer.py
@@ -265,9 +285,22 @@ jobs:
             .github/workflows/sedna-branch-build.yml \
             .github/workflows/validation-named-tests.yml
 
+  control_plane_preparation:
+    name: Prepare control-plane source through the registered route
+    if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile == 'control-plane' }}
+    needs:
+      - runner_policy
+    uses: ./.github/workflows/validation-control-plane-prep.yml
+    permissions:
+      contents: read
+    with:
+      target_sha: ${{ inputs.target_sha }}
+      base_sha: ${{ inputs.base_sha }}
+      base_ref: ${{ inputs.base_ref }}
+
   prepare-only:
     name: Prepare exact source schema diff
-    if: ${{ inputs.mode == 'prepare-only' }}
+    if: ${{ inputs.mode == 'prepare-only' && inputs.preparation_profile != 'control-plane' }}
     needs:
       - runner_policy
     runs-on: ubuntu-24.04
@@ -296,12 +329,15 @@ jobs:
           path: product
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - name: Verify H, B, T, and standard preparation architecture
+        id: preparation_identity
         shell: bash
         env:
           EXPECTED_H: ${{ github.sha }}
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
@@ -311,6 +347,14 @@ jobs:
           [[ "${EXPECTED_H}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          computer_use=false
+          if [[ "${MODE}" == "prepare-only" && "${PREPARATION_PROFILE}" == "cargo-schema" && "${TARGET_SHA}" == "3cd6436609ad59eed7f174a8c3aa6e3a67c1dbec" ]]; then
+            [[ "${BASE_SHA}" == "8389b61d82cb6fb936e4e500b977f31682441ffe" ]] || {
+              echo "computer-use preparation requires its exact comparison base" >&2
+              exit 1
+            }
+            computer_use=true
+          fi
           actual_h="$(git -C .workflow-src rev-parse HEAD)"
           actual_t="$(git -C product rev-parse HEAD)"
           [[ "${actual_h}" == "${EXPECTED_H}" ]] || {
@@ -328,6 +372,7 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+          printf 'computer-use=%s\n' "${computer_use}" >> "$GITHUB_OUTPUT"
       - name: Install pinned just for the TUI snapshot preparation profile
         if: ${{ inputs.preparation_profile == 'tui-snapshots' }}
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
@@ -374,10 +419,50 @@ jobs:
       - name: Snapshot the input lockfile
         if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
+        env:
+          COMPUTER_USE_PREPARATION: ${{ steps.preparation_identity.outputs.computer-use }}
         run: |
           set -euo pipefail
           cp "${PRODUCT_ROOT}/codex-rs/Cargo.lock" "${LOCK_BEFORE}"
           sha256sum "${LOCK_BEFORE}" > "${RUNNER_TEMP}/Cargo.lock.before.sha256"
+          if [[ "${COMPUTER_USE_PREPARATION}" == "true" ]]; then
+            cp "${PRODUCT_ROOT}/MODULE.bazel.lock" "${RUNNER_TEMP}/MODULE.bazel.lock.before"
+            sha256sum "${RUNNER_TEMP}/MODULE.bazel.lock.before" > "${RUNNER_TEMP}/MODULE.bazel.lock.before.sha256"
+            python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          root = Path(os.environ["PRODUCT_ROOT"])
+          schema_paths = [
+              "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+              "sdk/python/src/openai_codex/generated/v2_all.py",
+              "sdk/python/src/openai_codex/generated/notification_registry.py",
+              "sdk/python/src/openai_codex/api.py",
+              "codex-rs/app-server-protocol/schema/typescript/",
+              "codex-rs/app-server-protocol/schema/json/",
+          ]
+          paths = subprocess.check_output(
+              ["git", "-C", str(root), "ls-files", "--cached", "-z", "--", *schema_paths]
+          ).split(b"\0")
+          inventory = {}
+          for raw in paths:
+              if not raw:
+                  continue
+              relative = raw.decode("utf-8", errors="strict")
+              path = root / relative
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit("schema input is not a regular tracked file")
+              inventory[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+          if not inventory or not set(schema_paths[:4]) <= inventory.keys():
+              raise SystemExit("schema input inventory is incomplete")
+          Path(os.environ["RUNNER_TEMP"], "computer-use-schema.before.json").write_text(
+              json.dumps(inventory, sort_keys=True), encoding="utf-8"
+          )
+          PY
+          fi
       - name: Refresh only workspace package records
         if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         working-directory: product/codex-rs
@@ -388,6 +473,421 @@ jobs:
         working-directory: product
         shell: bash
         run: python3 codex-rs/app-server-protocol/scripts/write_schema_fixtures.py
+      - name: Resolve the exact computer-use Cargo graph without changing its lock
+        if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
+        working-directory: product/codex-rs
+        shell: bash
+        run: cargo metadata --locked --format-version 1 > "${RUNNER_TEMP}/computer-use-cargo-metadata.json"
+      - name: Check the closed computer-use lock and schema contract
+        if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
+          PRODUCT_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import collections
+          import copy
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import tomllib
+
+          target = "3cd6436609ad59eed7f174a8c3aa6e3a67c1dbec"
+          base = "8389b61d82cb6fb936e4e500b977f31682441ffe"
+          new_names = {"codex-android-computer-use", "codex-browser-computer-use"}
+          package_version = "0.160.0-dev.sedna.1"
+
+          def route(mode, profile, product, comparison):
+              selected = (mode, profile, product) == ("prepare-only", "cargo-schema", target)
+              if selected and comparison != base:
+                  raise ValueError("wrong-base")
+              return selected
+
+          def reject(code):
+              raise ValueError(code)
+
+          def key(package):
+              if not isinstance(package, dict):
+                  reject("package-record")
+              name, version, source = (package.get(field) for field in ("name", "version", "source"))
+              if not all(isinstance(value, str) and value for value in (name, version)):
+                  reject("package-record")
+              if "source" in package and (not isinstance(source, str) or not source):
+                  reject("package-record")
+              return name, version, source
+
+          def records(lock):
+              rows = lock.get("package") if isinstance(lock, dict) else None
+              if not isinstance(rows, list):
+                  reject("package-record")
+              indexed = {}
+              for row in rows:
+                  identity = key(row)
+                  if identity in indexed:
+                      reject("duplicate-lock-identity")
+                  indexed[identity] = row
+              return indexed
+
+          def schema_equal(before, after):
+              if not isinstance(before, dict) or not before or before != after:
+                  reject("schema-inventory-or-bytes")
+
+          def validate(before, after, metadata, manifests):
+              old, current = records(before), records(after)
+              if {k: v for k, v in before.items() if k != "package"} != {
+                  k: v for k, v in after.items() if k != "package"
+              }:
+                  reject("lock-header")
+              old_local = {row["name"]: row for row in old.values() if "source" not in row}
+              local = {row["name"]: row for row in current.values() if "source" not in row}
+              if len(old_local) != sum("source" not in row for row in old.values()):
+                  reject("local-package-set")
+              if len(local) != sum("source" not in row for row in current.values()):
+                  reject("local-package-set")
+              if new_names & old_local.keys() or local.keys() != old_local.keys() | new_names:
+                  reject("local-package-set")
+              if "codex-tui" not in old_local:
+                  reject("old-local-record")
+              for name, previous in old_local.items():
+                  actual = local[name]
+                  if name != "codex-tui":
+                      if actual != previous:
+                          reject("old-local-record")
+                      continue
+                  if {k: v for k, v in previous.items() if k != "dependencies"} != {
+                      k: v for k, v in actual.items() if k != "dependencies"
+                  }:
+                      reject("tui-record")
+                  if not all(isinstance(row.get("dependencies"), list) and all(
+                      isinstance(dep, str) for dep in row["dependencies"]
+                  ) for row in (previous, actual)):
+                      reject("tui-edges")
+                  if collections.Counter(actual["dependencies"]) != (
+                      collections.Counter(previous["dependencies"]) + collections.Counter(new_names)
+                  ):
+                      reject("tui-edges")
+              old_external = collections.Counter(
+                  json.dumps(row, sort_keys=True) for row in old.values() if "source" in row
+              )
+              current_external = collections.Counter(
+                  json.dumps(row, sort_keys=True) for row in current.values() if "source" in row
+              )
+              if old_external - current_external:
+                  reject("old-external-record")
+              packages = metadata.get("packages") if isinstance(metadata, dict) else None
+              resolve = metadata.get("resolve") if isinstance(metadata, dict) else None
+              if not isinstance(packages, list) or not isinstance(resolve, dict):
+                  reject("metadata-package")
+              by_id, by_key = {}, {}
+              for package in packages:
+                  identity = key({k: v for k, v in package.items() if k != "source" or v is not None})
+                  identifier = package.get("id")
+                  if not isinstance(identifier, str) or not identifier or identifier in by_id or identity in by_key:
+                      reject("metadata-ambiguity")
+                  by_id[identifier], by_key[identity] = package, identifier
+              nodes = resolve.get("nodes")
+              if not isinstance(nodes, list):
+                  reject("metadata-node")
+              graph = {}
+              for node in nodes:
+                  identifier, dependencies = node.get("id"), node.get("dependencies")
+                  if identifier not in by_id or identifier in graph or not isinstance(dependencies, list):
+                      reject("metadata-node")
+                  if any(not isinstance(dep, str) for dep in dependencies) or len(set(dependencies)) != len(dependencies):
+                      reject("metadata-node")
+                  graph[identifier] = dependencies
+              if any(dep not in by_id or dep not in graph for deps in graph.values() for dep in deps):
+                  reject("unresolved-metadata-edge")
+              if set(manifests) != new_names:
+                  reject("new-local-manifest")
+              roots = []
+              for name in sorted(new_names):
+                  manifest = manifests[name]
+                  expected_key = (name, package_version, None)
+                  row = local[name]
+                  if key(row) != expected_key or set(row) != {"name", "version", "dependencies"}:
+                      reject("new-local-record")
+                  identifier = by_key.get(expected_key)
+                  if identifier is None or identifier not in graph:
+                      reject("new-local-metadata")
+                  package = by_id[identifier]
+                  if manifest.get("name") != name or manifest.get("version") != package_version:
+                      reject("new-local-manifest")
+                  if package.get("manifest_path") != manifest.get("manifest_path"):
+                      reject("new-local-manifest")
+                  if identifier not in metadata.get("workspace_members", []):
+                      reject("new-local-metadata")
+                  expected_deps = collections.Counter(manifest["dependencies"])
+                  declared = package.get("dependencies")
+                  if not isinstance(declared, list) or any(not isinstance(dep, dict) for dep in declared):
+                      reject("new-local-metadata")
+                  if collections.Counter(dep.get("name") for dep in declared) != expected_deps:
+                      reject("new-local-metadata")
+                  if collections.Counter(by_id[dep]["name"] for dep in graph[identifier]) != expected_deps:
+                      reject("new-local-edges")
+                  if not isinstance(row["dependencies"], list):
+                      reject("new-local-edges")
+                  locked_ids = []
+                  for dependency in row["dependencies"]:
+                      match = re.fullmatch(r"([^\s]+)(?: ([^\s]+))?(?: \((.+)\))?", dependency) if isinstance(dependency, str) else None
+                      if match is None:
+                          reject("new-local-edges")
+                      dep_name, dep_version, dep_source = match.groups()
+                      matches = [identity for identity in current if identity[0] == dep_name
+                          and (dep_version is None or identity[1] == dep_version)
+                          and (dep_source is None or identity[2] == dep_source)]
+                      if len(matches) != 1 or matches[0] not in by_key:
+                          reject("new-local-edges")
+                      locked_ids.append(by_key[matches[0]])
+                  if collections.Counter(locked_ids) != collections.Counter(graph[identifier]):
+                      reject("new-local-edges")
+                  roots.append(identifier)
+              reachable, pending = set(), list(roots)
+              while pending:
+                  identifier = pending.pop()
+                  if identifier in reachable:
+                      continue
+                  reachable.add(identifier)
+                  pending.extend(graph[identifier])
+              additions = current_external - old_external
+              for serialized in additions:
+                  identifier = by_key.get(key(json.loads(serialized)))
+                  if identifier is None or identifier not in reachable:
+                      reject("new-external-closure")
+              return {
+                  "old_local_records": len(old_local),
+                  "old_external_records": sum(old_external.values()),
+                  "new_local_names": sorted(new_names),
+                  "new_external_records": sum(additions.values()),
+                  "reachable_metadata_packages": len(reachable),
+              }
+
+          # Controls mutate producer-shaped records, not subprocess return values.
+          def fixture():
+              old_dep = {"name": "old-dep", "version": "1.0.0", "source": "registry+fixture", "checksum": "a" * 64}
+              before = {"version": 4, "package": [
+                  {"name": "codex-tui", "version": package_version, "dependencies": ["old-dep"]},
+                  {"name": "codex-existing", "version": package_version, "dependencies": ["old-dep"]},
+                  old_dep,
+              ]}
+              after = copy.deepcopy(before)
+              after["package"][0]["dependencies"] += sorted(new_names)
+              after["package"] += [
+                  {"name": "codex-android-computer-use", "version": package_version, "dependencies": ["old-dep"]},
+                  {"name": "codex-browser-computer-use", "version": package_version, "dependencies": ["new-dep"]},
+                  {"name": "new-dep", "version": "2.0.0", "source": "registry+fixture", "checksum": "b" * 64},
+              ]
+              manifests = {name: {
+                  "name": name, "version": package_version,
+                  "manifest_path": "/fixture/" + name + "/Cargo.toml",
+                  "dependencies": ["old-dep" if "android" in name else "new-dep"],
+              } for name in new_names}
+              packages, nodes = [], []
+              ids = {row["name"]: "fixture#" + row["name"] for row in after["package"]}
+              for row in after["package"]:
+                  name = row["name"]
+                  packages.append({
+                      "id": ids[name], "name": name, "version": row["version"], "source": row.get("source"),
+                      "manifest_path": manifests[name]["manifest_path"] if name in manifests else "/fixture/Cargo.toml",
+                      "dependencies": [{"name": dep} for dep in row.get("dependencies", [])],
+                  })
+                  nodes.append({"id": ids[name], "dependencies": [ids[dep] for dep in row.get("dependencies", [])]})
+              metadata = {"packages": packages, "resolve": {"nodes": nodes}, "workspace_members": list(ids.values())}
+              return before, after, metadata, manifests
+
+          controls = []
+          validate(*fixture())
+          controls.append("exact-lock-positive")
+          # One transitive added external identity is joined through the new root.
+          transitive = fixture()
+          transitive[1]["package"].append({"name": "transitive", "version": "1", "source": "registry+fixture"})
+          transitive[2]["packages"].append({"id": "fixture#transitive", "name": "transitive", "version": "1", "source": "registry+fixture"})
+          transitive[2]["resolve"]["nodes"].append({"id": "fixture#transitive", "dependencies": []})
+          transitive[2]["resolve"]["nodes"][-2]["dependencies"].append("fixture#transitive")
+          transitive[1]["package"][-2]["dependencies"] = ["transitive"]
+          transitive[2]["packages"][-2]["dependencies"] = [{"name": "transitive"}]
+          validate(*transitive)
+          controls.append("transitive-closure-positive")
+          def negative(label, code, mutate):
+              data = fixture()
+              mutate(*data)
+              try:
+                  validate(*data)
+              except ValueError as error:
+                  if error.args != (code,):
+                      raise AssertionError("control rejected at the wrong invariant") from None
+              else:
+                  raise AssertionError("negative control was accepted")
+              controls.append(label)
+
+          def set_old(field, value):
+              return lambda b, a, m, f: a["package"][1].__setitem__(field, value)
+          negative("old-local-version", "old-local-record", set_old("version", "9.0.0"))
+          negative("old-local-checksum", "old-local-record", set_old("checksum", "c" * 64))
+          negative("old-local-payload", "old-local-record", set_old("extra", True))
+          negative("old-local-edge", "old-local-record", set_old("dependencies", []))
+          negative("old-local-source", "local-package-set", set_old("source", "registry+fixture"))
+          negative("tui-version", "tui-record", lambda b, a, m, f: a["package"][0].__setitem__("version", "9.0.0"))
+          negative("tui-unrelated-edge", "tui-edges", lambda b, a, m, f: a["package"][0]["dependencies"].append("other"))
+          negative("tui-missing-edge", "tui-edges", lambda b, a, m, f: a["package"][0]["dependencies"].remove("codex-browser-computer-use"))
+          negative("tui-duplicate-edge", "tui-edges", lambda b, a, m, f: a["package"][0]["dependencies"].append("codex-browser-computer-use"))
+          negative("missing-local", "local-package-set", lambda b, a, m, f: a["package"].pop(3))
+          negative("extra-local", "local-package-set", lambda b, a, m, f: a["package"].append({"name": "extra-local", "version": package_version}))
+          negative("wrong-local-version", "new-local-record", lambda b, a, m, f: a["package"][3].__setitem__("version", "9.0.0"))
+          negative("wrong-local-payload", "new-local-record", lambda b, a, m, f: a["package"][3].__setitem__("checksum", "c" * 64))
+          negative("wrong-local-dependency", "new-local-edges", lambda b, a, m, f: a["package"][3].__setitem__("dependencies", ["new-dep"]))
+          negative("old-external-mutation", "old-external-record", lambda b, a, m, f: a["package"][2].__setitem__("checksum", "c" * 64))
+          negative("old-external-loss", "old-external-record", lambda b, a, m, f: a["package"].pop(2))
+          def add_unreachable(b, a, m, f):
+              a["package"].append({"name": "unreachable", "version": "1", "source": "registry+fixture"})
+              m["packages"].append({"id": "fixture#unreachable", "name": "unreachable", "version": "1", "source": "registry+fixture"})
+              m["resolve"]["nodes"].append({"id": "fixture#unreachable", "dependencies": []})
+          negative("unreachable-external", "new-external-closure", add_unreachable)
+          negative("ambiguous-metadata", "metadata-ambiguity", lambda b, a, m, f: m["packages"].append(dict(m["packages"][-1], id="different-id")))
+          negative("missing-metadata", "metadata-node", lambda b, a, m, f: m["packages"].pop())
+          negative("missing-resolve-node", "unresolved-metadata-edge", lambda b, a, m, f: m["resolve"]["nodes"].pop())
+          negative("unresolved-edge", "unresolved-metadata-edge", lambda b, a, m, f: m["resolve"]["nodes"][-1]["dependencies"].append("unknown"))
+          negative("external-source-mismatch", "new-local-edges", lambda b, a, m, f: m["packages"][-1].__setitem__("source", "git+fixture"))
+          negative("external-version-mismatch", "new-local-edges", lambda b, a, m, f: m["packages"][-1].__setitem__("version", "3.0.0"))
+          negative("wrong-manifest", "new-local-manifest", lambda b, a, m, f: f["codex-browser-computer-use"].__setitem__("manifest_path", "/wrong/Cargo.toml"))
+          negative("wrong-declared-edge", "new-local-metadata", lambda b, a, m, f: m["packages"][3].__setitem__("dependencies", []))
+          negative("wrong-resolved-edge", "new-local-edges", lambda b, a, m, f: m["resolve"]["nodes"][3].__setitem__("dependencies", []))
+          for values, selected in [
+              (("prepare-only", "cargo-schema", target, base), True),
+              (("prepare-only", "cargo-schema", "0" * 40, base), False),
+              (("build", "cargo-schema", target, base), False),
+              (("consume-existing", "cargo-schema", target, base), False),
+              (("prepare-only", "config-schema", target, base), False),
+              (("prepare-only", "tui-snapshots", target, base), False),
+          ]:
+              if route(*values) is not selected:
+                  raise AssertionError("route control differs")
+              controls.append("route-" + values[0] + "-" + values[1] + "-" + str(selected))
+          try:
+              route("prepare-only", "cargo-schema", target, "0" * 40)
+          except ValueError as error:
+              if error.args != ("wrong-base",):
+                  raise
+          else:
+              raise AssertionError("wrong base was accepted")
+          controls.append("route-wrong-base")
+          schema = {
+              "sdk/python/src/openai_codex/api.py": "a" * 64,
+              "codex-rs/app-server-protocol/schema/typescript/fixture.ts": "b" * 64,
+              "codex-rs/app-server-protocol/schema/json/fixture.json": "c" * 64,
+          }
+          schema_equal(schema, dict(schema))
+          controls.append("schema-positive")
+          mutations = {
+              "bytes": dict(schema, **{"sdk/python/src/openai_codex/api.py": "d" * 64}),
+              "add": dict(schema, **{"codex-rs/app-server-protocol/schema/json/new.json": "d" * 64}),
+              "remove": {k: v for k, v in schema.items() if not k.endswith("fixture.ts")},
+              "rename": {k.replace("fixture.ts", "renamed.ts"): v for k, v in schema.items()},
+              "substitute": {k.replace("typescript/", "json/"): v for k, v in schema.items()},
+          }
+          for label, changed in mutations.items():
+              try:
+                  schema_equal(schema, changed)
+              except ValueError as error:
+                  if error.args != ("schema-inventory-or-bytes",):
+                      raise
+              else:
+                  raise AssertionError("schema negative was accepted")
+              controls.append("schema-" + label)
+          if not route(os.environ["MODE"], os.environ["PREPARATION_PROFILE"], os.environ["PRODUCT_SHA"], os.environ["BASE_SHA"]):
+              raise SystemExit("closed computer-use route was not selected")
+          root = Path(os.environ["PRODUCT_ROOT"])
+          temporary = Path(os.environ["RUNNER_TEMP"])
+          with Path(os.environ["LOCK_BEFORE"]).open("rb") as stream:
+              before = tomllib.load(stream)
+          with (root / "codex-rs/Cargo.lock").open("rb") as stream:
+              after = tomllib.load(stream)
+          with (root / "codex-rs/Cargo.toml").open("rb") as stream:
+              workspace = tomllib.load(stream)
+          if workspace["workspace"]["package"]["version"] != package_version:
+              raise SystemExit("workspace version differs from the admitted development version")
+          manifests = {}
+          for name in sorted(new_names):
+              path = root / "codex-rs" / name.removeprefix("codex-") / "Cargo.toml"
+              with path.open("rb") as stream:
+                  manifest = tomllib.load(stream)
+              if manifest["package"].get("version") != {"workspace": True}:
+                  raise SystemExit("new local manifest does not use the workspace version")
+              manifests[name] = {
+                  "name": manifest["package"]["name"], "version": package_version,
+                  "manifest_path": str(path),
+                  "dependencies": [dep for section in ("dependencies", "dev-dependencies", "build-dependencies")
+                      for dep in manifest.get(section, {})],
+              }
+          checks = validate(before, after, json.loads(
+              (temporary / "computer-use-cargo-metadata.json").read_text(encoding="utf-8")
+          ), manifests)
+          schema_paths = [
+              "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+              "sdk/python/src/openai_codex/generated/v2_all.py",
+              "sdk/python/src/openai_codex/generated/notification_registry.py",
+              "sdk/python/src/openai_codex/api.py",
+              "codex-rs/app-server-protocol/schema/typescript/",
+              "codex-rs/app-server-protocol/schema/json/",
+          ]
+          paths = subprocess.check_output(
+              ["git", "-C", str(root), "ls-files", "--cached", "--others", "-z", "--", *schema_paths]
+          ).split(b"\0")
+          inventory = {}
+          for raw in paths:
+              if not raw:
+                  continue
+              relative = raw.decode("utf-8", errors="strict")
+              path = root / relative
+              if path.is_symlink() or not path.is_file() or relative in inventory:
+                  raise SystemExit("schema output is not a unique regular file")
+              inventory[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+          schema_equal(json.loads((temporary / "computer-use-schema.before.json").read_text(encoding="utf-8")), inventory)
+          checks.update({
+              "controls_passed": len(controls), "control_names": controls,
+              "schema_path_sha256": inventory,
+              "cargo_lock_validated_sha256": hashlib.sha256((root / "codex-rs/Cargo.lock").read_bytes()).hexdigest(),
+              "metadata_sha256": hashlib.sha256((temporary / "computer-use-cargo-metadata.json").read_bytes()).hexdigest(),
+          })
+          (temporary / "computer-use-lock-validation.json").write_text(
+              json.dumps(checks, sort_keys=True), encoding="utf-8"
+          )
+          print(f"closed computer-use contract: {len(controls)} controls passed")
+          PY
+      - name: Install only the pinned Bazel module resolver
+        if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+        with:
+          bazelisk-version: 1.28.1
+          token: ""
+      - name: Update and verify only the exact computer-use module lock
+        if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset BAZELISK_GITHUB_TOKEN
+          [[ "$(cat .bazelversion)" == "9.0.0" ]] || {
+            echo "module preparation requires the admitted Bazel 9.0.0" >&2
+            exit 1
+          }
+          bazel_args=(--ignore_all_rc_files "--output_base=${RUNNER_TEMP}/computer-use-bazel")
+          [[ "$(bazel "${bazel_args[@]}" version --gnu_format)" == "bazel 9.0.0" ]] || {
+            echo "module resolver did not select Bazel 9.0.0" >&2
+            exit 1
+          }
+          printf 'bazel 9.0.0\n' > "${RUNNER_TEMP}/computer-use-bazel-version.txt"
+          bazel "${bazel_args[@]}" mod deps --lockfile_mode=update
+          cp MODULE.bazel.lock "${RUNNER_TEMP}/MODULE.bazel.lock.after"
+          bazel "${bazel_args[@]}" mod deps --lockfile_mode=error
+          cmp MODULE.bazel.lock "${RUNNER_TEMP}/MODULE.bazel.lock.after"
       - name: Validate the lock delta and generated-path allowlist
         if: ${{ inputs.preparation_profile == 'cargo-schema' }}
         shell: bash
@@ -395,6 +895,9 @@ jobs:
           WORKFLOW_HOST_SHA: ${{ github.sha }}
           PRODUCT_SHA: ${{ inputs.target_sha }}
           BASE_SHA: ${{ inputs.base_sha }}
+          COMPUTER_USE_PREPARATION: ${{ steps.preparation_identity.outputs.computer-use }}
+          MODE: ${{ inputs.mode }}
+          PREPARATION_PROFILE: ${{ inputs.preparation_profile }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -409,6 +912,19 @@ jobs:
           root = Path(os.environ["PRODUCT_ROOT"])
           before_lock = Path(os.environ["LOCK_BEFORE"])
           after_lock = root / "codex-rs/Cargo.lock"
+          computer_use = os.environ["COMPUTER_USE_PREPARATION"] == "true"
+          closed_checks = None
+          if computer_use:
+              if (os.environ["MODE"], os.environ["PREPARATION_PROFILE"], os.environ["PRODUCT_SHA"], os.environ["BASE_SHA"]) != (
+                  "prepare-only", "cargo-schema", "3cd6436609ad59eed7f174a8c3aa6e3a67c1dbec",
+                  "8389b61d82cb6fb936e4e500b977f31682441ffe",
+              ):
+                  raise SystemExit("closed preparation identity changed before export")
+              closed_checks = json.loads(Path(
+                  os.environ["RUNNER_TEMP"], "computer-use-lock-validation.json"
+              ).read_text(encoding="utf-8"))
+              if hashlib.sha256(after_lock.read_bytes()).hexdigest() != closed_checks["cargo_lock_validated_sha256"]:
+                  raise SystemExit("Bazel module resolution changed the validated Cargo.lock")
           with before_lock.open("rb") as stream:
               before = tomllib.load(stream)
           with after_lock.open("rb") as stream:
@@ -444,7 +960,7 @@ jobs:
               raise SystemExit(
                   "Cargo.lock refresh removed or changed an already-locked external dependency"
               )
-          if local_package_names(before) != local_package_names(after):
+          if not computer_use and local_package_names(before) != local_package_names(after):
               raise SystemExit("Cargo.lock refresh changed the local workspace package set")
 
           exact_files = {
@@ -458,6 +974,9 @@ jobs:
               "codex-rs/app-server-protocol/schema/typescript/",
               "codex-rs/app-server-protocol/schema/json/",
           )
+          if computer_use:
+              exact_files = {"codex-rs/Cargo.lock", "MODULE.bazel.lock"}
+              generated_prefixes = ()
 
           status = subprocess.check_output(
               ["git", "-C", str(root), "status", "--porcelain=v1", "-z", "--untracked-files=all"]
@@ -478,8 +997,10 @@ jobs:
               changed_paths.append(path)
               if state == "??":
                   untracked_paths.append(path)
-          if "codex-rs/Cargo.lock" not in changed_paths:
+          if not computer_use and "codex-rs/Cargo.lock" not in changed_paths:
               raise SystemExit("Cargo.lock did not change; refusing to emit an incomplete prep artifact")
+          if computer_use and not changed_paths:
+              raise SystemExit("neither admitted lock changed; refusing an empty prep artifact")
           changed_paths = sorted(set(changed_paths))
 
           if untracked_paths:
@@ -520,12 +1041,61 @@ jobs:
               "allowed_exact_paths": sorted(exact_files),
               "allowed_generated_prefixes": list(generated_prefixes),
           }
+          if computer_use:
+              temporary = Path(os.environ["RUNNER_TEMP"])
+              module_before = temporary / "MODULE.bazel.lock.before"
+              module_after = root / "MODULE.bazel.lock"
+              if module_after.read_bytes() != (temporary / "MODULE.bazel.lock.after").read_bytes():
+                  raise SystemExit("verified module lock changed before export")
+              def tree(directory, revision):
+                  return subprocess.check_output(
+                      ["git", "-C", str(directory), "rev-parse", revision + "^{tree}"], text=True
+                  ).strip()
+              trees = {
+                  "workflow_host_tree": tree(Path(os.environ["GITHUB_WORKSPACE"]) / ".workflow-src", "HEAD"),
+                  "product_tree": tree(root, "HEAD"),
+                  "comparison_base_tree": tree(root, os.environ["BASE_SHA"]),
+              }
+              if trees["product_tree"] != "2ac607f108d3e8ddd5df1eb7ac393d355de2a121" or trees["comparison_base_tree"] != "699cd8b075e3aeafff573557612cdb944eb75c0a":
+                  raise SystemExit("closed preparation input trees differ")
+              versions = {}
+              for tool, expected in (("rustc", "1.95.0"), ("cargo", "1.95.0"), ("uv", "0.11.3")):
+                  report = subprocess.check_output([tool, "--version"], text=True).strip()
+                  if report.split()[:2] != [tool, expected]:
+                      raise SystemExit("preparation tool version differs from its pin")
+                  versions[tool] = report
+              if (temporary / "computer-use-bazel-version.txt").read_text(encoding="utf-8") != "bazel 9.0.0\n":
+                  raise SystemExit("Bazel version evidence is missing")
+              identity.update(trees)
+              identity.update({
+                  "mode": os.environ["MODE"],
+                  "preparation_profile": os.environ["PREPARATION_PROFILE"],
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "tool_versions": dict(versions, bazel="9.0.0"),
+                  "setup_bazel_action": "bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86",
+                  "bazelisk_version": "1.28.1",
+                  "bazelisk_version_evidence": "pinned-setup-action-input",
+                  "checkout_action": "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+                  "rust_action": "dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582",
+                  "upload_action": "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f",
+                  "module_lock_before_sha256": hashlib.sha256(module_before.read_bytes()).hexdigest(),
+                  "module_lock_after_sha256": hashlib.sha256(module_after.read_bytes()).hexdigest(),
+                  "closed_computer_use_checks": closed_checks,
+                  "commands": [
+                      {"cwd": "product/codex-rs", "argv": ["cargo", "update", "--workspace"]},
+                      {"cwd": "product", "argv": ["python3", "codex-rs/app-server-protocol/scripts/write_schema_fixtures.py"]},
+                      {"cwd": "product/codex-rs", "argv": ["cargo", "metadata", "--locked", "--format-version", "1"]},
+                      {"cwd": "product", "argv": ["bazel", "--ignore_all_rc_files", "--output_base=<runner.temp>/computer-use-bazel", "mod", "deps", "--lockfile_mode=update"]},
+                      {"cwd": "product", "argv": ["bazel", "--ignore_all_rc_files", "--output_base=<runner.temp>/computer-use-bazel", "mod", "deps", "--lockfile_mode=error"]},
+                  ],
+              })
           Path(os.environ["RUNNER_TEMP"], "identity.json").write_text(
               json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
           PY
       - name: Require the generated lockfile to be accepted as-is
-        if: ${{ inputs.preparation_profile == 'cargo-schema' }}
+        if: ${{ inputs.preparation_profile == 'cargo-schema' && steps.preparation_identity.outputs.computer-use != 'true' }}
         working-directory: product/codex-rs
         shell: bash
         run: cargo metadata --locked --format-version 1 > /dev/null
@@ -541,6 +1111,9 @@ jobs:
             ${{ runner.temp }}/Cargo.lock.before
             ${{ runner.temp }}/Cargo.lock.before.sha256
             ${{ runner.temp }}/Cargo.lock.after
+            ${{ steps.preparation_identity.outputs.computer-use == 'true' && format('{0}/MODULE.bazel.lock.before', runner.temp) || '' }}
+            ${{ steps.preparation_identity.outputs.computer-use == 'true' && format('{0}/MODULE.bazel.lock.before.sha256', runner.temp) || '' }}
+            ${{ steps.preparation_identity.outputs.computer-use == 'true' && format('{0}/MODULE.bazel.lock.after', runner.temp) || '' }}
           if-no-files-found: error
           retention-days: 30
       - name: Upload exact config-schema source diff

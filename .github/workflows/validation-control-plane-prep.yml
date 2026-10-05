@@ -1,6 +1,17 @@
 name: validation-control-plane-prep
 
 on:
+  workflow_call:
+    inputs:
+      target_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+      base_ref:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       target_sha:
@@ -29,6 +40,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Validate requested identities
         shell: bash
@@ -88,6 +100,29 @@ jobs:
           target="$(git -C product rev-parse 'HEAD^{commit}')"
           [[ "${fetched_base}" == "${BASE_SHA}" ]] || { echo "comparison checkout mismatch" >&2; exit 2; }
           [[ "${target}" == "${TARGET_SHA}" ]] || { echo "candidate checkout mismatch" >&2; exit 2; }
+
+      - name: Validate clean trusted checkouts before installing tools
+        id: preflight
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+          HELPER_SHA: ${{ github.sha }}
+          PATCH_PATH: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.patch
+          RECEIPT_PATH: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: |
+          set -euo pipefail
+          python3 .workflow-src/.github/scripts/control_plane_preparation_route.py --preflight \
+            --product "${GITHUB_WORKSPACE}/product" \
+            --base "${GITHUB_WORKSPACE}/base" \
+            --helper "${GITHUB_WORKSPACE}/.workflow-src" \
+            --target-sha "${TARGET_SHA}" \
+            --base-sha "${BASE_SHA}" \
+            --helper-sha "${HELPER_SHA}" \
+            --base-ref "${BASE_REF}" \
+            --patch "${PATCH_PATH}" \
+            --receipt "${RECEIPT_PATH}"
 
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -172,7 +207,7 @@ jobs:
         run: |
           set -euo pipefail
           CARGO_TARGET_DIR="${RUNNER_TEMP}/control-plane-cargo-target" \
-            python3 .workflow-src/.github/scripts/prepare_control_plane.py \
+            python3 .workflow-src/.github/scripts/control_plane_preparation_route.py \
               --product "${GITHUB_WORKSPACE}/product" \
               --base "${GITHUB_WORKSPACE}/base" \
               --helper "${GITHUB_WORKSPACE}/.workflow-src" \
@@ -188,7 +223,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: control-plane-preparation-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
+          path: |
+            ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
+            ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.route.json
           if-no-files-found: error
           retention-days: 3
 
