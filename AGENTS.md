@@ -19,7 +19,6 @@ In the codex-rs folder where the rust code lives:
 - Do not add or modify code for `CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR`, `CODEX_SANDBOX_ENV_VAR`, or `CODEX_SANDBOX=seatbelt`; sandbox- and Seatbelt-aware tests depend on these markers.
 - For positional opaque literals, follow `argument_comment_lint`: use an exact `/*param_name*/` comment where required. Do not add comments to string/char literals without a clarity benefit.
 - New traits need role/usage docs. Prefer RPITIT traits with explicit `Send` bounds over `#[async_trait]` or `#[allow(async_fn_in_trait)]`.
-- Tests should compare whole objects where useful; do not test static values or removed logic. Put new test modules in sibling `*_tests.rs` files and avoid test-only production helpers.
 - Do not add general product docs under `docs/`; upstream documentation is maintained elsewhere. App-server API docs are the exception.
 - Keep native computer-use runtimes behind provider seams: Codex owns tool schemas, events, app-server/TUI projection, rollout, and native image output; backends own sessions, capture, UI digests, and input execution. Route browser integrations through the provider interfaces, not hot app-server/core paths. Successful visual observe/step responses require model-visible `inputImage` content. For behavior changes, update the focused native-computer-use, surface, regression, divergence, and recipe docs/tests.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
@@ -40,7 +39,7 @@ For likely upstream/core regressions, check `upstream/main`, then related open `
 
 ## Compatibility and tests
 
-Check compatibility when changing app-server APIs, raw response events (including experimental), CLI parameters, config loading, or rollout resume. Agent-logic changes need integration coverage for changed behavior; prefer existing `core/suite` helpers. Put new test modules in sibling `*_tests.rs` files and avoid test-only production helpers.
+Check compatibility when changing app-server APIs, raw response events (including experimental), CLI parameters, config loading, or rollout resume. Agent-logic changes need integration coverage for changed behavior; prefer existing `core/suite` helpers. Avoid test-only production helpers.
 
 ## TUI
 
