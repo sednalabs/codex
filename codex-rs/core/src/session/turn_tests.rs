@@ -76,8 +76,7 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
         .is_never()
     );
     assert!(
-        tracing::Subscriber::register_callsite(&subscriber, &ORDINARY_TRACE_METADATA)
-            .is_always()
+        tracing::Subscriber::register_callsite(&subscriber, &ORDINARY_TRACE_METADATA).is_always()
     );
 }
 

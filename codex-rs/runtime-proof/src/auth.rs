@@ -115,7 +115,7 @@ pub(crate) fn initialize_from_environment(
     }
     let socket = unsafe { std::fs::File::from_raw_fd(fd) };
     verify_root_seqpacket_peer(&socket)?;
-    let mut frame_bytes = receive_auth_frame(&socket)?;
+    let frame_bytes = receive_auth_frame(&socket)?;
     let frame: AuthFrame =
         serde_json::from_slice(&frame_bytes).context("decode protected runtime auth frame")?;
     validate_and_import(frame, claims, certificate_sha256)
@@ -131,7 +131,7 @@ pub(crate) fn initialize_from_environment(
 
 #[cfg(target_os = "linux")]
 fn validate_and_import(
-    frame: AuthFrame,
+    mut frame: AuthFrame,
     claims: &wire::CertificateClaims,
     certificate_sha256: &str,
 ) -> Result<()> {
@@ -201,12 +201,12 @@ fn validate_and_import(
     .context("import protected ChatGPT token into the ephemeral auth store")?;
 
     let auth = BootstrapAuth {
-        home: home.clone(),
+        home,
         server: frame.mcp_server,
         recipient: frame.recipient,
         provider_recipient: frame.provider_recipient,
         expires_at: frame.expires_at,
-        bearer: Zeroizing::new(frame.mcp_bearer.0.clone()),
+        bearer: Zeroizing::new(std::mem::take(&mut frame.mcp_bearer.0)),
     };
     let store = BOOTSTRAP_AUTH.get_or_init(|| Mutex::new(None));
     let mut stored = store
@@ -620,7 +620,7 @@ fn sha256_hex(value: &[u8]) -> String {
     let mut out = String::with_capacity(64);
     for byte in sha2::Sha256::digest(value) {
         use std::fmt::Write as _;
-        write!(out, "{byte:02x}").expect("writing to String cannot fail");
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

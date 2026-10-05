@@ -464,12 +464,6 @@ async fn handle_approved_mcp_tool_call(
                         protected_call =
                             codex_runtime_proof::is_protected_mcp_target(&server, recipient)
                                 .map_err(anyhow::Error::msg)?;
-                        if protected_call {
-                            runtime_redaction_context =
-                                codex_runtime_proof::capture_mcp_redaction_context(
-                                    &server, recipient, None,
-                                )?;
-                        }
                     }
                     let empty_arguments = JsonValue::Null;
                     let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);

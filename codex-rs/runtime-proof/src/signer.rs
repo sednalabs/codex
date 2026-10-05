@@ -28,7 +28,7 @@ enum SignerState {
     #[default]
     Uninitialized,
     Unconfigured,
-    Ready(RuntimeProofSigner),
+    Ready(Box<RuntimeProofSigner>),
 }
 
 static SIGNER: OnceLock<Mutex<SignerState>> = OnceLock::new();
@@ -47,11 +47,11 @@ pub(crate) fn install_bootstrap(certificate: String, seed: Zeroizing<[u8; 32]>) 
     if !matches!(&*state, SignerState::Uninitialized) {
         bail!("runtime proof startup was already initialized");
     }
-    *state = SignerState::Ready(RuntimeProofSigner {
+    *state = SignerState::Ready(Box::new(RuntimeProofSigner {
         certificate,
         claims,
         seed,
-    });
+    }));
     Ok(())
 }
 
@@ -99,9 +99,6 @@ pub fn sign_claim_proof(
         .lock()
         .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
     let SignerState::Ready(signer) = &*state else {
-        if matches!(&*state, SignerState::Unconfigured) {
-            return Ok(None);
-        }
         return Ok(None);
     };
     if !signer.matches_target(server, transport_url, tool)? {

@@ -5,6 +5,7 @@ name = "codex-runtime-proof"
 version.workspace = true
 
 [lib]
+doctest = false
 name = "codex_runtime_proof"
 path = "src/lib.rs"
 

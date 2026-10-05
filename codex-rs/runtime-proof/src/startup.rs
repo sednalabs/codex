@@ -3,7 +3,6 @@ use anyhow::Result;
 use anyhow::bail;
 use std::fs::File;
 use std::io::Read;
-use std::path::PathBuf;
 use zeroize::Zeroizing;
 
 const DESCRIPTOR_ENV: &str = "OPS_RUNTIME_BOOTSTRAP_FD";
@@ -279,7 +278,7 @@ fn read_bootstrap_frame(file: &File) -> Result<(String, Zeroizing<[u8; SEED_BYTE
         bail!("runtime proof bootstrap packet was truncated");
     }
     let frame_len = received as usize;
-    if frame_len > MAX_FRAME_BYTES || frame_len < 4 + SEED_BYTES {
+    if !(4 + SEED_BYTES..=MAX_FRAME_BYTES).contains(&frame_len) {
         bail!("runtime proof bootstrap frame has an invalid size");
     }
     let frame = &frame_buffer[..frame_len];
@@ -348,8 +347,7 @@ fn complete_bootstrap_ack(_file: &File) -> Result<()> {
 
 pub(crate) fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
-    let mut file =
-        File::open(PathBuf::from(executable)).context("cannot open runtime executable")?;
+    let mut file = File::open(executable).context("cannot open runtime executable")?;
     let mut hash = sha2::Sha256::new();
     let mut buffer = [0u8; 16 * 1024];
     loop {
@@ -364,7 +362,7 @@ pub(crate) fn current_artifact_sha256() -> Result<String> {
     let mut output = String::with_capacity(64);
     for byte in digest {
         use std::fmt::Write as _;
-        write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+        let _ = write!(output, "{byte:02x}");
     }
     Ok(output)
 }

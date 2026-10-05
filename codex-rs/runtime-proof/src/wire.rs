@@ -139,7 +139,7 @@ pub(crate) fn digest(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     for byte in Sha256::digest(bytes) {
         use std::fmt::Write as _;
-        write!(output, "{byte:02x}").expect("writing to a String cannot fail");
+        let _ = write!(output, "{byte:02x}");
     }
     output
 }

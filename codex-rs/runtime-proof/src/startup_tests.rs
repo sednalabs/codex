@@ -1,5 +1,7 @@
 use super::*;
+#[cfg(target_os = "linux")]
 use base64::Engine;
+#[cfg(target_os = "linux")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use pretty_assertions::assert_eq;
 

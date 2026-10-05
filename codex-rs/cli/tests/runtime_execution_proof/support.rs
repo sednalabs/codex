@@ -300,11 +300,11 @@ fn function_output<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
         .as_str()
 }
 
-fn wait_result_for_target<'a>(result: &'a Value, target: &str) -> Option<&'a Value> {
+fn wait_result_for_target(result: &Value, target: &str) -> Option<Value> {
     if target.is_empty() || result.get("timed_out")?.as_bool()? {
         return None;
     }
-    result.get("status")?.get(target)
+    result.get("status")?.get(target).cloned()
 }
 
 #[derive(Clone)]
@@ -653,7 +653,7 @@ impl ProtectedRuntimeFixture {
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
         let stdout = File::create(&self.output_path)?;
         let stderr = File::create(&self.errors_path)?;
-        let (launcher, child_socket) = seqpacket_pair()?;
+        let (mut launcher, child_socket) = seqpacket_pair()?;
         let (auth_launcher, auth_child_socket) = seqpacket_pair()?;
         let child_fd = child_socket.as_raw_fd();
         let auth_child_fd = auth_child_socket.as_raw_fd();

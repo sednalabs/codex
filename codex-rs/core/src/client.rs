@@ -523,7 +523,7 @@ fn validate_api_route(
     let Some(recipient) = recipient else {
         return Ok(api_provider.url_for_path(endpoint));
     };
-    validate_protected_api_provider(api_provider, &recipient)?;
+    validate_protected_api_provider(api_provider, recipient)?;
     let request_url = api_provider.url_for_path(endpoint);
     let expected_url = format!(
         "{}/{}",

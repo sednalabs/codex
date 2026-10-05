@@ -42,16 +42,19 @@ impl HttpClient for RecordingClient {
         &self,
         params: HttpRequestParams,
     ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
-        self.requests.lock().unwrap().push((
-            params.method,
-            params.url,
-            params
-                .headers
-                .iter()
-                .find(|header| header.name.eq_ignore_ascii_case("authorization"))
-                .map(|header| header.value.clone())
-                .unwrap_or_default(),
-        ));
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((
+                params.method,
+                params.url,
+                params
+                    .headers
+                    .iter()
+                    .find(|header| header.name.eq_ignore_ascii_case("authorization"))
+                    .map(|header| header.value.clone())
+                    .unwrap_or_default(),
+            ));
         async { Err(ExecServerError::HttpRequest("fixture response".to_string())) }.boxed()
     }
 
@@ -94,12 +97,20 @@ fn run_protected_child() -> anyhow::Result<()> {
         first.is_err(),
         "recording transport should return its fixture error"
     );
-    let first_count = recorder.requests.lock().unwrap().len();
+    let first_count = recorder
+        .requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
     anyhow::ensure!(
         first_count == 1,
         "first protected send did not reach transport"
     );
-    let sent = recorder.requests.lock().unwrap()[0].clone();
+    let sent = recorder
+        .requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)[0]
+        .clone();
     anyhow::ensure!(
         sent == (
             "POST".to_string(),
@@ -120,7 +131,12 @@ fn run_protected_child() -> anyhow::Result<()> {
         "expired protected client send must fail closed"
     );
     anyhow::ensure!(
-        recorder.requests.lock().unwrap().len() == 1,
+        recorder
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            == 1,
         "expired retained client reached its underlying network delegate"
     );
     Ok(())
@@ -169,7 +185,7 @@ fn launch_protected_child() -> anyhow::Result<()> {
         &json!({"alg":"EdDSA","typ":"runtime-certificate+jwt","kid":"fixture-issuer"}),
         &claims,
         &[0_u8; 64],
-    );
+    )?;
     let certificate_path = root.join("certificate.jwt");
     std::fs::write(&certificate_path, &certificate)?;
     let certificate_sha256 = format!("sha256:{}", sha256_file(&certificate_path)?);
@@ -218,13 +234,27 @@ fn launch_protected_child() -> anyhow::Result<()> {
     unsafe {
         command.pre_exec(move || {
             if dup2(bootstrap_fd, BOOTSTRAP_FD) < 0
-                || fcntl(BOOTSTRAP_FD, F_SETFD, 0) < 0
+                || fcntl(BOOTSTRAP_FD, F_SETFD, /*argument*/ 0) < 0
                 || dup2(auth_fd, AUTH_FD) < 0
-                || fcntl(AUTH_FD, F_SETFD, 0) < 0
-                || setgroups(0, std::ptr::null()) != 0
-                || setresgid(65534, 65534, 65534) != 0
-                || setresuid(65534, 65534, 65534) != 0
-                || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || fcntl(AUTH_FD, F_SETFD, /*argument*/ 0) < 0
+                || setgroups(/*size*/ 0, std::ptr::null()) != 0
+                || setresgid(
+                    /*real*/ 65534,
+                    /*effective*/ 65534,
+                    /*saved*/ 65534,
+                ) != 0
+                || setresuid(
+                    /*real*/ 65534,
+                    /*effective*/ 65534,
+                    /*saved*/ 65534,
+                ) != 0
+                || prctl(
+                    PR_SET_NO_NEW_PRIVS,
+                    /*arg2*/ 1,
+                    /*arg3*/ 0,
+                    /*arg4*/ 0,
+                    /*arg5*/ 0,
+                ) != 0
             {
                 return Err(std::io::Error::last_os_error());
             }
@@ -277,7 +307,7 @@ fn seqpacket_pair() -> anyhow::Result<(UnixStream, UnixStream)> {
         socketpair(
             AF_UNIX,
             SOCK_SEQPACKET | SOCK_CLOEXEC,
-            0,
+            /*protocol*/ 0,
             descriptors.as_mut_ptr(),
         )
     } != 0
@@ -316,13 +346,17 @@ fn bootstrap_frame(certificate: &str, seed: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn compact_jws(header: &serde_json::Value, claims: &serde_json::Value, signature: &[u8]) -> String {
-    format!(
+fn compact_jws(
+    header: &serde_json::Value,
+    claims: &serde_json::Value,
+    signature: &[u8],
+) -> anyhow::Result<String> {
+    Ok(format!(
         "{}.{}.{}",
-        base64url(serde_json::to_vec(header).unwrap().as_slice()),
-        base64url(serde_json::to_vec(claims).unwrap().as_slice()),
+        base64url(&serde_json::to_vec(header)?),
+        base64url(&serde_json::to_vec(claims)?),
         base64url(signature),
-    )
+    ))
 }
 
 fn synthetic_access_token(expires_at: u64) -> String {
