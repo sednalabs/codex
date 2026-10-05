@@ -948,6 +948,144 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
         self.assertNotIn(pending.encode(), data)
         self.assertFalse(json.loads(data)["generated_output_acceptance"])
 
+    def _catalogue_inline_expected(self, pending, sources=(), **omissions):
+        expected = self._expected(pending, exit_code=100)
+        observed = len(sources) + sum(count for count, _ in omissions.values())
+        complete = not omissions
+        other = expected["conservation"]["other_files"]
+        other.update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        other["evidence"].update(status="complete" if complete else "partial", observed_count=observed,
+            observed_entry_count=observed, emitted_count=len(sources), omitted_count=observed - len(sources),
+            paths=[{"source_locator": source, "kind": "insta_inline_pending", "git_status": "??",
+                    "observed_via": ["nonignored_untracked", "status"]} for source in sorted(sources)],
+            complete=complete, omission_reasons=self._omissions(**omissions))
+        for query in other["evidence"]["queries"].values():
+            query.update(observed_count=len(pending) + observed, observed_entry_count=len(pending) + observed)
+        expected["metadata_status"] = "complete" if complete else "incomplete"
+        return expected
+
+    def test_catalogue_inline_exact_associations_persist_only_public_source_locators(self):
+        associations = {
+            "codex-rs/tui/src/app/catalogue_fixture_tests.rs": "codex-rs/tui/src/app/.catalogue_fixture_tests.rs.pending-snap",
+            "codex-rs/tui/src/analytics/chart_example.rs": "codex-rs/tui/src/analytics/.chart_example.rs.pending-snap",
+        }
+        for source in associations:
+            self._additional_snapshot(source)
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, associations)
+        body = b"PRIVATE_INLINE_BODY /private/runner ghp_abcdefghijklmnopqrstuvwxyz123456 https://private.invalid\n"
+        allowed_reads = {self.product_root / relative for relative in (*prepare_tui_snapshots.SNAPSHOT_PATHS, *prepare_tui_snapshots.LOCK_PATHS)}
+        allowed_reads.add(Path(self.environment["RUNNER_TEMP"]) / prepare_tui_snapshots.ARTIFACT_DIRECTORY_NAME / "diagnostic.json")
+        original_read = Path.read_bytes
+        def read(path):
+            self.assertIn(path, allowed_reads, "unexpected body read")
+            return original_read(path)
+        def action():
+            for relative in [*pending, *associations.values()]:
+                self._pending(relative, contents=body)
+        with mock.patch.object(Path, "read_bytes", read):
+            data, stderr = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+        generator_index = self.invoked_commands.index(tuple(prepare_tui_snapshots.COMMAND))
+        self.assertEqual(sum(command == ("git", "-C", str(self.product_root), "ls-files", "-z")
+                             for command in self.invoked_commands[:generator_index]), 2)
+        queries = [command[3:] for command in self.invoked_commands[generator_index + 1:]
+                   if command[:3] == ("git", "-C", str(self.product_root)) and command[3:] in (
+                       ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                       ("ls-files", "--others", "--exclude-standard", "-z"))]
+        self.assertEqual(queries, [("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                                  ("ls-files", "--others", "--exclude-standard", "-z")])
+        for private in [*(value.encode() for value in associations.values()), body, b"PRIVATE_INLINE_BODY",
+                        b"/private", b"ghp_", b"https://", hashlib.sha256(body).hexdigest().encode()]:
+            self.assertNotIn(private, data)
+        self.assertEqual((expected["generated_output_acceptance"], expected["accepted_output_limit"]), (False, 69))
+
+    def test_catalogue_inline_absent_and_postlaunch_sources_remain_unknown(self):
+        sources = ("codex-rs/tui/src/app/absent_fixture.rs", "codex-rs/tui/src/app/postlaunch_fixture.rs")
+        inline = ("codex-rs/tui/src/app/.absent_fixture.rs.pending-snap", "codex-rs/tui/src/app/.postlaunch_fixture.rs.pending-snap")
+        (self.product_root / ".git/info/exclude").write_text(sources[1] + "\n")
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, not_prelaunch_tracked=(2, 0))
+        def action():
+            self._pending(sources[1], contents=b"source appeared after catalogue capture\n")
+            for relative in [*pending, *inline]:
+                self._pending(relative)
+        data, _ = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        for private in [*(value.encode() for value in (*sources, *inline)), b"PRIVATE_BODY", b"source_locator"]:
+            self.assertNotIn(private, data)
+
+    def test_catalogue_inline_near_match_credential_and_unknown_names_are_not_joined(self):
+        self._additional_snapshot("codex-rs/tui/src/app/catalogue_fixture.rs")
+        token_source = "codex-rs/tui/src/app/github_pat_" + "x" * 20 + ".rs"
+        self._additional_snapshot(token_source)
+        inline = ("codex-rs/tui/src/app/.catalogue_fixture.rs.pending-snap.PRIVATE_CANARY",
+                  "codex-rs/tui/src/app/.github_pat_" + "x" * 20 + ".rs.pending-snap",
+                  "codex-rs/tui/src/app/.untracked_fixture.rs.pending-snap")
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, credential_shaped=(1, 0), not_prelaunch_tracked=(2, 0))
+        def action():
+            for relative in [*pending, *inline]:
+                self._pending(relative)
+        data, _ = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        for private in [*(value.encode() for value in inline), token_source.encode(), b"PRIVATE", b"github_pat_", b"source_locator"]:
+            self.assertNotIn(private, data)
+
+    def test_catalogue_inline_prelaunch_source_symlink_and_hardlink_stay_ineligible(self):
+        sources = ("codex-rs/tui/src/app/linked_source.rs", "codex-rs/tui/src/app/aliased_source.rs")
+        inline = ("codex-rs/tui/src/app/.linked_source.rs.pending-snap", "codex-rs/tui/src/app/.aliased_source.rs.pending-snap")
+        for source in sources:
+            self._additional_snapshot(source)
+        os.link(self.product_root / sources[0], self.product_root / ".git/private-source-link")
+        (self.product_root / sources[1]).unlink()
+        (self.product_root / sources[1]).symlink_to(self.product_root / prepare_tui_snapshots.LOCK_PATHS[0])
+        self._git(self.product_root, "add", "--", sources[1])
+        self._commit(self.product_root, "ineligible catalogue source fixture")
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, prelaunch_ineligible=(2, 2))
+        def action():
+            for relative in [*pending, *inline]:
+                self._pending(relative)
+        data, _ = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        for private in [*(value.encode() for value in (*sources, *inline)), b"source_locator"]:
+            self.assertNotIn(private, data)
+
+    def test_catalogue_inline_observed_symlink_and_hardlink_never_become_associations(self):
+        sources = ("codex-rs/tui/src/app/symlink_output.rs", "codex-rs/tui/src/app/hardlink_output.rs")
+        inline = ("codex-rs/tui/src/app/.symlink_output.rs.pending-snap", "codex-rs/tui/src/app/.hardlink_output.rs.pending-snap")
+        for source in sources:
+            self._additional_snapshot(source)
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, path_validation_failed=(1, 1), hardlinked=(1, 1))
+        def action():
+            for relative in pending:
+                self._pending(relative)
+            (self.product_root / inline[0]).symlink_to(self.product_root / prepare_tui_snapshots.LOCK_PATHS[0])
+            self._pending(inline[1])
+            os.link(self.product_root / inline[1], self.product_root / ".git/private-output-link")
+        data, _ = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        for private in [*(value.encode() for value in (*sources, *inline)), b"source_locator", b"PRIVATE_BODY"]:
+            self.assertNotIn(private, data)
+
+    def test_catalogue_inline_non_rust_and_outside_tui_sources_are_not_associated(self):
+        sources = ("codex-rs/tui/src/catalogue_fixture.txt", "codex-rs/core/src/catalogue_fixture.rs")
+        inline = ("codex-rs/tui/src/.catalogue_fixture.txt.pending-snap", "codex-rs/core/src/.catalogue_fixture.rs.pending-snap")
+        for source in sources:
+            self._additional_snapshot(source)
+        pending = [*(path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS), self._additional_snapshot()]
+        expected = self._catalogue_inline_expected(pending, not_prelaunch_tracked=(2, 0))
+        def action():
+            for relative in [*pending, *inline]:
+                self._pending(relative)
+        data, _ = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        for private in [*(value.encode() for value in (*sources, *inline)), b"source_locator"]:
+            self.assertNotIn(private, data)
+
     def test_closed_candidate_missing_prelaunch_source_stays_omitted(self):
         source = "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup@windows_degraded.snap"
         def action():

@@ -501,10 +501,24 @@ DIAGNOSTIC_INLINE_SOURCE = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
 DIAGNOSTIC_INLINE_PENDING = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
 
 
+def _inline_pending_locators(catalogue: set[str] | None) -> dict[str, str]:
+    """Derive exact convention associations, not evidence of an Insta producer."""
+    locators = {}
+    for source in catalogue or ():
+        if (not source.startswith(TUI_SOURCE_ROOT + "/") or not source.endswith(".rs")
+                or _path_omission(source, source, catalogue, SAFE_SOURCE_PATH)):
+            continue
+        path = Path(source)
+        pending = path.with_name("." + path.name + ".pending-snap").as_posix()
+        if not _path_omission(pending, source, catalogue, SAFE_SOURCE_PATH):
+            locators[pending] = source
+    return locators
+
+
 def _closed_diagnostic_attribution(root: Path, catalogue: set[str]) -> set[str]:
-    """Capture eligibility of only admitted source locators before generation."""
+    """Capture regular one-link eligibility of public locators before generation."""
     eligible = set()
-    for source in (*DIAGNOSTIC_SNAPSHOT_CANDIDATES, DIAGNOSTIC_INLINE_SOURCE):
+    for source in (*DIAGNOSTIC_SNAPSHOT_CANDIDATES, *_inline_pending_locators(catalogue).values()):
         if source not in catalogue:
             continue
         try:
@@ -677,9 +691,10 @@ def _other_files_unchanged(root: Path, pending: set[str], pending_complete: bool
                               "observed_count": None, "observed_entry_count": seen}
     paths = []
     omissions = _omission_counts(catalogue)
+    inline_locators = _inline_pending_locators(catalogue)
     for relative, record in sorted(records.items()):
-        if relative == DIAGNOSTIC_INLINE_PENDING:
-            source = DIAGNOSTIC_INLINE_SOURCE
+        source = inline_locators.get(relative)
+        if source is not None and record["git_status"] in (None, "??"):
             reason = _closed_locator_omission(root, relative, source, catalogue, closed_eligible)
             if reason:
                 _record_omission(omissions, reason, source, catalogue)
