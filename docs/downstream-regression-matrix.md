@@ -1104,10 +1104,11 @@ permission contract is documented in
 Session shutdown pins default-turn creation in a heap-allocated future before
 awaiting it and SessionEnd hook processing. Keep the existing no-hook, root-only and
 hook-order behavior. The exact external-unload residency case is the core
-runtime control; the existing SessionEnd event tests remain separate hook
-behavior controls:
+runtime control; these existing core shutdown-consumer tests are also
+controls:
 `external_v2_unload_defers_for_pending_finalizers_and_submissions`,
-`session_end_matches_other_reason`, and `session_end_ignores_successful_output`.
+`session_end_flushes_transcript_and_ignores_control_output`, and
+`session_end_skips_subagents`.
 The current debugger frame identifies the SessionEnd coroutine poll path but
 not the specific faulting expression; this allocation change is a bounded
 hypothesis, not a claimed execution fix. Do not record the affected test as

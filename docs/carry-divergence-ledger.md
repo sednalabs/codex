@@ -3764,8 +3764,9 @@ Session shutdown pins default-turn creation in a heap-allocated future before
 awaiting it and running SessionEnd hooks. This is a bounded allocation
 hypothesis; it preserves the existing no-hook return,
 root-only check, and hook ordering. Keep the external-unload residency test as
-the exact core reproducer and the existing SessionEnd event tests as hook
-behavior controls. The debugger identified the SessionEnd coroutine poll path but not a specific
+the exact core reproducer, with `session_end_flushes_transcript_and_ignores_control_output`
+and `session_end_skips_subagents` as the existing shutdown-consumer controls.
+The debugger identified the SessionEnd coroutine poll path but not a specific
 faulting expression, so this source change does not claim a proven root cause
 or a passing execution.
 
