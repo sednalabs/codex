@@ -835,7 +835,6 @@ class PrepareFlowTests(unittest.TestCase):
         expected.update(status="incomplete", failure_code=code)
         expected["identity"]["helper_tree"] = None
         expected["inventory"] = {
-            "candidate_path_count": 0,
             "changed_path_count": 0,
             "omitted_path_count": 0,
         }
@@ -882,6 +881,13 @@ class PrepareFlowTests(unittest.TestCase):
         else:
             expected["source_style"] = {"status": "passed", "exit_code": 0}
             expected["self_tests"] = {"status": "passed", "exit_code": 0}
+            complete = self.expected_complete_receipt(args, b"", 0)
+            expected["dependency_inventory"]["base"] = complete[
+                "dependency_inventory"
+            ]["base"]
+            expected["dependency_inventory"]["target_initial"] = complete[
+                "dependency_inventory"
+            ]["target_initial"]
             expected["toolchain"]["status"] = "unknown"
             expected["toolchain"]["current_phase"] = tool_name
             expected["toolchain"]["commands"] = {
@@ -1312,12 +1318,15 @@ class PrepareFlowTests(unittest.TestCase):
             clear=False,
         ):
             with mock.patch.object(
-                prepare_control_plane,
-                "atomic_write",
-                side_effect=write_then_report_failure,
+                prepare_control_plane, "run", side_effect=self.mocked_run()
             ):
-                with mock.patch.object(Path, "unlink", fail_patch_cleanup):
-                    result = prepare_control_plane.prepare(self.args())
+                with mock.patch.object(
+                    prepare_control_plane,
+                    "atomic_write",
+                    side_effect=write_then_report_failure,
+                ):
+                    with mock.patch.object(Path, "unlink", fail_patch_cleanup):
+                        result = prepare_control_plane.prepare(self.args())
         receipt_bytes = receipt_path.read_bytes()
         expected = self.expected_complete_receipt(self.args(), b"", 0)
         expected.update(status="incomplete", failure_code="receipt_persist_failed")
@@ -1352,11 +1361,14 @@ class PrepareFlowTests(unittest.TestCase):
             clear=False,
         ):
             with mock.patch.object(
-                prepare_control_plane,
-                "atomic_write",
-                side_effect=lose_final_receipt,
+                prepare_control_plane, "run", side_effect=self.mocked_run()
             ):
-                result = prepare_control_plane.prepare(self.args())
+                with mock.patch.object(
+                    prepare_control_plane,
+                    "atomic_write",
+                    side_effect=lose_final_receipt,
+                ):
+                    result = prepare_control_plane.prepare(self.args())
         durable_bytes = receipt_path.read_bytes()
         expected = self.expected_complete_receipt(self.args(), b"", 0)
         self.assertEqual(result, 1)
