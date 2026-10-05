@@ -251,8 +251,6 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -u
-          test_log="${RUNNER_TEMP}/control-plane-self-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
-          set +e
           env -i \
             PATH="${PATH}" \
             HOME="${HOME}" \
@@ -264,12 +262,120 @@ jobs:
             UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT}" \
             GIT_CONFIG_NOSYSTEM=1 \
             GIT_CONFIG_GLOBAL=/dev/null \
-            python3 -m unittest discover -s .github/scripts -p test_prepare_control_plane.py \
-            >"${test_log}" 2>&1
-          test_exit=$?
-          set -e
-          printf 'helper_self_test_exit=%s\n' "${test_exit}"
-          awk '/^(FAIL|ERROR): / || /  File ".*test_prepare_control_plane.py", line [0-9]+, in / || /^(Ran [0-9]+ tests|FAILED \()/ { print }' "${test_log}"
+            python3 - <<'PY'
+          import json
+          import traceback
+          import unittest
+
+
+          class SafeAssertionError(AssertionError):
+              pass
+
+
+          def differing_paths(actual, expected, prefix="$", limit=64):
+              if type(actual) is not type(expected):
+                  return [prefix]
+              if isinstance(actual, dict):
+                  result = []
+                  for key in sorted(actual.keys() | expected.keys()):
+                      child = f"{prefix}.{key}"
+                      if key not in actual or key not in expected:
+                          result.append(child)
+                      else:
+                          result.extend(
+                              differing_paths(actual[key], expected[key], child, limit)
+                          )
+                      if len(result) >= limit:
+                          return result[:limit]
+                  return result
+              if isinstance(actual, list):
+                  result = []
+                  if len(actual) != len(expected):
+                      result.append(f"{prefix}.length")
+                  for index, (left, right) in enumerate(zip(actual, expected)):
+                      result.extend(
+                          differing_paths(left, right, f"{prefix}[{index}]", limit)
+                      )
+                      if len(result) >= limit:
+                          return result[:limit]
+                  return result[:limit]
+              return [] if actual == expected else [prefix]
+
+
+          def bounded_assert_equal(self, actual, expected, msg=None):
+              if actual == expected:
+                  return
+              paths = None
+              if isinstance(actual, bytes) and isinstance(expected, bytes):
+                  try:
+                      actual_json = json.loads(actual)
+                      expected_json = json.loads(expected)
+                  except (UnicodeDecodeError, json.JSONDecodeError):
+                      pass
+                  else:
+                      if (
+                          isinstance(actual_json, dict)
+                          and actual_json.get("schema") == "control-plane-preparation-v1"
+                          and isinstance(expected_json, dict)
+                          and expected_json.get("schema") == "control-plane-preparation-v1"
+                      ):
+                          paths = differing_paths(actual_json, expected_json)
+              if paths:
+                  raise SafeAssertionError("receipt_field_paths=" + ",".join(paths))
+              raise SafeAssertionError("assertion_values_redacted")
+
+
+          unittest.TestCase.assertEqual = bounded_assert_equal
+
+
+          class SafeResult(unittest.TestResult):
+              def __init__(self):
+                  super().__init__()
+                  self.records = []
+
+              def record(self, kind, test, err):
+                  frames = traceback.extract_tb(err[2]) if err[2] else []
+                  line = next(
+                      (
+                          frame.lineno
+                          for frame in reversed(frames)
+                          if frame.filename.endswith("test_prepare_control_plane.py")
+                      ),
+                      "unavailable",
+                  )
+                  detail = (
+                      str(err[1])
+                      if isinstance(err[1], SafeAssertionError)
+                      else "diagnostic_detail_redacted"
+                  )
+                  self.records.append((kind, test.id(), line, detail))
+
+              def addFailure(self, test, err):
+                  self.failures.append((test, "bounded failure"))
+                  self.record("failure", test, err)
+
+              def addError(self, test, err):
+                  self.errors.append((test, "bounded error"))
+                  self.record("error", test, err)
+
+              def addSubTest(self, test, subtest, err):
+                  if err is not None:
+                      self.failures.append((test, "bounded subtest failure"))
+                      self.record("failure", test, err)
+
+
+          suite = unittest.defaultTestLoader.discover(
+              ".github/scripts", pattern="test_prepare_control_plane.py"
+          )
+          result = SafeResult()
+          suite.run(result)
+          for kind, test_id, line, detail in result.records:
+              print(f"{kind}={test_id} test_file_line={line} {detail}")
+          print(
+              f"tests={result.testsRun} failures={len(result.failures)} "
+              f"errors={len(result.errors)}"
+          )
+          PY
 
       - name: Upload bounded preparation receipt
         if: ${{ always() && !cancelled() }}
