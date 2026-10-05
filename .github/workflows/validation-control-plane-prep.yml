@@ -82,7 +82,8 @@ jobs:
         shell: bash
         env:
           ISOLATED_HOME: ${{ runner.temp }}/control-plane-home
-        run: mkdir -p "${ISOLATED_HOME}"
+          ISOLATED_BAZEL_SETUP_HOME: ${{ runner.temp }}/control-plane-bazel-setup-home
+        run: mkdir -p "${ISOLATED_HOME}" "${ISOLATED_BAZEL_SETUP_HOME}"
 
       - name: Materialize comparison commit in candidate object database
         shell: bash
