@@ -169,36 +169,36 @@ impl BuilderDiagnostic {
         match &result {
             Ok(_) => self.returned(phase),
             Err(error) => {
-                self.marker(phase, "error", Self::error_class(error));
+                self.marker(phase, "error", &Self::error_class(error));
             }
         }
         result
     }
 
-    fn error_class(error: &anyhow::Error) -> &'static str {
+    fn codex_kind_class(kind: CodexErrKind) -> String {
+        // Serialize only the upstream payload-free discriminant, never CodexErr.
+        match serde_json::to_value(kind) {
+            Ok(serde_json::Value::String(label)) => format!("codex_{label}"),
+            _ => "unlisted_codex_kind".to_owned(),
+        }
+    }
+
+    fn error_class(error: &anyhow::Error) -> String {
         let kind = error
             .chain()
             .find_map(|cause| cause.downcast_ref::<std::io::Error>())
             .map(std::io::Error::kind);
-        match kind {
-            None => match error
+        if kind.is_none() {
+            return match error
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<CodexErr>())
                 .map(CodexErrKind::from)
             {
-                Some(CodexErrKind::Fatal) => "codex_fatal",
-                Some(CodexErrKind::InvalidRequest) => "codex_invalid_request",
-                Some(CodexErrKind::UnsupportedOperation) => "codex_unsupported_operation",
-                Some(CodexErrKind::Sandbox) => "codex_sandbox",
-                Some(CodexErrKind::LandlockSandboxExecutableNotProvided) => {
-                    "codex_sandbox_executable_not_provided"
-                }
-                Some(CodexErrKind::Json) => "codex_json",
-                Some(CodexErrKind::TokioJoin) => "codex_tokio_join",
-                Some(CodexErrKind::EnvVar) => "codex_env_var",
-                Some(_) => "unlisted_codex_kind",
-                None => "no_io_cause",
-            },
+                Some(kind) => Self::codex_kind_class(kind),
+                None => "no_io_cause".to_owned(),
+            };
+        }
+        match kind {
             Some(ErrorKind::NotFound) => "not_found",
             Some(ErrorKind::PermissionDenied) => "permission_denied",
             Some(ErrorKind::ConnectionRefused) => "connection_refused",
@@ -211,7 +211,9 @@ impl BuilderDiagnostic {
             Some(ErrorKind::UnexpectedEof) => "unexpected_eof",
             // ErrorKind is non-exhaustive; never format an unknown error.
             Some(_) => "unlisted_io_kind",
+            None => unreachable!("the no-I/O branch returned above"),
         }
+        .to_owned()
     }
 }
 
@@ -1743,9 +1745,9 @@ mod tests {
             ),
             (
                 CodexErrorDetails::LandlockSandboxExecutableNotProvided,
-                "codex_sandbox_executable_not_provided",
+                "codex_landlock_sandbox_executable_not_provided",
             ),
-            (CodexErrorDetails::TurnAborted, "unlisted_codex_kind"),
+            (CodexErrorDetails::TurnAborted, "codex_turn_aborted"),
         ] {
             let error = anyhow::Error::new(CodexErr::from(details)).context("private outer canary");
             assert_eq!(BuilderDiagnostic::error_class(&error), expected);
@@ -1754,11 +1756,96 @@ mod tests {
             ErrorKind::PermissionDenied,
             "private diagnostic canary",
         )));
-        assert_eq!(BuilderDiagnostic::error_class(&io_error), "permission_denied");
+        assert_eq!(
+            BuilderDiagnostic::error_class(&io_error),
+            "permission_denied"
+        );
         assert_eq!(
             BuilderDiagnostic::error_class(&anyhow!("private diagnostic canary")),
             "no_io_cause"
         );
+    }
+
+    #[test]
+    fn builder_error_categories_cover_complete_payload_free_enum() {
+        for (kind, expected) in [
+            (CodexErrKind::TurnAborted, "codex_turn_aborted"),
+            (
+                CodexErrKind::SessionBudgetExceeded,
+                "codex_session_budget_exceeded",
+            ),
+            (CodexErrKind::Stream, "codex_stream"),
+            (CodexErrKind::ContentFilter, "codex_content_filter"),
+            (CodexErrKind::RateLimitExceeded, "codex_rate_limit_exceeded"),
+            (
+                CodexErrKind::ContextWindowExceeded,
+                "codex_context_window_exceeded",
+            ),
+            (CodexErrKind::ThreadNotFound, "codex_thread_not_found"),
+            (CodexErrKind::AgentLimitReached, "codex_agent_limit_reached"),
+            (
+                CodexErrKind::SessionConfiguredNotFirstEvent,
+                "codex_session_configured_not_first_event",
+            ),
+            (CodexErrKind::Timeout, "codex_timeout"),
+            (CodexErrKind::RequestTimeout, "codex_request_timeout"),
+            (CodexErrKind::Spawn, "codex_spawn"),
+            (CodexErrKind::Interrupted, "codex_interrupted"),
+            (CodexErrKind::UnexpectedStatus, "codex_unexpected_status"),
+            (CodexErrKind::InvalidRequest, "codex_invalid_request"),
+            (CodexErrKind::InvalidPrompt, "codex_invalid_prompt"),
+            (CodexErrKind::ToolCollision, "codex_tool_collision"),
+            (
+                CodexErrKind::InvalidImageRequest,
+                "codex_invalid_image_request",
+            ),
+            (CodexErrKind::UsageLimitReached, "codex_usage_limit_reached"),
+            (CodexErrKind::ServerOverloaded, "codex_server_overloaded"),
+            (CodexErrKind::FlexUnavailable, "codex_flex_unavailable"),
+            (CodexErrKind::CyberPolicy, "codex_cyber_policy"),
+            (CodexErrKind::BioPolicy, "codex_bio_policy"),
+            (
+                CodexErrKind::MisalignmentPolicyViolation,
+                "codex_misalignment_policy_violation",
+            ),
+            (
+                CodexErrKind::ResponseStreamFailed,
+                "codex_response_stream_failed",
+            ),
+            (CodexErrKind::ConnectionFailed, "codex_connection_failed"),
+            (CodexErrKind::QuotaExceeded, "codex_quota_exceeded"),
+            (CodexErrKind::UsageNotIncluded, "codex_usage_not_included"),
+            (
+                CodexErrKind::InternalServerError,
+                "codex_internal_server_error",
+            ),
+            (CodexErrKind::RetryLimit, "codex_retry_limit"),
+            (CodexErrKind::InternalAgentDied, "codex_internal_agent_died"),
+            (CodexErrKind::Sandbox, "codex_sandbox"),
+            (
+                CodexErrKind::LandlockSandboxExecutableNotProvided,
+                "codex_landlock_sandbox_executable_not_provided",
+            ),
+            (
+                CodexErrKind::UnsupportedOperation,
+                "codex_unsupported_operation",
+            ),
+            (
+                CodexErrKind::RefreshTokenFailed,
+                "codex_refresh_token_failed",
+            ),
+            (CodexErrKind::Fatal, "codex_fatal"),
+            (CodexErrKind::Io, "codex_io"),
+            (CodexErrKind::Json, "codex_json"),
+            #[cfg(target_os = "linux")]
+            (CodexErrKind::LandlockRuleset, "codex_landlock_ruleset"),
+            #[cfg(target_os = "linux")]
+            (CodexErrKind::LandlockPathFd, "codex_landlock_path_fd"),
+            (CodexErrKind::TokioJoin, "codex_tokio_join"),
+            (CodexErrKind::EnvVar, "codex_env_var"),
+        ] {
+            assert_eq!(BuilderDiagnostic::codex_kind_class(kind), expected);
+        }
     }
 
     #[test]
