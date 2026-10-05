@@ -493,6 +493,54 @@ def _diagnostic_attribution(root: Path, catalogue: set[str]) -> set[str]:
     return attributed
 
 
+DIAGNOSTIC_SNAPSHOT_CANDIDATES = (
+    "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__app_server_thread_replacement_clears_previous_transcript_before_replay-2.snap",
+    "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup@windows_degraded.snap",
+)
+DIAGNOSTIC_INLINE_SOURCE = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+DIAGNOSTIC_INLINE_PENDING = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+
+
+def _closed_diagnostic_attribution(root: Path, catalogue: set[str]) -> set[str]:
+    """Capture eligibility of only admitted source locators before generation."""
+    eligible = set()
+    for source in (*DIAGNOSTIC_SNAPSHOT_CANDIDATES, DIAGNOSTIC_INLINE_SOURCE):
+        if source not in catalogue:
+            continue
+        try:
+            info = _relative_path(root, source).lstat()
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                eligible.add(source)
+        except (OSError, ValueError):
+            continue
+    return eligible
+
+
+def _observed_file_omission(root: Path, relative: str) -> str:
+    try:
+        info = _relative_path(root, relative).lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return "not_regular"
+        if info.st_nlink != 1:
+            return "hardlinked"
+    except ValueError:
+        return "path_validation_failed"
+    except OSError:
+        return "observation_failed"
+    return ""
+
+
+def _closed_locator_omission(root: Path, relative: str, source: str,
+                            catalogue: set[str] | None, eligible: set[str] | None) -> str:
+    if catalogue is None or eligible is None:
+        return "attribution_unavailable"
+    if source not in catalogue:
+        return "not_prelaunch_tracked"
+    if source not in eligible:
+        return "prelaunch_ineligible"
+    return _observed_file_omission(root, relative)
+
+
 def _omission_counts(catalogue: set[str] | None) -> dict[str, dict[str, int | None]]:
     return {reason: {"count": 0, "prelaunch_tracked_count": 0 if catalogue is not None else None}
             for reason in OMISSION_REASONS}
@@ -517,7 +565,7 @@ def _record_omission(counts, reason: str, source: str, catalogue: set[str] | Non
 
 
 def _diagnostic_inventory(root: Path, attributed: set[str] | None,
-                          catalogue: set[str] | None) -> tuple[dict[str, object], set[str]]:
+                          catalogue: set[str] | None, closed_eligible: set[str] | None) -> tuple[dict[str, object], set[str]]:
     """Count entries and expose attributable names, never pending file bodies."""
     observed: set[str] = set()
     paths = []
@@ -549,21 +597,20 @@ def _diagnostic_inventory(root: Path, attributed: set[str] | None,
                     continue
                 observed.add(relative)
                 original = relative.removesuffix(".new")
+                if original in DIAGNOSTIC_SNAPSHOT_CANDIDATES and relative == original + ".new":
+                    reason = _closed_locator_omission(root, relative, original, catalogue, closed_eligible)
+                    if reason:
+                        _record_omission(omissions, reason, original, catalogue)
+                    else:
+                        paths.append({"source_locator": original, "kind": "tracked_snapshot_candidate",
+                                      "classification": "pending_source_owner"})
+                    continue
                 reason = _path_omission(relative, original, catalogue if attributed is not None else None,
                                         SAFE_PENDING_PATH)
                 if not reason and relative not in attributed:
                     reason = "prelaunch_ineligible"
                 if not reason:
-                    try:
-                        info = _relative_path(root, relative).lstat()
-                        if not stat.S_ISREG(info.st_mode):
-                            reason = "not_regular"
-                        elif info.st_nlink != 1:
-                            reason = "hardlinked"
-                    except ValueError:
-                        reason = "path_validation_failed"
-                    except OSError:
-                        reason = "observation_failed"
+                    reason = _observed_file_omission(root, relative)
                 if reason:
                     _record_omission(omissions, reason, original, catalogue)
                     continue
@@ -572,7 +619,7 @@ def _diagnostic_inventory(root: Path, attributed: set[str] | None,
     complete = traversal_complete and attributed is not None and len(paths) == len(observed)
     return {"status": "complete" if complete else "partial" if observed else "unknown",
             "observed_count": len(observed) if traversal_complete else None,
-            "observed_entry_count": len(observed), "paths": sorted(paths, key=lambda item: item["path"]),
+            "observed_entry_count": len(observed), "paths": sorted(paths, key=lambda item: item.get("path", item.get("source_locator", ""))),
             "emitted_count": len(paths), "omitted_count": len(observed) - len(paths),
             "unobserved_count": 0 if traversal_complete else None,
             "complete": complete, "traversal_complete": traversal_complete,
@@ -592,7 +639,7 @@ def _observe_check(operation) -> dict[str, object]:
 
 
 def _other_files_unchanged(root: Path, pending: set[str], pending_complete: bool,
-                           catalogue: set[str] | None) -> dict[str, object]:
+                           catalogue: set[str] | None, closed_eligible: set[str] | None) -> dict[str, object]:
     """Observe both existing queries; name only immutable, public source paths."""
     independently_checked = set(SNAPSHOT_PATHS) | set(LOCK_PATHS)
     records = {}
@@ -631,6 +678,15 @@ def _other_files_unchanged(root: Path, pending: set[str], pending_complete: bool
     paths = []
     omissions = _omission_counts(catalogue)
     for relative, record in sorted(records.items()):
+        if relative == DIAGNOSTIC_INLINE_PENDING:
+            source = DIAGNOSTIC_INLINE_SOURCE
+            reason = _closed_locator_omission(root, relative, source, catalogue, closed_eligible)
+            if reason:
+                _record_omission(omissions, reason, source, catalogue)
+            else:
+                paths.append({"source_locator": source, "kind": "insta_inline_pending",
+                              "git_status": record["git_status"], "observed_via": sorted(record["observed_via"])})
+            continue
         reason = _path_omission(relative, relative, catalogue, SAFE_SOURCE_PATH)
         if reason:
             _record_omission(omissions, reason, relative, catalogue)
@@ -654,12 +710,12 @@ def _other_files_unchanged(root: Path, pending: set[str], pending_complete: bool
 
 
 def _rejection_diagnostic(
-    workspace: Path, identity: dict[str, str], baseline, locks, attributed, catalogue,
+    workspace: Path, identity: dict[str, str], baseline, locks, attributed, catalogue, closed_eligible,
     phase: str, code: str, exit_code: int | None, generation_attempted: bool,
 ) -> dict[str, object]:
     product = workspace / "product"
     try:
-        inventory, observed = _diagnostic_inventory(product, attributed, catalogue)
+        inventory, observed = _diagnostic_inventory(product, attributed, catalogue, closed_eligible)
     except (OSError, ValueError, subprocess.CalledProcessError):
         inventory = {"status": "unknown", "observed_count": None, "observed_entry_count": 0, "paths": [],
                      "emitted_count": 0, "omitted_count": None, "unobserved_count": None,
@@ -670,7 +726,7 @@ def _rejection_diagnostic(
     conservation = {
         "baselines": {**(_observe_check(lambda: _capture_baseline(product) == baseline) if baseline is not None else not_run), "expected": baseline},
         "locks": {**(_observe_check(lambda: _capture_locks(product) == locks) if locks is not None else not_run), "expected": locks},
-        "other_files": _other_files_unchanged(product, observed, inventory["traversal_complete"], catalogue),
+        "other_files": _other_files_unchanged(product, observed, inventory["traversal_complete"], catalogue, closed_eligible),
         "workflow_host": _observe_check(lambda: not _git(workspace / ".workflow-src", "status", "--porcelain=v1", "-z", "--untracked-files=all")),
     }
     return {"schema_version": DIAGNOSTIC_SCHEMA, "status": "failure", "artifact_kind": "diagnostic-only",
@@ -727,7 +783,7 @@ def prepare(environment: dict[str, str]) -> int:
     _check_clean_checkout(workspace / ".workflow-src", "workflow host")
     _check_clean_checkout(product_root, "product")
 
-    baseline = locks_before = attributed = catalogue = None
+    baseline = locks_before = attributed = catalogue = closed_eligible = None
     phase = "prelaunch"
     fallback_code = "prelaunch_failed"
     actual_exit = None
@@ -738,6 +794,7 @@ def prepare(environment: dict[str, str]) -> int:
         validate_no_preexisting_pending(product_root)
         catalogue = _tracked_path_set(product_root)
         attributed = _diagnostic_attribution(product_root, catalogue)
+        closed_eligible = _closed_diagnostic_attribution(product_root, catalogue)
         target_dir.mkdir(mode=0o700)
         output_env = dict(environment)
         output_env["INSTA_UPDATE"] = "new"
@@ -757,7 +814,7 @@ def prepare(environment: dict[str, str]) -> int:
         _check_clean_checkout(workspace / ".workflow-src", "workflow host")
     except (KeyError, OSError, subprocess.CalledProcessError, ValueError) as error:
         code = error.code if isinstance(error, SnapshotPreparationError) else fallback_code
-        diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed, catalogue,
+        diagnostic = _rejection_diagnostic(workspace, identity, baseline, locks_before, attributed, catalogue, closed_eligible,
                                             phase, code, actual_exit, generation_attempted)
         try:
             _write_diagnostic_artifact(staging_dir, artifact_dir, diagnostic)

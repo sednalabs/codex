@@ -882,6 +882,214 @@ class RejectedGenerationDiagnosticTests(IdentityFixture):
             self.assertNotIn(value, data)
         self.assertEqual(sum(item["count"] for item in expected["inventory"]["omission_reasons"].values()), 1)
 
+    def test_actual_80_outputs_and_inline_item_join_only_closed_source_locators(self):
+        candidate = "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__app_server_thread_replacement_clears_previous_transcript_before_replay-2.snap"
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+        historical = [path + ".new" for path in prepare_tui_snapshots.SNAPSHOT_PATHS[:25]]
+        additional = [f"codex-rs/tui/src/chatwidget/snapshots/codex_tui__closed_inventory_{index}.snap.new" for index in range(54)]
+        for relative in [*(path.removesuffix(".new") for path in additional), candidate, source]:
+            self._pending(relative, contents=b"public source fixture\n")
+        self._git(self.product_root, "add", "--", *(path.removesuffix(".new") for path in additional), candidate, source)
+        self._commit(self.product_root, "closed source locator fixture")
+        self.target_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
+        self.environment["TARGET_SHA"] = self.target_sha
+        pending = [*historical, *additional, candidate + ".new"]
+        expected = self._expected([*historical, *additional], exit_code=100)
+        expected["inventory"]["paths"].append({"source_locator": candidate, "kind": "tracked_snapshot_candidate", "classification": "pending_source_owner"})
+        expected["inventory"]["paths"].sort(key=lambda item: item.get("path", item.get("source_locator", "")))
+        expected["inventory"].update(observed_count=80, observed_entry_count=80, emitted_count=80)
+        other = expected["conservation"]["other_files"]
+        other.update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        other["evidence"].update(observed_count=1, observed_entry_count=1, emitted_count=1,
+            paths=[{"source_locator": source, "kind": "insta_inline_pending", "git_status": "??",
+                    "observed_via": ["nonignored_untracked", "status"]}])
+        for query in other["evidence"]["queries"].values():
+            query.update(observed_count=81, observed_entry_count=81)
+        body = b"PRIVATE_CLOSED_BODY ghp_abcdefghijklmnopqrstuvwxyz123456 /home/runner/private https://private.invalid\n"
+        original_read = Path.read_bytes
+        def read(path):
+            self.assertFalse(str(path).endswith(".snap.new"))
+            self.assertNotIn(path, [self.product_root / relative for relative in (candidate, source, inline)])
+            return original_read(path)
+        def action():
+            for relative in [*pending, inline]:
+                self._pending(relative, contents=body)
+        with mock.patch.object(Path, "read_bytes", read):
+            data, stderr = self._invoke(action, exit_code=100)
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_count_exceeded; artifact_state=diagnostic-only\n")
+        generator_index = self.invoked_commands.index(tuple(prepare_tui_snapshots.COMMAND))
+        self.assertEqual(sum(command == ("git", "-C", str(self.product_root), "ls-files", "-z")
+                             for command in self.invoked_commands[:generator_index]), 2)
+        observed_queries = [command[3:] for command in self.invoked_commands[generator_index + 1:]
+            if command[:3] == ("git", "-C", str(self.product_root)) and command[3:] in (
+                ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                ("ls-files", "--others", "--exclude-standard", "-z"))]
+        self.assertEqual(observed_queries, [("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+                                           ("ls-files", "--others", "--exclude-standard", "-z")])
+        for private in (candidate.encode() + b".new", inline.encode(), body, b"PRIVATE_CLOSED_BODY", b"ghp_",
+                        b"/home/runner", b"https://", hashlib.sha256(body).hexdigest().encode()):
+            self.assertNotIn(private, data)
+        self.assertFalse(expected["generated_output_acceptance"])
+        self.assertEqual((expected["historical_candidate_count"], expected["accepted_output_limit"]), (69, 69))
+
+    def test_exact_windows_degraded_candidate_is_diagnostic_not_allowed_output(self):
+        source = "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup@windows_degraded.snap"
+        pending = self._additional_snapshot(source)
+        expected = self._expected([], code="output_outside_allowlist")
+        expected["inventory"].update(observed_count=1, observed_entry_count=1, emitted_count=1,
+            paths=[{"source_locator": source, "kind": "tracked_snapshot_candidate", "classification": "pending_source_owner"}])
+        for query in expected["conservation"]["other_files"]["evidence"]["queries"].values():
+            query.update(observed_count=1, observed_entry_count=1)
+        data, stderr = self._invoke(lambda: self._pending(pending))
+        self.assertEqual(data, (json.dumps(expected, indent=2, sort_keys=True) + "\n").encode())
+        self.assertEqual(stderr, "TUI snapshot preparation failed: output_outside_allowlist; artifact_state=diagnostic-only\n")
+        self.assertNotIn(pending.encode(), data)
+        self.assertFalse(json.loads(data)["generated_output_acceptance"])
+
+    def test_closed_candidate_missing_prelaunch_source_stays_omitted(self):
+        source = "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup@windows_degraded.snap"
+        def action():
+            self._pending(source, contents=b"source appeared after prelaunch\n")
+            self._pending(source + ".new")
+        data, _ = self._invoke(action)
+        inventory = json.loads(data)["inventory"]
+        self.assertEqual((inventory["observed_count"], inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (1, 0, 1, False))
+        self.assertEqual(inventory["omission_reasons"], self._omissions(not_prelaunch_tracked=(1, 0)))
+        self.assertNotIn(source.encode(), data)
+
+    def test_inline_locator_missing_prelaunch_source_does_not_classify_untracked_item(self):
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        self._pending(source, contents=b"regular but untracked source fixture\n")
+        (self.product_root / ".git/info/exclude").write_text(source + "\n", encoding="utf-8")
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending, contents=b"valid pending fixture\n")
+            self._pending(inline)
+        data, _ = self._invoke(action)
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["omitted_count"]), ("failed", False, 1))
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(not_prelaunch_tracked=(1, 0)))
+        self.assertFalse(other["evidence"]["complete"])
+        self.assertNotIn(inline.encode(), data)
+        self.assertNotIn(b"source_locator", data)
+
+    def test_near_locator_and_token_canary_never_join_known_source(self):
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        self._additional_snapshot(source)
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap.PRIVATE_CANARY"
+        token_path = "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approvals_selection_popup@windows_degraded_github_pat_" + "x" * 20 + ".snap.new"
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending, contents=b"valid pending fixture\n")
+            for path in (inline, token_path):
+                self._pending(path)
+        data, _ = self._invoke(action)
+        public = json.loads(data)
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(credential_shaped=(1, 0)))
+        other = public["conservation"]["other_files"]
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["paths"], other["evidence"]["omitted_count"]), ("failed", False, [], 1))
+        self.assertFalse(public["inventory"]["complete"])
+        for value in (inline.encode(), token_path.encode(), b"PRIVATE_CANARY", b"github_pat_", b"source_locator"):
+            self.assertNotIn(value, data)
+
+    def test_closed_candidate_requires_prelaunch_single_link_source(self):
+        source = "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__app_server_thread_replacement_clears_previous_transcript_before_replay-2.snap"
+        pending = self._additional_snapshot(source)
+        os.link(self.product_root / source, self.product_root / ".git/private-source-link")
+        data, _ = self._invoke(lambda: self._pending(pending))
+        inventory = json.loads(data)["inventory"]
+        self.assertEqual(inventory["omission_reasons"], self._omissions(prelaunch_ineligible=(1, 1)))
+        self.assertEqual((inventory["emitted_count"], inventory["omitted_count"], inventory["complete"]), (0, 1, False))
+        self.assertNotIn(source.encode(), data)
+
+    def test_inline_locator_requires_prelaunch_single_link_source(self):
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        self._additional_snapshot(source)
+        os.link(self.product_root / source, self.product_root / ".git/private-source-link")
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending, contents=b"valid pending fixture\n")
+            self._pending(inline)
+        data, _ = self._invoke(action)
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(prelaunch_ineligible=(1, 1)))
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["emitted_count"]), ("failed", False, 0))
+        self.assertNotIn(source.encode(), data)
+
+    def test_inline_locator_requires_regular_not_symlink_prelaunch_source(self):
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        self._additional_snapshot(source)
+        (self.product_root / source).unlink()
+        (self.product_root / source).symlink_to(self.product_root / prepare_tui_snapshots.LOCK_PATHS[0])
+        self._git(self.product_root, "add", "--", source)
+        self._commit(self.product_root, "ineligible source fixture")
+        self.target_sha = self._git(self.product_root, "rev-parse", "HEAD").decode().strip()
+        self.environment["TARGET_SHA"] = self.target_sha
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending, contents=b"valid pending fixture\n")
+            self._pending(inline)
+        data, _ = self._invoke(action)
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(prelaunch_ineligible=(1, 1)))
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["emitted_count"]), ("failed", False, 0))
+        self.assertNotIn(source.encode(), data)
+
+    def test_closed_candidate_observed_output_must_be_single_link(self):
+        source = "codex-rs/tui/src/app/snapshots/codex_tui__app__tests__app_server_thread_replacement_clears_previous_transcript_before_replay-2.snap"
+        pending = self._additional_snapshot(source)
+        def action():
+            self._pending(pending)
+            os.link(self.product_root / pending, self.product_root / ".git/private-output-link")
+        data, _ = self._invoke(action)
+        inventory = json.loads(data)["inventory"]
+        self.assertEqual(inventory["omission_reasons"], self._omissions(hardlinked=(1, 1)))
+        self.assertFalse(inventory["complete"])
+        self.assertNotIn(source.encode(), data)
+
+    def test_inline_observed_symlink_is_not_a_source_locator_join(self):
+        source = "codex-rs/tui/src/analytics/activity_chart_tests.rs"
+        self._additional_snapshot(source)
+        inline = "codex-rs/tui/src/analytics/.activity_chart_tests.rs.pending-snap"
+        pending = prepare_tui_snapshots.SNAPSHOT_PATHS[0] + ".new"
+        def action():
+            self._pending(pending, contents=b"valid pending fixture\n")
+            (self.product_root / inline).symlink_to(self.product_root / prepare_tui_snapshots.LOCK_PATHS[0])
+        data, _ = self._invoke(action)
+        other = json.loads(data)["conservation"]["other_files"]
+        self.assertEqual(other["evidence"]["omission_reasons"], self._omissions(path_validation_failed=(1, 1)))
+        self.assertEqual((other["status"], other["actual_matches"], other["evidence"]["emitted_count"]), ("failed", False, 0))
+        self.assertNotIn(inline.encode(), data)
+        self.assertNotIn(source.encode(), data)
+
+    def test_metadata_overflow_drops_closed_locators_with_exact_omission_truth(self):
+        diagnostic = self._expected([])
+        paths = [{"path": f"codex-rs/tui/src/snapshots/codex_tui__{'x' * 180}{index}.snap.new", "origin": "additional_tracked_snapshot", "classification": "pending_source_owner"} for index in range(2000)]
+        paths.extend({"source_locator": source, "kind": "tracked_snapshot_candidate", "classification": "pending_source_owner"}
+                     for source in prepare_tui_snapshots.DIAGNOSTIC_SNAPSHOT_CANDIDATES)
+        diagnostic["inventory"].update(paths=paths, observed_count=2002, observed_entry_count=2002, emitted_count=2002)
+        other = diagnostic["conservation"]["other_files"]
+        other.update(status="failed", actual_matches=False, failure_code="conservation_mismatch")
+        other["evidence"].update(paths=[{"source_locator": prepare_tui_snapshots.DIAGNOSTIC_INLINE_SOURCE,
+            "kind": "insta_inline_pending", "git_status": "??", "observed_via": ["nonignored_untracked", "status"]}],
+            observed_count=1, observed_entry_count=1, emitted_count=1)
+        runner = Path(self.environment["RUNNER_TEMP"])
+        prepare_tui_snapshots._write_diagnostic_artifact(runner / "locator-overflow-staging", runner / "locator-overflow-artifact", diagnostic)
+        data = (runner / "locator-overflow-artifact/diagnostic.json").read_bytes()
+        public = json.loads(data)
+        self.assertLessEqual(len(data), prepare_tui_snapshots.MAX_METADATA_BYTES)
+        self.assertEqual((public["metadata_status"], public["generated_output_acceptance"]), ("incomplete", False))
+        self.assertEqual((public["inventory"]["paths"], public["inventory"]["omitted_count"]), ([], 2002))
+        self.assertEqual(public["inventory"]["omission_reasons"], self._omissions(metadata_budget=(2002, 2002)))
+        self.assertEqual(public["conservation"]["other_files"]["evidence"]["omission_reasons"], self._omissions(metadata_budget=(1, 1)))
+        self.assertEqual((public["conservation"]["other_files"]["status"], public["conservation"]["other_files"]["actual_matches"]), ("failed", False))
+        self.assertNotIn(b"source_locator", data)
+
     def test_long_tracked_path_is_counted_before_syntax_or_attribution(self):
         relative = "codex-rs/tui/src/" + ("x" * 64 + "/") * 16 + "codex_tui__long.snap"
         pending = self._additional_snapshot(relative)
