@@ -52,6 +52,7 @@ use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrKind;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::models::PermissionProfile;
@@ -187,7 +188,17 @@ impl BuilderDiagnostic {
         let kind = error
             .chain()
             .find_map(|cause| cause.downcast_ref::<std::io::Error>())
-            .map(std::io::Error::kind);
+            .map(std::io::Error::kind)
+            .or_else(|| {
+                // Transparent CodexErr wrappers may forward past the Io value
+                // in Error::source. Recover only its typed, payload-free kind.
+                error.chain().find_map(|cause| {
+                    match cause.downcast_ref::<CodexErr>()?.details() {
+                        CodexErrorDetails::Io(error) => Some(error.kind()),
+                        _ => None,
+                    }
+                })
+            });
         if kind.is_none() {
             return match error
                 .chain()
@@ -1752,13 +1763,41 @@ mod tests {
             let error = anyhow::Error::new(CodexErr::from(details)).context("private outer canary");
             assert_eq!(BuilderDiagnostic::error_class(&error), expected);
         }
-        let io_error = anyhow::Error::new(CodexErr::from(std::io::Error::new(
-            ErrorKind::PermissionDenied,
-            "private diagnostic canary",
-        )));
+        for (kind, expected) in [
+            (ErrorKind::NotFound, "not_found"),
+            (ErrorKind::PermissionDenied, "permission_denied"),
+            (ErrorKind::ConnectionRefused, "connection_refused"),
+            (ErrorKind::ConnectionReset, "connection_reset"),
+            (ErrorKind::BrokenPipe, "broken_pipe"),
+            (ErrorKind::InvalidInput, "invalid_input"),
+            (ErrorKind::InvalidData, "invalid_data"),
+            (ErrorKind::TimedOut, "timed_out"),
+            (ErrorKind::Interrupted, "interrupted"),
+            (ErrorKind::UnexpectedEof, "unexpected_eof"),
+            (ErrorKind::Other, "unlisted_io_kind"),
+        ] {
+            let direct = anyhow::Error::new(std::io::Error::new(
+                kind,
+                "private direct diagnostic canary",
+            ));
+            assert_eq!(BuilderDiagnostic::error_class(&direct), expected);
+            let wrapped = anyhow::Error::new(CodexErr::from(std::io::Error::new(
+                kind,
+                "private wrapped diagnostic canary",
+            )))
+            .context("private outer diagnostic canary");
+            assert_eq!(BuilderDiagnostic::error_class(&wrapped), expected);
+        }
+        let direct_precedence = anyhow::Error::new(std::io::Error::new(
+            ErrorKind::Other,
+            CodexErr::from(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "private nested diagnostic canary",
+            )),
+        ));
         assert_eq!(
-            BuilderDiagnostic::error_class(&io_error),
-            "permission_denied"
+            BuilderDiagnostic::error_class(&direct_precedence),
+            "unlisted_io_kind"
         );
         assert_eq!(
             BuilderDiagnostic::error_class(&anyhow!("private diagnostic canary")),
