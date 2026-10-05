@@ -1645,10 +1645,11 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
         env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
         with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
-                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)) as load, \
                 patch.object(named_tests, "run_request", return_value=result) as run, \
                 patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
             self.assertEqual(0, named_tests.main())
+        load.assert_called_once_with()
         run.assert_called_once_with(self.request, Path.cwd().resolve())
         write.assert_called_once_with(data)
         output.assert_called_once_with('{"failure_code": "", "status": "success"}')
@@ -1660,10 +1661,11 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
         env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
         with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
-                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)) as load, \
                 patch.object(named_tests, "run_request", return_value=result) as run, \
                 patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
             self.assertEqual(1, named_tests.main())
+        load.assert_called_once_with()
         run.assert_called_once_with(self.request, Path.cwd().resolve())
         write.assert_called_once_with(data)
         output.assert_called_once_with('{"failure_code": "core_diagnostic_sample_failed", "status": "failure"}')
