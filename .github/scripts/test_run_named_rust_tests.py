@@ -1215,6 +1215,32 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         return "\n".join(f"codex-core-runtime-diagnostic-v1 case={case} stage={stage} state={state} error=none"
                          for stage in stages for state in ("entered", "returned"))
 
+    def _builder_phases(self, case: str) -> tuple[str, ...]:
+        # Independent fixture inventory from the actual Rust builder call sites.
+        phases = ("auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
+                  "environment_manager_creation")
+        return (*phases, *(("workspace_setup",) if case == "project_docs" else ()),
+                "state_database_optional_initialization", "installation_id_resolution",
+                "thread_manager_construction", "ordinary_conversation_start")
+
+    def _builder_markers(self, case: str) -> str:
+        return "\n".join(f"codex-core-runtime-diagnostic-builder-v1 case={case} phase={phase} state={state} class=none"
+                         for phase in self._builder_phases(case) for state in ("entered", "returned"))
+
+    def _producer_markers(self, case: str, builder: str | None = None) -> str:
+        outer = self._markers(case).splitlines()
+        nested = self._builder_markers(case) if builder is None else builder
+        # The nested build_with_auto_env runs inside the outer builder stage.
+        return "\n".join([*outer[:5], *nested.splitlines(), *outer[5:]])
+
+    def _builder_error_markers(self, case: str, phase: str, error_class: str) -> str:
+        index = self._builder_phases(case).index(phase)
+        nested = self._builder_markers(case).splitlines()[:2 * index + 1]
+        nested.append(f"codex-core-runtime-diagnostic-builder-v1 case={case} phase={phase} state=error class={error_class}")
+        outer_class = "other" if error_class in {"no_io_cause", "unlisted_io_kind"} else error_class
+        return "\n".join([*self._markers(case).splitlines()[:5], *nested,
+                          f"codex-core-runtime-diagnostic-v1 case={case} stage=builder state=error error={outer_class}"])
+
     def _sample(self, case: str, outcome: str = "ok", stderr: str | None = None) -> subprocess.CompletedProcess[str]:
         name = next(name for key, name, _ in named_tests.CORE_DIAGNOSTIC_CASES if key == case)
         output = (f"test {name} ... {outcome}\n"
@@ -1222,7 +1248,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                   f"{int(outcome == 'ignored')} ignored; 0 measured; 1 filtered out\n")
         return subprocess.CompletedProcess(named_tests.core_diagnostic_command(name),
                                           101 if outcome == "FAILED" else 0, output,
-                                          self._markers(case) if stderr is None else stderr)
+                                          self._producer_markers(case) if stderr is None else stderr)
 
     def _run(self, *, request: dict[str, object] | None = None, extra_env: dict[str, str] | None = None,
              samples: list[object] | None = None, inventory: str | None = None, inventory_exit: int = 0,
@@ -1345,8 +1371,8 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
 
     def test_incomplete_markers_counts_or_outcomes_keep_sample_red(self) -> None:
         for first in (self._sample("restricted", stderr=""), self._sample("restricted", stderr=self._markers("restricted").splitlines()[0]),
-                      subprocess.CompletedProcess([], 0, self._sample("restricted").stdout.replace("1 filtered", "0 filtered"), self._markers("restricted")),
-                      subprocess.CompletedProcess([], 0, "PRIVATE_PANIC", self._markers("restricted"))):
+                      subprocess.CompletedProcess([], 0, self._sample("restricted").stdout.replace("1 filtered", "0 filtered"), self._producer_markers("restricted")),
+                      subprocess.CompletedProcess([], 0, "PRIVATE_PANIC", self._producer_markers("restricted"))):
             result, _ = self._run(samples=[first, self._sample("project_docs")])
             self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(result))["status"])
 
@@ -1391,6 +1417,262 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         public = json.loads(named_tests.public_artifact_bytes(result))
         self.assertEqual(("failure", "public_result_overflow", "core_runtime_diagnostic", True, False, "not_attempted"),
                          tuple(public[key] for key in ("status", "failure_code", "result_kind", "diagnostic_only", "full_target_execution", "qualification_status")))
+
+    def test_builder_actual_combined_producer_has_independent_exact_inventories(self) -> None:
+        for case, limit in (("restricted", 16), ("project_docs", 18)):
+            self.assertEqual(self._builder_phases(case), named_tests.CORE_BUILDER_PHASES[case])
+            stream = self._producer_markers(case)
+            outer = named_tests.core_stage_evidence(case, "", stream)
+            nested = named_tests.core_builder_evidence(case, "", stream)
+            self.assertEqual(("complete", 12, 12, 0),
+                             (outer["sequence_status"], outer["stderr_candidate_count"], len(outer["records"]), outer["omitted_marker_count"]))
+            self.assertEqual(("complete", limit, limit, True),
+                             (nested["sequence_status"], nested["stderr_candidate_count"], len(nested["records"]), nested["completed_path"]))
+            self.assertTrue(all(item["class"] == "none" for item in nested["records"]))
+        result, calls = self._run()
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual((6, "success", False, "not_attempted"),
+                         (len(calls), public["status"], public["full_target_execution"], public["qualification_status"]))
+        self.assertEqual([16, 18], [len(item["builder_evidence"]["records"]) for item in public["diagnostic_samples"]])
+        self.assertTrue(all(item["builder_evidence"]["completed_path"] for item in public["diagnostic_samples"]))
+
+    def test_builder_each_result_terminal_is_retained_as_observed_diagnostic_red(self) -> None:
+        result_phases = {"auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
+                         "workspace_setup", "installation_id_resolution", "ordinary_conversation_start"}
+        self.assertEqual(result_phases, named_tests.CORE_BUILDER_RESULT_PHASES)
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            for phase in self._builder_phases(case):
+                if phase not in result_phases:
+                    continue
+                for error_class in ("no_io_cause", "unlisted_io_kind", "permission_denied"):
+                    with self.subTest(case=case, phase=phase, error_class=error_class):
+                        samples = [self._sample(key, "FAILED", self._builder_error_markers(key, phase, error_class))
+                                   if key == case else self._sample(key) for key, _, _ in named_tests.CORE_DIAGNOSTIC_CASES]
+                        result, calls = self._run(samples=samples)
+                        public = json.loads(named_tests.public_artifact_bytes(result))
+                        sample = next(item for item in public["diagnostic_samples"] if item["case"] == case)
+                        evidence = sample["builder_evidence"]
+                        self.assertEqual((6, "failure", True, "not_attempted", []),
+                                         (len(calls), public["status"], public["sampling_complete"], public["qualification_status"], public["tests"]))
+                        self.assertEqual(("error", False, phase, error_class),
+                                         tuple(evidence[key] for key in ("sequence_status", "completed_path", "terminal_phase", "terminal_class")))
+                        self.assertEqual((phase, "error", error_class),
+                                         tuple(evidence["records"][-1][key] for key in ("phase", "state", "class")))
+                        self.assertEqual("success", next(item for item in public["diagnostic_samples"] if item["case"] != case)["status"])
+
+    def test_builder_closed_error_classes_do_not_create_self_option_or_infallible_errors(self) -> None:
+        classes = {"not_found", "permission_denied", "connection_refused", "connection_reset",
+                   "broken_pipe", "invalid_input", "invalid_data", "timed_out", "interrupted",
+                   "unexpected_eof", "no_io_cause", "unlisted_io_kind"}
+        self.assertEqual(classes | {"none"}, named_tests.CORE_BUILDER_CLASSES)
+        for error_class in classes:
+            stream = self._builder_error_markers("restricted", "config_preparation", error_class)
+            evidence = named_tests.core_builder_evidence("restricted", "", stream)
+            self.assertEqual(("error", error_class), (evidence["sequence_status"], evidence["terminal_class"]))
+        for phase in ("environment_manager_creation", "state_database_optional_initialization", "thread_manager_construction"):
+            stream = self._builder_error_markers("restricted", phase, "no_io_cause")
+            self.assertEqual("invalid", named_tests.core_builder_evidence("restricted", "", stream)["sequence_status"])
+        for error_class in ("none", "other", "unknown", "PRIVATE_ERROR"):
+            stream = self._builder_error_markers("restricted", "config_preparation", error_class)
+            self.assertFalse(named_tests.core_builder_evidence("restricted", "", stream)["completed_path"])
+            self.assertEqual("invalid", named_tests.core_builder_evidence("restricted", "", stream)["sequence_status"])
+
+    def test_builder_entered_only_prefix_reports_incomplete_without_fabricating_error(self) -> None:
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            for index, phase in enumerate(self._builder_phases(case)):
+                prefix = "\n".join(self._builder_markers(case).splitlines()[:2 * index + 1])
+                evidence = named_tests.core_builder_evidence(case, "", prefix)
+                projected = named_tests._safe_core_builder_evidence(case, evidence)
+                self.assertEqual(("partial", False, phase, "", ""),
+                                 tuple(projected[key] for key in ("sequence_status", "completed_path", "last_entered_phase", "terminal_phase", "terminal_class")))
+                self.assertEqual("entered", projected["records"][-1]["state"])
+
+    def test_builder_missing_duplicate_misordered_and_post_error_records_fail_closed(self) -> None:
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            lines = self._builder_markers(case).splitlines()
+            error = [line for line in self._builder_error_markers(case, "config_preparation", "no_io_cause").splitlines()
+                     if line.startswith("codex-core-runtime-diagnostic-builder-")]
+            variants = [lines[:2] + lines[4:], lines[:2] + lines[:2] + lines[2:],
+                        lines[2:4] + lines[:2] + lines[4:], list(reversed(lines)),
+                        [*error, *lines[4:6]]]
+            for nested in variants:
+                with self.subTest(case=case, count=len(nested)):
+                    stream = self._producer_markers(case, "\n".join(nested))
+                    self.assertEqual("invalid", named_tests.core_builder_evidence(case, "", stream)["sequence_status"])
+                    self.assertEqual("complete", named_tests.core_stage_evidence(case, "", stream)["sequence_status"])
+
+    def test_builder_zero_and_one_setup_grammars_reject_other_branches(self) -> None:
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            valid = self._builder_markers(case)
+            wrong_case_grammar = self._builder_markers("project_docs" if case == "restricted" else "restricted").replace(
+                "case=project_docs" if case == "restricted" else "case=restricted", f"case={case}")
+            variants = [wrong_case_grammar, valid.replace("phase=ordinary_conversation_start", "phase=resume"),
+                        valid.replace("phase=ordinary_conversation_start", "phase=start_with_shell_override")]
+            if case == "project_docs":
+                setup = [line for line in valid.splitlines() if "phase=workspace_setup " in line]
+                variants.append(valid + "\n" + "\n".join(setup))
+            for nested in variants:
+                stream = self._producer_markers(case, nested)
+                self.assertEqual("invalid", named_tests.core_builder_evidence(case, "", stream)["sequence_status"])
+                self.assertEqual("complete", named_tests.core_stage_evidence(case, "", stream)["sequence_status"])
+
+    def test_builder_malformed_frame_vocabulary_and_injection_never_become_outer_records(self) -> None:
+        valid = self._builder_markers("restricted")
+        first = valid.splitlines()[0]
+        replacements = [("-builder-v1", "-builder-v2"), ("case=restricted", "case=untrusted"),
+                        ("case=restricted", "case=project_docs"),
+                        ("phase=auto_env_selection", "phase=untrusted"), ("state=entered", "state=cancelled"),
+                        ("class=none", "class=permission_denied"), (" class=none", ""),
+                        ("class=none", "class=PRIVATE_CREDENTIAL /private/secret https://private.invalid")]
+        variants = [valid.replace(old, new, 1) for old, new in replacements]
+        variants.extend([first + " PRIVATE_BODY\n" + valid, "PRIVATE_PREFIX " + first + "\n" + valid,
+                         valid + "\ncodex-core-runtime-diagnostic-builder-v1 PRIVATE_BACKTRACE github_pat_PRIVATE"])
+        for nested in variants:
+            stream = self._producer_markers("restricted", nested)
+            outer = named_tests.core_stage_evidence("restricted", "", stream)
+            builder = named_tests.core_builder_evidence("restricted", "", stream)
+            self.assertEqual(("complete", 12), (outer["sequence_status"], outer["stderr_candidate_count"]))
+            self.assertEqual("invalid", builder["sequence_status"])
+            self.assertFalse(builder["completed_path"])
+            result, _ = self._run(samples=[self._sample("restricted", stderr=stream), self._sample("project_docs")])
+            data = named_tests.public_artifact_bytes(result)
+            self.assertEqual("failure", json.loads(data)["status"])
+            for canary in (b"PRIVATE", b"/private", b"https://", b"github_pat_"):
+                self.assertNotIn(canary, data)
+
+    def test_builder_stdout_ambiguity_is_separate_and_never_attests_order_or_pid(self) -> None:
+        case = "restricted"
+        stream = self._producer_markers(case)
+        for stdout, expected_outer, expected_builder in ((self._builder_markers(case), "complete", "invalid"),
+                (self._markers(case), "invalid", "complete"), (stream, "invalid", "invalid")):
+            outer = named_tests.core_stage_evidence(case, stdout, stream)
+            nested = named_tests.core_builder_evidence(case, stdout, stream)
+            self.assertEqual((expected_outer, expected_builder), (outer["sequence_status"], nested["sequence_status"]))
+            self.assertEqual(("unknown", "unknown"), (nested["cross_stream_chronology"], nested["writer_process_identity"]))
+            first = self._sample(case)
+            first.stdout += "\n" + stdout
+            result, _ = self._run(samples=[first, self._sample("project_docs")])
+            self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(result))["status"])
+        joined = self._markers(case).splitlines()[0] + " " + self._builder_markers(case).splitlines()[0]
+        self.assertEqual("invalid", named_tests.core_stage_evidence(case, "", stream + "\n" + joined)["sequence_status"])
+        self.assertEqual("invalid", named_tests.core_builder_evidence(case, "", stream + "\n" + joined)["sequence_status"])
+
+    def test_builder_cannot_replace_missing_outer_frames_or_relax_outer_twelve_record_cap(self) -> None:
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            stream = self._producer_markers(case)
+            variants = [self._builder_markers(case), "\n".join(stream.splitlines()[:-1]),
+                        stream + "\n" + self._markers(case).splitlines()[0], stream.replace("diagnostic-v1", "diagnostic-v2")]
+            for stderr in variants:
+                outer = named_tests.core_stage_evidence(case, "", stderr)
+                self.assertFalse(outer["attribution_complete"])
+                self.assertLessEqual(len(outer["records"]), 12)
+                self.assertTrue(named_tests.core_builder_evidence(case, "", stderr)["completed_path"])
+                samples = [self._sample(key, stderr=stderr) if key == case else self._sample(key)
+                           for key, _, _ in named_tests.CORE_DIAGNOSTIC_CASES]
+                result, _ = self._run(samples=samples)
+                self.assertEqual("failure", json.loads(named_tests.public_artifact_bytes(result))["status"])
+
+    def test_builder_extra_records_are_omitted_truthfully_without_increasing_outer_candidates(self) -> None:
+        for case, limit in (("restricted", 16), ("project_docs", 18)):
+            nested = self._builder_markers(case)
+            stream = self._producer_markers(case, nested + "\n" + nested)
+            evidence = named_tests.core_builder_evidence(case, "", stream)
+            self.assertEqual(("invalid", limit, limit * 2, limit),
+                             (evidence["sequence_status"], len(evidence["records"]), evidence["stderr_candidate_count"], evidence["omitted_marker_count"]))
+            projected = named_tests._safe_core_builder_evidence(case, evidence)
+            self.assertEqual(("invalid", False, limit),
+                             (projected["sequence_status"], projected["completed_path"], projected["omitted_marker_count"]))
+            self.assertEqual(12, named_tests.core_stage_evidence(case, "", stream)["stderr_candidate_count"])
+
+    def test_builder_missing_evidence_and_launch_failure_stay_red_with_second_case_retained(self) -> None:
+        for first in (self._sample("restricted", stderr=self._markers("restricted")), OSError("PRIVATE_ERROR /private/path")):
+            result, calls = self._run(samples=[first, self._sample("project_docs")])
+            data = named_tests.public_artifact_bytes(result)
+            public = json.loads(data)
+            evidence = public["diagnostic_samples"][0]["builder_evidence"]
+            self.assertEqual((6, "failure", "missing", False, [], ""),
+                             (len(calls), public["status"], evidence["sequence_status"], evidence["completed_path"], evidence["records"], evidence["terminal_class"]))
+            self.assertEqual("success", public["diagnostic_samples"][1]["status"])
+            self.assertEqual(not isinstance(first, OSError), public["sampling_complete"])
+            self.assertNotIn(b"PRIVATE", data)
+
+    def test_builder_whole_public_projection_rechecks_material_types_counts_and_grammar(self) -> None:
+        result, _ = self._run()
+        self.assertEqual("success", json.loads(named_tests.public_artifact_bytes(result))["status"])
+        mutations = [lambda item: item.pop("builder_evidence"),
+                     lambda item: item.update(builder_evidence="PRIVATE_RECORDS"),
+                     lambda item: item["builder_evidence"].update(records="PRIVATE_RECORDS"),
+                     lambda item: item["builder_evidence"].update(stderr_candidate_count=True),
+                     lambda item: item["builder_evidence"].update(omitted_marker_count=1),
+                     lambda item: item["builder_evidence"].update(invalid_marker_count=1),
+                     lambda item: item["builder_evidence"].update(stdout_ambiguity_count=1),
+                     lambda item: item["builder_evidence"].update(designated_channel="stdout"),
+                     lambda item: item["builder_evidence"].update(sequence_status="error"),
+                     lambda item: item["builder_evidence"].update(completed_path=1),
+                     lambda item: item["builder_evidence"].update(attribution_complete=False),
+                     lambda item: item["builder_evidence"]["records"][0].update(case="project_docs"),
+                     lambda item: item["builder_evidence"]["records"][0].update(phase="PRIVATE_PATH"),
+                     lambda item: item["builder_evidence"]["records"][0].update(state="error", **{"class": "none"}),
+                     lambda item: item["builder_evidence"]["records"][0].update(**{"class": "other"}),
+                     lambda item: item["builder_evidence"]["records"].reverse()]
+        for mutate in mutations:
+            damaged = copy.deepcopy(result)
+            mutate(damaged["diagnostic_samples"][0])
+            data = named_tests.public_artifact_bytes(damaged)
+            public = json.loads(data)
+            self.assertEqual(("failure", "public_projection_incomplete", False, "not_attempted"),
+                             tuple(public[key] for key in ("status", "failure_code", "full_target_execution", "qualification_status")))
+            self.assertFalse(public["diagnostic_samples"][0]["builder_evidence"]["completed_path"])
+            self.assertNotIn(b"PRIVATE", data)
+
+    def test_builder_complete_persisted_bytes_omit_private_fields_and_rederive_attribution(self) -> None:
+        result, _ = self._run()
+        canary = "PRIVATE_BODY /private/error https://private.invalid github_pat_PRIVATE_CREDENTIAL BACKTRACE"
+        evidence = result["diagnostic_samples"][0]["builder_evidence"]
+        evidence.update(raw_stdout=canary, raw_stderr=canary, error=canary, exception=canary, path=canary,
+                        terminal_phase=canary, terminal_class=canary, last_entered_phase=canary,
+                        cross_stream_chronology=canary, writer_process_identity=canary)
+        evidence["records"][0].update(body=canary, cause=canary, argv=[canary])
+        data = named_tests.public_artifact_bytes(result)
+        public = json.loads(data)
+        self.assertEqual("success", public["status"])
+        projected = public["diagnostic_samples"][0]["builder_evidence"]
+        self.assertEqual(("", "", "ordinary_conversation_start", "unknown", "unknown"),
+                         tuple(projected[key] for key in ("terminal_phase", "terminal_class", "last_entered_phase", "cross_stream_chronology", "writer_process_identity")))
+        for token in (b"PRIVATE", b"/private", b"https://", b"github_pat_", b"BACKTRACE",
+                      hashlib.sha256(canary.encode()).hexdigest().encode()):
+            self.assertNotIn(token, data)
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "run_request", return_value=result) as run, \
+                patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+            self.assertEqual(0, named_tests.main())
+        run.assert_called_once_with(self.request, Path.cwd().resolve())
+        write.assert_called_once_with(data)
+        output.assert_called_once_with('{"failure_code": "", "status": "success"}')
+
+    def test_builder_red_public_bytes_drive_main_exit_and_bounded_overflow_scope(self) -> None:
+        result, _ = self._run(samples=[self._sample("restricted", "FAILED", self._builder_error_markers(
+            "restricted", "ordinary_conversation_start", "no_io_cause")), self._sample("project_docs")])
+        data = named_tests.public_artifact_bytes(result)
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "run_request", return_value=result) as run, \
+                patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+            self.assertEqual(1, named_tests.main())
+        run.assert_called_once_with(self.request, Path.cwd().resolve())
+        write.assert_called_once_with(data)
+        output.assert_called_once_with('{"failure_code": "core_diagnostic_sample_failed", "status": "failure"}')
+        with patch.object(named_tests, "MAX_PUBLIC_RESULT_BYTES", 4000):
+            overflow_data = named_tests.public_artifact_bytes(result)
+        overflow = json.loads(overflow_data)
+        self.assertLessEqual(len(overflow_data), 4000)
+        self.assertEqual(("failure", "public_result_overflow", True, False, "not_attempted", []),
+                         tuple(overflow[key] for key in ("status", "failure_code", "diagnostic_only", "full_target_execution", "qualification_status", "diagnostic_samples")))
 
 
 class PublicArtifactBoundaryTests(unittest.TestCase):

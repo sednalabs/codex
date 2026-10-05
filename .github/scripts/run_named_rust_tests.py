@@ -104,6 +104,22 @@ CORE_DIAGNOSTIC_FRAME = re.compile(
     r"codex-core-runtime-diagnostic-v1 case=(restricted|project_docs) "
     r"stage=([a-z_]+) state=(entered|returned|error) error=([a-z_]+)"
 )
+CORE_BUILDER_DIAGNOSTIC_PREFIX = "codex-core-runtime-diagnostic-builder-"
+CORE_BUILDER_DIAGNOSTIC_FRAME = re.compile(
+    r"codex-core-runtime-diagnostic-builder-v1 case=(restricted|project_docs) "
+    r"phase=([a-z_]+) state=(entered|returned|error) class=([a-z_]+)"
+)
+CORE_BUILDER_PHASES = {
+    "restricted": ("auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
+                   "environment_manager_creation", "state_database_optional_initialization",
+                   "installation_id_resolution", "thread_manager_construction", "ordinary_conversation_start"),
+    "project_docs": ("auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
+                     "environment_manager_creation", "workspace_setup", "state_database_optional_initialization",
+                     "installation_id_resolution", "thread_manager_construction", "ordinary_conversation_start"),
+}
+CORE_BUILDER_RESULT_PHASES = frozenset({"auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
+                                      "workspace_setup", "installation_id_resolution", "ordinary_conversation_start"})
+CORE_BUILDER_CLASSES = (CORE_DIAGNOSTIC_ERRORS - {"other"}) | {"no_io_cause", "unlisted_io_kind"}
 VALIDATION_IDENTITY_ENV = {
     "harness_sha": "VALIDATION_HARNESS_SHA", "base_ref": "VALIDATION_BASE_REF",
     "base_sha": "VALIDATION_BASE_SHA", "target_sha": "VALIDATION_TARGET_SHA",
@@ -1052,7 +1068,7 @@ def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
     records = []
     candidates = invalid = 0
     for line in stderr.splitlines():
-        if CORE_DIAGNOSTIC_PREFIX not in line:
+        if CORE_DIAGNOSTIC_PREFIX not in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, ""):
             continue
         candidates += 1
         match = CORE_DIAGNOSTIC_FRAME.fullmatch(line)
@@ -1060,7 +1076,8 @@ def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
             invalid += 1
         elif len(records) < 12:
             records.append(dict(zip(("case", "stage", "state", "error"), match.groups())))
-    ambiguity = sum(CORE_DIAGNOSTIC_PREFIX in line for line in stdout.splitlines())
+    ambiguity = sum(CORE_DIAGNOSTIC_PREFIX in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, "")
+                    for line in stdout.splitlines())
     status = core_stage_sequence(case, records)
     if invalid or ambiguity or candidates != len(records):
         status = "invalid"
@@ -1070,6 +1087,53 @@ def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
             "stdout_ambiguity_count": ambiguity, "attribution_complete": status == "complete",
             "last_entered_stage": next((item["stage"] for item in reversed(records)
                                          if item["state"] == "entered"), ""),
+            "cross_stream_chronology": "unknown", "writer_process_identity": "unknown"}
+
+
+def core_builder_sequence(case: str, records: list[dict[str, str]]) -> str:
+    expected = [(phase, state, "none") for phase in CORE_BUILDER_PHASES[case]
+                for state in ("entered", "returned")]
+    if not records:
+        return "missing"
+    for index, record in enumerate(records):
+        if index >= len(expected) or record.get("case") != case:
+            return "invalid"
+        actual = (record.get("phase"), record.get("state"), record.get("class"))
+        if (index % 2 == 1 and actual[0] == expected[index][0]
+                and actual[0] in CORE_BUILDER_RESULT_PHASES and actual[1] == "error"
+                and actual[2] in CORE_BUILDER_CLASSES - {"none"} and index == len(records) - 1):
+            return "error"
+        if actual != expected[index]:
+            return "invalid"
+    return "complete" if len(records) == len(expected) else "partial"
+
+
+def core_builder_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
+    records = []
+    candidates = invalid = 0
+    limit = 2 * len(CORE_BUILDER_PHASES[case])
+    for line in stderr.splitlines():
+        if CORE_BUILDER_DIAGNOSTIC_PREFIX not in line:
+            continue
+        candidates += 1
+        match = CORE_BUILDER_DIAGNOSTIC_FRAME.fullmatch(line)
+        if (not match or match[1] != case or match[2] not in CORE_BUILDER_PHASES[case]
+                or match[4] not in CORE_BUILDER_CLASSES):
+            invalid += 1
+        elif len(records) < limit:
+            records.append(dict(zip(("case", "phase", "state", "class"), match.groups())))
+    ambiguity = sum(CORE_BUILDER_DIAGNOSTIC_PREFIX in line for line in stdout.splitlines())
+    status = core_builder_sequence(case, records)
+    if invalid or ambiguity or candidates != len(records):
+        status = "invalid"
+    return {"designated_channel": "stderr", "sequence_status": status, "records": records,
+            "stderr_candidate_count": candidates, "invalid_marker_count": invalid,
+            "omitted_marker_count": candidates - len(records), "stdout_ambiguity_count": ambiguity,
+            "attribution_complete": status == "complete", "completed_path": status == "complete",
+            "last_entered_phase": next((item["phase"] for item in reversed(records)
+                                         if item["state"] == "entered"), ""),
+            "terminal_phase": records[-1]["phase"] if status == "error" else "",
+            "terminal_class": records[-1]["class"] if status == "error" else "",
             "cross_stream_chronology": "unknown", "writer_process_identity": "unknown"}
 
 
@@ -1085,20 +1149,23 @@ def run_core_diagnostic_samples(result: dict[str, Any], manifest_root: Path,
             result["diagnostic_samples"].append({"case": case, "name": selector,
                 "status": "failure", "exit_code": None, "command_returned": False,
                 "observed_outcomes": [], "result_counts": None,
-                "stage_evidence": core_stage_evidence(case, "", "")})
+                "stage_evidence": core_stage_evidence(case, "", ""),
+                "builder_evidence": core_builder_evidence(case, "", "")})
             continue
         output = "\n".join((completed.stdout or "", completed.stderr or ""))
         counts = test_result_counts(output)
         outcomes = test_outcomes(output).get(selector, [])
         evidence = core_stage_evidence(case, completed.stdout or "", completed.stderr or "")
+        builder = core_builder_evidence(case, completed.stdout or "", completed.stderr or "")
         success = (completed.returncode == 0 and outcomes == ["ok"]
                    and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
                                   "filtered": result["inventory"]["test_count"] - 1}
-                   and evidence["attribution_complete"])
+                   and evidence["attribution_complete"] and builder["completed_path"])
         result["diagnostic_samples"].append({"case": case, "name": selector,
             "status": "success" if success else "failure", "exit_code": completed.returncode,
             "command_returned": True, "observed_outcomes": outcomes, "result_counts": counts,
-            "stage_evidence": evidence, "diagnostics": command_diagnostics(completed)})
+            "stage_evidence": evidence, "builder_evidence": builder,
+            "diagnostics": command_diagnostics(completed)})
     result["sampling_complete"] = all(item["command_returned"] for item in result["diagnostic_samples"])
     if any(item["status"] != "success" for item in result["diagnostic_samples"]):
         result.update(status="failure", failure_code="core_diagnostic_sample_failed")
@@ -1629,6 +1696,39 @@ def _safe_core_stage_evidence(case: str, value: Any) -> dict[str, Any]:
     return safe
 
 
+def _safe_core_builder_evidence(case: str, value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    phases = CORE_BUILDER_PHASES[case]
+    values = source.get("records") if isinstance(source.get("records"), list) else []
+    records = [{key: item[key] for key in ("case", "phase", "state", "class")}
+               for item in values[:2 * len(phases)] if isinstance(item, dict) and item.get("case") == case
+               and isinstance(item.get("phase"), str) and item["phase"] in phases
+               and isinstance(item.get("state"), str) and item["state"] in {"entered", "returned", "error"}
+               and isinstance(item.get("class"), str) and item["class"] in CORE_BUILDER_CLASSES]
+    safe = _safe_fields(source, counts=("stderr_candidate_count", "invalid_marker_count",
+                        "omitted_marker_count", "stdout_ambiguity_count"), handled=(
+                        "records", "designated_channel", "sequence_status", "attribution_complete",
+                        "completed_path", "last_entered_phase", "terminal_phase", "terminal_class",
+                        "cross_stream_chronology", "writer_process_identity"))
+    status = core_builder_sequence(case, records)
+    if (len(values) != len(records) or safe.get("invalid_marker_count") != 0
+            or safe.get("stdout_ambiguity_count") != 0 or safe.get("omitted_marker_count") != 0
+            or safe.get("stderr_candidate_count") != len(records)
+            or source.get("designated_channel") != "stderr" or source.get("sequence_status") != status
+            or source.get("completed_path") is not (status == "complete")
+            or source.get("attribution_complete") is not (status == "complete")):
+        status = "invalid"
+    safe.update(designated_channel="stderr", sequence_status=status, records=records,
+                projection_omitted_marker_count=len(values) - len(records),
+                attribution_complete=status == "complete", completed_path=status == "complete",
+                last_entered_phase=next((item["phase"] for item in reversed(records)
+                                         if item["state"] == "entered"), ""),
+                terminal_phase=records[-1]["phase"] if status == "error" else "",
+                terminal_class=records[-1]["class"] if status == "error" else "",
+                cross_stream_chronology="unknown", writer_process_identity="unknown")
+    return safe
+
+
 def _safe_core_samples(value: Any) -> dict[str, Any]:
     values = value if isinstance(value, list) else []
     samples = []
@@ -1640,13 +1740,14 @@ def _safe_core_samples(value: Any) -> dict[str, Any]:
         if item.get("name") != selected[case]:
             continue
         safe = _safe_fields(item, booleans=("command_returned",), enums={"status": {"success", "failure"}},
-                            handled=("case", "name", "exit_code", "result_counts", "observed_outcomes", "stage_evidence", "diagnostics"))
+                            handled=("case", "name", "exit_code", "result_counts", "observed_outcomes", "stage_evidence", "builder_evidence", "diagnostics"))
         outcomes = item.get("observed_outcomes") if isinstance(item.get("observed_outcomes"), list) else []
         accepted = [outcome for outcome in outcomes if isinstance(outcome, str) and outcome in {"ok", "FAILED", "ignored"}][:4]
         safe.update(case=case, name=selected[case], exit_code=_safe_exit(item.get("exit_code")),
                     result_counts=_safe_counts(item.get("result_counts")), observed_outcomes=accepted,
                     outcome_original_count=len(outcomes), outcome_omitted_count=len(outcomes) - len(accepted),
-                    stage_evidence=_safe_core_stage_evidence(case, item.get("stage_evidence")))
+                    stage_evidence=_safe_core_stage_evidence(case, item.get("stage_evidence")),
+                    builder_evidence=_safe_core_builder_evidence(case, item.get("builder_evidence")))
         if "diagnostics" in item:
             safe["diagnostics"] = _safe_diagnostics(item["diagnostics"])
         samples.append(safe)
@@ -1703,7 +1804,8 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                         and item["observed_outcomes"] == ["ok"] and item["outcome_original_count"] == 1
                         and item["result_counts"] == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
                                                       "filtered": inventory.get("test_count", 0) - 1}
-                        and item["stage_evidence"]["attribution_complete"] for item in safe["diagnostic_samples"])
+                        and item["stage_evidence"]["attribution_complete"]
+                        and item["builder_evidence"]["completed_path"] for item in safe["diagnostic_samples"])
         elif safe["result_kind"] == "named_tests":
             complete = complete and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"] and not inventory["omitted_count"] and not request["selectors"]["omitted_count"] and not tests["omitted_count"]
             complete = complete and [item["name"] for item in safe["tests"]] == request["tests"] and bool(safe["tests"])
