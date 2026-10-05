@@ -236,6 +236,41 @@ jobs:
               --patch "${PATCH_PATH}" \
               --receipt "${RECEIPT_PATH}"
 
+      - name: Identify helper self-test failure
+        if: ${{ always() && !cancelled() && steps.prepare.outcome == 'failure' }}
+        continue-on-error: true
+        shell: bash
+        working-directory: .workflow-src
+        env:
+          HOME: ${{ runner.temp }}/control-plane-home
+          RUFF_CACHE_DIR: ${{ runner.temp }}/control-plane-ruff-cache
+          UV_CACHE_DIR: ${{ runner.temp }}/control-plane-uv-cache
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/control-plane-uv-project
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -u
+          test_log="${RUNNER_TEMP}/control-plane-self-tests-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.log"
+          set +e
+          env -i \
+            PATH="${PATH}" \
+            HOME="${HOME}" \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            PYTHONDONTWRITEBYTECODE=1 \
+            RUFF_CACHE_DIR="${RUFF_CACHE_DIR}" \
+            UV_CACHE_DIR="${UV_CACHE_DIR}" \
+            UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT}" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            python3 -m unittest discover -s .github/scripts -p test_prepare_control_plane.py \
+            >"${test_log}" 2>&1
+          test_exit=$?
+          set -e
+          printf 'helper_self_test_exit=%s\n' "${test_exit}"
+          awk '/^(FAIL|ERROR): / || /  File ".*test_prepare_control_plane.py", line [0-9]+, in / || /^(Ran [0-9]+ tests|FAILED \()/ { print }' "${test_log}"
+
       - name: Upload bounded preparation receipt
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
