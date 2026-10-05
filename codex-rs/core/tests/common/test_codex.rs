@@ -105,6 +105,94 @@ const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_TEST_REMOTE_EXEC_SERVER_URL"
 static REMOTE_TEST_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const SUBMIT_TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
 
+// Keep this diagnostic beside the awaited builder operations it observes. It is
+// private to the existing test helper, not a runtime API or general tracer.
+#[derive(Clone, Copy)]
+enum BuilderDiagnostic {
+    Disabled,
+    Restricted,
+    ProjectDocs,
+}
+
+#[derive(Clone, Copy)]
+enum BuilderPhase {
+    AutoEnvSelection,
+    ConfigPreparation,
+    LinuxRuntimePathResolution,
+    EnvironmentManagerCreation,
+    WorkspaceSetup,
+    StateDatabaseOptionalInitialization,
+    InstallationIdResolution,
+    ThreadManagerConstruction,
+    OrdinaryConversationStart,
+}
+
+impl BuilderDiagnostic {
+    fn marker(self, phase: BuilderPhase, state: &'static str, class: &'static str) {
+        let case = match self {
+            Self::Disabled => return,
+            Self::Restricted => "restricted",
+            Self::ProjectDocs => "project_docs",
+        };
+        let phase = match phase {
+            BuilderPhase::AutoEnvSelection => "auto_env_selection",
+            BuilderPhase::ConfigPreparation => "config_preparation",
+            BuilderPhase::LinuxRuntimePathResolution => "linux_runtime_path_resolution",
+            BuilderPhase::EnvironmentManagerCreation => "environment_manager_creation",
+            BuilderPhase::WorkspaceSetup => "workspace_setup",
+            BuilderPhase::StateDatabaseOptionalInitialization => {
+                "state_database_optional_initialization"
+            }
+            BuilderPhase::InstallationIdResolution => "installation_id_resolution",
+            BuilderPhase::ThreadManagerConstruction => "thread_manager_construction",
+            BuilderPhase::OrdinaryConversationStart => "ordinary_conversation_start",
+        };
+        eprintln!(
+            "codex-core-runtime-diagnostic-builder-v1 case={case} phase={phase} state={state} class={class}"
+        );
+    }
+
+    fn entered(self, phase: BuilderPhase) {
+        self.marker(phase, "entered", "none");
+    }
+
+    fn returned(self, phase: BuilderPhase) {
+        self.marker(phase, "returned", "none");
+    }
+
+    fn result<T>(self, phase: BuilderPhase, result: Result<T>) -> Result<T> {
+        if matches!(self, Self::Disabled) {
+            return result;
+        }
+        match &result {
+            Ok(_) => self.returned(phase),
+            Err(error) => {
+                let kind = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .map(std::io::Error::kind);
+                let class = match kind {
+                    None => "no_io_cause",
+                    Some(ErrorKind::NotFound) => "not_found",
+                    Some(ErrorKind::PermissionDenied) => "permission_denied",
+                    Some(ErrorKind::ConnectionRefused) => "connection_refused",
+                    Some(ErrorKind::ConnectionReset) => "connection_reset",
+                    Some(ErrorKind::BrokenPipe) => "broken_pipe",
+                    Some(ErrorKind::InvalidInput) => "invalid_input",
+                    Some(ErrorKind::InvalidData) => "invalid_data",
+                    Some(ErrorKind::TimedOut) => "timed_out",
+                    Some(ErrorKind::Interrupted) => "interrupted",
+                    Some(ErrorKind::UnexpectedEof) => "unexpected_eof",
+                    // ErrorKind is non-exhaustive; never format an unknown error.
+                    Some(_) => "unlisted_io_kind",
+                };
+                self.marker(phase, "error", class);
+            }
+        }
+        result
+    }
+}
+
 pub struct RecordingUserInstructionsProvider {
     inner: Arc<dyn UserInstructionsProvider>,
     load_count: AtomicUsize,
@@ -607,6 +695,7 @@ impl TestCodexBuilder {
         Box::pin(self.build_with_home_and_base_url(
             base_url, home, /*resume_from*/ None, test_env,
             /*include_local_environment*/ false,
+            BuilderDiagnostic::Disabled,
         ))
         .await
     }
@@ -624,8 +713,26 @@ impl TestCodexBuilder {
         &mut self,
         server: &wiremock::MockServer,
     ) -> anyhow::Result<TestCodex> {
-        let test_env = test_env().await?;
-        self.build_with_environment(server, test_env).await
+        // Only these exact Linux fixtures can produce the fixed nested grammar.
+        // A changed setup count or shell branch disables observation, not the
+        // builder operation, and leaves the consumer's evidence incomplete.
+        let diagnostic = if cfg!(target_os = "linux") && self.user_shell_override.is_none() {
+            match std::env::var("CODEX_CORE_RUNTIME_DIAGNOSTIC_CASE").as_deref() {
+                Ok("restricted") if self.workspace_setups.is_empty() => {
+                    BuilderDiagnostic::Restricted
+                }
+                Ok("project_docs") if self.workspace_setups.len() == 1 => {
+                    BuilderDiagnostic::ProjectDocs
+                }
+                _ => BuilderDiagnostic::Disabled,
+            }
+        } else {
+            BuilderDiagnostic::Disabled
+        };
+        diagnostic.entered(BuilderPhase::AutoEnvSelection);
+        let test_env = diagnostic.result(BuilderPhase::AutoEnvSelection, test_env().await)?;
+        self.build_with_environment_observed(server, test_env, diagnostic)
+            .await
     }
 
     /// Builds a test runtime using an explicitly selected execution environment.
@@ -633,6 +740,16 @@ impl TestCodexBuilder {
         &mut self,
         server: &wiremock::MockServer,
         test_env: TestEnv,
+    ) -> anyhow::Result<TestCodex> {
+        self.build_with_environment_observed(server, test_env, BuilderDiagnostic::Disabled)
+            .await
+    }
+
+    async fn build_with_environment_observed(
+        &mut self,
+        server: &wiremock::MockServer,
+        test_env: TestEnv,
+        diagnostic: BuilderDiagnostic,
     ) -> anyhow::Result<TestCodex> {
         let home = match self.home.clone() {
             Some(home) => home,
@@ -642,6 +759,7 @@ impl TestCodexBuilder {
         Box::pin(self.build_with_home_and_base_url(
             base_url, home, /*resume_from*/ None, test_env,
             /*include_local_environment*/ false,
+            diagnostic,
         ))
         .await
     }
@@ -659,6 +777,7 @@ impl TestCodexBuilder {
         Box::pin(self.build_with_home_and_base_url(
             base_url, home, /*resume_from*/ None, test_env,
             /*include_local_environment*/ true,
+            BuilderDiagnostic::Disabled,
         ))
         .await
     }
@@ -679,6 +798,7 @@ impl TestCodexBuilder {
             /*resume_from*/ None,
             test_env,
             /*include_local_environment*/ false,
+            BuilderDiagnostic::Disabled,
         ))
         .await
     }
@@ -701,6 +821,7 @@ impl TestCodexBuilder {
         Box::pin(self.build_with_home_and_base_url(
             base_url, home, /*resume_from*/ None, test_env,
             /*include_local_environment*/ false,
+            BuilderDiagnostic::Disabled,
         ))
         .await
     }
@@ -719,6 +840,7 @@ impl TestCodexBuilder {
             Some(rollout_path),
             test_env,
             /*include_local_environment*/ false,
+            BuilderDiagnostic::Disabled,
         ))
         .await
     }
@@ -745,25 +867,36 @@ impl TestCodexBuilder {
         resume_from: Option<PathBuf>,
         test_env: TestEnv,
         include_local_environment: bool,
+        diagnostic: BuilderDiagnostic,
     ) -> anyhow::Result<TestCodex> {
-        let (config, fallback_cwd) = self
-            .prepare_config(base_url, &home, test_env.cwd().clone())
-            .await?;
+        diagnostic.entered(BuilderPhase::ConfigPreparation);
+        let (config, fallback_cwd) = diagnostic.result(
+            BuilderPhase::ConfigPreparation,
+            self.prepare_config(base_url, &home, test_env.cwd().clone())
+                .await,
+        )?;
         let exec_server_url = self
             .exec_server_url
             .clone()
             .or_else(|| test_env.exec_server_url.clone());
-        #[cfg(target_os = "linux")]
-        let codex_linux_sandbox_exe = Some(
-            crate::find_codex_linux_sandbox_exe()
-                .context("should find binary for codex-linux-sandbox")?,
-        );
-        #[cfg(not(target_os = "linux"))]
-        let codex_linux_sandbox_exe = None;
-        let local_runtime_paths = codex_exec_server::ExecServerRuntimeOptions::new(
-            std::env::current_exe()?,
-            codex_linux_sandbox_exe,
+        diagnostic.entered(BuilderPhase::LinuxRuntimePathResolution);
+        let local_runtime_paths = diagnostic.result(
+            BuilderPhase::LinuxRuntimePathResolution,
+            (|| -> Result<_> {
+                #[cfg(target_os = "linux")]
+                let codex_linux_sandbox_exe = Some(
+                    crate::find_codex_linux_sandbox_exe()
+                        .context("should find binary for codex-linux-sandbox")?,
+                );
+                #[cfg(not(target_os = "linux"))]
+                let codex_linux_sandbox_exe = None;
+                Ok(codex_exec_server::ExecServerRuntimeOptions::new(
+                    std::env::current_exe()?,
+                    codex_linux_sandbox_exe,
+                )?)
+            })(),
         )?;
+        diagnostic.entered(BuilderPhase::EnvironmentManagerCreation);
         let environment_manager = Arc::new(if include_local_environment {
             codex_exec_server::EnvironmentManager::create_for_tests_with_local(
                 exec_server_url,
@@ -777,11 +910,16 @@ impl TestCodexBuilder {
             )
             .await
         });
+        diagnostic.returned(BuilderPhase::EnvironmentManagerCreation);
         let file_system = test_env.environment().get_filesystem();
         let mut workspace_setups = vec![];
         swap(&mut self.workspace_setups, &mut workspace_setups);
         for setup in workspace_setups {
-            setup(config.cwd.clone(), Arc::clone(&file_system)).await?;
+            diagnostic.entered(BuilderPhase::WorkspaceSetup);
+            diagnostic.result(
+                BuilderPhase::WorkspaceSetup,
+                setup(config.cwd.clone(), Arc::clone(&file_system)).await,
+            )?;
         }
         let cwd = test_env.local_cwd_temp_dir().unwrap_or(fallback_cwd);
         Box::pin(self.build_from_config(
@@ -791,6 +929,7 @@ impl TestCodexBuilder {
             resume_from,
             test_env,
             environment_manager,
+            diagnostic,
         ))
         .await
     }
@@ -803,13 +942,20 @@ impl TestCodexBuilder {
         resume_from: Option<PathBuf>,
         mut test_env: TestEnv,
         environment_manager: Arc<codex_exec_server::EnvironmentManager>,
+        diagnostic: BuilderDiagnostic,
     ) -> anyhow::Result<TestCodex> {
+        diagnostic.entered(BuilderPhase::StateDatabaseOptionalInitialization);
         let state_db = codex_core::init_state_db(&config).await;
+        diagnostic.returned(BuilderPhase::StateDatabaseOptionalInitialization);
         let thread_store = self
             .thread_store
             .clone()
             .unwrap_or_else(|| thread_store_from_config(&config, state_db.clone()));
-        let installation_id = resolve_installation_id(&config.codex_home).await?;
+        diagnostic.entered(BuilderPhase::InstallationIdResolution);
+        let installation_id = diagnostic.result(
+            BuilderPhase::InstallationIdResolution,
+            resolve_installation_id(&config.codex_home).await,
+        )?;
         let user_instructions_provider =
             self.user_instructions_provider.clone().unwrap_or_else(|| {
                 Arc::new(CodexHomeUserInstructionsProvider::new(
@@ -825,6 +971,7 @@ impl TestCodexBuilder {
             .code_mode_host_program
             .take()
             .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
+        diagnostic.entered(BuilderPhase::ThreadManagerConstruction);
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
             if let Some(configure) = self.extension_builder_hook.take() {
@@ -869,6 +1016,7 @@ impl TestCodexBuilder {
                 thread_manager
             }
         });
+        diagnostic.returned(BuilderPhase::ThreadManagerConstruction);
         let user_shell_override = self.user_shell_override.clone();
         let client_mcp_extensions = || {
             ClientMcpExtensions::new(
@@ -915,6 +1063,7 @@ impl TestCodexBuilder {
                 .await?
             }
             (None, None) => {
+                diagnostic.entered(BuilderPhase::OrdinaryConversationStart);
                 let environments = if test_env.selection().cwd.infer_path_convention()
                     == Some(PathConvention::Windows)
                     && PathUri::from_abs_path(&config.cwd) != test_env.selection().cwd
@@ -928,13 +1077,17 @@ impl TestCodexBuilder {
                 } else {
                     None
                 };
-                Box::pin(thread_manager.start_thread(StartThreadOptions {
-                    history_mode: self.history_mode,
-                    client_mcp_extensions: client_mcp_extensions(),
-                    environments,
-                    ..StartThreadOptions::new(config.clone())
-                }))
-                .await?
+                diagnostic.result(
+                    BuilderPhase::OrdinaryConversationStart,
+                    Box::pin(thread_manager.start_thread(StartThreadOptions {
+                        history_mode: self.history_mode,
+                        client_mcp_extensions: client_mcp_extensions(),
+                        environments,
+                        ..StartThreadOptions::new(config.clone())
+                    }))
+                    .await
+                    .map_err(Into::into),
+                )?
             }
         };
 
