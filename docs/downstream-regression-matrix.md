@@ -1101,9 +1101,11 @@ permission contract is documented in
 
 ## Native per-execution MCP proof
 
-Session shutdown pins default-turn creation in a heap-allocated future before
-awaiting it and SessionEnd hook processing. Keep the existing no-hook, root-only and
-hook-order behavior. The exact external-unload residency case is the core
+Session shutdown boxes the complete SessionEnd-hook future at its existing
+teardown call site before awaiting it. Keep the existing no-hook, root-only,
+teardown-order, and hook behavior. The earlier inner allocation was insufficient;
+this replacement remains a hypothesis because the first debugger frame did not
+identify a faulting expression. The exact external-unload residency case is the core
 runtime control; these existing core shutdown-consumer tests are also
 controls:
 `external_v2_unload_defers_for_pending_finalizers_and_submissions`,

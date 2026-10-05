@@ -373,7 +373,7 @@ pub(crate) async fn run_session_end_hooks(sess: &Arc<Session>) {
         return;
     }
 
-    let turn_context = Box::pin(sess.new_default_turn()).await;
+    let turn_context = sess.new_default_turn().await;
 
     // SessionEnd is root-only; ThreadSpawn uses SubagentStart/SubagentStop and other subagents
     // are internal implementation details.
