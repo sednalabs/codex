@@ -209,22 +209,61 @@ impl BuilderDiagnostic {
                 None => "no_io_cause".to_owned(),
             };
         }
-        match kind {
-            Some(ErrorKind::NotFound) => "not_found",
-            Some(ErrorKind::PermissionDenied) => "permission_denied",
-            Some(ErrorKind::ConnectionRefused) => "connection_refused",
-            Some(ErrorKind::ConnectionReset) => "connection_reset",
-            Some(ErrorKind::BrokenPipe) => "broken_pipe",
-            Some(ErrorKind::InvalidInput) => "invalid_input",
-            Some(ErrorKind::InvalidData) => "invalid_data",
-            Some(ErrorKind::TimedOut) => "timed_out",
-            Some(ErrorKind::Interrupted) => "interrupted",
-            Some(ErrorKind::UnexpectedEof) => "unexpected_eof",
-            // ErrorKind is non-exhaustive; never format an unknown error.
-            Some(_) => "unlisted_io_kind",
-            None => unreachable!("the no-I/O branch returned above"),
+        let kind = kind.expect("the no-I/O branch returned above");
+        // Debug is applied only to std's payload-free ErrorKind discriminant,
+        // never to Error, CodexErr, their sources, paths, or context. It also
+        // represents pinned hidden variants without requiring unstable features.
+        Self::io_kind_label(&format!("{kind:?}")).to_owned()
+    }
+
+    fn io_kind_label(label: &str) -> &'static str {
+        // Complete ErrorKind vocabulary from Rust 1.95.0 std/src/io/error.rs.
+        // Unknown future discriminants remain closed, not arbitrary strings.
+        match label {
+            "NotFound" => "not_found",
+            "PermissionDenied" => "permission_denied",
+            "ConnectionRefused" => "connection_refused",
+            "ConnectionReset" => "connection_reset",
+            "HostUnreachable" => "host_unreachable",
+            "NetworkUnreachable" => "network_unreachable",
+            "ConnectionAborted" => "connection_aborted",
+            "NotConnected" => "not_connected",
+            "AddrInUse" => "addr_in_use",
+            "AddrNotAvailable" => "addr_not_available",
+            "NetworkDown" => "network_down",
+            "BrokenPipe" => "broken_pipe",
+            "AlreadyExists" => "already_exists",
+            "WouldBlock" => "would_block",
+            "NotADirectory" => "not_a_directory",
+            "IsADirectory" => "is_a_directory",
+            "DirectoryNotEmpty" => "directory_not_empty",
+            "ReadOnlyFilesystem" => "read_only_filesystem",
+            "FilesystemLoop" => "filesystem_loop",
+            "StaleNetworkFileHandle" => "stale_network_file_handle",
+            "InvalidInput" => "invalid_input",
+            "InvalidData" => "invalid_data",
+            "TimedOut" => "timed_out",
+            "WriteZero" => "write_zero",
+            "StorageFull" => "storage_full",
+            "NotSeekable" => "not_seekable",
+            "QuotaExceeded" => "quota_exceeded",
+            "FileTooLarge" => "file_too_large",
+            "ResourceBusy" => "resource_busy",
+            "ExecutableFileBusy" => "executable_file_busy",
+            "Deadlock" => "deadlock",
+            "CrossesDevices" => "crosses_devices",
+            "TooManyLinks" => "too_many_links",
+            "InvalidFilename" => "invalid_filename",
+            "ArgumentListTooLong" => "argument_list_too_long",
+            "Interrupted" => "interrupted",
+            "Unsupported" => "unsupported",
+            "UnexpectedEof" => "unexpected_eof",
+            "OutOfMemory" => "out_of_memory",
+            "InProgress" => "in_progress",
+            "Other" => "io_other",
+            "Uncategorized" => "io_uncategorized",
+            _ => "unlisted_io_kind",
         }
-        .to_owned()
     }
 }
 
@@ -1768,13 +1807,41 @@ mod tests {
             (ErrorKind::PermissionDenied, "permission_denied"),
             (ErrorKind::ConnectionRefused, "connection_refused"),
             (ErrorKind::ConnectionReset, "connection_reset"),
+            (ErrorKind::HostUnreachable, "host_unreachable"),
+            (ErrorKind::NetworkUnreachable, "network_unreachable"),
+            (ErrorKind::ConnectionAborted, "connection_aborted"),
+            (ErrorKind::NotConnected, "not_connected"),
+            (ErrorKind::AddrInUse, "addr_in_use"),
+            (ErrorKind::AddrNotAvailable, "addr_not_available"),
+            (ErrorKind::NetworkDown, "network_down"),
             (ErrorKind::BrokenPipe, "broken_pipe"),
+            (ErrorKind::AlreadyExists, "already_exists"),
+            (ErrorKind::WouldBlock, "would_block"),
+            (ErrorKind::NotADirectory, "not_a_directory"),
+            (ErrorKind::IsADirectory, "is_a_directory"),
+            (ErrorKind::DirectoryNotEmpty, "directory_not_empty"),
+            (ErrorKind::ReadOnlyFilesystem, "read_only_filesystem"),
+            (ErrorKind::StaleNetworkFileHandle, "stale_network_file_handle"),
             (ErrorKind::InvalidInput, "invalid_input"),
             (ErrorKind::InvalidData, "invalid_data"),
             (ErrorKind::TimedOut, "timed_out"),
+            (ErrorKind::WriteZero, "write_zero"),
+            (ErrorKind::StorageFull, "storage_full"),
+            (ErrorKind::NotSeekable, "not_seekable"),
+            (ErrorKind::QuotaExceeded, "quota_exceeded"),
+            (ErrorKind::FileTooLarge, "file_too_large"),
+            (ErrorKind::ResourceBusy, "resource_busy"),
+            (ErrorKind::ExecutableFileBusy, "executable_file_busy"),
+            (ErrorKind::Deadlock, "deadlock"),
+            (ErrorKind::CrossesDevices, "crosses_devices"),
+            (ErrorKind::TooManyLinks, "too_many_links"),
+            (ErrorKind::InvalidFilename, "invalid_filename"),
+            (ErrorKind::ArgumentListTooLong, "argument_list_too_long"),
             (ErrorKind::Interrupted, "interrupted"),
+            (ErrorKind::Unsupported, "unsupported"),
             (ErrorKind::UnexpectedEof, "unexpected_eof"),
-            (ErrorKind::Other, "unlisted_io_kind"),
+            (ErrorKind::OutOfMemory, "out_of_memory"),
+            (ErrorKind::Other, "io_other"),
         ] {
             let direct = anyhow::Error::new(std::io::Error::new(
                 kind,
@@ -1797,7 +1864,7 @@ mod tests {
         ));
         assert_eq!(
             BuilderDiagnostic::error_class(&direct_precedence),
-            "unlisted_io_kind"
+            "io_other"
         );
         assert_eq!(
             BuilderDiagnostic::error_class(&anyhow!("private diagnostic canary")),
@@ -1807,6 +1874,55 @@ mod tests {
 
     #[test]
     fn builder_error_categories_cover_complete_payload_free_enum() {
+        for (label, expected) in [
+            ("NotFound", "not_found"),
+            ("PermissionDenied", "permission_denied"),
+            ("ConnectionRefused", "connection_refused"),
+            ("ConnectionReset", "connection_reset"),
+            ("HostUnreachable", "host_unreachable"),
+            ("NetworkUnreachable", "network_unreachable"),
+            ("ConnectionAborted", "connection_aborted"),
+            ("NotConnected", "not_connected"),
+            ("AddrInUse", "addr_in_use"),
+            ("AddrNotAvailable", "addr_not_available"),
+            ("NetworkDown", "network_down"),
+            ("BrokenPipe", "broken_pipe"),
+            ("AlreadyExists", "already_exists"),
+            ("WouldBlock", "would_block"),
+            ("NotADirectory", "not_a_directory"),
+            ("IsADirectory", "is_a_directory"),
+            ("DirectoryNotEmpty", "directory_not_empty"),
+            ("ReadOnlyFilesystem", "read_only_filesystem"),
+            ("FilesystemLoop", "filesystem_loop"),
+            ("StaleNetworkFileHandle", "stale_network_file_handle"),
+            ("InvalidInput", "invalid_input"),
+            ("InvalidData", "invalid_data"),
+            ("TimedOut", "timed_out"),
+            ("WriteZero", "write_zero"),
+            ("StorageFull", "storage_full"),
+            ("NotSeekable", "not_seekable"),
+            ("QuotaExceeded", "quota_exceeded"),
+            ("FileTooLarge", "file_too_large"),
+            ("ResourceBusy", "resource_busy"),
+            ("ExecutableFileBusy", "executable_file_busy"),
+            ("Deadlock", "deadlock"),
+            ("CrossesDevices", "crosses_devices"),
+            ("TooManyLinks", "too_many_links"),
+            ("InvalidFilename", "invalid_filename"),
+            ("ArgumentListTooLong", "argument_list_too_long"),
+            ("Interrupted", "interrupted"),
+            ("Unsupported", "unsupported"),
+            ("UnexpectedEof", "unexpected_eof"),
+            ("OutOfMemory", "out_of_memory"),
+            ("InProgress", "in_progress"),
+            ("Other", "io_other"),
+            ("Uncategorized", "io_uncategorized"),
+        ] {
+            assert_eq!(BuilderDiagnostic::io_kind_label(label), expected);
+        }
+        for invalid in ["FutureKind", "private diagnostic canary", "/private/canary", "Other(payload)"] {
+            assert_eq!(BuilderDiagnostic::io_kind_label(invalid), "unlisted_io_kind");
+        }
         for (kind, expected) in [
             (CodexErrKind::TurnAborted, "codex_turn_aborted"),
             (
