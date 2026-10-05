@@ -1210,6 +1210,20 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
     producer_inventory_command = ["cargo", "test", "--locked", "-p", "core_test_support", "--lib", "--", "--list"]
     producer_commands = [["cargo", "test", "--locked", "-p", "core_test_support", "--lib", name,
                           "--", "--exact", "--test-threads=1"] for name in producer_names]
+    # Independent complete fixed-Rust discriminant labels, not error payloads.
+    io_classes = (
+        "not_found", "permission_denied", "connection_refused", "connection_reset",
+        "host_unreachable", "network_unreachable", "connection_aborted", "not_connected",
+        "addr_in_use", "addr_not_available", "network_down", "broken_pipe",
+        "already_exists", "would_block", "not_a_directory", "is_a_directory",
+        "directory_not_empty", "read_only_filesystem", "filesystem_loop", "stale_network_file_handle",
+        "invalid_input", "invalid_data", "timed_out", "write_zero",
+        "storage_full", "not_seekable", "quota_exceeded", "file_too_large",
+        "resource_busy", "executable_file_busy", "deadlock", "crosses_devices",
+        "too_many_links", "invalid_filename", "argument_list_too_long", "interrupted",
+        "unsupported", "unexpected_eof", "out_of_memory", "in_progress",
+        "io_other", "io_uncategorized",
+    )
     # Independent complete CodexErrKind serde snake_case vocabulary, including Linux-only kinds.
     codex_classes = (
         "codex_turn_aborted", "codex_session_budget_exceeded", "codex_stream", "codex_content_filter",
@@ -1259,7 +1273,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         index = self._builder_phases(case).index(phase)
         nested = self._builder_markers(case).splitlines()[:2 * index + 1]
         nested.append(f"codex-core-runtime-diagnostic-builder-v1 case={case} phase={phase} state=error class={error_class}")
-        outer_class = "other" if error_class in {"no_io_cause", "unlisted_io_kind", *self.codex_classes} else error_class
+        outer_class = error_class if error_class in named_tests.CORE_DIAGNOSTIC_ERRORS - {"none", "other"} else "other"
         return "\n".join([*self._markers(case).splitlines()[:5], *nested,
                           f"codex-core-runtime-diagnostic-v1 case={case} stage=builder state=error error={outer_class}"])
 
@@ -1623,7 +1637,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             for phase in self._builder_phases(case):
                 if phase not in result_phases:
                     continue
-                for error_class in ("no_io_cause", "unlisted_io_kind", "permission_denied", *self.codex_classes):
+                for error_class in ("no_io_cause", "unlisted_io_kind", *self.io_classes, *self.codex_classes):
                     with self.subTest(case=case, phase=phase, error_class=error_class):
                         samples = [self._sample(key, "FAILED", self._builder_error_markers(key, phase, error_class))
                                    if key == case else self._sample(key) for key, _, _ in named_tests.CORE_DIAGNOSTIC_CASES]
@@ -1645,9 +1659,8 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                         self.assertEqual("success", next(item for item in public["diagnostic_samples"] if item["case"] != case)["status"])
 
     def test_builder_closed_error_classes_do_not_create_self_option_or_infallible_errors(self) -> None:
-        classes = {"not_found", "permission_denied", "connection_refused", "connection_reset",
-                   "broken_pipe", "invalid_input", "invalid_data", "timed_out", "interrupted",
-                   "unexpected_eof", "no_io_cause", "unlisted_io_kind", *self.codex_classes}
+        classes = {"no_io_cause", "unlisted_io_kind", *self.io_classes, *self.codex_classes}
+        self.assertEqual(set(self.io_classes), named_tests.CORE_BUILDER_IO_CLASSES)
         self.assertEqual(classes | {"none"}, named_tests.CORE_BUILDER_CLASSES)
         for error_class in classes:
             stream = self._builder_error_markers("restricted", "config_preparation", error_class)

@@ -131,7 +131,21 @@ CORE_BUILDER_PHASES = {
 }
 CORE_BUILDER_RESULT_PHASES = frozenset({"auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
                                       "workspace_setup", "installation_id_resolution", "ordinary_conversation_start"})
-CORE_BUILDER_CLASSES = (CORE_DIAGNOSTIC_ERRORS - {"other"}) | {
+# Payload-free ErrorKind vocabulary from the fixed Rust 1.95.0 discriminants.
+CORE_BUILDER_IO_CLASSES = {
+    "not_found", "permission_denied", "connection_refused", "connection_reset",
+    "host_unreachable", "network_unreachable", "connection_aborted", "not_connected",
+    "addr_in_use", "addr_not_available", "network_down", "broken_pipe",
+    "already_exists", "would_block", "not_a_directory", "is_a_directory",
+    "directory_not_empty", "read_only_filesystem", "filesystem_loop", "stale_network_file_handle",
+    "invalid_input", "invalid_data", "timed_out", "write_zero",
+    "storage_full", "not_seekable", "quota_exceeded", "file_too_large",
+    "resource_busy", "executable_file_busy", "deadlock", "crosses_devices",
+    "too_many_links", "invalid_filename", "argument_list_too_long", "interrupted",
+    "unsupported", "unexpected_eof", "out_of_memory", "in_progress",
+    "io_other", "io_uncategorized",
+}
+CORE_BUILDER_CLASSES = CORE_BUILDER_IO_CLASSES | {"none"} | {
     "no_io_cause", "unlisted_io_kind",
     "codex_turn_aborted", "codex_session_budget_exceeded", "codex_stream", "codex_content_filter",
     "codex_rate_limit_exceeded", "codex_context_window_exceeded", "codex_thread_not_found",
