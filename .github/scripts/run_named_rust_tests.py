@@ -58,6 +58,7 @@ PUBLIC_FAILURE_CODES = {
     "core_diagnostic_mode_invalid", "core_diagnostic_mode_collision",
     "core_diagnostic_request_invalid", "core_diagnostic_identity_invalid",
     "core_diagnostic_sample_failed", "core_diagnostic_sample_incomplete",
+    "core_diagnostic_producer_controls_failed",
 }
 CORE_RUNTIME_TARGET = ("codex-core", "integration", "all")
 CORE_RUNTIME_BUILDS = (
@@ -93,6 +94,17 @@ CORE_DIAGNOSTIC_CASES = (
      ("mock_server", "sse_mount", "builder", "instruction_assertion", "turn_submit", "response_match")),
     ("project_docs", "suite::agents_md::agents_docs_are_concatenated_from_project_root_to_cwd",
      ("mock_server", "sse_mount", "builder", "turn_submit", "response_match", "final_assertion")),
+)
+CORE_DIAGNOSTIC_PRODUCER_TESTS = (
+    "test_codex::tests::builder_error_categories_never_include_error_payloads",
+    "test_codex::tests::builder_error_categories_cover_complete_payload_free_enum",
+)
+CORE_DIAGNOSTIC_PRODUCER_INVENTORY = (
+    "cargo", "test", "--locked", "-p", "core_test_support", "--lib", "--", "--list",
+)
+CORE_DIAGNOSTIC_PRODUCER_COMMANDS = tuple(
+    ("cargo", "test", "--locked", "-p", "core_test_support", "--lib", name,
+     "--", "--exact", "--test-threads=1") for name in CORE_DIAGNOSTIC_PRODUCER_TESTS
 )
 CORE_DIAGNOSTIC_ERRORS = {
     "none", "not_found", "permission_denied", "connection_refused", "connection_reset",
@@ -1033,7 +1045,8 @@ def matched_test_evidence(lines: list[str]) -> dict[str, Any]:
 def core_diagnostic_fields() -> dict[str, Any]:
     return {"result_kind": "core_runtime_diagnostic", "diagnostic_only": True,
             "full_target_execution": False, "qualification_status": "not_attempted",
-            "sampling_complete": False, "diagnostic_samples": []}
+            "sampling_complete": False, "diagnostic_samples": [],
+            "producer_controls": {"status": "not-run", "inventory": {"status": "not-run", "tests": []}, "tests": []}}
 
 
 def core_diagnostic_request_error(request: dict[str, Any], preparation_only: bool) -> str:
@@ -1149,6 +1162,63 @@ def core_builder_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]
             "terminal_phase": records[-1]["phase"] if status == "error" else "",
             "terminal_class": records[-1]["class"] if status == "error" else "",
             "cross_stream_chronology": "unknown", "writer_process_identity": "unknown"}
+
+
+def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root: Path,
+                                          env: dict[str, str]) -> bool:
+    # These classifier controls live in a separate lib target, not integration/all.
+    # Keep their inventory/count proof distinct from the unchanged sample request.
+    controls = result["producer_controls"]
+    controls["status"] = "failure"
+    result.update(status="failure", failure_code="core_diagnostic_producer_controls_failed")
+    command = list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY)
+    try:
+        inventory = subprocess.run(command, cwd=manifest_root, env=env, text=True,
+                                   capture_output=True, check=False, shell=False)
+    except OSError:
+        controls["inventory"].update(status="failure", argv=command, command_returned=False,
+                                     command_matches=False, exit_code=None)
+        return False
+    names = listed_tests(inventory.stdout or "")
+    valid = (inventory.args == command and inventory.returncode == 0
+             and len(CORE_DIAGNOSTIC_PRODUCER_TESTS) <= len(names) <= MAX_PUBLIC_INVENTORY_NAMES
+             and len(set(names)) == len(names) and all(TEST_RE.fullmatch(name) for name in names)
+             and all(names.count(name) == 1 for name in CORE_DIAGNOSTIC_PRODUCER_TESTS))
+    controls["inventory"] = {"status": "success" if valid else "failure", "tests": names,
+        "test_count": len(names), "argv": command, "command_returned": True,
+        "command_matches": inventory.args == command, "exit_code": inventory.returncode,
+        "diagnostics": command_diagnostics(inventory)}
+    if not valid:
+        return False
+    for name, argv in zip(CORE_DIAGNOSTIC_PRODUCER_TESTS, CORE_DIAGNOSTIC_PRODUCER_COMMANDS):
+        command = list(argv)
+        record = {"name": name, "argv": command, "status": "failure", "command_returned": False,
+                  "command_matches": False, "exit_code": None, "execution_reconciled": False,
+                  "observed_outcomes": [], "matched_line_count": 0, "matched_lines_truncated": False,
+                  "unexpected_outcome_count": 0, "result_counts": None}
+        controls["tests"].append(record)
+        try:
+            completed = subprocess.run(command, cwd=manifest_root, env=env, text=True,
+                                       capture_output=True, check=False, shell=False)
+        except OSError:
+            continue
+        output = "\n".join((completed.stdout or "", completed.stderr or ""))
+        counts = test_result_counts(output)
+        outcomes = test_outcomes(output)
+        success = (completed.args == command and completed.returncode == 0 and outcomes == {name: ["ok"]}
+                   and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": len(names) - 1})
+        record.update(status="success" if success else "failure", command_returned=True,
+                      command_matches=completed.args == command, exit_code=completed.returncode,
+                      execution_reconciled=success, observed_outcomes=outcomes.get(name, []),
+                      matched_line_count=len(outcomes.get(name, [])), unexpected_outcome_count=sum(
+                          len(values) for key, values in outcomes.items() if key != name),
+                      result_counts=counts, diagnostics=command_diagnostics(completed))
+    if not all(item["execution_reconciled"] for item in controls["tests"]):
+        return False
+    controls["status"] = "success"
+    result.update(status="success")
+    result.pop("failure_code", None)
+    return True
 
 
 def run_core_diagnostic_samples(result: dict[str, Any], manifest_root: Path,
@@ -1356,6 +1426,8 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         )
         return result
     if diagnostic_only:
+        if not run_core_diagnostic_producer_controls(result, manifest_root, env):
+            return result
         return run_core_diagnostic_samples(result, manifest_root, env)
     # Run the complete immutable target command.  This keeps the command
     # surface closed while the requested names remain exact post-run selectors.
@@ -1768,6 +1840,61 @@ def _safe_core_samples(value: Any) -> dict[str, Any]:
     return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
 
 
+def _safe_core_producer_controls(value: Any) -> dict[str, Any]:
+    # Publish only the fixed commands/names and typed counts, never other lib names.
+    source = value if isinstance(value, dict) else {}
+    raw_inventory = source.get("inventory") if isinstance(source.get("inventory"), dict) else {}
+    values = raw_inventory.get("tests") if isinstance(raw_inventory.get("tests"), list) else []
+    names = [name for name in values if type(name) is str and TEST_RE.fullmatch(name)]
+    inventory = _safe_fields(raw_inventory, counts=("test_count",), booleans=("command_returned",),
+                            enums={"status": {"success", "failure", "not-run"}},
+                            handled=("tests", "argv", "command_matches", "exit_code", "diagnostics"))
+    inventory.update(argv=list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY),
+                     command_matches=raw_inventory.get("argv") == list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY)
+                                     and raw_inventory.get("command_matches") is True,
+                     exit_code=_safe_exit(raw_inventory.get("exit_code")), original_count=len(values),
+                     unique_count=len(set(names)), invalid_name_count=len(values) - len(names),
+                     selected_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if names.count(name) == 1],
+                     missing_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if name not in names],
+                     ambiguous_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if names.count(name) > 1])
+    if "diagnostics" in raw_inventory:
+        inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"])
+    inventory_ok = (inventory.get("status") == "success" and inventory.get("command_returned") is True
+                    and inventory["command_matches"] and inventory["exit_code"] == 0
+                    and len(CORE_DIAGNOSTIC_PRODUCER_TESTS) <= len(values) <= MAX_PUBLIC_INVENTORY_NAMES
+                    and inventory.get("test_count") == len(values) == len(set(names))
+                    and inventory["invalid_name_count"] == 0
+                    and inventory["selected_tests"] == list(CORE_DIAGNOSTIC_PRODUCER_TESTS))
+    values = source.get("tests") if isinstance(source.get("tests"), list) else []
+    records = []
+    known = set(CORE_DIAGNOSTIC_PRODUCER_TESTS)
+    for item in values[:2]:
+        projected = _safe_test_results([item], known)["records"]
+        if not projected:
+            continue
+        record = projected[0]
+        command = list(CORE_DIAGNOSTIC_PRODUCER_COMMANDS[CORE_DIAGNOSTIC_PRODUCER_TESTS.index(record["name"])])
+        record.update(argv=command, command_returned=item.get("command_returned") is True,
+                      command_matches=item.get("argv") == command and item.get("command_matches") is True,
+                      unexpected_outcome_count=_safe_count(item.get("unexpected_outcome_count")))
+        record["omitted_field_count"] -= len(set(item) & {"argv", "command_returned", "command_matches", "unexpected_outcome_count"})
+        records.append(record)
+    reconciled = (source.get("status") == "success" and inventory_ok and len(values) == len(records) == 2
+                  and [item["name"] for item in records] == list(CORE_DIAGNOSTIC_PRODUCER_TESTS)
+                  and all(item.get("status") == "success" and item["command_returned"]
+                          and item["command_matches"] and item["exit_code"] == 0
+                          and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"]
+                          and item["outcome_original_count"] == item.get("matched_line_count") == 1
+                          and item["matched_lines_truncated"] is False
+                          and item["unexpected_outcome_count"] == 0 and item["result_counts"] == {
+                              "passed": 1, "failed": 0, "ignored": 0, "measured": 0,
+                              "filtered": inventory.get("test_count", 0) - 1} for item in records))
+    return {"status": "success" if reconciled else "not-run" if source.get("status") == "not-run" else "failure",
+            "reconciled": reconciled, "inventory": inventory, "tests": records,
+            "original_count": len(values), "omitted_count": len(values) - len(records),
+            "omitted_field_count": len(set(source) - {"status", "inventory", "tests"})}
+
+
 def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
     """Project every public field afresh; omitted raw content is never hashed."""
     inventory = _safe_inventory(result.get("inventory"))
@@ -1783,12 +1910,13 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
         "candidate_sha": _safe_token(result.get("candidate_sha"), GIT_SHA_RE),
         "identity": identity, "request": request, "inventory": inventory,
         "tests": tests.pop("records"), "test_projection": tests,
-        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples"}),
+        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples", "producer_controls"}),
     }
     if safe["result_kind"] == "core_runtime_diagnostic":
         samples = _safe_core_samples(result.get("diagnostic_samples"))
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
-                    diagnostic_samples=samples.pop("records"), sample_projection=samples)
+                    diagnostic_samples=samples.pop("records"), sample_projection=samples,
+                    producer_controls=_safe_core_producer_controls(result.get("producer_controls")))
         safe["sampling_complete"] = (samples["original_count"] == 2 and samples["omitted_count"] == 0
                                      and all(item.get("command_returned") is True for item in safe["diagnostic_samples"]))
     if "runtime_preparation" in result:
@@ -1803,7 +1931,8 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                     and safe["candidate_sha"] == identity.get("target_sha") and bool(safe["request_fingerprint"]))
         complete = complete and request["request_fingerprint"] == safe["request_fingerprint"]
         if safe["result_kind"] == "core_runtime_diagnostic":
-            complete = complete and (result.get("diagnostic_only") is True and result.get("full_target_execution") is False
+            complete = complete and (safe["producer_controls"]["reconciled"]
+                        and result.get("diagnostic_only") is True and result.get("full_target_execution") is False
                         and result.get("qualification_status") == "not_attempted" and result.get("sampling_complete") is True
                         and safe["sampling_complete"] and request.get("profile") == "rust_integration"
                         and tuple(request.get(key) for key in ("package", "target_kind", "target")) == CORE_RUNTIME_TARGET
