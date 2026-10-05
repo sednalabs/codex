@@ -144,7 +144,7 @@ In the codex-rs folder where the rust code lives:
 - Treat “downstream-only behavior” as behavior introduced by fork-specific patches, branch policy, local wrappers, or local environment glue that does not exist in `openai/codex`.
 - When a regression appears to be upstream/core until proven otherwise, bias toward the upstream-fix -> upstream-issue -> local-trace order above.
 
-Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace-wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Do not re-run tests after running `fix` or `fmt`.
+Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace-wide Clippy builds; only run `just fix` without `-p` if you changed shared crates. Finish required fixes and formatting before validating, then run the affected tests on the exact final candidate after behavioral, fixture, generated, or observer changes. Reuse earlier evidence only when the change is mechanical and each reused result is demonstrably unaffected; formatting-only changes do not require a blanket full-suite rerun. This ordering does not replace any required hosted or protected checks.
 
 Also run `just argument-comment-lint` to ensure the codebase is clean of comment lint errors.
 
@@ -154,7 +154,7 @@ Also run `just argument-comment-lint` to ensure the codebase is clean of comment
 - Use `validation-lab.yml` as the default remote-first validation surface for scratch refs, integration refs, and other non-PR exploratory work.
 - Prefer `profile=targeted` for one active seam and `profile=frontier` for bounded next-blocker harvesting once there is a recent trusted baseline.
 - Downstream release support includes Linux `x86_64` and Linux Arm64 GNU. Public release artifacts and native release verification must cover both architectures; heavyweight checkpoint workflows and routine remote validation may remain target-specific when their owning contract does not require the release matrix. Intel macOS remains an explicitly selected release mode, while other platforms require a deliberate support-contract change with matching docs and workflows.
-- Configured helper presets remain a good narrow local lane for smoke checks, formatting, and targeted validation.
+- Configured helper presets can provide narrow smoke checks, formatting, and targeted validation, but their availability does not authorize local compute. Run them on an approved hosted runner under the applicable validation policy unless the user explicitly authorizes local execution or a closer instruction overrides it.
 - Do not run routine direct terminal `cargo build` or `cargo test` commands for expensive local validation when the same work can be offloaded to GitHub CI.
 - Heavy remote CI only starts after the relevant work is committed and pushed.
 - Preview/build workflows are buildability checkpoints, not every-commit branch defaults.
@@ -268,16 +268,16 @@ is easy to review and future diffs stay visual.
 
 When UI or text output changes intentionally, update the snapshots as follows:
 
-- Run tests to generate any updated snapshots:
+- On an approved hosted runner, run tests on the exact final candidate to generate any updated snapshots:
   - `just test -p codex-tui`
-- Check what’s pending:
+- On that runner, check what’s pending:
   - `cargo insta pending-snapshots -p codex-tui`
-- Review changes by reading the generated `*.snap.new` files directly in the repo, or preview a specific file:
+- Review the generated `*.snap.new` files directly in the repo, or preview a specific file:
   - `cargo insta show -p codex-tui path/to/file.snap.new`
-- Only if you intend to accept all new snapshots in this crate, run:
+- Only after reviewing and confirming that every pending snapshot in this crate is intended, run this on the approved hosted runner; otherwise accept only the intended reviewed snapshots:
   - `cargo insta accept -p codex-tui`
 
-If you don’t have the tool:
+If you don’t have the tool, install it in the approved hosted validation environment:
 
 - `cargo install --locked cargo-insta`
 
@@ -396,7 +396,7 @@ closest `pyproject.toml`'s `requires-python` field to see what minimum runtime v
 
 ## Platform Support
 
-Tests and features must support Linux, macOS and Windows unless feature is explicitly OS-specific.
+Follow the applicable component and workflow contracts for platform support. Preserve component portability and run all mandatory cross-platform checks; the absence of a Windows release target does not waive required Windows tests. Release targets and preview/executor modes are defined by their owning workflows and do not by themselves add or remove component test requirements.
 
 Codex supports running connected app-server and exec-server on different operating systems. See the
 `$remote-tests` skill for details about integration testing these configurations.
