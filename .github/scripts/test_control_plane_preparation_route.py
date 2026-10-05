@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import unittest
 from unittest import mock
 import zipfile
@@ -132,7 +133,7 @@ class RouteFlowTests(unittest.TestCase):
                 self.fake_helper(args, env, generate_path=generate_path, return_override=return_override)):
             return route.execute(self.args)
 
-    def preflight(self, args=None, fault=None):
+    def preflight(self, args=None, fault=None, argv=None):
         args = self.args if args is None else args
         real_run = self.preparation.run
         roots = {str(self.fixture.helper), str(self.fixture.base), str(self.fixture.product)}
@@ -154,10 +155,126 @@ class RouteFlowTests(unittest.TestCase):
                 mock.patch.object(route, "launch_helper", side_effect=AssertionError("must not launch")) as launch, \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, \
                 mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            result = route.execute(args, preflight_only=True)
+            result = route.execute(args, preflight_only=True) if argv is None else route.main(argv)
         launch.assert_not_called()
         self.assertEqual(stdout.getvalue(), "")
         return result, stderr.getvalue(), calls
+
+    def workflow_preflight(self, args=None, context=None):
+        args = self.args if args is None else args
+        source = (ROOT / "workflows/validation-control-plane-prep.yml").read_text()
+        block = source.split("      - name: Validate clean trusted checkouts before installing tools\n", 1)[1]
+        block = block.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+        script = "\n".join(line[10:] for line in block.splitlines())
+        temporary = Path(self.env["RUNNER_TEMP"])
+        shim_dir = temporary / "preflight-capture-bin"
+        shim_dir.mkdir(exist_ok=True)
+        captured_path = temporary / "preflight-captured.json"
+        # Execute the actual shell envelope. Only its fixed python3 boundary is
+        # replaced; captured argv/env then traverse the real CLI and Git guards.
+        shim = shim_dir / "python3"
+        shim.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                        f"with open({str(captured_path)!r}, 'x') as output:\n"
+                        "    json.dump({'argv': sys.argv[1:], 'env': dict(os.environ)}, output)\n")
+        shim.chmod(0o755)
+        captured_path.unlink(missing_ok=True)
+        ambient = dict(self.env, PATH=str(shim_dir) + os.pathsep + self.env["PATH"],
+            TARGET_SHA=args.target_sha, BASE_SHA=args.base_sha, HELPER_SHA=args.helper_sha,
+            BASE_REF=args.base_ref, PATCH_PATH=args.patch, RECEIPT_PATH=args.receipt)
+        for key in ("HOME", "home", "CODEX_HOME", "BAZELRC", "BAZELISK_BASE_URL",
+                    "BAZELISK_GITHUB_TOKEN", "BAZELISK_USER_AGENT", "USE_BAZEL_VERSION",
+                    "USE_BAZEL_FALLBACK_VERSION", "BUILDBUDDY_API_KEY", "CARGO_ENCODED_RUSTFLAGS",
+                    "CARGO_BUILD_RUSTFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTFLAGS",
+                    "RUSTUP_HOME", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", "RUST_MIN_STACK",
+                    "GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+                    "ACTIONS_RUNTIME_URL", "ACTIONS_RESULTS_URL", "ACTIONS_CACHE_URL", "PRIVATE_DATA"):
+            ambient[key] = CANARY
+        ambient.update(context or {})
+        actual = subprocess.run(("bash", "-c", script), cwd=self.fixture.root, env=ambient,
+                                shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual((actual.returncode, actual.stdout, actual.stderr), (0, b"", b""))
+        captured = json.loads(captured_path.read_bytes())
+        expected_argv = [".workflow-src/.github/scripts/control_plane_preparation_route.py", "--preflight",
+            "--product", args.product, "--base", args.base, "--helper", args.helper,
+            "--target-sha", args.target_sha, "--base-sha", args.base_sha, "--helper-sha", args.helper_sha,
+            "--base-ref", args.base_ref, "--patch", args.patch, "--receipt", args.receipt]
+        expected_env = {key: ambient[key] for key in (
+            "PATH", "RUNNER_TEMP", "GITHUB_WORKSPACE", "GITHUB_REPOSITORY", "GITHUB_SHA",
+            "GITHUB_WORKFLOW_SHA", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT", "GITHUB_JOB")}
+        expected_env.update(LANG="C.UTF-8", LC_ALL="C.UTF-8", PYTHONDONTWRITEBYTECODE="1",
+                            GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
+        self.assertEqual(captured, {"argv": expected_argv, "env": expected_env})
+        self.assertNotIn("HOME", captured["env"])
+        self.assertNotIn(CANARY, json.dumps(captured))
+        with mock.patch.dict(os.environ, captured["env"], clear=True):
+            self.assertEqual(self.preparation.minimal_env()["HOME"],
+                             str(temporary / "control-plane-home"))
+            result = self.preflight(args, argv=captured["argv"][1:])
+        return result
+
+    def test_actual_callee_preflight_closes_environment_and_preserves_fixed_argv(self):
+        result, diagnostic, calls = self.workflow_preflight()
+        self.assertEqual((result, diagnostic), (0, ""))
+        expected = []
+        for root in (self.fixture.helper, self.fixture.base, self.fixture.product):
+            expected.extend(("git", "-C", str(root), *suffix) for suffix in (
+                ("rev-parse", "HEAD^{commit}"), ("rev-parse", "HEAD^{tree}"),
+                ("status", "--porcelain=v1", "--untracked-files=all")))
+        expected.extend(("git", "-C", str(self.fixture.product), *suffix) for suffix in (
+            ("rev-parse", self.args.base_sha + "^{tree}"),
+            ("diff", "--no-renames", "--raw", "-z", self.args.base_sha, self.args.target_sha)))
+        self.assertEqual(calls, expected)
+        witness = route.make_witness(self.args, route.platform_context(self.env, self.args.helper_sha))
+        witness["identity"] = {"helper_sha": self.args.helper_sha, "helper_tree": self.fixture.helper_tree,
+            "base_sha": self.args.base_sha, "base_tree": route.BASE_TREE,
+            "target_sha": self.args.target_sha, "target_tree": route.TARGET_TREE}
+        self.assertEqual(route.witness_path(self.args).read_bytes(), route.encode_witness(witness))
+        self.assertEqual(self.launches, [])
+        self.assertFalse(Path(self.args.receipt).exists())
+        self.assertFalse(Path(self.args.patch).exists())
+
+    def test_actual_callee_closed_preflight_preserves_provenance_trust_and_delta_rejections(self):
+        self.assertEqual(self.workflow_preflight()[:2], (0, ""))
+        result, diagnostic, calls = self.workflow_preflight(context={"GITHUB_WORKFLOW_SHA": "8" * 40})
+        self.assertEqual((result, json.loads(diagnostic), calls),
+                         (1, {"code": "invalid_identity", "phase": "platform_context"}, []))
+        home_config = Path(self.env["RUNNER_TEMP"]) / "control-plane-home/.bazelrc"
+        home_config.parent.mkdir(exist_ok=True)
+        for path, code, phase in ((home_config, "unexpected_user_configuration", "user_configuration"),
+                                 (self.fixture.product / "justfile", "trusted_execution_input_changed", "trusted_inputs")):
+            original = path.read_bytes() if path.exists() else None
+            path.write_text(CANARY)
+            try:
+                result, diagnostic, calls = self.workflow_preflight()
+                self.assertEqual((result, json.loads(diagnostic), calls),
+                                 (1, {"code": code, "phase": phase}, []))
+                self.assertNotIn(CANARY.encode(), route.witness_path(self.args).read_bytes())
+            finally:
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+        self.assertEqual(self.workflow_preflight()[:2], (0, ""))
+        (self.fixture.product / "foreign.txt").write_text(CANARY)
+        self.fixture.git(self.fixture.product, "add", "foreign.txt")
+        self.fixture.git(self.fixture.product, "commit", "--quiet", "-m", "isolated delta rejection")
+        target = self.fixture.git(self.fixture.product, "rev-parse", "HEAD").decode().strip()
+        tree = self.fixture.git(self.fixture.product, "rev-parse", "HEAD^{tree}").decode().strip()
+        args = argparse.Namespace(**dict(vars(self.args), target_sha=target))
+        self.assertTrue(self.preparation.clean_checkout(self.fixture.product))
+        with self.assertRaises(self.preparation.PreparationError) as error:
+            self.preparation.check_candidate_delta(self.fixture.product, args.base_sha, target, route.BASE_TREE)
+        self.assertEqual(error.exception.code, "candidate_delta_outside_allowlist")
+        with mock.patch.object(route, "TARGET_SHA", target), mock.patch.object(route, "TARGET_TREE", tree):
+            result, diagnostic, calls = self.workflow_preflight(args)
+        self.assertEqual((result, json.loads(diagnostic), len(calls)),
+                         (1, {"code": "candidate_delta_outside_allowlist", "phase": "candidate_delta"}, 11))
+        self.assertNotIn(CANARY, diagnostic)
+        self.assertNotIn(CANARY.encode(), route.witness_path(args).read_bytes())
+        self.assertEqual(self.launches, [])
+        self.assertFalse(Path(args.receipt).exists())
+        self.assertFalse(Path(args.patch).exists())
 
     def assert_preflight_diagnostic(self, code, phase, args=None, fault=None, witness=True):
         result, diagnostic, calls = self.preflight(args, fault)

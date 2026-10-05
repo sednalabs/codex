@@ -113,7 +113,24 @@ jobs:
           RECEIPT_PATH: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.json
         run: |
           set -euo pipefail
-          python3 .workflow-src/.github/scripts/control_plane_preparation_route.py --preflight \
+          env -i \
+            PATH="${PATH}" \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            PYTHONDONTWRITEBYTECODE=1 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            RUNNER_TEMP="${RUNNER_TEMP}" \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            GITHUB_SHA="${GITHUB_SHA}" \
+            GITHUB_WORKFLOW_SHA="${GITHUB_WORKFLOW_SHA}" \
+            GITHUB_REF="${GITHUB_REF}" \
+            GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT}" \
+            GITHUB_JOB="${GITHUB_JOB}" \
+            python3 .workflow-src/.github/scripts/control_plane_preparation_route.py --preflight \
             --product "${GITHUB_WORKSPACE}/product" \
             --base "${GITHUB_WORKSPACE}/base" \
             --helper "${GITHUB_WORKSPACE}/.workflow-src" \
