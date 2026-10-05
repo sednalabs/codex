@@ -3695,6 +3695,7 @@
         "codex-rs/cli/tests/runtime_execution_proof.rs",
         "codex-rs/cli/tests/runtime_execution_proof/support.rs",
         "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
         "codex-rs/core/src/codex_delegate.rs",
@@ -3724,6 +3725,7 @@
         "signs_each_final_claim_request_with_native_context_and_fresh_nonce",
         "bootstrap_frame_is_bounded_and_descriptor_closes",
         "runtime_execution_nonce_is_per_session_even_with_a_shared_mcp_manager",
+        "post_sampling_token_estimate_is_disabled_by_always_on_sinks",
         "external_v2_unload_defers_for_pending_finalizers_and_submissions",
         "session_end_flushes_transcript_and_ignores_control_output",
         "session_end_skips_subagents",
@@ -3743,13 +3745,14 @@
         "delegate_provider_override_is_rejected_before_credential_egress"
       ],
       "owner": "downstream",
-      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
+      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-credential-proof",
       "hotspot_files": [
         "codex-rs/core/src/client.rs",
         "codex-rs/core/src/client_tests.rs",
         "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn_tests.rs",
         "codex-rs/core/src/mcp_tool_call.rs"
       ],
       "extraction_target": "native host capability for narrowly scoped MCP request proof"

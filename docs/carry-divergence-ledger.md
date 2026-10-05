@@ -3768,6 +3768,12 @@ still failed; the available traces do not establish a hook-specific cause or
 a passing execution. The ordinary Linux qualification restores the repository
 standard `RUST_MIN_STACK` value used by its existing Rust test workflows.
 
+The post-sampling token-estimate regression asks the constructed feedback and
+state sink stack for direct callsite interest on its excluded TRACE event, and
+uses an ordinary TRACE callsite as a positive control. This avoids relying on
+the process-wide cached `event_enabled!` result while preserving both sink
+filters and their production behavior.
+
 The runtime key is process-scoped and is erased if its protection checks drift.
 The issuer certificate binds the fixed execution-lease duration; an ordinary
 request or registration replay does not renew that lifetime. This client

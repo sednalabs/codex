@@ -344,9 +344,11 @@ exact-head hosted proof:
   downstream child model, provider, and reasoning precedence.
 - Upstream `66bd101fff` owns lazy post-sampling token estimates. The existing
   `core-runtime-surface-smoke` lane pins
-  `post_sampling_token_estimate_is_disabled_by_always_on_sinks`, while broader
-  core validation continues to cover downstream response-model identity and
-  plugin guidance around the same turn loop.
+  `post_sampling_token_estimate_is_disabled_by_always_on_sinks`. It checks the
+  excluded event's direct callsite interest against the actual feedback and
+  state sink stack, with an ordinary TRACE callsite as a positive control;
+  broader core validation continues to cover downstream response-model
+  identity and plugin guidance around the same turn loop.
 - Upstream `f343d1237d` owns the core-compatible skill omission-notice policy.
   `codex.skill-loader-fixture-hermeticity-targeted` follows
   `omission_notice_follows_render_policy_and_is_charged_to_catalog_budget` and
