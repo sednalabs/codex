@@ -1203,6 +1203,12 @@ class ExistingFailureObserverRegressionCarryover(unittest.TestCase):
 
 
 class CoreRuntimeDiagnosticTests(unittest.TestCase):
+    startup_name = "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads"
+    startup_inventory_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"]
+    startup_command = ["cargo", "test", "--locked", "-p", "codex-core", "--lib", startup_name,
+                       "--", "--exact", "--test-threads=1"]
+    startup_sites = ("time_provider", "thread_persistence", "local_rollout_path", "agents_md_refresh",
+                     "network_proxy", "hooks_new", "mcp_initial_install", "referenced_rollout_materialization")
     producer_names = (
         "test_codex::tests::builder_error_categories_never_include_error_payloads",
         "test_codex::tests::builder_error_categories_cover_complete_payload_free_enum",
@@ -1292,23 +1298,34 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                   f"{int(outcome == 'ignored')} ignored; 0 measured; 2 filtered out\n")
         return subprocess.CompletedProcess(self.producer_commands[index], 101 if outcome == "FAILED" else 0, output, "")
 
+    def _startup_control(self, outcome: str = "ok") -> subprocess.CompletedProcess[str]:
+        output = (f"test {self.startup_name} ... {outcome}\n"
+                  f"test result: {'FAILED' if outcome == 'FAILED' else 'ok'}. {int(outcome == 'ok')} passed; "
+                  f"{int(outcome == 'FAILED')} failed; {int(outcome == 'ignored')} ignored; 0 measured; 1 filtered out\n")
+        return subprocess.CompletedProcess(self.startup_command, 101 if outcome == "FAILED" else 0, output, "")
+
     def _run(self, *, request: dict[str, object] | None = None, extra_env: dict[str, str] | None = None,
              samples: list[object] | None = None, inventory: str | None = None, inventory_exit: int = 0,
              build_exit: int = 0, producer_inventory: str | None = None,
              producer_inventory_response: object | None = None,
-             producer_controls: list[object] | None = None) -> tuple[dict[str, object], list[list[str]]]:
+             producer_controls: list[object] | None = None, startup_inventory: str | None = None,
+             startup_inventory_response: object | None = None,
+             startup_control: object | None = None) -> tuple[dict[str, object], list[list[str]]]:
         request = self.request if request is None else request
         env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
         env.update({named_tests.CORE_DIAGNOSTIC_ONLY_ENV: "true", named_tests.CORE_DIAGNOSTIC_CASE_ENV: "INHERITED_PRIVATE"})
         env.update(extra_env or {})
         record = named_tests.select_target(self.request, named_tests.load_manifest(self.root))
         expected = [["git", "rev-parse", "HEAD"], *[list(argv) for _, argv in named_tests.CORE_RUNTIME_BUILDS],
-                    list(record["inventory_argv"]), self.producer_inventory_command, *self.producer_commands,
+                    list(record["inventory_argv"]), self.startup_inventory_command, self.startup_command,
+                    self.producer_inventory_command, *self.producer_commands,
                     *[named_tests.core_diagnostic_command(name) for _, name, _ in named_tests.CORE_DIAGNOSTIC_CASES]]
         inventory = "\n".join(f"{name}: test" for name in self.request["tests"]) if inventory is None else inventory
         producer_inventory = "\n".join(f"{name}: test" for name in (*self.producer_names,
             "test_codex::tests::custom_tool_call_output_text_returns_output_text")) if producer_inventory is None else producer_inventory
         producer_controls = [self._producer_control(index) for index in range(2)] if producer_controls is None else producer_controls
+        startup_inventory = f"{self.startup_name}: test\nsession::tests::other: test\n" if startup_inventory is None else startup_inventory
+        startup_control = self._startup_control() if startup_control is None else startup_control
         samples = [self._sample(case) for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES] if samples is None else samples
         calls = []
 
@@ -1326,8 +1343,8 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             child_env = {key: value for key, value in env.items() if key not in
                          (named_tests.CORE_DIAGNOSTIC_ONLY_ENV, named_tests.CORE_DIAGNOSTIC_CASE_ENV, named_tests.RUNTIME_PREPARATION_ONLY_ENV)}
             child_env["RUST_MIN_STACK"] = "8388608"
-            if index >= 7:
-                child_env[named_tests.CORE_DIAGNOSTIC_CASE_ENV] = named_tests.CORE_DIAGNOSTIC_CASES[index - 7][0]
+            if index >= 9:
+                child_env[named_tests.CORE_DIAGNOSTIC_CASE_ENV] = named_tests.CORE_DIAGNOSTIC_CASES[index - 9][0]
             self.assertEqual(kwargs["env"], child_env)
             self.assertFalse(kwargs["shell"])
             if index < 3:
@@ -1335,12 +1352,17 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             if index == 3:
                 return subprocess.CompletedProcess(argv, inventory_exit, inventory, "PRIVATE_INVENTORY")
             if index == 4:
+                returned = startup_inventory_response if startup_inventory_response is not None else subprocess.CompletedProcess(
+                    argv, 0, startup_inventory, "PRIVATE_STARTUP_INVENTORY")
+            elif index == 5:
+                returned = startup_control
+            elif index == 6:
                 returned = producer_inventory_response if producer_inventory_response is not None else subprocess.CompletedProcess(
                     argv, 0, producer_inventory, "PRIVATE_PRODUCER_INVENTORY")
-            elif index < 7:
-                returned = producer_controls[index - 5]
+            elif index < 9:
+                returned = producer_controls[index - 7]
             else:
-                returned = samples[index - 7]
+                returned = samples[index - 9]
             if isinstance(returned, OSError):
                 raise returned
             return returned
@@ -1357,7 +1379,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
     def test_fixed_calls_and_positive_public_sample_are_not_whole_target(self) -> None:
         result, calls = self._run()
         public = json.loads(named_tests.public_artifact_bytes(result))
-        self.assertEqual(9, len(calls))
+        self.assertEqual(11, len(calls))
         self.assertEqual(("success", "core_runtime_diagnostic", True, False, "not_attempted", True, []),
                          tuple(public[key] for key in ("status", "result_kind", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "tests")))
         self.assertEqual([case for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES], [item["case"] for item in public["diagnostic_samples"]])
@@ -1368,7 +1390,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         public = json.loads(named_tests.public_artifact_bytes(result))
         controls = public["producer_controls"]
         self.assertEqual(self.producer_names, named_tests.CORE_DIAGNOSTIC_PRODUCER_TESTS)
-        self.assertEqual([self.producer_inventory_command, *self.producer_commands], calls[4:7])
+        self.assertEqual([self.producer_inventory_command, *self.producer_commands], calls[6:9])
         self.assertEqual(("success", True, 2, 0), tuple(controls[key] for key in
                          ("status", "reconciled", "original_count", "omitted_count")))
         self.assertEqual((3, 3, 3, 0, list(self.producer_names), [], []), tuple(controls["inventory"][key] for key in
@@ -1380,6 +1402,173 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                                                           "execution_reconciled", "observed_outcomes", "matched_line_count",
                                                           "unexpected_outcome_count", "matched_lines_truncated")))
             self.assertEqual({"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 2}, record["result_counts"])
+
+    def test_startup_owning_lib_control_is_real_counted_preflight_not_a_sample(self) -> None:
+        result, calls = self._run()
+        public = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual(calls[4:9], [self.startup_inventory_command, self.startup_command,
+                                     self.producer_inventory_command, *self.producer_commands])
+        control = public["startup_control"]
+        self.assertEqual(("success", True, 1, 0, 2, [self.startup_name]),
+                         (control["status"], control["reconciled"], control["original_count"], control["omitted_count"],
+                          control["inventory"]["test_count"], control["inventory"]["selected_tests"]))
+        record = control["tests"][0]
+        self.assertEqual((self.startup_name, self.startup_command, True, True, 0, ["ok"], 1, 0,
+                          {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 1}),
+                         tuple(record[key] for key in ("name", "argv", "command_returned", "command_matches", "exit_code",
+                                                      "observed_outcomes", "matched_line_count", "unexpected_outcome_count", "result_counts")))
+        valid = f"{self.startup_name}: test\nsession::tests::other: test\n"
+        inventories = [{"startup_inventory": ""}, {"startup_inventory": valid + f"{self.startup_name}: test\n"},
+                       {"startup_inventory": valid + "/private/PRIVATE: test\n"},
+                       {"startup_inventory_response": OSError("PRIVATE_LAUNCH")},
+                       {"startup_inventory_response": subprocess.CompletedProcess(self.startup_inventory_command, 101, valid, "PRIVATE_BODY")},
+                       {"startup_inventory_response": subprocess.CompletedProcess(self.producer_inventory_command, 0, valid, "")}]
+        passing = self._startup_control()
+        executions = [self._startup_control("FAILED"), self._startup_control("ignored"), OSError("PRIVATE_LAUNCH"),
+                      subprocess.CompletedProcess(self.startup_command, 101, passing.stdout, "PRIVATE_ERROR"),
+                      subprocess.CompletedProcess(self.producer_commands[0], 0, passing.stdout, ""),
+                      subprocess.CompletedProcess(self.startup_command, 0, passing.stdout.replace("1 filtered", "0 filtered"), ""),
+                      subprocess.CompletedProcess(self.startup_command, 0, passing.stdout + passing.stdout, ""),
+                      subprocess.CompletedProcess(self.startup_command, 0, passing.stdout + "test PRIVATE_EXTRA ... ok\n", "")]
+        for options, count in [*((item, 5) for item in inventories), *(({"startup_control": item}, 6) for item in executions)]:
+            with self.subTest(options=list(options)):
+                failed, calls = self._run(**options)
+                data = named_tests.public_artifact_bytes(failed)
+                projected = json.loads(data)
+                self.assertEqual((count, "failure", "core_diagnostic_producer_controls_failed", [], "not-run", False),
+                                 (len(calls), projected["status"], projected["failure_code"], projected["diagnostic_samples"],
+                                  projected["producer_controls"]["status"], projected["startup_control"]["reconciled"]))
+                self.assertNotIn(b"PRIVATE", data)
+        mutations = [lambda value: value.pop("startup_control"),
+                     lambda value: value["startup_control"].update(status="not-run"),
+                     lambda value: value["startup_control"]["inventory"].update(test_count=True),
+                     lambda value: value["startup_control"]["inventory"].update(argv=self.producer_inventory_command),
+                     lambda value: value["startup_control"]["tests"].clear(),
+                     lambda value: value["startup_control"]["tests"].append(value["startup_control"]["tests"][0]),
+                     lambda value: value["startup_control"]["tests"][0].update(argv=self.producer_commands[0]),
+                     lambda value: value["startup_control"]["tests"][0].update(command_returned=False),
+                     lambda value: value["startup_control"]["tests"][0]["result_counts"].update(filtered=0)]
+        for mutate in mutations:
+            damaged = copy.deepcopy(result)
+            mutate(damaged)
+            projected = json.loads(named_tests.public_artifact_bytes(damaged))
+            self.assertEqual(("failure", "public_projection_incomplete", False),
+                             (projected["status"], projected["failure_code"], projected["startup_control"]["reconciled"]))
+        failed, _ = self._run(startup_control=self._startup_control("FAILED"))
+        failed["startup_control"]["tests"][0].update(body="PRIVATE_BODY", exception="PRIVATE_ERROR", raw_argv=["PRIVATE_ARGV"])
+        data = named_tests.public_artifact_bytes(failed)
+        env = {variable: self.identity[key] for key, variable in named_tests.VALIDATION_IDENTITY_ENV.items()}
+        env[named_tests.CORE_DIAGNOSTIC_ONLY_ENV] = "true"
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", ["runner"]), \
+                patch.object(named_tests, "load_request", return_value=(self.request, None)), \
+                patch.object(named_tests, "run_request", return_value=failed), \
+                patch.object(Path, "write_bytes") as write, patch("builtins.print") as output:
+            self.assertEqual(1, named_tests.main())
+        write.assert_called_once_with(data)
+        output.assert_called_once_with('{"failure_code": "core_diagnostic_producer_controls_failed", "status": "failure"}')
+        self.assertNotIn(b"PRIVATE", data)
+
+    def test_startup_sites_join_combined_producer_stderr_to_only_the_failed_result(self) -> None:
+        result, _ = self._run()
+        baseline = json.loads(named_tests.public_artifact_bytes(result))
+        self.assertEqual("success", baseline["status"])
+        self.assertTrue(all(item["startup_evidence"]["observation_status"] == "absent"
+                            and item["startup_evidence"]["execution_matches"] for item in baseline["diagnostic_samples"]))
+        self.assertEqual(set(self.startup_sites), named_tests.CORE_STARTUP_SITES)
+        for case, _, _ in named_tests.CORE_DIAGNOSTIC_CASES:
+            for site in self.startup_sites:
+                marker = f"codex-core-runtime-diagnostic-startup-v1 case={case} site={site}"
+                stream = self._builder_error_markers(case, "ordinary_conversation_start", "io_other")
+                terminal = f"codex-core-runtime-diagnostic-builder-v1 case={case} phase=ordinary_conversation_start state=error"
+                stream = stream.replace(terminal, marker + "\n" + terminal)
+                samples = [self._sample(key, "FAILED", stream) if key == case else self._sample(key)
+                           for key, _, _ in named_tests.CORE_DIAGNOSTIC_CASES]
+                failed, calls = self._run(samples=samples)
+                data = named_tests.public_artifact_bytes(failed)
+                public = json.loads(data)
+                sample = next(item for item in public["diagnostic_samples"] if item["case"] == case)
+                expected = {"designated_channel": "stderr", "observation_status": "error_site",
+                    "records": [{"case": case, "site": site}], "stderr_candidate_count": 1, "invalid_marker_count": 0,
+                    "omitted_marker_count": 0, "stdout_ambiguity_count": 0, "projection_omitted_marker_count": 0,
+                    "omitted_field_count": 0, "error_site": site, "scope": "failed_result_boundary_only",
+                    "cross_stream_chronology": "unknown", "writer_process_identity": "unknown", "execution_matches": True}
+                self.assertEqual(expected, sample["startup_evidence"])
+                self.assertEqual((11, "failure", False, "not_attempted", 6, "error", "ordinary_conversation_start", "io_other"),
+                                 (len(calls), public["status"], public["full_target_execution"], public["qualification_status"],
+                                  sample["stage_evidence"]["stderr_candidate_count"], sample["builder_evidence"]["sequence_status"],
+                                  sample["builder_evidence"]["terminal_phase"], sample["builder_evidence"]["terminal_class"]))
+                self.assertEqual("success", next(item for item in public["diagnostic_samples"] if item["case"] != case)["status"])
+                damaged = copy.deepcopy(failed)
+                item = next(item for item in damaged["diagnostic_samples"] if item["case"] == case)
+                item["observed_outcomes"].append("PRIVATE_OMITTED_OUTCOME")
+                projected = named_tests.public_artifact_bytes(damaged)
+                rejected = next(item for item in json.loads(projected)["diagnostic_samples"] if item["case"] == case)["startup_evidence"]
+                self.assertEqual(("invalid", "", False),
+                                 (rejected["observation_status"], rejected["error_site"], rejected["execution_matches"]))
+                self.assertNotIn(b"PRIVATE", projected)
+                damaged = copy.deepcopy(failed)
+                item = next(item for item in damaged["diagnostic_samples"] if item["case"] == case)
+                item["startup_evidence"]["records"][0]["payload"] = "PRIVATE_BODY"
+                projected = named_tests.public_artifact_bytes(damaged)
+                rejected = next(item for item in json.loads(projected)["diagnostic_samples"] if item["case"] == case)["startup_evidence"]
+                self.assertEqual(("invalid", "", False),
+                                 (rejected["observation_status"], rejected["error_site"], rejected["execution_matches"]))
+                self.assertNotIn(b"PRIVATE", projected)
+                damaged = copy.deepcopy(failed)
+                item = next(item for item in damaged["diagnostic_samples"] if item["case"] == case)
+                item.update(exit_code=0, observed_outcomes=["ok"], result_counts={"passed": 1, "failed": 0,
+                    "ignored": 0, "measured": 0, "filtered": 1})
+                rejected = next(item for item in json.loads(named_tests.public_artifact_bytes(damaged))["diagnostic_samples"]
+                                if item["case"] == case)["startup_evidence"]
+                self.assertEqual(("invalid", "", False),
+                                 (rejected["observation_status"], rejected["error_site"], rejected["execution_matches"]))
+
+    def test_startup_invalid_namespace_caps_projection_and_payloads_cannot_qualify(self) -> None:
+        case = "restricted"
+        marker = "codex-core-runtime-diagnostic-startup-v1 case=restricted site=agents_md_refresh"
+        stream = self._builder_error_markers(case, "ordinary_conversation_start", "io_other")
+        terminal = "codex-core-runtime-diagnostic-builder-v1 case=restricted phase=ordinary_conversation_start state=error"
+        variants = [("", marker.replace("-v1", "-v2")), ("", marker.replace("agents_md_refresh", "unknown")),
+                    ("", marker.replace("restricted", "unknown")), ("", marker.replace("restricted", "project_docs")),
+                    ("", marker + "\n" + marker), ("", marker + "\n" + marker.replace("agents_md_refresh", "time_provider")),
+                    ("", marker + " state=error"), ("", "prefix " + marker),
+                    ("", marker.replace("agents_md_refresh", "refusal")),
+                    ("", marker + " PRIVATE_BODY /private/path https://private.invalid github_pat_PRIVATE"),
+                    (marker, ""), (marker, marker), ("", "\n".join([marker] * 32))]
+        for stdout, witness in variants:
+            with self.subTest(stdout=bool(stdout), witnesses=witness.count("startup-")):
+                failed_sample = self._sample(case, "FAILED", stream.replace(terminal, witness + "\n" + terminal))
+                failed_sample.stdout += stdout
+                failed, calls = self._run(samples=[failed_sample, self._sample("project_docs")])
+                data = named_tests.public_artifact_bytes(failed)
+                public = json.loads(data)
+                evidence = public["diagnostic_samples"][0]["startup_evidence"]
+                self.assertEqual((11, "failure", "invalid", "", False, "success"),
+                                 (len(calls), public["status"], evidence["observation_status"], evidence["error_site"],
+                                  evidence["execution_matches"], public["diagnostic_samples"][1]["status"]))
+                self.assertLessEqual(len(evidence["records"]), 1)
+                self.assertEqual(6, public["diagnostic_samples"][0]["stage_evidence"]["stderr_candidate_count"])
+                for canary in (b"PRIVATE", b"/private", b"https://", b"github_pat_", b"stdout_tail", b"stderr_tail",
+                               hashlib.sha256(witness.encode()).hexdigest().encode()):
+                    self.assertNotIn(canary, data)
+        baseline, _ = self._run()
+        self.assertEqual("success", json.loads(named_tests.public_artifact_bytes(baseline))["status"])
+        mutations = [lambda item: item.pop("startup_evidence"),
+                     lambda item: item.update(startup_evidence="PRIVATE_BODY"),
+                     lambda item: item["startup_evidence"].update(stderr_candidate_count=True),
+                     lambda item: item["startup_evidence"].update(designated_channel="stdout"),
+                     lambda item: item["startup_evidence"].update(stdout_ambiguity_count=1),
+                     lambda item: item["startup_evidence"].update(omitted_marker_count=1),
+                     lambda item: item["startup_evidence"].update(observation_status="error_site", error_site="PRIVATE_SITE"),
+                     lambda item: item["startup_evidence"].update(execution_matches=False),
+                     lambda item: item["startup_evidence"]["records"].append({"case": "restricted", "site": "agents_md_refresh"})]
+        for mutate in mutations:
+            damaged = copy.deepcopy(baseline)
+            mutate(damaged["diagnostic_samples"][0])
+            data = named_tests.public_artifact_bytes(damaged)
+            self.assertEqual(("failure", "public_projection_incomplete"),
+                             tuple(json.loads(data)[key] for key in ("status", "failure_code")))
+            self.assertNotIn(b"PRIVATE", data)
 
     def test_producer_inventory_rejects_before_control_execution_or_sampling(self) -> None:
         valid = "\n".join(f"{name}: test" for name in self.producer_names)
@@ -1398,7 +1587,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                 data = named_tests.public_artifact_bytes(result)
                 public = json.loads(data)
                 controls = public["producer_controls"]
-                self.assertEqual((5, "failure", "core_diagnostic_producer_controls_failed", False, [], []),
+                self.assertEqual((7, "failure", "core_diagnostic_producer_controls_failed", False, [], []),
                                  (len(calls), public["status"], public["failure_code"], public["sampling_complete"],
                                   public["diagnostic_samples"], controls["tests"]))
                 self.assertEqual(("failure", self.producer_inventory_command, missing, ambiguous),
@@ -1425,7 +1614,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                 data = named_tests.public_artifact_bytes(result)
                 public = json.loads(data)
                 controls = public["producer_controls"]
-                self.assertEqual((7, "failure", "core_diagnostic_producer_controls_failed", False, [], False, "not_attempted"),
+                self.assertEqual((9, "failure", "core_diagnostic_producer_controls_failed", False, [], False, "not_attempted"),
                                  (len(calls), public["status"], public["failure_code"], public["sampling_complete"],
                                   public["diagnostic_samples"], public["full_target_execution"], public["qualification_status"]))
                 self.assertEqual(["failure", "success"], [item["status"] for item in controls["tests"]])
@@ -1435,7 +1624,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                     self.assertNotIn(canary, data)
         second_failed, calls = self._run(producer_controls=[self._producer_control(0), self._producer_control(1, "FAILED")])
         public = json.loads(named_tests.public_artifact_bytes(second_failed))
-        self.assertEqual((7, "failure", [], ["success", "failure"]),
+        self.assertEqual((9, "failure", [], ["success", "failure"]),
                          (len(calls), public["status"], public["diagnostic_samples"],
                           [item["status"] for item in public["producer_controls"]["tests"]]))
 
@@ -1532,7 +1721,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             with self.subTest(first=type(first).__name__):
                 result, calls = self._run(samples=[first, self._sample("project_docs")])
                 public = json.loads(named_tests.public_artifact_bytes(result))
-                self.assertEqual(9, len(calls))
+                self.assertEqual(11, len(calls))
                 self.assertEqual("failure", public["status"])
                 self.assertEqual("success", public["diagnostic_samples"][1]["status"])
                 self.assertEqual(not isinstance(first, OSError), public["sampling_complete"])
@@ -1624,7 +1813,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             self.assertTrue(all(item["class"] == "none" for item in nested["records"]))
         result, calls = self._run()
         public = json.loads(named_tests.public_artifact_bytes(result))
-        self.assertEqual((9, "success", False, "not_attempted"),
+        self.assertEqual((11, "success", False, "not_attempted"),
                          (len(calls), public["status"], public["full_target_execution"], public["qualification_status"]))
         self.assertEqual([16, 18], [len(item["builder_evidence"]["records"]) for item in public["diagnostic_samples"]])
         self.assertTrue(all(item["builder_evidence"]["completed_path"] for item in public["diagnostic_samples"]))
@@ -1645,7 +1834,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
                         public = json.loads(named_tests.public_artifact_bytes(result))
                         sample = next(item for item in public["diagnostic_samples"] if item["case"] == case)
                         evidence = sample["builder_evidence"]
-                        self.assertEqual((9, "failure", True, "not_attempted", []),
+                        self.assertEqual((11, "failure", True, "not_attempted", []),
                                          (len(calls), public["status"], public["sampling_complete"], public["qualification_status"], public["tests"]))
                         self.assertEqual(("error", False, phase, error_class),
                                          tuple(evidence[key] for key in ("sequence_status", "completed_path", "terminal_phase", "terminal_class")))
@@ -1679,7 +1868,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
         stream = self._builder_error_markers("restricted", "ordinary_conversation_start", "codex_fatal")
         baseline, calls = self._run(samples=[self._sample("restricted", "FAILED", stream), self._sample("project_docs")])
         public = json.loads(named_tests.public_artifact_bytes(baseline))
-        self.assertEqual((9, "failure", True, False, "not_attempted"),
+        self.assertEqual((11, "failure", True, False, "not_attempted"),
                          (len(calls), public["status"], public["sampling_complete"], public["full_target_execution"], public["qualification_status"]))
         self.assertEqual(("error", "ordinary_conversation_start", "codex_fatal"),
                          tuple(public["diagnostic_samples"][0]["builder_evidence"][key]
@@ -1693,7 +1882,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             result, calls = self._run(samples=[self._sample("restricted", "FAILED", rejected_stream), self._sample("project_docs")])
             data = named_tests.public_artifact_bytes(result)
             rejected = json.loads(data)
-            self.assertEqual((9, "failure", True, False, "not_attempted"),
+            self.assertEqual((11, "failure", True, False, "not_attempted"),
                              (len(calls), rejected["status"], rejected["sampling_complete"], rejected["full_target_execution"], rejected["qualification_status"]))
             self.assertEqual(("invalid", False, ""), tuple(rejected["diagnostic_samples"][0]["builder_evidence"][key]
                              for key in ("sequence_status", "completed_path", "terminal_class")))
@@ -1819,7 +2008,7 @@ class CoreRuntimeDiagnosticTests(unittest.TestCase):
             data = named_tests.public_artifact_bytes(result)
             public = json.loads(data)
             evidence = public["diagnostic_samples"][0]["builder_evidence"]
-            self.assertEqual((9, "failure", "missing", False, [], ""),
+            self.assertEqual((11, "failure", "missing", False, [], ""),
                              (len(calls), public["status"], evidence["sequence_status"], evidence["completed_path"], evidence["records"], evidence["terminal_class"]))
             self.assertEqual("success", public["diagnostic_samples"][1]["status"])
             self.assertEqual(not isinstance(first, OSError), public["sampling_complete"])

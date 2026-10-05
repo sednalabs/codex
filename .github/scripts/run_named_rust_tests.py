@@ -106,6 +106,23 @@ CORE_DIAGNOSTIC_PRODUCER_COMMANDS = tuple(
     ("cargo", "test", "--locked", "-p", "core_test_support", "--lib", name,
      "--", "--exact", "--test-threads=1") for name in CORE_DIAGNOSTIC_PRODUCER_TESTS
 )
+CORE_DIAGNOSTIC_STARTUP_TESTS = (
+    "session::startup_diagnostic::tests::startup_site_witness_preserves_results_and_rejects_payloads",
+)
+CORE_DIAGNOSTIC_STARTUP_INVENTORY = (
+    "cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list",
+)
+CORE_DIAGNOSTIC_STARTUP_COMMANDS = tuple(
+    ("cargo", "test", "--locked", "-p", "codex-core", "--lib", name,
+     "--", "--exact", "--test-threads=1") for name in CORE_DIAGNOSTIC_STARTUP_TESTS
+)
+# Two fixed owning-lib consumers only; never selected by request data.
+CORE_DIAGNOSTIC_CONTROL_SPECS = {
+    "producer_controls": (CORE_DIAGNOSTIC_PRODUCER_INVENTORY, CORE_DIAGNOSTIC_PRODUCER_TESTS,
+                          CORE_DIAGNOSTIC_PRODUCER_COMMANDS),
+    "startup_control": (CORE_DIAGNOSTIC_STARTUP_INVENTORY, CORE_DIAGNOSTIC_STARTUP_TESTS,
+                        CORE_DIAGNOSTIC_STARTUP_COMMANDS),
+}
 CORE_DIAGNOSTIC_ERRORS = {
     "none", "not_found", "permission_denied", "connection_refused", "connection_reset",
     "broken_pipe", "invalid_input", "invalid_data", "timed_out", "interrupted",
@@ -121,6 +138,14 @@ CORE_BUILDER_DIAGNOSTIC_FRAME = re.compile(
     r"codex-core-runtime-diagnostic-builder-v1 case=(restricted|project_docs) "
     r"phase=([a-z_]+) state=(entered|returned|error) class=([a-z_]+)"
 )
+CORE_STARTUP_DIAGNOSTIC_PREFIX = "codex-core-runtime-diagnostic-startup-"
+CORE_STARTUP_DIAGNOSTIC_FRAME = re.compile(
+    r"codex-core-runtime-diagnostic-startup-v1 case=(restricted|project_docs) site=([a-z_]+)"
+)
+CORE_STARTUP_SITES = frozenset({
+    "time_provider", "thread_persistence", "local_rollout_path", "agents_md_refresh",
+    "network_proxy", "hooks_new", "mcp_initial_install", "referenced_rollout_materialization",
+})
 CORE_BUILDER_PHASES = {
     "restricted": ("auto_env_selection", "config_preparation", "linux_runtime_path_resolution",
                    "environment_manager_creation", "state_database_optional_initialization",
@@ -1060,7 +1085,8 @@ def core_diagnostic_fields() -> dict[str, Any]:
     return {"result_kind": "core_runtime_diagnostic", "diagnostic_only": True,
             "full_target_execution": False, "qualification_status": "not_attempted",
             "sampling_complete": False, "diagnostic_samples": [],
-            "producer_controls": {"status": "not-run", "inventory": {"status": "not-run", "tests": []}, "tests": []}}
+            "producer_controls": {"status": "not-run", "inventory": {"status": "not-run", "tests": []}, "tests": []},
+            "startup_control": {"status": "not-run", "inventory": {"status": "not-run", "tests": []}, "tests": []}}
 
 
 def core_diagnostic_request_error(request: dict[str, Any], preparation_only: bool) -> str:
@@ -1109,7 +1135,7 @@ def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
     records = []
     candidates = invalid = 0
     for line in stderr.splitlines():
-        if CORE_DIAGNOSTIC_PREFIX not in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, ""):
+        if CORE_DIAGNOSTIC_PREFIX not in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, "").replace(CORE_STARTUP_DIAGNOSTIC_PREFIX, ""):
             continue
         candidates += 1
         match = CORE_DIAGNOSTIC_FRAME.fullmatch(line)
@@ -1117,7 +1143,7 @@ def core_stage_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
             invalid += 1
         elif len(records) < 12:
             records.append(dict(zip(("case", "stage", "state", "error"), match.groups())))
-    ambiguity = sum(CORE_DIAGNOSTIC_PREFIX in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, "")
+    ambiguity = sum(CORE_DIAGNOSTIC_PREFIX in line.replace(CORE_BUILDER_DIAGNOSTIC_PREFIX, "").replace(CORE_STARTUP_DIAGNOSTIC_PREFIX, "")
                     for line in stdout.splitlines())
     status = core_stage_sequence(case, records)
     if invalid or ambiguity or candidates != len(records):
@@ -1178,14 +1204,52 @@ def core_builder_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]
             "cross_stream_chronology": "unknown", "writer_process_identity": "unknown"}
 
 
+def core_startup_evidence(case: str, stdout: str, stderr: str) -> dict[str, Any]:
+    records = []
+    candidates = invalid = 0
+    for line in stderr.splitlines():
+        if CORE_STARTUP_DIAGNOSTIC_PREFIX not in line:
+            continue
+        candidates += 1
+        match = CORE_STARTUP_DIAGNOSTIC_FRAME.fullmatch(line)
+        if not match or match[1] != case or match[2] not in CORE_STARTUP_SITES:
+            invalid += 1
+        elif not records:
+            records.append({"case": match[1], "site": match[2]})
+    ambiguity = sum(CORE_STARTUP_DIAGNOSTIC_PREFIX in line for line in stdout.splitlines())
+    status = "invalid" if invalid or ambiguity or candidates != len(records) else "error_site" if records else "absent"
+    return {"designated_channel": "stderr", "observation_status": status, "records": records,
+            "stderr_candidate_count": candidates, "invalid_marker_count": invalid,
+            "omitted_marker_count": candidates - len(records), "stdout_ambiguity_count": ambiguity,
+            "error_site": records[0]["site"] if status == "error_site" else "",
+            "scope": "failed_result_boundary_only", "cross_stream_chronology": "unknown",
+            "writer_process_identity": "unknown"}
+
+
+def core_startup_execution_matches(evidence: dict[str, Any], sample: dict[str, Any], inventory_count: Any) -> bool:
+    if sample.get("command_returned") is not True or evidence.get("observation_status") == "invalid":
+        return False
+    if evidence.get("observation_status") == "absent":
+        return True  # Absence is valid and never proves a startup path completed.
+    builder = sample.get("builder_evidence") or {}
+    count = _safe_count(inventory_count)
+    exit_code = _safe_exit(sample.get("exit_code"))
+    return (evidence.get("observation_status") == "error_site" and count is not None and count > 0
+            and exit_code is not None and exit_code != 0 and sample.get("observed_outcomes") == ["FAILED"]
+            and sample.get("outcome_original_count", 1) == 1 and sample.get("outcome_omitted_count", 0) == 0
+            and sample.get("result_counts") == {"passed": 0, "failed": 1, "ignored": 0, "measured": 0, "filtered": count - 1}
+            and builder.get("sequence_status") == "error" and builder.get("terminal_phase") == "ordinary_conversation_start")
+
+
 def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root: Path,
-                                          env: dict[str, str]) -> bool:
+                                          env: dict[str, str], control_field: str = "producer_controls") -> bool:
     # These classifier controls live in a separate lib target, not integration/all.
     # Keep their inventory/count proof distinct from the unchanged sample request.
-    controls = result["producer_controls"]
+    inventory_argv, selected_tests, commands = CORE_DIAGNOSTIC_CONTROL_SPECS[control_field]
+    controls = result[control_field]
     controls["status"] = "failure"
     result.update(status="failure", failure_code="core_diagnostic_producer_controls_failed")
-    command = list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY)
+    command = list(inventory_argv)
     try:
         inventory = subprocess.run(command, cwd=manifest_root, env=env, text=True,
                                    capture_output=True, check=False, shell=False)
@@ -1195,16 +1259,16 @@ def run_core_diagnostic_producer_controls(result: dict[str, Any], manifest_root:
         return False
     names = listed_tests(inventory.stdout or "")
     valid = (inventory.args == command and inventory.returncode == 0
-             and len(CORE_DIAGNOSTIC_PRODUCER_TESTS) <= len(names) <= MAX_PUBLIC_INVENTORY_NAMES
+             and len(selected_tests) <= len(names) <= MAX_PUBLIC_INVENTORY_NAMES
              and len(set(names)) == len(names) and all(TEST_RE.fullmatch(name) for name in names)
-             and all(names.count(name) == 1 for name in CORE_DIAGNOSTIC_PRODUCER_TESTS))
+             and all(names.count(name) == 1 for name in selected_tests))
     controls["inventory"] = {"status": "success" if valid else "failure", "tests": names,
         "test_count": len(names), "argv": command, "command_returned": True,
         "command_matches": inventory.args == command, "exit_code": inventory.returncode,
         "diagnostics": command_diagnostics(inventory)}
     if not valid:
         return False
-    for name, argv in zip(CORE_DIAGNOSTIC_PRODUCER_TESTS, CORE_DIAGNOSTIC_PRODUCER_COMMANDS):
+    for name, argv in zip(selected_tests, commands):
         command = list(argv)
         record = {"name": name, "argv": command, "status": "failure", "command_returned": False,
                   "command_matches": False, "exit_code": None, "execution_reconciled": False,
@@ -1248,21 +1312,27 @@ def run_core_diagnostic_samples(result: dict[str, Any], manifest_root: Path,
                 "status": "failure", "exit_code": None, "command_returned": False,
                 "observed_outcomes": [], "result_counts": None,
                 "stage_evidence": core_stage_evidence(case, "", ""),
-                "builder_evidence": core_builder_evidence(case, "", "")})
+                "builder_evidence": core_builder_evidence(case, "", ""),
+                "startup_evidence": {**core_startup_evidence(case, "", ""), "execution_matches": False}})
             continue
         output = "\n".join((completed.stdout or "", completed.stderr or ""))
         counts = test_result_counts(output)
         outcomes = test_outcomes(output).get(selector, [])
         evidence = core_stage_evidence(case, completed.stdout or "", completed.stderr or "")
         builder = core_builder_evidence(case, completed.stdout or "", completed.stderr or "")
+        startup = core_startup_evidence(case, completed.stdout or "", completed.stderr or "")
+        startup["execution_matches"] = core_startup_execution_matches(startup, {
+            "command_returned": True, "exit_code": completed.returncode, "observed_outcomes": outcomes,
+            "result_counts": counts, "builder_evidence": builder}, result["inventory"]["test_count"])
         success = (completed.returncode == 0 and outcomes == ["ok"]
                    and counts == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
                                   "filtered": result["inventory"]["test_count"] - 1}
-                   and evidence["attribution_complete"] and builder["completed_path"])
+                   and evidence["attribution_complete"] and builder["completed_path"]
+                   and startup["observation_status"] == "absent" and startup["execution_matches"])
         result["diagnostic_samples"].append({"case": case, "name": selector,
             "status": "success" if success else "failure", "exit_code": completed.returncode,
             "command_returned": True, "observed_outcomes": outcomes, "result_counts": counts,
-            "stage_evidence": evidence, "builder_evidence": builder,
+            "stage_evidence": evidence, "builder_evidence": builder, "startup_evidence": startup,
             "diagnostics": command_diagnostics(completed)})
     result["sampling_complete"] = all(item["command_returned"] for item in result["diagnostic_samples"])
     if any(item["status"] != "success" for item in result["diagnostic_samples"]):
@@ -1440,6 +1510,8 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         )
         return result
     if diagnostic_only:
+        if not run_core_diagnostic_producer_controls(result, manifest_root, env, "startup_control"):
+            return result
         if not run_core_diagnostic_producer_controls(result, manifest_root, env):
             return result
         return run_core_diagnostic_samples(result, manifest_root, env)
@@ -1829,7 +1901,31 @@ def _safe_core_builder_evidence(case: str, value: Any) -> dict[str, Any]:
     return safe
 
 
-def _safe_core_samples(value: Any) -> dict[str, Any]:
+def _safe_core_startup_evidence(case: str, value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    values = source.get("records") if isinstance(source.get("records"), list) else []
+    records = [{"case": item["case"], "site": item["site"]} for item in values[:1]
+               if isinstance(item, dict) and set(item) == {"case", "site"}
+               and item.get("case") == case and type(item.get("site")) is str
+               and item["site"] in CORE_STARTUP_SITES]
+    safe = _safe_fields(source, counts=("stderr_candidate_count", "invalid_marker_count", "omitted_marker_count",
+        "stdout_ambiguity_count"), handled=("records", "designated_channel", "observation_status", "error_site",
+        "scope", "cross_stream_chronology", "writer_process_identity", "execution_matches"))
+    status = "error_site" if records else "absent"
+    if (len(values) != len(records) or safe.get("stderr_candidate_count") != len(records)
+            or safe.get("invalid_marker_count") != 0 or safe.get("omitted_marker_count") != 0
+            or safe.get("stdout_ambiguity_count") != 0 or source.get("designated_channel") != "stderr"
+            or source.get("observation_status") != status
+            or source.get("error_site") != (records[0]["site"] if records else "")):
+        status = "invalid"
+    safe.update(designated_channel="stderr", observation_status=status, records=records,
+                projection_omitted_marker_count=len(values) - len(records),
+                error_site=records[0]["site"] if status == "error_site" else "",
+                scope="failed_result_boundary_only", cross_stream_chronology="unknown", writer_process_identity="unknown")
+    return safe
+
+
+def _safe_core_samples(value: Any, inventory_count: Any = None) -> dict[str, Any]:
     values = value if isinstance(value, list) else []
     samples = []
     selected = {key: name for key, name, _ in CORE_DIAGNOSTIC_CASES}
@@ -1840,61 +1936,68 @@ def _safe_core_samples(value: Any) -> dict[str, Any]:
         if item.get("name") != selected[case]:
             continue
         safe = _safe_fields(item, booleans=("command_returned",), enums={"status": {"success", "failure"}},
-                            handled=("case", "name", "exit_code", "result_counts", "observed_outcomes", "stage_evidence", "builder_evidence", "diagnostics"))
+                            handled=("case", "name", "exit_code", "result_counts", "observed_outcomes", "stage_evidence", "builder_evidence", "startup_evidence", "diagnostics"))
         outcomes = item.get("observed_outcomes") if isinstance(item.get("observed_outcomes"), list) else []
         accepted = [outcome for outcome in outcomes if isinstance(outcome, str) and outcome in {"ok", "FAILED", "ignored"}][:4]
         safe.update(case=case, name=selected[case], exit_code=_safe_exit(item.get("exit_code")),
                     result_counts=_safe_counts(item.get("result_counts")), observed_outcomes=accepted,
                     outcome_original_count=len(outcomes), outcome_omitted_count=len(outcomes) - len(accepted),
                     stage_evidence=_safe_core_stage_evidence(case, item.get("stage_evidence")),
-                    builder_evidence=_safe_core_builder_evidence(case, item.get("builder_evidence")))
+                    builder_evidence=_safe_core_builder_evidence(case, item.get("builder_evidence")),
+                    startup_evidence=_safe_core_startup_evidence(case, item.get("startup_evidence")))
+        startup = safe["startup_evidence"]
+        startup["execution_matches"] = core_startup_execution_matches(startup, safe, inventory_count)
+        declared = item.get("startup_evidence") if isinstance(item.get("startup_evidence"), dict) else {}
+        if declared.get("execution_matches") is not startup["execution_matches"]:
+            startup.update(observation_status="invalid", error_site="", execution_matches=False)
         if "diagnostics" in item:
             safe["diagnostics"] = _safe_diagnostics(item["diagnostics"])
         samples.append(safe)
     return {"records": samples, "original_count": len(values), "omitted_count": len(values) - len(samples)}
 
 
-def _safe_core_producer_controls(value: Any) -> dict[str, Any]:
+def _safe_core_producer_controls(value: Any, control_field: str = "producer_controls") -> dict[str, Any]:
     # Publish only the fixed commands/names and typed counts, never other lib names.
     source = value if isinstance(value, dict) else {}
+    inventory_argv, selected_tests, commands = CORE_DIAGNOSTIC_CONTROL_SPECS[control_field]
     raw_inventory = source.get("inventory") if isinstance(source.get("inventory"), dict) else {}
     values = raw_inventory.get("tests") if isinstance(raw_inventory.get("tests"), list) else []
     names = [name for name in values if type(name) is str and TEST_RE.fullmatch(name)]
     inventory = _safe_fields(raw_inventory, counts=("test_count",), booleans=("command_returned",),
                             enums={"status": {"success", "failure", "not-run"}},
                             handled=("tests", "argv", "command_matches", "exit_code", "diagnostics"))
-    inventory.update(argv=list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY),
-                     command_matches=raw_inventory.get("argv") == list(CORE_DIAGNOSTIC_PRODUCER_INVENTORY)
+    inventory.update(argv=list(inventory_argv),
+                     command_matches=raw_inventory.get("argv") == list(inventory_argv)
                                      and raw_inventory.get("command_matches") is True,
                      exit_code=_safe_exit(raw_inventory.get("exit_code")), original_count=len(values),
                      unique_count=len(set(names)), invalid_name_count=len(values) - len(names),
-                     selected_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if names.count(name) == 1],
-                     missing_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if name not in names],
-                     ambiguous_tests=[name for name in CORE_DIAGNOSTIC_PRODUCER_TESTS if names.count(name) > 1])
+                     selected_tests=[name for name in selected_tests if names.count(name) == 1],
+                     missing_tests=[name for name in selected_tests if name not in names],
+                     ambiguous_tests=[name for name in selected_tests if names.count(name) > 1])
     if "diagnostics" in raw_inventory:
         inventory["diagnostics"] = _safe_diagnostics(raw_inventory["diagnostics"])
     inventory_ok = (inventory.get("status") == "success" and inventory.get("command_returned") is True
                     and inventory["command_matches"] and inventory["exit_code"] == 0
-                    and len(CORE_DIAGNOSTIC_PRODUCER_TESTS) <= len(values) <= MAX_PUBLIC_INVENTORY_NAMES
+                    and len(selected_tests) <= len(values) <= MAX_PUBLIC_INVENTORY_NAMES
                     and inventory.get("test_count") == len(values) == len(set(names))
                     and inventory["invalid_name_count"] == 0
-                    and inventory["selected_tests"] == list(CORE_DIAGNOSTIC_PRODUCER_TESTS))
+                    and inventory["selected_tests"] == list(selected_tests))
     values = source.get("tests") if isinstance(source.get("tests"), list) else []
     records = []
-    known = set(CORE_DIAGNOSTIC_PRODUCER_TESTS)
-    for item in values[:2]:
+    known = set(selected_tests)
+    for item in values[:len(selected_tests)]:
         projected = _safe_test_results([item], known)["records"]
         if not projected:
             continue
         record = projected[0]
-        command = list(CORE_DIAGNOSTIC_PRODUCER_COMMANDS[CORE_DIAGNOSTIC_PRODUCER_TESTS.index(record["name"])])
+        command = list(commands[selected_tests.index(record["name"])])
         record.update(argv=command, command_returned=item.get("command_returned") is True,
                       command_matches=item.get("argv") == command and item.get("command_matches") is True,
                       unexpected_outcome_count=_safe_count(item.get("unexpected_outcome_count")))
         record["omitted_field_count"] -= len(set(item) & {"argv", "command_returned", "command_matches", "unexpected_outcome_count"})
         records.append(record)
-    reconciled = (source.get("status") == "success" and inventory_ok and len(values) == len(records) == 2
-                  and [item["name"] for item in records] == list(CORE_DIAGNOSTIC_PRODUCER_TESTS)
+    reconciled = (source.get("status") == "success" and inventory_ok and len(values) == len(records) == len(selected_tests)
+                  and [item["name"] for item in records] == list(selected_tests)
                   and all(item.get("status") == "success" and item["command_returned"]
                           and item["command_matches"] and item["exit_code"] == 0
                           and item.get("execution_reconciled") is True and item["observed_outcomes"] == ["ok"]
@@ -1924,13 +2027,14 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
         "candidate_sha": _safe_token(result.get("candidate_sha"), GIT_SHA_RE),
         "identity": identity, "request": request, "inventory": inventory,
         "tests": tests.pop("records"), "test_projection": tests,
-        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples", "producer_controls"}),
+        "omitted_field_count": len(set(result) - {"schema_version", "status", "failure_code", "result_kind", "request_fingerprint", "candidate_sha", "identity", "request", "inventory", "tests", "runtime_preparation", "failure_evidence", "missing_tests", "ambiguous_tests", "diagnostic_only", "full_target_execution", "qualification_status", "sampling_complete", "diagnostic_samples", "producer_controls", "startup_control"}),
     }
     if safe["result_kind"] == "core_runtime_diagnostic":
-        samples = _safe_core_samples(result.get("diagnostic_samples"))
+        samples = _safe_core_samples(result.get("diagnostic_samples"), inventory.get("test_count"))
         safe.update(diagnostic_only=True, full_target_execution=False, qualification_status="not_attempted",
                     diagnostic_samples=samples.pop("records"), sample_projection=samples,
-                    producer_controls=_safe_core_producer_controls(result.get("producer_controls")))
+                    producer_controls=_safe_core_producer_controls(result.get("producer_controls")),
+                    startup_control=_safe_core_producer_controls(result.get("startup_control"), "startup_control"))
         safe["sampling_complete"] = (samples["original_count"] == 2 and samples["omitted_count"] == 0
                                      and all(item.get("command_returned") is True for item in safe["diagnostic_samples"]))
     if "runtime_preparation" in result:
@@ -1945,7 +2049,7 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                     and safe["candidate_sha"] == identity.get("target_sha") and bool(safe["request_fingerprint"]))
         complete = complete and request["request_fingerprint"] == safe["request_fingerprint"]
         if safe["result_kind"] == "core_runtime_diagnostic":
-            complete = complete and (safe["producer_controls"]["reconciled"]
+            complete = complete and (safe["producer_controls"]["reconciled"] and safe["startup_control"]["reconciled"]
                         and result.get("diagnostic_only") is True and result.get("full_target_execution") is False
                         and result.get("qualification_status") == "not_attempted" and result.get("sampling_complete") is True
                         and safe["sampling_complete"] and request.get("profile") == "rust_integration"
@@ -1962,7 +2066,9 @@ def public_safe_result(result: dict[str, Any]) -> dict[str, Any]:
                         and item["result_counts"] == {"passed": 1, "failed": 0, "ignored": 0, "measured": 0,
                                                       "filtered": inventory.get("test_count", 0) - 1}
                         and item["stage_evidence"]["attribution_complete"]
-                        and item["builder_evidence"]["completed_path"] for item in safe["diagnostic_samples"])
+                        and item["builder_evidence"]["completed_path"]
+                        and item["startup_evidence"]["observation_status"] == "absent"
+                        and item["startup_evidence"]["execution_matches"] for item in safe["diagnostic_samples"])
         elif safe["result_kind"] == "named_tests":
             complete = complete and inventory.get("status") == "success" and inventory.get("test_count") == inventory["original_count"] and not inventory["omitted_count"] and not request["selectors"]["omitted_count"] and not tests["omitted_count"]
             complete = complete and [item["name"] for item in safe["tests"]] == request["tests"] and bool(safe["tests"])
