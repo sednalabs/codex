@@ -886,7 +886,7 @@ fn reasoning_delta(thread_id: ThreadId, item_id: &str, delta: &str) -> ServerNot
 #[tokio::test]
 async fn agents_overview_details_render_markdown() {
     let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
+    let thread_id = ThreadId::from_u128(/*value*/ 46);
     let mut thread = overview_thread(
         thread_id,
         /*parent_thread_id*/ None,
@@ -974,7 +974,7 @@ fn agents_overview_markdown_preview_preserves_layout_and_bounds() {
 #[tokio::test]
 async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachment() {
     let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
+    let thread_id = ThreadId::from_u128(/*value*/ 44);
     let mut thread = overview_thread(
         thread_id,
         /*parent_thread_id*/ None,
@@ -1007,7 +1007,7 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
 
     // A working child can stream through a server attachment without a local channel.
     let parent = overview_thread(
-        ThreadId::new(),
+        ThreadId::from_u128(/*value*/ 45),
         /*parent_thread_id*/ None,
         "Parent",
         thread.status.clone(),
