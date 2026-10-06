@@ -2410,7 +2410,7 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
             self._run(request, inventory, outcomes + "\n" + full_without_duration)))
         self.assertEqual(
             (accepted_without_duration["status"], accepted_without_duration["failure_code"]),
-            ("success", None),
+            ("success", ""),
         )
 
         rejected = (
