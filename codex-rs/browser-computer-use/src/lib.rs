@@ -1346,17 +1346,18 @@ JSON
             r#"
 let currentUrl = "about:blank";
 let screenshotCount = 0;
-const browserState = { width: 1280, height: 720, scrollX: 0, scrollY: 0 };
+const browserState = { width: 1280, height: 720, scrollX: 0, scrollY: 0, devicePixelRatio: 2 };
 global.window = {};
 Object.defineProperties(global.window, {
   innerWidth: { get: () => browserState.width },
   innerHeight: { get: () => browserState.height },
+  devicePixelRatio: { get: () => browserState.devicePixelRatio },
   scrollX: { get: () => browserState.scrollX },
   scrollY: { get: () => browserState.scrollY },
 });
 global.window.scrollTo = (x, y) => { browserState.scrollX = x; browserState.scrollY = Math.max(0, Math.min(y, 1080)); };
 global.document = { documentElement: {
-  get clientWidth() { return browserState.width; },
+  get clientWidth() { return browserState.width - (process.env.CODEX_BROWSER_FIXTURE_MISMATCH_RESTORE === "1" && screenshotCount > 0 && browserState.width === 1280 ? 1 : 0); },
   get clientHeight() { return browserState.height; },
   scrollWidth: 1280,
   scrollHeight: 1800,
@@ -1373,6 +1374,12 @@ global.document = { documentElement: {
     getAttribute: (name) => name === "role" ? "combobox" : null,
     getBoundingClientRect: () => ({ x: 10, y: 60, width: 180, height: 30 }),
   },
+  {
+    tagName: "BUTTON", isContentEditable: false, hidden: false, disabled: false,
+    innerText: "Save draft", textContent: "Save draft",
+    getAttribute: (name) => name === "aria-label" ? 'Save "draft" \\ now' : null,
+    getBoundingClientRect: () => ({ x: 10, y: 100, width: 120, height: 30 }),
+  },
 ] };
 const page = {
   isClosed: () => false,
@@ -1383,9 +1390,14 @@ const page = {
   screenshot: async () => {
     screenshotCount += 1;
     if (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT === "1" || (process.env.CODEX_BROWSER_FIXTURE_FAIL_SCREENSHOT_AFTER_FIRST === "1" && screenshotCount === 2)) throw new Error("fixture screenshot failure");
-    return Buffer.from("fixture-image");
+    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    return Buffer.concat([signature, Buffer.from(`fixture-image-${screenshotCount}-${browserState.scrollY}`)]);
   },
-  setViewportSize: async ({ width, height }) => { browserState.width = width; browserState.height = height; },
+  setViewportSize: async ({ width, height }) => {
+    browserState.width = width;
+    browserState.height = height;
+    if (process.env.CODEX_BROWSER_FIXTURE_MISMATCH_RESTORE === "1" && screenshotCount > 0 && width === 1280) browserState.devicePixelRatio = 1.5;
+  },
   evaluate: async (fn, arg) => {
     if (process.env.CODEX_BROWSER_FIXTURE_FAIL_RESTORE === "1" && fn.toString().includes("scroll.x")) {
       throw new Error("fixture restoration failure");
@@ -1499,6 +1511,30 @@ exports.chromium = {
                 run_playwright_provider(&params, &config).await
             }
         };
+
+        fn decode_inline_png(image_url: &str) -> Vec<u8> {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let encoded = image_url
+                .strip_prefix("data:image/png;base64,")
+                .expect("typed inline PNG data URL");
+            let mut decoded = Vec::new();
+            let mut accumulator = 0u32;
+            let mut bits = 0u8;
+            for byte in encoded.bytes().take_while(|byte| *byte != b'=') {
+                let value = ALPHABET
+                    .iter()
+                    .position(|candidate| *candidate == byte)
+                    .expect("valid base64 image data") as u32;
+                accumulator = (accumulator << 6) | value;
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    decoded.push((accumulator >> bits) as u8);
+                }
+            }
+            decoded
+        }
 
         let absolute_root = temp.path().join("custom-state");
         let absolute = absolute_root.to_string_lossy().to_string();
@@ -1897,6 +1933,176 @@ fs.writeFile = async (file, ...args) => {
         assert!(text.contains("\"role\":\"combobox\""));
         assert!(!text.contains("DO_NOT_EXPOSE_ARIA_TEXTBOX_SECRET"));
         assert!(!text.contains("DO_NOT_EXPOSE_ARIA_COMBOBOX_SECRET"));
+
+        let visual_fixture_root = temp.path().join("visual-pair-state");
+        let visual_fixture = run_visual(
+            visual_fixture_root.clone(),
+            "visual-pair-thread",
+            json!({
+                "scope": "viewport_and_page",
+                "captures": [
+                    {"label": "top-wide", "viewportWidth": 960, "viewportHeight": 640, "scroll": "top"},
+                    {"label": "bottom-narrow", "viewportWidth": 640, "viewportHeight": 480, "scroll": "bottom"}
+                ],
+                "save_artifact": true
+            }),
+            configured_node_path.clone(),
+        )
+        .await
+        .expect("successful synthetic visual capture with saved artifacts");
+        assert!(visual_fixture.success, "{visual_fixture:?}");
+        let visual_fixture_text = visual_fixture
+            .content_items
+            .iter()
+            .find_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("textual capture metadata");
+        assert!(!visual_fixture_text.contains("data:image/png;base64,"));
+        let hints_json = visual_fixture_text
+            .lines()
+            .find_map(|line| line.strip_prefix("page_hints: "))
+            .expect("page/control hints are reported");
+        let hints: Value = serde_json::from_str(hints_json).expect("valid page hint JSON");
+        assert!(hints["controls"].as_array().unwrap().iter().any(|control| {
+            control["selectors"].as_array().unwrap().iter().any(|selector| {
+                selector.as_str() == Some(r#"[aria-label="Save \22 draft\22 \5c  now"]"#)
+            })
+        }), "quotes and backslashes in control labels are CSS-escaped");
+
+        let inline_images = visual_fixture
+            .content_items
+            .iter()
+            .filter_map(|item| match item {
+                DynamicToolCallOutputContentItem::InputImage { image_url } => {
+                    Some(decode_inline_png(image_url))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(inline_images.len(), 2, "one inline image per labeled capture");
+        assert_ne!(inline_images[0], inline_images[1], "fixture captures are distinct");
+        const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+        let profile = std::fs::read_dir(visual_fixture_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let manifest_relative_path = visual_fixture_text
+            .lines()
+            .find_map(|line| line.strip_prefix("artifact_manifest: "))
+            .expect("saved manifest path is reported");
+        let manifest_path = profile.join(manifest_relative_path);
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(&manifest_path).expect("saved capture manifest"),
+        )
+        .expect("valid saved capture manifest");
+        let captures = manifest["captures"].as_array().expect("manifest captures");
+        assert_eq!(captures.len(), 2);
+        for (index, expected_label) in ["top-wide", "bottom-narrow"].iter().enumerate() {
+            let capture = &captures[index];
+            let expected_width = if index == 0 { 960 } else { 640 };
+            assert_eq!(capture["order"], index + 1);
+            assert_eq!(capture["label"], *expected_label);
+            assert_eq!(capture["metadata"]["requestedViewport"]["width"], expected_width);
+            assert_eq!(capture["metadata"]["effectiveViewport"]["width"], expected_width);
+            assert_eq!(capture["metadata"]["devicePixelRatio"], 2);
+            assert!(capture["metadata"]["clientViewport"]["width"]
+                .as_u64()
+                .unwrap()
+                > 0);
+            let saved = std::fs::read(
+                manifest_path
+                    .parent()
+                    .unwrap()
+                    .join(capture["path"].as_str().unwrap()),
+            )
+            .expect("manifest-listed PNG exists");
+            assert!(saved.starts_with(PNG_SIGNATURE));
+            assert_eq!(saved, inline_images[index], "saved PNG pairs with typed image by capture order");
+        }
+        assert!(manifest["captures"][1]["metadata"]["scroll"]["y"]
+            .as_f64()
+            .unwrap()
+            > 0.0);
+        let restoration = &manifest["restoration"];
+        assert_eq!(restoration["success"], true);
+        assert_eq!(
+            restoration["actual"]["clientViewport"],
+            restoration["expected"]["clientViewport"]
+        );
+        assert_eq!(
+            restoration["actual"]["devicePixelRatio"],
+            restoration["expected"]["devicePixelRatio"]
+        );
+        assert_eq!(
+            restoration["actual"]["scroll"],
+            restoration["expected"]["scroll"]
+        );
+
+        let (_restore_mismatch_wrapper, restore_mismatch_node) =
+            make_node_wrapper(false, &[("CODEX_BROWSER_FIXTURE_MISMATCH_RESTORE", "1")]);
+        let restore_mismatch_root = temp.path().join("restore-mismatch-state");
+        let restore_mismatch = run_visual(
+            restore_mismatch_root.clone(),
+            "restore-mismatch-thread",
+            json!({
+                "captures": [{"label": "before-mismatch", "viewportWidth": 960, "scroll": "bottom"}],
+                "save_artifact": true
+            }),
+            restore_mismatch_node,
+        )
+        .await
+        .expect("restoration readback mismatch response");
+        assert!(!restore_mismatch.success);
+        let DynamicToolCallOutputContentItem::InputText { text } = &restore_mismatch.content_items[0]
+        else {
+            panic!("restoration mismatch includes structured text");
+        };
+        let restoration_json = text
+            .lines()
+            .find_map(|line| line.strip_prefix("restoration: "))
+            .expect("actual and expected restoration readbacks are reported");
+        let restoration: Value = serde_json::from_str(restoration_json).unwrap();
+        assert_eq!(restoration["success"], false);
+        assert_eq!(restoration["actual"]["devicePixelRatio"], 1.5);
+        assert_eq!(restoration["expected"]["devicePixelRatio"], 2);
+        assert_eq!(restoration["actual"]["clientViewport"]["width"], 1279);
+        assert_eq!(restoration["expected"]["clientViewport"]["width"], 1280);
+        let mismatch_profile = std::fs::read_dir(restore_mismatch_root.join("profiles"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(
+            !mismatch_profile.join("artifacts").exists(),
+            "no artifacts are saved when viewport restoration readback mismatches"
+        );
+
+        let (_invalid_capture_mode_wrapper, invalid_capture_mode_node) =
+            make_node_wrapper(false, &[("CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE", "typo")]);
+        let invalid_capture_mode_root = temp.path().join("invalid-capture-mode-state");
+        let invalid_capture_mode = run_visual(
+            invalid_capture_mode_root.clone(),
+            "invalid-capture-mode-thread",
+            json!({}),
+            invalid_capture_mode_node,
+        )
+        .await
+        .expect("unsupported capture mode response");
+        assert!(!invalid_capture_mode.success);
+        assert!(matches!(
+            invalid_capture_mode.content_items.first(),
+            Some(DynamicToolCallOutputContentItem::InputText { text })
+                if text.contains("unsupported capture mode")
+        ));
+        assert!(
+            !invalid_capture_mode_root.exists(),
+            "unsupported capture mode fails before creating a profile"
+        );
 
         let invalid_root = temp.path().join("invalid-visual-state");
         let invalid_inputs = [

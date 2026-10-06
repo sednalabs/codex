@@ -32,6 +32,7 @@ async function main() {
   }
   const request = JSON.parse(await readStdin());
   validateVisualArguments(request.arguments || {});
+  captureMode();
   const { chromium } = loadPlaywright();
   const { stateDir } = await browserProfile(request);
   await withProfileLock(stateDir, async () => {
@@ -372,10 +373,11 @@ function validateVisualArguments(args) {
 }
 
 function captureMode() {
-  const mode = (
-    process.env.CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE || CAPTURE_VIEWPORT
-  ).toLowerCase();
-  return mode === CAPTURE_FULL_PAGE ? CAPTURE_FULL_PAGE : CAPTURE_VIEWPORT;
+  const mode = (process.env.CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE || CAPTURE_VIEWPORT).toLowerCase();
+  if (mode === CAPTURE_VIEWPORT || mode === CAPTURE_FULL_PAGE) return mode;
+  throw new Error(
+    `unsupported capture mode ${JSON.stringify(mode)}; expected ${CAPTURE_VIEWPORT} or ${CAPTURE_FULL_PAGE}`,
+  );
 }
 
 async function activePage(context) {
@@ -837,9 +839,11 @@ async function captureScreenshots(page, args) {
       await page.evaluate((scroll) => window.scrollTo(scroll.x, scroll.y), original.scroll);
       const restored = await viewportMetadata(page, originalViewport);
       const viewportMatches = restored.effectiveViewport.width === original.effectiveViewport.width && restored.effectiveViewport.height === original.effectiveViewport.height;
+      const clientViewportMatches = restored.clientViewport?.width === original.clientViewport?.width && restored.clientViewport?.height === original.clientViewport?.height;
+      const devicePixelRatioMatches = restored.devicePixelRatio === original.devicePixelRatio;
       const scrollMatches = restored.scroll.x === original.scroll.x && restored.scroll.y === original.scroll.y;
-      result.restoration = { requested: true, success: viewportMatches && scrollMatches, actual: restored, expected: original };
-      if (!result.restoration.success) result.error ||= "restoration: viewport or scroll position did not return to its initial value";
+      result.restoration = { requested: true, success: viewportMatches && clientViewportMatches && devicePixelRatioMatches && scrollMatches, actual: restored, expected: original };
+      if (!result.restoration.success) result.error ||= "restoration: viewport, device scale, or scroll position did not return to its initial value";
     } catch (error) {
       result.restoration = { requested: true, success: false, error: errorMessage(error) };
       result.error ||= `restoration: ${errorMessage(error)}`;
@@ -889,7 +893,13 @@ async function pageHints(page, offset = 0) {
       const testId = element.getAttribute("data-testid");
       if (testId) hints.push(`[data-testid="${CSS.escape(testId)}"]`);
       const label = element.getAttribute("aria-label");
-      if (label) hints.push(`${role}[aria-label="${label.slice(0, 80)}"]`);
+      if (label) {
+        const escapedLabel = label.slice(0, 80).replace(/[\u0000-\u001f\u007f"\\]/g, (character) => {
+          const codePoint = character.codePointAt(0);
+          return `\\${codePoint.toString(16)} `;
+        });
+        hints.push(`[aria-label="${escapedLabel}"]`);
+      }
       if (!hints.length) hints.push(tag);
       return [{ role, name, disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"), box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, selectors: hints.slice(0, 3) }];
     });
