@@ -17,7 +17,6 @@ from verify_existing_first_binary_producer import (
     ARCHES,
     BROWSER_DIAGNOSTIC_BASE_REF,
     BROWSER_DIAGNOSTIC_BASE_SHA,
-    BROWSER_DIAGNOSTIC_CALL_ID,
     BROWSER_DIAGNOSTIC_FIELDS,
     BROWSER_DIAGNOSTIC_FIXTURE_SHA,
     BROWSER_DIAGNOSTIC_PRODUCT_SHA,
@@ -2983,6 +2982,29 @@ class ConsumerResultTests(unittest.TestCase):
             "function_call_output_tool_names": [],
             "synthetic_browser_provider_invoked": False,
             "synthetic_browser_provider_tool_name": None,
+            "source_stage_observations": [
+                {
+                    "stage": "browser_provider",
+                    "call_id_matches_fixture": True,
+                    "provider_process_exit_success": True,
+                    "provider_json_parse_success": True,
+                    "provider_content_item_count": 3,
+                },
+                {
+                    "stage": "app_server_response",
+                    "call_id_matches_fixture": True,
+                    "app_server_response_accepted": True,
+                    "app_server_response_submitted": True,
+                    "app_server_accepted_item_count": 3,
+                },
+                {
+                    "stage": "core_function_output",
+                    "call_id_matches_fixture": True,
+                    "core_response_received": True,
+                    "core_function_output_constructed": True,
+                    "core_output_item_count": 3,
+                },
+            ],
         }
         self.assertEqual(BROWSER_DIAGNOSTIC_FIELDS, frozenset(diagnostic))
         consumer_path = runner_temp / "consumer.json"
@@ -3057,6 +3079,17 @@ class ConsumerResultTests(unittest.TestCase):
             self.assertEqual(1, result["failures"])
             self.assertEqual(2, result["browser_output_diagnostic"]["responses_request_count"])
             self.assertEqual([], result["browser_output_diagnostic"]["function_call_output_call_ids"])
+            self.assertEqual(
+                ["browser_provider", "app_server_response", "core_function_output"],
+                [
+                    observation["stage"]
+                    for observation in result["browser_output_diagnostic"]["source_stage_observations"]
+                ],
+            )
+            self.assertTrue(all(
+                observation["call_id_matches_fixture"]
+                for observation in result["browser_output_diagnostic"]["source_stage_observations"]
+            ))
             self.assertIn("pytest exited with status 1", result["issues"])
             self.assertIn("JUnit reports failures=1 errors=0", result["issues"])
 

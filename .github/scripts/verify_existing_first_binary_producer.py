@@ -100,14 +100,13 @@ S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
 S3_SDK_SHA = "b0b13d9d4b02500f27e31e60eab06b2de36bb0d6"
 S4_SDK_SHA = "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a"
 BROWSER_DIAGNOSTIC_PROFILE = "browser-diagnostic"
-BROWSER_DIAGNOSTIC_PRODUCT_SHA = "940dcc0a6d839216d2b1604658a78a9abf00317e"
+BROWSER_DIAGNOSTIC_PRODUCT_SHA = "18a678acf0702aaaebe6908aceda6d60d3d540f1"
 BROWSER_DIAGNOSTIC_BASE_REF = "validation/interrupt-guardian-fixture-8389-20261004"
 BROWSER_DIAGNOSTIC_BASE_SHA = "8389b61d82cb6fb936e4e500b977f31682441ffe"
-BROWSER_DIAGNOSTIC_FIXTURE_SHA = "614ebadcd49997c10efc8a5b986ce81747b9b487"
+BROWSER_DIAGNOSTIC_FIXTURE_SHA = "18a678acf0702aaaebe6908aceda6d60d3d540f1"
 BROWSER_DIAGNOSTIC_SDK_SHA = S4_SDK_SHA
 BROWSER_DIAGNOSTIC_TEST_NAME = "test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate"
 BROWSER_DIAGNOSTIC_PROPERTY = "browser_output_diagnostic_json"
-BROWSER_DIAGNOSTIC_CALL_ID = "browser-visual-fixture-call"
 BROWSER_DIAGNOSTIC_TOOL_NAMES = frozenset({"browser_observe", "browser_step"})
 BROWSER_DIAGNOSTIC_FIELDS = frozenset(
     {
@@ -120,6 +119,7 @@ BROWSER_DIAGNOSTIC_FIELDS = frozenset(
         "function_call_output_tool_names",
         "synthetic_browser_provider_invoked",
         "synthetic_browser_provider_tool_name",
+        "source_stage_observations",
     }
 )
 EXPECTED_STATE_POSITIVE = frozenset(
@@ -438,7 +438,7 @@ def _browser_diagnostic_from_junit(cases: list[ET.Element], issues: list[str]) -
         return None
     call_ids = diagnostic.get("function_call_output_call_ids")
     tool_names = diagnostic.get("function_call_output_tool_names")
-    allowed_call_ids = {BROWSER_DIAGNOSTIC_CALL_ID, "<other>", "<missing>"}
+    allowed_call_ids = {"<fixture>", "<other>", "<missing>"}
     allowed_tool_names = BROWSER_DIAGNOSTIC_TOOL_NAMES | {"<other>", "<absent>"}
     if (
         not isinstance(call_ids, list)
@@ -468,6 +468,50 @@ def _browser_diagnostic_from_junit(cases: list[ET.Element], issues: list[str]) -
     if diagnostic["function_call_output_count"] and not diagnostic["second_request_input_available"]:
         issues.append("JUnit Browser diagnostic call outputs lack a second-request input witness")
         return None
+    stage_observations = diagnostic.get("source_stage_observations")
+    if not isinstance(stage_observations, list) or len(stage_observations) > 32:
+        issues.append("JUnit Browser source-stage observations are malformed")
+        return None
+    stage_fields = {
+        "browser_provider": {
+            "call_id_matches_fixture",
+            "provider_process_exit_success",
+            "provider_json_parse_success",
+            "provider_content_item_count",
+        },
+        "app_server_response": {
+            "call_id_matches_fixture",
+            "app_server_response_accepted",
+            "app_server_response_submitted",
+            "app_server_accepted_item_count",
+        },
+        "core_function_output": {
+            "call_id_matches_fixture",
+            "core_response_received",
+            "core_function_output_constructed",
+            "core_output_item_count",
+        },
+    }
+    for observation in stage_observations:
+        if not isinstance(observation, dict):
+            issues.append("JUnit Browser source-stage observation is not an object")
+            return None
+        stage = observation.get("stage")
+        expected_fields = stage_fields.get(stage) if isinstance(stage, str) else None
+        if expected_fields is None or frozenset(observation) != expected_fields | {"stage"}:
+            issues.append("JUnit Browser source-stage observation has an unknown field inventory")
+            return None
+        if type(observation.get("call_id_matches_fixture")) is not bool:
+            issues.append("JUnit Browser source-stage call-id match is malformed")
+            return None
+        count_key = next(key for key in expected_fields if key.endswith("_item_count"))
+        result_keys = expected_fields - {"call_id_matches_fixture", count_key}
+        if any(type(observation.get(key)) is not bool for key in result_keys):
+            issues.append("JUnit Browser source-stage outcome booleans are malformed")
+            return None
+        if type(observation.get(count_key)) is not int or observation[count_key] < 0:
+            issues.append("JUnit Browser source-stage item count is malformed")
+            return None
     return diagnostic
 
 
