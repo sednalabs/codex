@@ -874,6 +874,8 @@ def self_test_failure_projection(
             continue
         trace = location_pattern.fullmatch(line)
         if trace and current_test == trace.group(2):
+            if current_test in invalid_locations:
+                continue
             location = locations.get(current_test)
             raw_line_number = trace.group(1)
             if len(raw_line_number) > len(str(source_line_count)):

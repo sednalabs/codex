@@ -1747,6 +1747,8 @@ class PublicArtifactTests(unittest.TestCase):
                 b'test_prepare_control_plane.py", line '
                 + malformed_line_number
                 + b", in test_malformed_line\n"
+                b'  File "/home/runner/private/.github/scripts/'
+                b'test_prepare_control_plane.py", line 6, in test_malformed_line\n'
                 b"AssertionError: PRIVATE_MALFORMED_CANARY\n"
                 b"FAIL: test_untrusted_canary "
                 b"(test_prepare_control_plane.Private.test_untrusted_canary)\n"
