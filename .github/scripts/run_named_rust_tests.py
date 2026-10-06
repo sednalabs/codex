@@ -28,6 +28,11 @@ TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
 ALLOWED_EXECUTION_MODES = {"full_target", "exact_tests"}
+TUI_DIAGNOSTIC_TESTS = (
+    "app::agents_overview::tests::"
+    "agents_overview_reasoning_uses_existing_events_and_expires_with_attachment",
+    "app::agents_overview::tests::agents_overview_details_render_markdown",
+)
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -275,7 +280,10 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
-    if not isinstance(execution_mode, str) or execution_mode not in ALLOWED_EXECUTION_MODES:
+    if (
+        not isinstance(execution_mode, str)
+        or execution_mode not in ALLOWED_EXECUTION_MODES
+    ):
         return None, fail("execution_mode_invalid", "execution_mode is not in the hosted allowlist")
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
@@ -286,6 +294,17 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("test_name_invalid", "test names must be fully-qualified safe names")
     if len(set(tests)) != len(tests):
         return None, fail("test_names_duplicate", "test names must be unique")
+    if execution_mode == "exact_tests" and (
+        package != "codex-tui"
+        or target_kind != "lib"
+        or target not in ("", None, "lib")
+        or profile != "rust_minimal"
+        or tests != list(TUI_DIAGNOSTIC_TESTS)
+    ):
+        return None, fail(
+            "execution_mode_scope_invalid",
+            "exact_tests is restricted to the approved TUI diagnostic selectors",
+        )
     normalized = {
         "schema_version": SCHEMA_VERSION,
         "profile": profile,
