@@ -987,7 +987,12 @@ async fn agents_overview_details_render_markdown() {
     );
     assert_tui_diagnostic!(
         "long_code_wrapped_segment",
-        contains_line(&long_lines, "should wrap inside the task details")
+        long_lines
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("should wrap inside the task details")
+            && !contains_line(&long_lines, "should wrap inside the task details")
     );
     assert_tui_diagnostic!(
         "long_code_final_segment",
