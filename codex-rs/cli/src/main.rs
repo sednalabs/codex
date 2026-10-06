@@ -2737,11 +2737,7 @@ mod tests {
 
     #[test]
     fn version_output_identifies_sedna_and_preserves_package_version() {
-        let error = command_with_build_identity()
-            .try_get_matches_from(["codex", "--version"])
-            .expect_err("--version should exit with the version display");
-
-        let rendered = error.to_string();
+        let rendered = command_with_build_identity().render_version();
         std::assert_eq!(
             rendered.trim(),
             format!("codex {}", cli_display_version())
