@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import importlib.util
 import io
 import json
 import os
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,36 @@ def _copy_database(source: Path, destination: Path) -> None:
     finally:
         destination_connection.close()
         source_connection.close()
+
+
+def _write_melbourne_tzif_fixture(zoneinfo_root: Path) -> None:
+    """Write only the transition used by the DST assertion into a temp TZif."""
+    zone = zoneinfo_root / "Australia" / "Melbourne"
+    zone.parent.mkdir(parents=True, exist_ok=True)
+    abbreviations = b"AEST\0AEDT\0"
+    header = (
+        b"TZif\0"
+        + bytes(15)
+        + struct.pack(
+            ">6I",
+            0,  # ttisgmtcnt
+            0,  # ttisstdcnt
+            0,  # leapcnt
+            1,  # timecnt
+            2,  # typecnt
+            len(abbreviations),
+        )
+    )
+    # The test window straddles Melbourne's 2026 spring transition at 16:00Z.
+    transition = calendar.timegm((2026, 10, 3, 16, 0, 0))
+    transitions = (
+        struct.pack(">l", transition)
+        + b"\x01"
+        + struct.pack(">lBB", 10 * 60 * 60, 0, 0)
+        + struct.pack(">lBB", 11 * 60 * 60, 1, 5)
+        + abbreviations
+    )
+    zone.write_bytes(header + transitions)
 
 
 def _diagnostic_excerpt(value: str, max_chars: int = 512) -> str:
@@ -117,6 +149,7 @@ def _report(
     start: str = START,
     end: str = END,
     timezone: str = "UTC",
+    zoneinfo_path: Path | None = None,
     scope: str = "all",
     thread_id: str | None = None,
     credit_mode: str = "both",
@@ -150,6 +183,8 @@ def _report(
         "PYTHONDONTWRITEBYTECODE": "1",
         "TZ": "UTC",
     }
+    if zoneinfo_path is not None:
+        env["PYTHONTZPATH"] = str(zoneinfo_path.resolve())
     completed = subprocess.run(
         argv,
         cwd=repo_root,
@@ -688,12 +723,22 @@ def _correctness(
         "rate interval boundary is half-open",
     )
 
+    zoneinfo_path = None
+    try:
+        helper.ZoneInfo("Australia/Melbourne")
+    except helper.ZoneInfoNotFoundError:
+        zoneinfo_path = temp_root / "melbourne-tzdata"
+        _write_melbourne_tzif_fixture(zoneinfo_path)
+        dst_timezone_status = "synthetic_tzif_fixture"
+    else:
+        dst_timezone_status = "host_iana_tzdata"
     dst, _dst_diagnostic = _report(
         database,
         repo_root,
         start="2026-10-03T15:30:00Z",
         end="2026-10-03T16:30:00Z",
         timezone="Australia/Melbourne",
+        zoneinfo_path=zoneinfo_path,
         credit_mode="supplied_standard_scenario",
         expected_exit=0,
     )
@@ -793,6 +838,7 @@ def _correctness(
     rollback_connection.close()
     return {
         "correctness_status": "passed",
+        "dst_timezone_status": dst_timezone_status,
         "all_window_call_count": all_report["summary"]["provider_call_count"],
         "subtree_call_count": subtree["summary"]["provider_call_count"],
         "actual_covered_calls": actual["covered_call_count"],
