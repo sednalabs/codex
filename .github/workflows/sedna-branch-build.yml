@@ -625,6 +625,30 @@ jobs:
             exit 1
           fi
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          with (Path("product") / "codex-rs/Cargo.toml").open("rb") as manifest:
+              cargo_version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          match = re.fullmatch(
+              r"(?P<base>\d+\.\d+\.\d+)(?:-dev\.sedna\.\d+)?",
+              cargo_version,
+          )
+          target_sha = os.environ["TARGET_SHA"]
+          run_number = os.environ["GITHUB_RUN_NUMBER"]
+          if match is None or not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+              raise SystemExit("source version or product identity is not an admitted release input")
+          if not re.fullmatch(r"[1-9][0-9]*", run_number):
+              raise SystemExit("hosted progressive iteration is malformed")
+          package_version = (
+              f"{match.group('base')}-dev.sedna.{run_number}+g{target_sha[:8]}"
+          )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as environment:
+              environment.write(f"PACKAGE_VERSION={package_version}\n")
+          PY
       - name: Install Linux bwrap build dependencies
         shell: bash
         run: |
@@ -634,13 +658,17 @@ jobs:
       - name: Build canonical package and same-source proxy sidecar
         working-directory: product
         shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
+          export STABLE_GIT_COMMIT="${TARGET_SHA}"
           mkdir -p "${CODEX_PACKAGE_OUT}"
           CODEX_REPO_ROOT="${PWD}" python3 scripts/build_codex_package.py \
             --target "${CODEX_TARGET}" \
             --variant codex \
             --cargo-profile release \
+            --package-version "${PACKAGE_VERSION}" \
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
@@ -680,15 +708,29 @@ jobs:
           import hashlib
           import json
           import os
+          import subprocess
           from pathlib import Path
 
           package_out = Path(os.environ["PACKAGE_OUT"])
           target = os.environ["RUST_TARGET"]
           package_manifest = json.loads((package_out / "codex-package.json").read_text())
-          if package_manifest.get("version") != "0.160.0-dev.sedna.1":
-              raise SystemExit(
-                  "package manifest is not the admitted source-derived development version"
-              )
+          expected_version = os.environ["PACKAGE_VERSION"]
+          if package_manifest.get("version") != expected_version:
+              raise SystemExit("package manifest does not match the hosted progressive version")
+          package_dir = Path(os.environ["RUNNER_TEMP"]) / f"codex-package-{target}"
+          cli_result = subprocess.run(
+              [str(package_dir / "bin/codex"), "--version"],
+              capture_output=True,
+              check=False,
+              text=True,
+              timeout=30,
+          )
+          if (
+              cli_result.returncode != 0
+              or cli_result.stdout.strip() != f"codex Sedna v{expected_version}"
+              or cli_result.stderr.strip()
+          ):
+              raise SystemExit("packaged CLI does not expose the expected progressive version")
 
           def sha256_file(path):
               digest = hashlib.sha256()
@@ -722,6 +764,7 @@ jobs:
               "architecture": os.environ["PRODUCT_ARCH"],
               "runner_label": os.environ["RUNNER_LABEL"],
               "package_version": package_manifest["version"],
+              "progressive_iteration": int(os.environ["GITHUB_RUN_NUMBER"]),
               "artifacts_sha256": digests,
           }
           (package_out / "manifest.json").write_text(
@@ -801,6 +844,30 @@ jobs:
             exit 1
           fi
           git -C product cat-file -e "${BASE_SHA}^{commit}"
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          with (Path("product") / "codex-rs/Cargo.toml").open("rb") as manifest:
+              cargo_version = tomllib.load(manifest)["workspace"]["package"]["version"]
+          match = re.fullmatch(
+              r"(?P<base>\d+\.\d+\.\d+)(?:-dev\.sedna\.\d+)?",
+              cargo_version,
+          )
+          target_sha = os.environ["TARGET_SHA"]
+          run_number = os.environ["GITHUB_RUN_NUMBER"]
+          if match is None or not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+              raise SystemExit("source version or product identity is not an admitted release input")
+          if not re.fullmatch(r"[1-9][0-9]*", run_number):
+              raise SystemExit("hosted progressive iteration is malformed")
+          package_version = (
+              f"{match.group('base')}-dev.sedna.{run_number}+g{target_sha[:8]}"
+          )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as environment:
+              environment.write(f"PACKAGE_VERSION={package_version}\n")
+          PY
       - name: Install Linux bwrap build dependencies
         shell: bash
         run: |
@@ -810,13 +877,17 @@ jobs:
       - name: Build canonical package and same-source proxy sidecar
         working-directory: product
         shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
+          export STABLE_GIT_COMMIT="${TARGET_SHA}"
           mkdir -p "${CODEX_PACKAGE_OUT}"
           CODEX_REPO_ROOT="${PWD}" python3 scripts/build_codex_package.py \
             --target "${CODEX_TARGET}" \
             --variant codex \
             --cargo-profile release \
+            --package-version "${PACKAGE_VERSION}" \
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
@@ -856,15 +927,29 @@ jobs:
           import hashlib
           import json
           import os
+          import subprocess
           from pathlib import Path
 
           package_out = Path(os.environ["PACKAGE_OUT"])
           target = os.environ["RUST_TARGET"]
           package_manifest = json.loads((package_out / "codex-package.json").read_text())
-          if package_manifest.get("version") != "0.160.0-dev.sedna.1":
-              raise SystemExit(
-                  "package manifest is not the admitted source-derived development version"
-              )
+          expected_version = os.environ["PACKAGE_VERSION"]
+          if package_manifest.get("version") != expected_version:
+              raise SystemExit("package manifest does not match the hosted progressive version")
+          package_dir = Path(os.environ["RUNNER_TEMP"]) / f"codex-package-{target}"
+          cli_result = subprocess.run(
+              [str(package_dir / "bin/codex"), "--version"],
+              capture_output=True,
+              check=False,
+              text=True,
+              timeout=30,
+          )
+          if (
+              cli_result.returncode != 0
+              or cli_result.stdout.strip() != f"codex Sedna v{expected_version}"
+              or cli_result.stderr.strip()
+          ):
+              raise SystemExit("packaged CLI does not expose the expected progressive version")
 
           def sha256_file(path):
               digest = hashlib.sha256()
@@ -898,6 +983,7 @@ jobs:
               "architecture": os.environ["PRODUCT_ARCH"],
               "runner_label": os.environ["RUNNER_LABEL"],
               "package_version": package_manifest["version"],
+              "progressive_iteration": int(os.environ["GITHUB_RUN_NUMBER"]),
               "artifacts_sha256": digests,
           }
           (package_out / "manifest.json").write_text(
@@ -1274,7 +1360,7 @@ jobs:
             build:*)
               TEST_ARGS=("${TEST_ROOT}")
               PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
-              FIXTURE_ARGS=()
+              FIXTURE_ARGS=(--consumer-context-file "${CONSUMER_CONTEXT}")
               ;;
             consume-existing:pair)
               TEST_ARGS=(
@@ -2268,6 +2354,7 @@ jobs:
               --base-sha "${BASE_SHA}" \
               --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
               --run-id "${PRODUCER_RUN_ID}" \
+              --consumer-context-file "${CONSUMER_CONTEXT}" \
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
