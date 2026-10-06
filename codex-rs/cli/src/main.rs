@@ -154,7 +154,9 @@ fn cli_display_version() -> &'static str {
 }
 
 fn command_with_build_identity() -> clap::Command {
-    MultitoolCli::command().version(cli_display_version())
+    MultitoolCli::command()
+        .display_name("codex")
+        .version(cli_display_version())
 }
 
 #[derive(Debug, clap::Subcommand)]
