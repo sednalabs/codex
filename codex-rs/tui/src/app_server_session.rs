@@ -50,6 +50,7 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
@@ -152,6 +153,7 @@ use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -230,12 +232,53 @@ pub(crate) fn is_history_pagination_unsupported(source: &JSONRPCErrorError) -> b
                 .any(|error| message.contains(error)))
 }
 
+fn browser_namespace_count(params: &ThreadStartParams) -> usize {
+    params
+        .dynamic_tools
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec,
+                DynamicToolSpec::Namespace(namespace) if namespace.name == "codex_browser"
+            )
+        })
+        .count()
+}
+
+fn record_browser_thread_start_observation(
+    namespace_count_before_start: usize,
+    fallback_stripped_browser_namespace: bool,
+) {
+    if std::env::var_os("CODEX_TEST_BROWSER_THREAD_START_OBSERVATION").is_none() {
+        return;
+    }
+    let Some(codex_home) = std::env::var_os("CODEX_HOME") else {
+        return;
+    };
+    let path = PathBuf::from(codex_home).join("browser-thread-start-observation.jsonl");
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(
+        file,
+        "{{\"browser_namespace_count_before_start\":{namespace_count_before_start},\"fallback_stripped_browser_namespace\":{fallback_stripped_browser_namespace}}}"
+    );
+}
+
+fn browser_thread_start_observation_enabled() -> bool {
+    std::env::var_os("CODEX_TEST_BROWSER_THREAD_START_OBSERVATION").is_some()
+}
+
 pub(crate) async fn request_thread_start_with_history_fallback(
     request_handle: &AppServerRequestHandle,
     mut request_id: RequestId,
     mut params: ThreadStartParams,
 ) -> std::result::Result<(ThreadStartResponse, ThreadHistorySupport, bool), TypedRequestError> {
     let mut history_support = ThreadHistorySupport::Paginated;
+    let namespace_count_before_start = browser_namespace_count(&params);
+    let mut fallback_stripped_browser_namespace = false;
     loop {
         match request_handle
             .request_typed(ClientRequest::ThreadStart {
@@ -245,6 +288,10 @@ pub(crate) async fn request_thread_start_with_history_fallback(
             .await
         {
             Ok(response) => {
+                record_browser_thread_start_observation(
+                    namespace_count_before_start,
+                    fallback_stripped_browser_namespace,
+                );
                 let task_tools_available = params.dynamic_tools.is_some()
                     || params
                         .config
@@ -272,10 +319,17 @@ pub(crate) async fn request_thread_start_with_history_fallback(
                             .any(|field| message.contains(field))
                     } =>
             {
-                tracing::warn!(
-                    error = %source.message,
-                    "app server does not support TUI dynamic tools; starting without them"
-                );
+                fallback_stripped_browser_namespace = browser_namespace_count(&params) > 0;
+                if browser_thread_start_observation_enabled() {
+                    tracing::warn!(
+                        "app server does not support TUI dynamic tools; starting without them"
+                    );
+                } else {
+                    tracing::warn!(
+                        error = %source.message,
+                        "app server does not support TUI dynamic tools; starting without them"
+                    );
+                }
                 params.dynamic_tools = None;
                 request_id = RequestId::String(format!("legacy-thread-start-{}", Uuid::new_v4()));
             }

@@ -199,6 +199,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             if not key.startswith("CODEX_BROWSER_")
         },
     )
+    isolated.environment["CODEX_TEST_BROWSER_THREAD_START_OBSERVATION"] = "1"
     fixture_dir = home / "browser-fixture"
     fixture_dir.mkdir()
     image_bytes = [_png(220, 20, 20), _png(20, 20, 220)]
@@ -281,8 +282,28 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             tui.send("\r")
             server.wait_for_requests(2, timeout_s=30)
 
+        observation_path = home / "browser-thread-start-observation.jsonl"
+        observations = [
+            json.loads(line)
+            for line in observation_path.read_text(encoding="utf-8").splitlines()
+        ] if observation_path.exists() else []
+        distinct_observations = {
+            (
+                observation.get("browser_namespace_count_before_start"),
+                observation.get("fallback_stripped_browser_namespace"),
+            )
+            for observation in observations
+        }
+        assert len(distinct_observations) == 1, {
+            "observation_count": len(observations),
+            "distinct_observation_count": len(distinct_observations),
+        }
+        namespace_count_before_start, fallback_stripped_browser_namespace = next(
+            iter(distinct_observations)
+        )
+
         requests = [request for request in server.requests() if request.path == "/v1/responses"]
-        assert len(requests) == 2, f"expected one call and one typed-output follow-up: {requests!r}"
+        assert len(requests) == 2, {"response_request_count": len(requests)}
         request_body = requests[0].body_json()
         advertised = request_body.get("tools")
         if not isinstance(advertised, list):
@@ -302,7 +323,11 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             ),
             None,
         )
-        assert browser_namespace is not None, advertised
+        assert browser_namespace is not None, {
+            "browser_namespace_count_before_start": namespace_count_before_start,
+            "fallback_stripped_browser_namespace": fallback_stripped_browser_namespace,
+            "advertised_tool_count": len(advertised),
+        }
         assert {tool.get("name") for tool in browser_namespace.get("tools", [])} >= {
             "browser_observe", "browser_step",
         }
@@ -311,12 +336,14 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             item for request in requests for item in request.input()
             if item.get("type") == "function_call_output" and item.get("call_id") == call_id
         ]
-        assert len(call_outputs) == 1, call_outputs
+        assert len(call_outputs) == 1, {"browser_call_output_count": len(call_outputs)}
         output = call_outputs[0].get("output")
-        assert isinstance(output, list), f"typed multimodal output required, got {output!r}"
-        assert [part.get("type") for part in output] == [
-            "input_text", "input_image", "input_image",
-        ], output
+        assert isinstance(output, list), {"typed_multimodal_output_is_list": isinstance(output, list)}
+        output_types = [part.get("type") for part in output]
+        assert output_types == ["input_text", "input_image", "input_image"], {
+            "typed_output_item_count": len(output_types),
+            "typed_input_image_count": output_types.count("input_image"),
+        }
         text = output[0].get("text", "")
         recorded_request = json.loads((fixture_dir / "provider-request.json").read_text(encoding="utf-8"))
         assert recorded_request["namespace"] == "codex_browser"
@@ -369,8 +396,18 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             base64.b64decode(image.split(",", 1)[1], validate=True)
             for image in encoded_images
         ]
-        assert model_images == image_bytes
+        assert model_images == image_bytes, {
+            "model_image_count": len(model_images),
+            "model_image_bytes_match_fixture": model_images == image_bytes,
+        }
         for capture, image in zip(manifest_on_disk["captures"], model_images, strict=True):
             saved = (fixture_dir / capture["path"]).read_bytes()
-            assert saved == image
-            assert hashlib.sha256(saved).hexdigest() == capture["sha256"]
+            assert saved == image, {
+                "capture_order": capture["order"],
+                "saved_png_matches_typed_image": saved == image,
+            }
+            hash_matches = hashlib.sha256(saved).hexdigest() == capture["sha256"]
+            assert hash_matches, {
+                "capture_order": capture["order"],
+                "saved_png_hash_matches_manifest": hash_matches,
+            }
