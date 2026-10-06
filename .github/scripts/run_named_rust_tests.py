@@ -45,6 +45,30 @@ TUI_DIAGNOSTIC_SNAPSHOT_NAMES = {
         "codex_tui__app__agents_overview__tests__agents_overview_markdown_table.snap",
     },
 }
+TUI_DIAGNOSTIC_ASSERTION_LABELS = {
+    "app::agents_overview::tests::agents_overview_details_render_markdown": {
+        "details_panel_heading",
+        "thread_title",
+        "last_message_label",
+        "markdown_heading",
+        "fixed_list_item",
+        "kept_list_item",
+        "fenced_code_content",
+        "rendered_bold_markup_removed",
+        "rendered_inline_code_markup_removed",
+        "item_completed_preserves_render",
+        "long_code_first_segment",
+        "long_code_wrapped_segment",
+        "long_code_final_segment",
+        "long_prompt_clipped",
+        "table_header",
+        "table_separator",
+        "table_row",
+    },
+}
+ASSERTION_LABEL_RE = re.compile(
+    r"TUI_DIAGNOSTIC_ASSERTION=(?P<label>[a-z_]{1,64})"
+)
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -134,8 +158,45 @@ def failure_projection(
         failure_class = "test_failure"
 
     source_location = None
+    assertion_label = None
+    allowed_assertion_labels = TUI_DIAGNOSTIC_ASSERTION_LABELS.get(selector, set())
+    observed_assertion_labels = {
+        match.group("label")
+        for match in ASSERTION_LABEL_RE.finditer(projection_input)
+        if match.group("label") in allowed_assertion_labels
+    }
+    if len(observed_assertion_labels) == 1:
+        assertion_label = next(iter(observed_assertion_labels))
+        test_name = selector.rsplit("::", 1)[-1]
+        source_path = repo_root / "codex-rs/tui/src/app/agents_overview_tests.rs"
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            source = ""
+        function_start = source.find(f"async fn {test_name}() {{")
+        next_test = source.find("\n#[", function_start) if function_start >= 0 else -1
+        if function_start >= 0:
+            function_end = next_test if next_test >= 0 else len(source)
+            function_source = source[function_start:function_end]
+            label_matches = list(
+                re.finditer(rf'"{re.escape(assertion_label)}"', function_source)
+            )
+            if len(label_matches) == 1:
+                source_offset = function_start + label_matches[0].start()
+                line = source.count("\n", 0, source_offset) + 1
+                line_start = source.rfind("\n", 0, source_offset) + 1
+                column = source_offset - line_start + 1
+                source_location = verified_repo_location(
+                    "codex-rs/tui/src/app/agents_overview_tests.rs",
+                    line,
+                    column,
+                    repo_root,
+                )
+
     expected_thread_suffix = selector
     for match in SOURCE_LOCATION_RE.finditer(projection_input):
+        if source_location is not None:
+            break
         if not match.group("thread").endswith(expected_thread_suffix):
             continue
         source_location = verified_repo_location(
@@ -181,6 +242,7 @@ def failure_projection(
 
     return {
         "class": failure_class,
+        "assertion_label": assertion_label,
         "source_location": source_location,
         "snapshot_name": snapshot_name,
     }
@@ -691,6 +753,13 @@ def main() -> int:
                 failure_class = diagnostics.get("class")
                 if failure_class in allowed_failure_classes:
                     safe_test["failure_class"] = failure_class
+                assertion_label = diagnostics.get("assertion_label")
+                if (
+                    isinstance(assertion_label, str)
+                    and assertion_label
+                    in TUI_DIAGNOSTIC_ASSERTION_LABELS.get(name, set())
+                ):
+                    safe_test["assertion_label"] = assertion_label
                 source_location = diagnostics.get("source_location")
                 if isinstance(source_location, str):
                     location_match = re.fullmatch(

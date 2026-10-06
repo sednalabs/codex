@@ -908,18 +908,42 @@ async fn agents_overview_details_render_markdown() {
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .unwrap();
     let cached = terminal.backend().to_string();
+    macro_rules! assert_tui_diagnostic {
+        ($label:literal, $condition:expr $(,)?) => {
+            assert!(
+                $condition,
+                "TUI_DIAGNOSTIC_ASSERTION={}",
+                $label
+            );
+        };
+    }
     let contains_line = |rendered: &str, expected: &str| {
         rendered.lines().any(|line| line.contains(expected))
     };
-    assert!(contains_line(&cached, "Task details"));
-    assert!(contains_line(&cached, "Review parser"));
-    assert!(contains_line(&cached, "Last message"));
-    assert!(contains_line(&cached, "## Findings"));
-    assert!(contains_line(&cached, "• Fixed parsing and tokens"));
-    assert!(contains_line(&cached, "• Kept compatibility."));
-    assert!(contains_line(&cached, "let token = 1;"));
-    assert!(!cached.contains("**parsing**"));
-    assert!(!cached.contains("`tokens`"));
+    assert_tui_diagnostic!("details_panel_heading", contains_line(&cached, "Task details"));
+    assert_tui_diagnostic!("thread_title", contains_line(&cached, "Review parser"));
+    assert_tui_diagnostic!("last_message_label", contains_line(&cached, "Last message"));
+    assert_tui_diagnostic!("markdown_heading", contains_line(&cached, "## Findings"));
+    assert_tui_diagnostic!(
+        "fixed_list_item",
+        contains_line(&cached, "• Fixed parsing and tokens")
+    );
+    assert_tui_diagnostic!(
+        "kept_list_item",
+        contains_line(&cached, "• Kept compatibility.")
+    );
+    assert_tui_diagnostic!(
+        "fenced_code_content",
+        contains_line(&cached, "let token = 1;")
+    );
+    assert_tui_diagnostic!(
+        "rendered_bold_markup_removed",
+        !cached.contains("**parsing**")
+    );
+    assert_tui_diagnostic!(
+        "rendered_inline_code_markup_removed",
+        !cached.contains("`tokens`")
+    );
 
     app.agents_overview.last_messages.clear();
     app.track_agents_overview_activity(
@@ -942,7 +966,10 @@ async fn agents_overview_details_render_markdown() {
     terminal
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .unwrap();
-    assert_eq!(terminal.backend().to_string(), cached);
+    assert_tui_diagnostic!(
+        "item_completed_preserves_render",
+        terminal.backend().to_string() == cached
+    );
 
     thread.preview = format!("```\n{}\n```", "long prompt ".repeat(25));
     app.agents_overview.activity.clear();
@@ -954,13 +981,19 @@ async fn agents_overview_details_render_markdown() {
     app.chat_widget.show_bottom_pane_view(Box::new(view));
 
     let long_lines = render_bottom_popup(&app.chat_widget, /*width*/ 96);
-    assert!(contains_line(&long_lines, "let explanation = \"A long code line"));
-    assert!(contains_line(
-        &long_lines,
-        "should wrap inside the task details"
-    ));
-    assert!(contains_line(&long_lines, "panel.\";"));
-    assert!(contains_line(&long_lines, "…"));
+    assert_tui_diagnostic!(
+        "long_code_first_segment",
+        contains_line(&long_lines, "let explanation = \"A long code line")
+    );
+    assert_tui_diagnostic!(
+        "long_code_wrapped_segment",
+        contains_line(&long_lines, "should wrap inside the task details")
+    );
+    assert_tui_diagnostic!(
+        "long_code_final_segment",
+        contains_line(&long_lines, "panel.\";")
+    );
+    assert_tui_diagnostic!("long_prompt_clipped", contains_line(&long_lines, "…"));
 
     app.agents_overview.last_messages.insert(
         thread_id,
@@ -969,13 +1002,22 @@ async fn agents_overview_details_render_markdown() {
     let view = app.agents_overview_view(vec![thread], Some(thread_id));
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     let table = render_bottom_popup(&app.chat_widget, /*width*/ 96);
-    assert!(table
-        .lines()
-        .any(|line| line.contains("Check") && line.contains("Result")));
-    assert!(table.lines().any(|line| line.contains("━━━━")));
-    assert!(table
-        .lines()
-        .any(|line| line.contains("Parser") && line.contains("Fixed")));
+    assert_tui_diagnostic!(
+        "table_header",
+        table
+            .lines()
+            .any(|line| line.contains("Check") && line.contains("Result"))
+    );
+    assert_tui_diagnostic!(
+        "table_separator",
+        table.lines().any(|line| line.contains("━━━━"))
+    );
+    assert_tui_diagnostic!(
+        "table_row",
+        table
+            .lines()
+            .any(|line| line.contains("Parser") && line.contains("Fixed"))
+    );
 }
 
 #[test]
