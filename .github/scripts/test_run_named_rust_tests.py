@@ -299,7 +299,10 @@ class NamedFailureObserverTests(unittest.TestCase):
         *,
         requested: tuple[str, ...] = (named_tests.VERSION_OUTPUT_SELECTOR,),
         assertion: str = "assertion failed: `(left == right)`",
-        diff_header: str = "Diff < left / right > :",
+        diff_header: str = (
+            "\x1b[1mDiff\x1b[0m \x1b[31m<\x1b[0m left / right "
+            "\x1b[32m>\x1b[0m :"
+        ),
     ) -> tuple[dict[str, object], dict[str, object]]:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
         output = (
@@ -307,8 +310,7 @@ class NamedFailureObserverTests(unittest.TestCase):
             f"---- {selector} stdout ----\n"
             f"{assertion}\n"
             "\n"
-            "\x1b[1mDiff\x1b[0m \x1b[31m<\x1b[0m left / right "
-            "\x1b[32m>\x1b[0m :\n"
+            f"{diff_header}\n"
             f'\x1b[31m<\x1b[0m"{actual}"\n'
             f'\x1b[32m>\x1b[0m"{expected}"\n'
             "failures:\n"
