@@ -476,6 +476,218 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() {
+        let codex_home = unique_temp_dir();
+        let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string())
+            .await
+            .expect("initialize isolated state runtime and apply usage indexes");
+
+        for thread in [
+            UsageThreadRecord {
+                thread_id: "root-thread".to_string(),
+                parent_thread_id: None,
+                root_thread_id: Some("root-thread".to_string()),
+                fork_parent_thread_id: None,
+                source: Some("cli".to_string()),
+            },
+            UsageThreadRecord {
+                thread_id: "child-thread".to_string(),
+                parent_thread_id: Some("root-thread".to_string()),
+                root_thread_id: None,
+                fork_parent_thread_id: Some("root-thread".to_string()),
+                source: Some("subagent".to_string()),
+            },
+            UsageThreadRecord {
+                thread_id: "grandchild-thread".to_string(),
+                parent_thread_id: Some("child-thread".to_string()),
+                root_thread_id: None,
+                fork_parent_thread_id: None,
+                source: Some("subagent".to_string()),
+            },
+            UsageThreadRecord {
+                thread_id: "zero-call-thread".to_string(),
+                parent_thread_id: Some("child-thread".to_string()),
+                root_thread_id: None,
+                fork_parent_thread_id: None,
+                source: Some("subagent".to_string()),
+            },
+            UsageThreadRecord {
+                thread_id: "forked-thread".to_string(),
+                parent_thread_id: None,
+                root_thread_id: None,
+                fork_parent_thread_id: Some("child-thread".to_string()),
+                source: Some("subagent".to_string()),
+            },
+        ] {
+            runtime
+                .record_usage_thread(&thread)
+                .await
+                .expect("persist authoritative test lineage");
+        }
+
+        sqlx::query(
+            "INSERT INTO usage_codex_credit_policies (policy_id, provider, billing_surface, account_plan, rate_card_kind, effective_from, effective_to, source_url, source_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("policy-test")
+        .bind("openai")
+        .bind("chatgpt_credits")
+        .bind("plus")
+        .bind("codex_token_based")
+        .bind("2026-09-01T00:00:00Z")
+        .bind(Option::<String>::None)
+        .bind("https://example.invalid/test-card")
+        .bind("2026-09-01T00:00:00Z")
+        .execute(runtime.usage_pool().as_ref())
+        .await
+        .expect("persist bounded synthetic credit policy");
+        sqlx::query(
+            "INSERT INTO usage_codex_credit_rates (rate_id, provider, model, service_tier, speed_mode, rate_card_kind, credits_per_1m_uncached_input, credits_per_1m_cached_input, credits_per_1m_output, effective_from, effective_to, source_url, source_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("rate-before")
+        .bind("openai")
+        .bind("gpt-6-luna")
+        .bind("default")
+        .bind("standard")
+        .bind("codex_token_based")
+        .bind(1_000_000.0_f64)
+        .bind(2_000_000.0_f64)
+        .bind(3_000_000.0_f64)
+        .bind("2026-09-30T00:00:00Z")
+        .bind("2026-09-30T00:30:00Z")
+        .bind("https://example.invalid/test-card")
+        .bind("2026-09-29T00:00:00Z")
+        .bind("rate-after")
+        .bind("openai")
+        .bind("gpt-6-luna")
+        .bind("default")
+        .bind("standard")
+        .bind("codex_token_based")
+        .bind(1_000_000.0_f64)
+        .bind(2_000_000.0_f64)
+        .bind(3_000_000.0_f64)
+        .bind("2026-09-30T00:30:00Z")
+        .bind(Option::<String>::None)
+        .bind("https://example.invalid/test-card")
+        .bind("2026-09-29T00:00:00Z")
+        .execute(runtime.usage_pool().as_ref())
+        .await
+        .expect("persist adjacent half-open synthetic rate intervals");
+
+        for (mut call, started, completed) in [
+            (
+                completed_record(
+                    "root-call",
+                    "root-thread",
+                    "root-response",
+                    "ok",
+                    Some((100, 20, 0, 10, 130)),
+                ),
+                "2026-09-30T00:00:00.000Z",
+                "2026-09-30T00:00:01Z",
+            ),
+            (
+                completed_record(
+                    "child-call",
+                    "child-thread",
+                    "child-response",
+                    "ok",
+                    Some((50, 10, 0, 5, 65)),
+                ),
+                "2026-09-30T00:30:00.000+00:00",
+                "2026-09-30T00:30:01Z",
+            ),
+            (
+                completed_record(
+                    "grandchild-call",
+                    "grandchild-thread",
+                    "grandchild-response",
+                    "provider_usage_missing",
+                    None,
+                ),
+                "2026-09-30T00:40:00Z",
+                "2026-09-30T00:40:01Z",
+            ),
+            (
+                completed_record(
+                    "forked-call",
+                    "forked-thread",
+                    "forked-response",
+                    "ok",
+                    Some((1, 0, 0, 1, 2)),
+                ),
+                "2026-09-30T00:50:00Z",
+                "2026-09-30T00:50:01Z",
+            ),
+            (
+                completed_record(
+                    "end-boundary-call",
+                    "child-thread",
+                    "end-boundary-response",
+                    "ok",
+                    Some((1, 0, 0, 1, 2)),
+                ),
+                "2026-09-30T01:00:00Z",
+                "2026-09-30T01:00:01Z",
+            ),
+        ] {
+            call.started_at = started.to_string();
+            call.completed_at = completed.to_string();
+            if call.provider_call_id == "forked-call" {
+                call.actual_model_used = None;
+            }
+            runtime
+                .record_provider_call_usage(&call)
+                .await
+                .expect("persist completed synthetic response through the production writer");
+        }
+        sqlx::query("UPDATE usage_provider_calls SET provider_reported_credits = ? WHERE provider_call_id = ?")
+            .bind(4.25_f64)
+            .bind("child-call")
+            .execute(runtime.usage_pool().as_ref())
+            .await
+            .expect("add synthetic provider-reported credit evidence");
+        runtime.close().await;
+
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("codex-state crate must be nested in the repository")
+            .to_path_buf();
+        let harness = repo_root.join("scripts/test_codex_usage_report.py");
+        let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");
+        let output = std::process::Command::new("python3")
+            .arg(&harness)
+            .arg("--database")
+            .arg(sqlite.usage_db_path())
+            .arg("--repo-root")
+            .arg(&repo_root)
+            .arg("--scale")
+            .env_clear()
+            .env("PATH", python_path)
+            .env("PYTHONNOUSERSITE", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env("TZ", "UTC")
+            .current_dir(&repo_root)
+            .output()
+            .expect("launch exact synthetic CLI qualification harness");
+        assert!(
+            output.status.success(),
+            "synthetic usage reporting qualification failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let evidence: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .expect("qualification harness returns one JSON evidence object");
+        assert_eq!(evidence["consumer"]["correctness_status"], "passed");
+        assert_eq!(evidence["scale"]["scale_status"], "passed");
+        assert_eq!(evidence["scale"]["history_queries"].as_array().map(Vec::len), Some(3));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
     async fn account_scope_order_fixture(account_first: bool) {
         let codex_home = unique_temp_dir();
         let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
