@@ -34,6 +34,7 @@ MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_TEXT_FIELD_CHARS = 8_192
 MAX_OUTPUT_TEXT_CHARS = 1_000_000
+MAX_SQLITE_ROW_BYTES = 1024 * 1024
 SQL_CHUNK = 250
 PROGRESS_INTERVAL = 1_000
 
@@ -506,6 +507,17 @@ class UsageReporter:
             conn = sqlite3.connect(uri, uri=True, timeout=0.25, isolation_level=None)
         except sqlite3.Error as exc:
             raise ReportProblem("unavailable", "database_unavailable") from exc
+        set_limit = getattr(conn, "setlimit", None)
+        length_limit = getattr(sqlite3, "SQLITE_LIMIT_LENGTH", None)
+        if set_limit is None or length_limit is None:
+            conn.close()
+            raise ReportProblem("unavailable", "bounded_text_limit_unavailable")
+        try:
+            # Bound SQLite values/rows before Python materializes result rows.
+            set_limit(length_limit, MAX_SQLITE_ROW_BYTES)
+        except sqlite3.Error as exc:
+            conn.close()
+            raise ReportProblem("unavailable", "bounded_text_limit_unavailable") from exc
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         conn.set_authorizer(_sqlite_authorizer)
@@ -1270,6 +1282,8 @@ class UsageReporter:
             raise
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
+            if getattr(exc, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_TOOBIG", -1):
+                raise WorkLimitReached("output_size_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
             if "no such index" in message or "no query solution" in message:
@@ -1282,6 +1296,8 @@ class UsageReporter:
                 raise ReportProblem("unavailable", "ledger_busy") from exc
             raise ReportProblem("unavailable", "sqlite_query_failed") from exc
         except sqlite3.Error as exc:
+            if getattr(exc, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_TOOBIG", -1):
+                raise WorkLimitReached("output_size_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
             raise ReportProblem("unavailable", "sqlite_read_failed") from exc

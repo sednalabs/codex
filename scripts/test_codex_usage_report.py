@@ -171,6 +171,47 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         guarded_connection.rollback()
         guarded_connection.close()
 
+    oversized_database = temp_root / "output-text-limit.sqlite"
+    _copy_database(database, oversized_database)
+    oversized_writer = sqlite3.connect(oversized_database)
+    try:
+        oversized_writer.execute(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, provider, actual_model_used, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "oversized-output-text-call",
+                "child-thread",
+                "openai",
+                "x" * (2 * helper.MAX_SQLITE_ROW_BYTES),
+                "default",
+                "runtime_contract",
+                0,
+                "chatgpt_credits",
+                "plus",
+                "2026-09-30T00:45:00Z",
+                "2026-09-30T00:45:01Z",
+                1,
+                0,
+                0,
+                1,
+                2,
+                "ok",
+            ),
+        )
+        oversized_writer.commit()
+    finally:
+        oversized_writer.close()
+    oversized_text, _oversized_text_diagnostic = _report(
+        oversized_database,
+        repo_root,
+        credit_mode="supplied_standard_scenario",
+        expected_exit=2,
+    )
+    _assert(oversized_text["status"] == "incomplete", "oversized source text must return typed incomplete")
+    _assert(
+        oversized_text["error"]["reason"] == "output_size_limit_exceeded",
+        "SQLite text-value limit must not allocate or emit an oversized report",
+    )
+
     all_report, all_diagnostic = _report(database, repo_root, diagnostics=True, expected_exit=2)
     _assert(all_report["status"] == "incomplete", "missing usage/model evidence must be incomplete")
     _assert(all_report["summary"]["provider_call_count"] == 4, "all scope must include exactly four in-window calls")
@@ -360,6 +401,7 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         "diagnostic_vm_instructions": all_diagnostic.get("sqlite_vm_instruction_estimate"),
         "wal_writer_visibility": "passed",
         "migration_rollback": "passed",
+        "oversized_text_status": oversized_text["error"]["reason"],
     }
 
 
