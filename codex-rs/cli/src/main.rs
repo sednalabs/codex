@@ -2727,12 +2727,20 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn version_output_identifies_sedna_and_preserves_package_version() {
+    fn version_flag_exits_with_display_version() {
         let error = command_with_build_identity()
             .try_get_matches_from(["codex", "--version"])
             .expect_err("--version should exit with the version display");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn version_output_identifies_sedna_and_preserves_package_version() {
+        let error = command_with_build_identity()
+            .try_get_matches_from(["codex", "--version"])
+            .expect_err("--version should exit with the version display");
+
         assert_eq!(
             error.to_string().trim(),
             format!("codex {}", cli_display_version())
