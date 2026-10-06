@@ -140,6 +140,29 @@ RUSTC_CODE_TO_CLASS = {
 RUSTC_ERROR_CLASSES = frozenset(
     (*RUSTC_CODE_TO_CLASS.values(), "compiler_error", "uncoded_error")
 )
+# Emit only fixed marker counts from Cargo diagnostics; the message/code/rendered
+# payload remains private. Connection marker labels align with the named-test helper.
+CARGO_FAILURE_MARKER_PATTERNS = (
+    (
+        "network-fetch-error",
+        re.compile(
+            r"\b(?:failed to fetch|could not fetch|fetch failed|"
+            r"failed to download|could not download|download failed)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("connection-refused", re.compile(r"\bconnection refused\b", re.IGNORECASE)),
+    ("connection-reset", re.compile(r"\bconnection reset\b", re.IGNORECASE)),
+    ("timed-out", re.compile(r"\btimed out\b|\btimeout\b", re.IGNORECASE)),
+    (
+        "name-resolution-error",
+        re.compile(
+            r"\b(?:could not resolve|failed to resolve|"
+            r"temporary failure in name resolution)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 TOOL_VERSION_PATTERNS = {
@@ -277,6 +300,7 @@ def cargo_json_failure_projection(
     emitted_unlocated_count = 0
     unparsed_line_count = 0
     class_counts: Counter[str] = Counter()
+    failure_marker_counts: Counter[str] = Counter()
     errors: list[dict[str, object]] = []
     for stream in (stdout, stderr):
         for line in stream.splitlines():
@@ -309,6 +333,11 @@ def cargo_json_failure_projection(
                 error_class = "compiler_error"
             class_counts[error_class] += 1
             error_count += 1
+            diagnostic_text = message.get("message")
+            if isinstance(diagnostic_text, str):
+                for marker, pattern in CARGO_FAILURE_MARKER_PATTERNS:
+                    if pattern.search(diagnostic_text):
+                        failure_marker_counts[marker] += 1
             if len(errors) >= MAX_PUBLIC_FIX_ERRORS:
                 omitted_count += 1
                 continue
@@ -345,6 +374,7 @@ def cargo_json_failure_projection(
         "projection_status": projection_status,
         "error_count": error_count,
         "class_counts": dict(sorted(class_counts.items())),
+        "failure_marker_counts": dict(sorted(failure_marker_counts.items())),
         "errors": errors,
         "omitted_count": omitted_count,
         "emitted_unlocated_count": emitted_unlocated_count,

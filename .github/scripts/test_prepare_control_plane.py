@@ -1462,6 +1462,7 @@ class PrepareFlowTests(unittest.TestCase):
                     "projection_status": "errors_found",
                     "error_count": 1,
                     "class_counts": {"trait_bound": 1},
+                    "failure_marker_counts": {},
                     "errors": [
                         {
                             "class": "trait_bound",
@@ -1548,6 +1549,7 @@ class PrepareFlowTests(unittest.TestCase):
                 "projection_status": "errors_found",
                 "error_count": 3,
                 "class_counts": {"trait_bound": 2, "type_inference": 1},
+                "failure_marker_counts": {},
                 "errors": [
                     {
                         "class": "trait_bound",
@@ -1584,6 +1586,59 @@ class PrepareFlowTests(unittest.TestCase):
             b"E0277",
             b"E0282",
             b"not_a_tracked_source.rs",
+        ):
+            self.assertNotIn(private_value, serialized)
+
+    def test_cargo_fetch_failure_projection_is_fixed_and_payload_free(self):
+        records = (
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": None,
+                    "message": (
+                        "failed to fetch PRIVATE_URL: connection reset from "
+                        "PRIVATE_HOST"
+                    ),
+                    "rendered": "PRIVATE_RENDERED_TEXT",
+                    "spans": [],
+                },
+            },
+        )
+        stderr = b"\n".join(json.dumps(item).encode("utf-8") for item in records)
+        projection = prepare_control_plane.cargo_json_failure_projection(
+            b"", stderr, self.product
+        )
+        self.assertEqual(
+            projection,
+            {
+                "projection_status": "errors_found",
+                "error_count": 1,
+                "class_counts": {"uncoded_error": 1},
+                "failure_marker_counts": {
+                    "connection-reset": 1,
+                    "network-fetch-error": 1,
+                },
+                "errors": [
+                    {
+                        "class": "uncoded_error",
+                        "file": "unavailable",
+                        "line": None,
+                        "column": None,
+                    }
+                ],
+                "omitted_count": 0,
+                "emitted_unlocated_count": 1,
+                "unparsed_line_count": 0,
+            },
+        )
+        serialized = json.dumps(projection, sort_keys=True).encode("utf-8")
+        for private_value in (
+            b"PRIVATE_URL",
+            b"PRIVATE_HOST",
+            b"PRIVATE_RENDERED_TEXT",
+            b"connection reset",
+            b"failed to fetch",
         ):
             self.assertNotIn(private_value, serialized)
 
