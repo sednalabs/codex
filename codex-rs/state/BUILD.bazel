@@ -11,4 +11,9 @@ codex_rust_crate(
         "usage_migrations/**",
     ]),
     crate_name = "codex_state",
+    test_data_extra = [
+        "//:scripts/codex_usage_report.py",
+        "//:scripts/test_codex_usage_report.py",
+        "//codex-rs/state:usage_migrations/0015_bounded_usage_reporting_indexes.sql",
+    ],
 )
