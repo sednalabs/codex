@@ -446,10 +446,8 @@ pub struct ProtectedRuntimeFixture {
 impl ProtectedRuntimeFixture {
     pub async fn start() -> Result<Self> {
         Self::start_config(
-            /*redirect_claims*/ false,
-            /*delay_first_claim*/ false,
-            /*error_claims*/ false,
-            /*spawn_child*/ true,
+            /*redirect_claims*/ false, /*delay_first_claim*/ false,
+            /*error_claims*/ false, /*spawn_child*/ true,
         )
         .await
     }
@@ -466,20 +464,16 @@ impl ProtectedRuntimeFixture {
 
     pub async fn start_delayed_response_expiry() -> Result<Self> {
         Self::start_config(
-            /*redirect_claims*/ false,
-            /*delay_first_claim*/ true,
-            /*error_claims*/ false,
-            /*spawn_child*/ false,
+            /*redirect_claims*/ false, /*delay_first_claim*/ true,
+            /*error_claims*/ false, /*spawn_child*/ false,
         )
         .await
     }
 
     pub async fn start_with_mcp_error() -> Result<Self> {
         Self::start_config(
-            /*redirect_claims*/ false,
-            /*delay_first_claim*/ false,
-            /*error_claims*/ true,
-            /*spawn_child*/ true,
+            /*redirect_claims*/ false, /*delay_first_claim*/ false,
+            /*error_claims*/ true, /*spawn_child*/ true,
         )
         .await
     }
@@ -639,7 +633,8 @@ impl ProtectedRuntimeFixture {
     }
 
     pub async fn run_cli_with_prompt(&self, prompt: &str) -> Result<Output> {
-        self.run_cli_with_prompt_and_auth_fault(prompt, /*fault*/ None).await
+        self.run_cli_with_prompt_and_auth_fault(prompt, /*fault*/ None)
+            .await
     }
 
     pub fn model_request_paths(&self) -> Vec<String> {

@@ -103,7 +103,9 @@ fn protected_cloud_config_refuses_eligible_or_unclassified_accounts() {
             "plan {plan} must not start a credential-bearing cloud-config loader"
         );
     }
-    assert!(crate::provider_auth::ensure_protected_cloud_config_ineligible(None).is_err());
+    assert!(
+        crate::provider_auth::ensure_protected_cloud_config_ineligible(/*plan_type*/ None).is_err()
+    );
     for plan in [
         "free",
         "go",
