@@ -267,8 +267,12 @@ pub fn join_control_plane_usage(
         }
         let conflicting_identity_event_count = conflicting_identity_events.len();
         let unqualified_response_event_count = unqualified_response_events.len();
-        conflicting_reference_ids.extend(conflicting_identity_events);
-        unqualified_reference_ids.extend(unqualified_response_events);
+        conflicting_reference_ids.extend(
+            conflicting_identity_events.into_iter().map(|(_, identity)| identity),
+        );
+        unqualified_reference_ids.extend(
+            unqualified_response_events.into_iter().map(|(_, identity)| identity),
+        );
         if identity_quarantined {
             summary.quarantined_call_count += 1;
         }

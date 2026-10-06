@@ -348,9 +348,26 @@ impl Summary {
         }
     }
     fn repetitions(out: &mut Self, events: &[&RecordedEvent]) {
-        type WaitRequest = (WaitPrimitive, ReturnWhen, TargetMode, Option<bool>, Option<i64>, Option<u64>,
-            TargetReferenceKind, Vec<String>, bool, TargetReferenceKind, Vec<String>, Option<bool>,
-            Option<String>, Option<String>);
+        type WaitRequest = (
+            (
+                WaitPrimitive,
+                ReturnWhen,
+                TargetMode,
+                Option<bool>,
+                Option<i64>,
+                Option<u64>,
+                TargetReferenceKind,
+            ),
+            (
+                Vec<String>,
+                bool,
+                TargetReferenceKind,
+                Vec<String>,
+                Option<bool>,
+                Option<String>,
+                Option<String>,
+            ),
+        );
         type WaitResult = (SelectedOutcome, Vec<ReadinessObservation>, Option<String>, Option<String>,
             Vec<ReadinessObservation>, Vec<String>, TargetReferenceKind, Option<bool>, Option<ObservedHostWaitReturn>);
         type CallIdentity = (Option<String>, String);
@@ -367,11 +384,26 @@ impl Summary {
             if !wait.conflicting && wait.phase == WaitPhase::Completed
                 && wait.return_when != ReturnWhen::Unknown
                 && wait.requested_target_set_complete && result_complete {
-                let request = (wait.primitive, wait.return_when, wait.target_mode, wait.any_targets,
-                    wait.requested_timeout_ms, wait.effective_timeout_ms, wait.requested_target_kind,
-                    wait.requested_target_ids.clone(), wait.requested_target_set_complete,
-                    wait.resolved_target_kind, wait.resolved_target_ids.clone(), wait.resolved_target_set_complete,
-                    wait.helper_id.clone(), wait.helper_version.clone());
+                let request = (
+                    (
+                        wait.primitive,
+                        wait.return_when,
+                        wait.target_mode,
+                        wait.any_targets,
+                        wait.requested_timeout_ms,
+                        wait.effective_timeout_ms,
+                        wait.requested_target_kind,
+                    ),
+                    (
+                        wait.requested_target_ids.clone(),
+                        wait.requested_target_set_complete,
+                        wait.resolved_target_kind,
+                        wait.resolved_target_ids.clone(),
+                        wait.resolved_target_set_complete,
+                        wait.helper_id.clone(),
+                        wait.helper_version.clone(),
+                    ),
+                );
                 let result = (wait.selected_outcome, wait.selected_readiness.clone(),
                     wait.selected_target_id.clone(), wait.selected_target_turn_id.clone(),
                     wait.subscribed_readiness.clone(), wait.resolved_target_ids.clone(),
