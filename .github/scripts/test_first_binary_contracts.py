@@ -23,6 +23,13 @@ OPTION_SOURCE = """def pytest_addoption(parser):
     group.addoption('--consumer-context-file', required=True, type=Path)
     group.addoption('--fixture-sha')
 """
+BROWSER_DIAGNOSTIC_OPTION_SOURCE = """def pytest_addoption(parser):
+    group = parser.getgroup('Sedna first binary package')
+    for option in ('artifact-dir', 'artifact-name', 'target-sha', 'base-ref', 'base-sha', 'workflow-host-sha'):
+        group.addoption(f'--{option}', required=True)
+    group.addoption('--artifact-id', required=True, type=int)
+    group.addoption('--run-id', required=True, type=int)
+"""
 TEST_RUN = '''test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
 case "${CONSUMER_PROFILE}" in
   focused)
@@ -78,7 +85,7 @@ case "${MODE}:${CONSUMER_PROFILE}" in
   build:browser-diagnostic)
     TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
     PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
-    FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file context)
+    FIXTURE_ARGS=()
     ;;
   *) exit 1 ;;
 esac
@@ -154,6 +161,7 @@ class CheckerFixture(unittest.TestCase):
             "PRODUCER_RUN_ID": "7", "PRODUCER_WORKFLOW_HOST_SHA": "p" * 40,
         }
         if mode == "build" and profile == "browser-diagnostic":
+            (self.test_dir / "conftest.py").write_text(BROWSER_DIAGNOSTIC_OPTION_SOURCE, encoding="utf-8")
             env.update(
                 TARGET_SHA=producer_verifier.BROWSER_DIAGNOSTIC_PRODUCT_SHA,
                 FIXTURE_SHA=producer_verifier.BROWSER_DIAGNOSTIC_FIXTURE_SHA,
@@ -223,7 +231,7 @@ class SelectedRunTests(CheckerFixture):
         self.assertIn(("sdk", producer_verifier.BROWSER_DIAGNOSTIC_SDK_SHA), seen)
 
     def test_browser_diagnostic_profile_rejects_source_pair_and_selector_substitutions(self):
-        for mutation in ("fixture", "sdk", "base", "extra_selector"):
+        for mutation in ("fixture", "sdk", "base", "extra_selector", "extra_args"):
             with self.subTest(mutation=mutation):
                 run = BROWSER_DIAGNOSTIC_BUILD_RUN
                 env_override = {}
@@ -238,6 +246,11 @@ class SelectedRunTests(CheckerFixture):
                         'TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")',
                         'TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate" "${TEST_ROOT}/test_selected.py::test_selected")',
                     )
+                elif mutation == "extra_args":
+                    run = run.replace(
+                        "FIXTURE_ARGS=()",
+                        'FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file context)',
+                    )
                 result = self.run_checks(
                     mode="build",
                     profile="browser-diagnostic",
@@ -251,8 +264,11 @@ class SelectedRunTests(CheckerFixture):
                     self.assertTrue(any("SDK SHA is not admitted" in error for error in result.errors))
                 elif mutation == "base":
                     self.assertTrue(any("comparison ref is not admitted" in error for error in result.errors))
-                else:
+                elif mutation == "extra_selector":
                     self.assertTrue(any("select exactly its admitted nodeid" in error for error in result.errors))
+                else:
+                    self.assertTrue(any("unknown pytest option --consumer-context-file" in error for error in result.errors))
+                    self.assertTrue(any("unknown pytest option --fixture-sha" in error for error in result.errors))
 
     def test_consume_fixture_root_uses_fixture_sha_and_wrong_head_blocks(self):
         seen = []

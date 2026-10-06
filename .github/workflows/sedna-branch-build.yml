@@ -1193,7 +1193,7 @@ jobs:
             build:browser-diagnostic)
               TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
               PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
-              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file "${CONSUMER_CONTEXT}")
+              FIXTURE_ARGS=()
               ;;
             build:*)
               TEST_ARGS=("${TEST_ROOT}")
@@ -2190,7 +2190,7 @@ jobs:
             build:browser-diagnostic)
               TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
               PRODUCER_ARGS=(--workflow-host-sha "${WORKFLOW_HOST_SHA}" --run-id "${PRODUCER_RUN_ID}")
-              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file "${CONSUMER_CONTEXT}")
+              FIXTURE_ARGS=()
               ;;
             build:*)
               TEST_ARGS=("${TEST_ROOT}")
