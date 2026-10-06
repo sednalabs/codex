@@ -162,6 +162,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-rmcp-client",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-rmcp-client", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-state",
       "target_kind": "lib",
       "target": "",
