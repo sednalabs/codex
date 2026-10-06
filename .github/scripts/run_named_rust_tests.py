@@ -438,23 +438,6 @@ def full_target_result_counts(
     inventory = set(inventory_names)
     if not inventory or len(inventory) != len(inventory_names):
         return None
-    outcomes = test_outcomes(output)
-    if set(outcomes) != inventory or any(
-        len(values) != 1 for values in outcomes.values()
-    ):
-        return None
-    observed = {
-        "passed": sum(
-            values == ["ok"] for values in outcomes.values()
-        ),
-        "failed": sum(
-            values == ["FAILED"] for values in outcomes.values()
-        ),
-        "ignored": sum(
-            values == ["ignored"] for values in outcomes.values()
-        ),
-        "measured": 0,
-    }
     summaries = []
     for line in output.splitlines():
         stripped = line.lstrip()
@@ -470,26 +453,22 @@ def full_target_result_counts(
     if len(unfiltered) != 1:
         return None
 
-    qualifying = []
-    for match in unfiltered:
-        count_names = ("passed", "failed", "ignored", "measured", "filtered")
-        if any(
-            len(match.group(name)) > MAX_CARGO_SUMMARY_COUNT_DIGITS
-            for name in count_names
-        ):
-            continue
-        counts = {
-            name: int(match.group(name))
-            for name in count_names
-        }
-        summary_status = "ok" if counts["failed"] == 0 else "FAILED"
-        if (
-            match.group("status") == summary_status
-            and sum(counts[name] for name in observed) == len(inventory)
-            and all(counts[name] == observed[name] for name in observed)
-        ):
-            qualifying.append(counts)
-    return qualifying[0] if len(qualifying) == 1 else None
+    match = unfiltered[0]
+    count_names = ("passed", "failed", "ignored", "measured", "filtered")
+    if any(
+        len(match.group(name)) > MAX_CARGO_SUMMARY_COUNT_DIGITS
+        for name in count_names
+    ):
+        return None
+    counts = {name: int(match.group(name)) for name in count_names}
+    summary_status = "ok" if counts["failed"] == 0 else "FAILED"
+    if (
+        match.group("status") != summary_status
+        or sum(counts[name] for name in ("passed", "failed", "ignored", "measured"))
+        != len(inventory)
+    ):
+        return None
+    return counts
 
 
 def cargo_summary_channel_evidence(output: str) -> dict[str, Any]:

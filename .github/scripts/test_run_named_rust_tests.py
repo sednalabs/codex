@@ -2392,7 +2392,11 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
         auxiliary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out\n"
 
         accepted = json.loads(named_tests.public_artifact_bytes(
-            self._run(request, inventory, outcomes + "\n" + auxiliary + full)))
+            self._run(
+                request,
+                inventory,
+                outcomes + "\ntest mcp::filtered_auxiliary ... ok\n" + auxiliary + full,
+            )))
         self.assertEqual((accepted["status"], accepted["inventory"]["test_count"],
                           len(accepted["tests"])), ("success", 10, 10))
         self.assertTrue(all(item["execution_reconciled"] for item in accepted["tests"]))
