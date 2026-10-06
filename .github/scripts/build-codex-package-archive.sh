@@ -8,6 +8,7 @@ Usage: build-codex-package-archive.sh \
   --bundle <primary|app-server> \
   --entrypoint-dir <dir> \
   --archive-dir <dir> \
+  [--package-version <semver>] \
   [--bwrap-bin <path>] \
   [--code-mode-host-bin <path>] \
   [--rg-bin <path>] \
@@ -32,6 +33,7 @@ command_runner_bin_provided="false"
 sandbox_setup_bin_provided="false"
 voice_release_dir=""
 release_version=""
+package_version=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +51,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --archive-dir)
       archive_dir="${2:?--archive-dir requires a value}"
+      shift 2
+      ;;
+    --package-version)
+      package_version="${2:?--package-version requires a value}"
       shift 2
       ;;
     --bwrap-bin)
@@ -204,6 +210,9 @@ python_args=(
   --cargo-profile release
   --package-dir "$package_dir"
 )
+if [[ -n "$package_version" ]]; then
+  python_args+=(--package-version "$package_version")
+fi
 if [[ -z "$voice_release_dir" ]]; then
   python_args+=(--archive-output "$gzip_archive_path" --archive-output "$zstd_archive_path")
 fi
