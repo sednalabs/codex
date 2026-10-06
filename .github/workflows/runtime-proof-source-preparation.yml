@@ -12,6 +12,7 @@ on:
       - codex-rs/codex-mcp/src/protected_http_client_tests.rs
       - codex-rs/core/src/client.rs
       - codex-rs/core/src/mcp_tool_call.rs
+      - codex-rs/core/src/mcp_tool_call_tests.rs
       - codex-rs/core/src/session/turn_tests.rs
       - codex-rs/exec/src/lib.rs
       - codex-rs/runtime-proof/Cargo.toml
