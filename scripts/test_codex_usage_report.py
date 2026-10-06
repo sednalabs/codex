@@ -1140,7 +1140,7 @@ def main() -> int:
     database = args.database.resolve(strict=True)
     repo_root = Path(__file__).resolve().parent.parent
     requested_repo_root = args.repo_root.resolve(strict=True)
-    if requested_repo_root != repo_root:
+    if not requested_repo_root.samefile(repo_root):
         parser.error("--repo-root must identify this checkout")
     with tempfile.TemporaryDirectory(
         prefix="codex-usage-report-qualification-"
