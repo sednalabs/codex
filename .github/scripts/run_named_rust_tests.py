@@ -3,10 +3,11 @@
 
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
-tests to run. The runner inventories the target first, refuses to run when a
-requested name is missing or ambiguous, then passes each verified name as an
-exact libtest selector. Failure output is projected to fixed classes and
-verified repository locations; raw test output is never published.
+tests to reconcile. The runner inventories the target first and refuses to
+run when a requested name is missing or ambiguous. By default it runs the
+complete catalog-owned target once; an explicit exact_tests mode runs only
+the verified requested selectors. Failure output is projected to fixed
+classes and verified repository locations; raw test output is never published.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
+ALLOWED_EXECUTION_MODES = {"full_target", "exact_tests"}
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -260,6 +262,7 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     target_kind = payload.get("target_kind")
     target = payload.get("target", "")
     profile = payload.get("profile")
+    execution_mode = payload.get("execution_mode", "full_target")
     tests = payload.get("tests")
     if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
         return None, fail("package_invalid", "package must be a safe Cargo package name")
@@ -272,6 +275,8 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         return None, fail("target_invalid", "lib requests must not name an integration target")
     if profile not in ALLOWED_PROFILES:
         return None, fail("profile_invalid", "profile is not in the hosted allowlist")
+    if not isinstance(execution_mode, str) or execution_mode not in ALLOWED_EXECUTION_MODES:
+        return None, fail("execution_mode_invalid", "execution_mode is not in the hosted allowlist")
     expected_profile = os.environ.get("VALIDATION_PROFILE", "")
     if expected_profile and profile != expected_profile:
         return None, fail("profile_mismatch", "request profile does not match workflow profile")
@@ -289,6 +294,8 @@ def load_request() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         "target": "" if target in (None, "lib") else target,
         "tests": tests,
     }
+    if "execution_mode" in payload:
+        normalized["execution_mode"] = execution_mode
     return normalized, None
 
 
@@ -406,15 +413,51 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    for name in request["tests"]:
-        # Inventory above proves each requested name is unique in this target.
-        # Run each one with libtest exact matching; request values never reach a
-        # shell and are appended only after the safe-name and inventory checks.
+    execution_mode = request.get("execution_mode", "full_target")
+    executions: dict[
+        str,
+        tuple[
+            subprocess.CompletedProcess[str],
+            str,
+            dict[str, int] | None,
+            list[str],
+            bool,
+        ],
+    ] = {}
+    if execution_mode == "exact_tests":
+        for name in request["tests"]:
+            # Inventory above proves each requested name is unique in this target.
+            # Request values are appended only after safe-name and inventory checks.
+            test_command = cargo_args(
+                request,
+                list_only=False,
+                exact_test=name,
+                command_record=command_record,
+            )
+            completed = subprocess.run(
+                test_command,
+                cwd=manifest_root,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+            )
+            output = "\n".join(
+                value for value in (completed.stdout, completed.stderr) if value
+            )
+            executions[name] = (
+                completed,
+                output,
+                test_result_counts(output),
+                test_outcomes(output).get(name, []),
+                True,
+            )
+    else:
+        # Preserve the established default: one complete immutable target run,
+        # with requested selectors reconciled against its unfiltered results.
         test_command = cargo_args(
-            request,
-            list_only=False,
-            exact_test=name,
-            command_record=command_record,
+            request, list_only=False, command_record=command_record
         )
         completed = subprocess.run(
             test_command,
@@ -428,13 +471,23 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         output = "\n".join(
             value for value in (completed.stdout, completed.stderr) if value
         )
-        counts = test_result_counts(output)
+        result_counts = test_result_counts(output)
         outcomes = test_outcomes(output)
-        observed = outcomes.get(name, [])
+        for name in request["tests"]:
+            executions[name] = (
+                completed,
+                output,
+                result_counts,
+                outcomes.get(name, []),
+                False,
+            )
+
+    for name in request["tests"]:
+        completed, output, result_counts, observed, isolated = executions[name]
         outcome = observed[0] if len(observed) == 1 else ""
         execution_reconciled = (
             completed.returncode == 0
-            and counts is not None
+            and result_counts is not None
             and len(observed) == 1
             and outcome == "ok"
         )
@@ -446,26 +499,23 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             failure_code = "named_test_ignored"
         elif completed.returncode != 0 or outcome == "FAILED":
             failure_code = "named_test_failed"
-        elif counts is None:
+        elif result_counts is None:
             failure_code = "execution_reconciliation_failed"
-        result["tests"].append(
-            {
-                "name": name,
-                "status": status,
-                "exit_code": completed.returncode,
-                "execution_reconciled": execution_reconciled,
-                "observed_outcomes": observed,
-                "result_counts": counts,
-                "diagnostics": (
-                    {"exit_code": completed.returncode}
-                    if execution_reconciled
-                    else {
-                        "exit_code": completed.returncode,
-                        **failure_projection(output, repo_root),
-                    }
-                ),
-            }
-        )
+        diagnostics = {"exit_code": completed.returncode}
+        if not execution_reconciled and isolated:
+            diagnostics.update(failure_projection(output, repo_root))
+        test_result = {
+            "name": name,
+            "status": status,
+            "exit_code": completed.returncode,
+            "execution_reconciled": execution_reconciled,
+            "observed_outcomes": observed,
+            "result_counts": result_counts,
+            "diagnostics": diagnostics,
+        }
+        if failure_code:
+            test_result["failure_code"] = failure_code
+        result["tests"].append(test_result)
         if status != "success":
             result["status"] = "failure"
             if "failure_code" not in result:
@@ -504,12 +554,94 @@ def main() -> int:
     Path("rust-tests-v1-results.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(
-        json.dumps(
-            {"status": result.get("status"), "failure_code": result.get("failure_code", "")},
-            sort_keys=True,
+    safe_tests = []
+    allowed_failure_classes = {
+        "snapshot_assertion_failed",
+        "assertion_equal_failed",
+        "assertion_failed",
+        "panic",
+        "test_failure",
+    }
+    for test in result.get("tests", []):
+        if not isinstance(test, dict):
+            continue
+        name = test.get("name")
+        status = test.get("status")
+        if not isinstance(name, str) or not TEST_RE.fullmatch(name):
+            continue
+        if status not in {"success", "failure"}:
+            continue
+        observed = test.get("observed_outcomes")
+        observed_outcome = (
+            observed[0]
+            if isinstance(observed, list)
+            and len(observed) == 1
+            and observed[0] in {"ok", "FAILED", "ignored"}
+            else "unknown"
         )
-    )
+        safe_test = {
+            "selector": name,
+            "status": status,
+            "observed_outcome": observed_outcome,
+        }
+        if status == "failure":
+            failure_code = test.get("failure_code")
+            if isinstance(failure_code, str) and re.fullmatch(r"[a-z_]{1,64}", failure_code):
+                safe_test["failure_code"] = failure_code
+            diagnostics = test.get("diagnostics")
+            if isinstance(diagnostics, dict):
+                failure_class = diagnostics.get("class")
+                if failure_class in allowed_failure_classes:
+                    safe_test["failure_class"] = failure_class
+                source_location = diagnostics.get("source_location")
+                if isinstance(source_location, str):
+                    location_match = re.fullmatch(
+                        r"(?P<path>codex-rs/tui/src/[A-Za-z0-9_./-]+\.rs):"
+                        r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
+                        source_location,
+                    )
+                    if location_match:
+                        verified_location = verified_repo_location(
+                            location_match.group("path"),
+                            int(location_match.group("line")),
+                            int(location_match.group("column")),
+                            Path.cwd().resolve(),
+                        )
+                        if verified_location == source_location:
+                            safe_test["source_location"] = source_location
+        safe_tests.append(safe_test)
+    inventory_summary = result.get("inventory")
+    if not isinstance(inventory_summary, dict):
+        inventory_summary = {}
+    request_summary = result.get("request")
+    if not isinstance(request_summary, dict):
+        request_summary = {}
+    safe_failure_code = result.get("failure_code", "")
+    if not isinstance(safe_failure_code, str) or not re.fullmatch(
+        r"[a-z_]{1,64}", safe_failure_code
+    ):
+        safe_failure_code = ""
+    safe_summary = {
+        "status": result.get("status")
+        if result.get("status") in {"success", "failure"}
+        else "failure",
+        "failure_code": safe_failure_code,
+        "execution_mode": request_summary.get("execution_mode", "full_target"),
+        "inventory": {
+            "status": inventory_summary.get("status", "not-run"),
+            "test_count": inventory_summary.get("test_count", 0),
+        },
+        "tests": safe_tests,
+    }
+    if safe_summary["execution_mode"] == "full_target" and safe_tests:
+        test_results = result.get("tests", [])
+        if (
+            test_results
+            and isinstance(test_results[0], dict)
+            and isinstance(test_results[0].get("result_counts"), dict)
+        ):
+            safe_summary["full_target_summary"] = test_results[0]["result_counts"]
+    print(json.dumps(safe_summary, sort_keys=True))
     return 0 if result.get("status") == "success" else 1
 
 
