@@ -698,7 +698,8 @@ jobs:
               --target "${CODEX_TARGET}" \
               --bundle primary \
               --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
-              --archive-dir "${CODEX_PACKAGE_OUT}"
+              --archive-dir "${CODEX_PACKAGE_OUT}" \
+              --package-version "${PACKAGE_VERSION}"
           cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "${CODEX_TARGET}" \
             -p codex-responses-api-proxy
           install -Dm 0755 \
@@ -956,7 +957,8 @@ jobs:
               --target "${CODEX_TARGET}" \
               --bundle primary \
               --entrypoint-dir "${CARGO_TARGET_DIR}/${CODEX_TARGET}/release" \
-              --archive-dir "${CODEX_PACKAGE_OUT}"
+              --archive-dir "${CODEX_PACKAGE_OUT}" \
+              --package-version "${PACKAGE_VERSION}"
           cargo build --manifest-path codex-rs/Cargo.toml --locked --release --target "${CODEX_TARGET}" \
             -p codex-responses-api-proxy
           install -Dm 0755 \
