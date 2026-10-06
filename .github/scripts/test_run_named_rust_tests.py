@@ -274,15 +274,16 @@ class NamedFailureObserverTests(unittest.TestCase):
         *,
         requested: tuple[str, ...] = (named_tests.VERSION_OUTPUT_SELECTOR,),
         assertion: str = "assertion `left == right` failed",
+        rows: tuple[str, ...] | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
+        if rows is None:
+            rows = (f'  left: "{actual}"', f'  right: "{expected}"')
         output = (
             f"test {selector} ... FAILED\n"
             f"---- {selector} stdout ----\n"
-            f"{assertion}\n"
-            f'  left: "{actual}"\n'
-            f'  right: "{expected}"\n'
-            "failures:\n"
+            + "\n".join((assertion, *rows, "failures:"))
+            + "\n"
         )
         evidence = self._evidence(
             output, requested=requested, known={selector}
@@ -307,7 +308,94 @@ class NamedFailureObserverTests(unittest.TestCase):
             safe["blocks"][0]["public_version_display"],
             {"actual": actual, "expected": expected},
         )
+        self.assertEqual(
+            evidence["blocks"][0]["public_version_status"], "pair_emitted"
+        )
+        self.assertEqual(
+            safe["blocks"][0]["public_version_status"], "pair_emitted"
+        )
         self.assertEqual(safe["blocks"][0]["name"], selector)
+
+    def test_public_version_status_is_fixed_and_value_free(self) -> None:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        valid_actual = "codex Sedna v" + "a" * 40
+        valid_expected = "codex Sedna v1.2.3-rc.1+build.7"
+        invalid_display = "codex Sedna /private-value"
+        overlong_display = "codex Sedna v1.2.3+" + "x" * 120
+        malformed_value = "PRIVATE_DIAGNOSTIC_SENTINEL"
+        cases = (
+            ("pair_emitted", valid_actual, valid_expected, None),
+            (
+                "pair_suppressed_invalid_or_overlong_display",
+                invalid_display,
+                valid_expected,
+                None,
+            ),
+            (
+                "pair_suppressed_invalid_or_overlong_display",
+                overlong_display,
+                valid_expected,
+                None,
+            ),
+            (
+                "equality_pair_incomplete_or_malformed",
+                valid_actual,
+                valid_expected,
+                (f'  left: "{valid_actual}"',),
+            ),
+            (
+                "equality_pair_incomplete_or_malformed",
+                valid_actual,
+                valid_expected,
+                (
+                    f'  left: "{valid_actual}"',
+                    f'  unexpected: "{malformed_value}"',
+                    f'  right: "{valid_expected}"',
+                ),
+            ),
+        )
+
+        for status, actual, expected, rows in cases:
+            with self.subTest(status=status):
+                evidence, safe = self._version_display_projection(
+                    actual,
+                    expected,
+                    rows=rows,
+                )
+                evidence_block = evidence["blocks"][0]
+                safe_block = safe["blocks"][0]
+                self.assertEqual(
+                    evidence_block["public_version_status"], status
+                )
+                self.assertEqual(safe_block["public_version_status"], status)
+                if status == "pair_emitted":
+                    expected_pair = {"actual": actual, "expected": expected}
+                    self.assertEqual(
+                        evidence_block["public_version_display"], expected_pair
+                    )
+                    self.assertEqual(
+                        safe_block["public_version_display"], expected_pair
+                    )
+                else:
+                    encoded_evidence = json.dumps(evidence, sort_keys=True)
+                    encoded_safe = json.dumps(safe, sort_keys=True)
+                    self.assertNotIn("public_version_display", encoded_evidence)
+                    self.assertNotIn("public_version_display", encoded_safe)
+                    self.assertNotIn(actual, encoded_evidence)
+                    self.assertNotIn(expected, encoded_evidence)
+                    self.assertNotIn(malformed_value, encoded_evidence)
+
+        evidence, _ = self._version_display_projection(
+            valid_actual, valid_expected
+        )
+        evidence["blocks"][0]["public_version_status"] = "RAW_PRIVATE_STATUS"
+        safe = named_tests._safe_failure_evidence(
+            evidence, {selector}, {selector}
+        )
+        encoded_safe = json.dumps(safe, sort_keys=True)
+        self.assertNotIn("public_version_status", encoded_safe)
+        self.assertNotIn("public_version_display", encoded_safe)
+        self.assertNotIn("RAW_PRIVATE_STATUS", encoded_safe)
 
     def test_version_display_projection_suppresses_invalid_unrequested_and_non_equality_values(self) -> None:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
@@ -334,6 +422,27 @@ class NamedFailureObserverTests(unittest.TestCase):
                 self.assertNotIn("public_version_display", encoded_safe)
                 self.assertNotIn(actual, encoded_evidence)
                 self.assertNotIn(expected, encoded_evidence)
+                if not requested:
+                    self.assertNotIn("public_version_status", encoded_evidence)
+                    self.assertNotIn("public_version_status", encoded_safe)
+                elif assertion == "assertion `left != right` failed":
+                    self.assertEqual(
+                        evidence["blocks"][0]["public_version_status"],
+                        "equality_header_unrecognized",
+                    )
+                    self.assertEqual(
+                        safe["blocks"][0]["public_version_status"],
+                        "equality_header_unrecognized",
+                    )
+                else:
+                    self.assertEqual(
+                        evidence["blocks"][0]["public_version_status"],
+                        "pair_suppressed_invalid_or_overlong_display",
+                    )
+                    self.assertEqual(
+                        safe["blocks"][0]["public_version_status"],
+                        "pair_suppressed_invalid_or_overlong_display",
+                    )
 
     def test_failed_name_counts_keep_safe_459_inventory_names(self) -> None:
         names = [f"suite::test_{index:03}" for index in range(459)]

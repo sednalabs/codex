@@ -216,6 +216,14 @@ FAILURE_HEADER_RE = re.compile(
 VERSION_OUTPUT_SELECTOR = (
     "tests::version_output_identifies_sedna_and_preserves_package_version"
 )
+PUBLIC_VERSION_STATUSES = frozenset(
+    {
+        "pair_emitted",
+        "pair_suppressed_invalid_or_overlong_display",
+        "equality_header_unrecognized",
+        "equality_pair_incomplete_or_malformed",
+    }
+)
 SEMVER_IDENTIFIER_RE = (
     r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
 )
@@ -226,7 +234,7 @@ SEMVER_RE = re.compile(
 )
 RUST_ASSERT_EQ_RE = re.compile(r"^\s*assertion `left == right` failed\s*$")
 RUST_ASSERT_VALUE_RE = re.compile(
-    r'^\s+(left|right): "([^"\r\n]{1,128})"$'
+    r'^\s+(left|right): "([^"\r\n]*)"$'
 )
 FAILURE_MARKER_PATTERNS = (
     ("permission-denied", re.compile(r"\bpermission denied\b", re.IGNORECASE)),
@@ -1005,19 +1013,39 @@ def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
     if match is None or match.group(1) != expected_field:
         block["_public_version_state"] = "suppressed"
         block.pop("_public_version_actual_candidate", None)
+        block.pop("_public_version_invalid_candidate", None)
         return
+    value_start, value_end = match.span(2)
+    value_length = value_end - value_start
+    candidate = (
+        _safe_public_version_display(line[value_start:value_end])
+        if value_length <= 128
+        else None
+    )
+    if candidate is None:
+        block["_public_version_invalid_candidate"] = True
     if state == "left":
-        block["_public_version_actual_candidate"] = match.group(2)
+        if candidate is not None:
+            block["_public_version_actual_candidate"] = candidate
         block["_public_version_state"] = "right"
         return
-    pair = _safe_public_version_pair(
-        {
-            "actual": block.pop("_public_version_actual_candidate", None),
-            "expected": match.group(2),
-        }
-    )
-    if pair is not None:
-        block["_public_version_display"] = pair
+    actual = block.pop("_public_version_actual_candidate", None)
+    invalid_candidate = block.pop("_public_version_invalid_candidate", False)
+    if invalid_candidate or candidate is None or actual is None:
+        block["_public_version_status"] = (
+            "pair_suppressed_invalid_or_overlong_display"
+        )
+    else:
+        pair = _safe_public_version_pair(
+            {"actual": actual, "expected": candidate}
+        )
+        if pair is None:
+            block["_public_version_status"] = (
+                "pair_suppressed_invalid_or_overlong_display"
+            )
+        else:
+            block["_public_version_display"] = pair
+            block["_public_version_status"] = "pair_emitted"
     block["_public_version_state"] = "done"
 
 
@@ -1025,10 +1053,27 @@ def _finish_failure_block(block: dict[str, Any]) -> dict[str, Any]:
     public_version_display = _safe_public_version_pair(
         block.pop("_public_version_display", None)
     )
-    block.pop("_public_version_state", None)
+    public_version_state = block.pop("_public_version_state", "disabled")
+    public_version_status = block.pop("_public_version_status", None)
     block.pop("_public_version_actual_candidate", None)
-    if public_version_display is not None:
-        block["public_version_display"] = public_version_display
+    block.pop("_public_version_invalid_candidate", None)
+    if (
+        block.get("name") == VERSION_OUTPUT_SELECTOR
+        and public_version_state != "disabled"
+    ):
+        if public_version_display is not None:
+            public_version_status = "pair_emitted"
+            block["public_version_display"] = public_version_display
+        elif public_version_status not in PUBLIC_VERSION_STATUSES:
+            public_version_status = (
+                "equality_header_unrecognized"
+                if public_version_state == "search"
+                else "equality_pair_incomplete_or_malformed"
+            )
+        elif public_version_status == "pair_emitted":
+            public_version_status = "pair_suppressed_invalid_or_overlong_display"
+        if public_version_status in PUBLIC_VERSION_STATUSES:
+            block["public_version_status"] = public_version_status
     markers = sorted(block.pop("_markers"))
     numeric_captures = sorted(block.pop("_numeric_captures"))
     markers_truncated = len(markers) > MAX_FAILURE_MARKERS_PER_BLOCK
@@ -2099,7 +2144,13 @@ def _safe_failure_evidence(
                 "source_stream": {"stdout", "stderr"},
                 "channel": {"stdout", "stderr"},
             },
-            handled=("name", "markers", "numeric_captures", "public_version_display"),
+            handled=(
+                "name",
+                "markers",
+                "numeric_captures",
+                "public_version_display",
+                "public_version_status",
+            ),
         )
         projected.update(
             {
@@ -2111,9 +2162,21 @@ def _safe_failure_evidence(
             }
         )
         if block["name"] == VERSION_OUTPUT_SELECTOR and VERSION_OUTPUT_SELECTOR in requested_test_names:
-            public_version_display = _safe_public_version_pair(block.get("public_version_display"))
-            if public_version_display is not None:
-                projected["public_version_display"] = public_version_display
+            public_version_status = block.get("public_version_status")
+            if public_version_status in PUBLIC_VERSION_STATUSES:
+                projected["public_version_status"] = public_version_status
+                if public_version_status == "pair_emitted":
+                    public_version_display = _safe_public_version_pair(
+                        block.get("public_version_display")
+                    )
+                    if public_version_display is None:
+                        projected[
+                            "public_version_status"
+                        ] = "pair_suppressed_invalid_or_overlong_display"
+                    else:
+                        projected["public_version_display"] = (
+                            public_version_display
+                        )
         projected["size_scope"] = "pre_projection_structured_source"
         safe["blocks"].append(projected)
         if len(safe["blocks"]) == MAX_FAILURE_BLOCKS:
