@@ -562,7 +562,7 @@ def _correctness(
     try:
         rollback_connection.executescript(
             "BEGIN IMMEDIATE;\n"
-            + (repo_root / "codex-rs" / "state" / "usage_migrations" / "0020_bounded_usage_reporting_indexes.sql").read_text(encoding="utf-8")
+            + (repo_root / "codex-rs" / "state" / "usage_migrations" / "0015_bounded_usage_reporting_indexes.sql").read_text(encoding="utf-8")
             + "\nCOMMIT;"
         )
     except sqlite3.Error:
@@ -687,7 +687,7 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         raise AssertionError("could not import the exact tested reporter source")
     helper = importlib.util.module_from_spec(helper_spec)
     helper_spec.loader.exec_module(helper)
-    migration = repo_root / "codex-rs" / "state" / "usage_migrations" / "0020_bounded_usage_reporting_indexes.sql"
+    migration = repo_root / "codex-rs" / "state" / "usage_migrations" / "0015_bounded_usage_reporting_indexes.sql"
     full_old = temp_root / "history-old.sqlite"
     connection = _prepare_old_schema_copy(database, full_old)
     snapshots: list[tuple[int, Path]] = []
