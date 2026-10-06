@@ -679,6 +679,19 @@ jobs:
             --package-version "${PACKAGE_VERSION}" \
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = (
+              Path(os.environ["RUNNER_TEMP"])
+              / f"codex-package-{os.environ['CODEX_TARGET']}"
+              / "codex-package.json"
+          )
+          actual = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+          print(f"package_builder_manifest_matches_expected={actual == os.environ['PACKAGE_VERSION']}")
+          PY
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
             bash .github/scripts/build-codex-package-archive.sh \
               --target "${CODEX_TARGET}" \
@@ -923,6 +936,19 @@ jobs:
             --package-version "${PACKAGE_VERSION}" \
             --package-dir "${RUNNER_TEMP}/codex-package-${CODEX_TARGET}" \
             --force
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = (
+              Path(os.environ["RUNNER_TEMP"])
+              / f"codex-package-{os.environ['CODEX_TARGET']}"
+              / "codex-package.json"
+          )
+          actual = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+          print(f"package_builder_manifest_matches_expected={actual == os.environ['PACKAGE_VERSION']}")
+          PY
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
             bash .github/scripts/build-codex-package-archive.sh \
               --target "${CODEX_TARGET}" \
