@@ -2368,24 +2368,23 @@ jobs:
             unset CODEX_STATE_HISTORY_ACCEPTANCE
           fi
           set +e
-          test_root="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary"
-          case "${CONSUMER_PROFILE}" in
-            version-identity)
-              test_args=(
-                "${test_root}/test_agent_control_tui_acceptance.py::test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
-              )
-              ;;
-            full) test_args=("${test_root}") ;;
-            *) echo "unsupported build consumer profile" >&2; exit 1 ;;
-          esac
+          if [[ "${CONSUMER_PROFILE}" == "version-identity" ]]; then
+            set -- -k test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity
+          elif [[ "${CONSUMER_PROFILE}" == "full" ]]; then
+            set --
+          else
+            echo "unsupported build consumer profile" >&2
+            exit 1
+          fi
           "${UV_PATH}" run --locked \
             --project "${PRODUCT_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
             pytest -q \
-              --confcutdir="${test_root}" \
-              "${test_args[@]}" \
+              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              "$@" \
               --artifact-dir "${ARTIFACT_DIR}" \
               --artifact-id "${ARTIFACT_ID}" \
               --artifact-name "${ARTIFACT_NAME}" \
