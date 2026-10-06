@@ -295,12 +295,6 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             "input_text", "input_image", "input_image",
         ], output
         text = output[0].get("text", "")
-        assert '"label": "top"' in text and '"label": "bottom"' in text
-        assert text.index('"label": "top"') < text.index('"label": "bottom"')
-        assert "restoration:" in text
-        assert "artifact_manifest: browser-fixture/manifest.json" in text
-        assert "data:image/png;base64," not in text
-
         recorded_request = json.loads((fixture_dir / "provider-request.json").read_text(encoding="utf-8"))
         assert recorded_request["namespace"] == "codex_browser"
         assert recorded_request["tool"] == "browser_observe"
@@ -314,6 +308,38 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         assert [capture["label"] for capture in manifest_on_disk["captures"]] == [
             "top", "bottom",
         ]
+        expected_metadata = [
+            {
+                "effectiveViewport": {"width": 800, "height": 600},
+                "devicePixelRatio": 1,
+                "scroll": {"x": 0, "y": 0},
+            },
+            {
+                "effectiveViewport": {"width": 640, "height": 480},
+                "devicePixelRatio": 1,
+                "scroll": {"x": 0, "y": 1200},
+            },
+        ]
+        assert [capture["metadata"] for capture in manifest_on_disk["captures"]] == expected_metadata
+        text_captures = [
+            json.loads(line.partition("capture: ")[2])
+            for line in text.splitlines()
+            if line.startswith("capture: ")
+        ]
+        assert text_captures == [
+            {
+                "order": capture["order"],
+                "label": capture["label"],
+                "metadata": capture["metadata"],
+            }
+            for capture in manifest_on_disk["captures"]
+        ]
+        assert [capture["label"] for capture in text_captures] == ["top", "bottom"]
+        assert [capture["metadata"] for capture in text_captures] == expected_metadata
+        restoration = next(line for line in text.splitlines() if line.startswith("restoration: "))
+        assert json.loads(restoration.partition("restoration: ")[2]) == manifest_on_disk["restoration"]
+        assert "artifact_manifest: browser-fixture/manifest.json" in text
+        assert "data:image/png;base64," not in text
         encoded_images = [part.get("image_url", "") for part in output[1:]]
         assert all(image.startswith("data:image/png;base64,") for image in encoded_images)
         model_images = [
