@@ -51,7 +51,12 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 "✨\u{200A}".bold().fg(accent_color()),
                 "Update available!".bold().fg(accent_color()),
                 " ",
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
+                format!(
+                    "{} -> {}",
+                    crate::version::CODEX_CLI_VERSION,
+                    self.latest_version
+                )
+                .bold(),
             ],
             update_instruction,
             "",
@@ -77,7 +82,11 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         };
         vec![
             Line::from("Update available!"),
-            Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
+            Line::from(format!(
+                "{} -> {}",
+                crate::version::CODEX_CLI_VERSION,
+                self.latest_version
+            )),
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),
