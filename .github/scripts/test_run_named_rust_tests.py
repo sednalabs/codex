@@ -295,7 +295,7 @@ class NamedFailureObserverTests(unittest.TestCase):
     def test_exact_version_selector_projects_only_valid_public_display_pair(self) -> None:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
         actual = "codex Sedna v" + "a" * 40
-        expected = "codex Sedna 1.2.3-rc.1+build.7"
+        expected = "codex Sedna v1.2.3-rc.1+build.7"
 
         evidence, safe = self._version_display_projection(actual, expected)
 
