@@ -828,19 +828,71 @@ jobs:
           )
           print(f"closed computer-use contract: {len(controls)} controls passed")
           PY
-      - name: Install only the pinned Bazel module resolver
+      - name: Download and verify the pinned Bazelisk binary without credentials
         if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
-        with:
-          bazelisk-version: 1.28.1
-          token: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          inherited_home="${HOME:-}"
+          [[ -n "${inherited_home}" ]] || {
+            echo "computer-use preparation requires an inherited HOME" >&2
+            exit 1
+          }
+          [[ ! -e "${inherited_home}/.netrc" && ! -L "${inherited_home}/.netrc" ]] || {
+            echo "computer-use preparation refuses an inherited HOME with .netrc" >&2
+            exit 1
+          }
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          bootstrap_home="${RUNNER_TEMP}/computer-use-bazelisk-bootstrap-home"
+          binary_dir="${RUNNER_TEMP}/computer-use-bazelisk/bin"
+          install -d -m 0700 "${bootstrap_home}" "${binary_dir}"
+          export HOME="${bootstrap_home}"
+          download="${RUNNER_TEMP}/computer-use-bazelisk-linux-amd64"
+          if ! curl --disable --fail --location --silent \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 120 \
+            --output "${download}" \
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.28.1/bazelisk-linux-amd64" \
+            2>/dev/null; then
+            echo "pinned public Bazelisk asset download failed" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' \
+            '22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8' \
+            "${download}" | sha256sum --check --status - || {
+              echo "pinned Bazelisk asset digest mismatch" >&2
+              exit 1
+            }
+          install -m 0755 "${download}" "${binary_dir}/bazel"
+          printf '%s\n' "${binary_dir}" >> "${GITHUB_PATH}"
       - name: Update and verify only the exact computer-use module lock
         if: ${{ steps.preparation_identity.outputs.computer-use == 'true' }}
         working-directory: product
         shell: bash
+        env:
+          HOME: ${{ runner.temp }}/computer-use-bazel-home
+          BAZELISK_HOME: ${{ runner.temp }}/computer-use-bazelisk-home
+          BAZELISK_BASE_URL: https://github.com/bazelbuild/bazel/releases/download
+          BAZELISK_VERIFY_SHA256: c44a93f25398c68f904fa1d19b61d321de6c0d2f09dca375d7bc0dc9b9428403
+          BAZELISK_GITHUB_TOKEN: ""
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
         run: |
           set -euo pipefail
-          unset BAZELISK_GITHUB_TOKEN
+          [[ ! -e "${HOME}" && ! -L "${HOME}" ]] || {
+            echo "computer-use Bazel home is not fresh" >&2
+            exit 1
+          }
+          [[ ! -e "${BAZELISK_HOME}" && ! -L "${BAZELISK_HOME}" ]] || {
+            echo "computer-use Bazelisk home is not fresh" >&2
+            exit 1
+          }
+          install -d -m 0700 "${HOME}" "${BAZELISK_HOME}"
+          [[ ! -e "${HOME}/.netrc" && ! -L "${HOME}/.netrc" ]] || {
+            echo "computer-use Bazel home unexpectedly contains .netrc" >&2
+            exit 1
+          }
+          unset BAZELISK_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           [[ "$(cat .bazelversion)" == "9.0.0" ]] || {
             echo "module preparation requires the admitted Bazel 9.0.0" >&2
             exit 1
