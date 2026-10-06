@@ -43,6 +43,17 @@ jobs:
       RUST_MIN_STACK: "8388608"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
+      - name: Validate exact fix-diagnostic target identity
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${TARGET_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "target_sha is invalid" >&2
+            exit 2
+          }
+
       - name: Check out exact fix-diagnostic target
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -50,6 +61,18 @@ jobs:
           path: product
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify exact fix-diagnostic checkout
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git -C product rev-parse --verify 'HEAD^{commit}')"
+          [[ "${actual_sha}" == "${TARGET_SHA}" ]] || {
+            echo "fix diagnostic checkout mismatch" >&2
+            exit 2
+          }
 
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
