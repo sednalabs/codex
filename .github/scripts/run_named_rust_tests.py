@@ -224,6 +224,14 @@ PUBLIC_VERSION_STATUSES = frozenset(
         "equality_pair_incomplete_or_malformed",
     }
 )
+PUBLIC_VERSION_SIDE_CLASSES = frozenset(
+    {
+        "valid",
+        "invalid",
+        "overlong",
+        "not_parsed",
+    }
+)
 SEMVER_IDENTIFIER_RE = (
     r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
 )
@@ -997,6 +1005,20 @@ def _safe_public_version_pair(value: Any) -> dict[str, str] | None:
     return {"actual": actual, "expected": expected}
 
 
+def _classify_public_version_span(
+    line: str, value_start: int, value_end: int
+) -> tuple[str, str | None, bool]:
+    """Classify one assertion value without retaining unbounded or invalid text."""
+    value_length = value_end - value_start
+    has_codex_prefix = line.startswith("codex ", value_start, value_end)
+    if value_length > 128:
+        return "overlong", None, has_codex_prefix
+    candidate = line[value_start:value_end]
+    if _safe_public_version_display(candidate) is None:
+        return "invalid", None, has_codex_prefix
+    return "valid", candidate, has_codex_prefix
+
+
 def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
     """Capture only left/right from the exact selector's equality assertion."""
     state = block.get("_public_version_state")
@@ -1013,25 +1035,27 @@ def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
     if match is None or match.group(1) != expected_field:
         block["_public_version_state"] = "suppressed"
         block.pop("_public_version_actual_candidate", None)
-        block.pop("_public_version_invalid_candidate", None)
         return
     value_start, value_end = match.span(2)
-    value_length = value_end - value_start
-    candidate = (
-        _safe_public_version_display(line[value_start:value_end])
-        if value_length <= 128
-        else None
+    side = "actual" if state == "left" else "expected"
+    side_class, candidate, has_codex_prefix = _classify_public_version_span(
+        line, value_start, value_end
     )
-    if candidate is None:
-        block["_public_version_invalid_candidate"] = True
+    block[f"_public_version_{side}_class"] = side_class
+    block[f"_public_version_{side}_codex_prefix_match"] = has_codex_prefix
     if state == "left":
         if candidate is not None:
             block["_public_version_actual_candidate"] = candidate
         block["_public_version_state"] = "right"
         return
     actual = block.pop("_public_version_actual_candidate", None)
-    invalid_candidate = block.pop("_public_version_invalid_candidate", False)
-    if invalid_candidate or candidate is None or actual is None:
+    actual_class = block.get("_public_version_actual_class", "not_parsed")
+    if (
+        actual_class != "valid"
+        or side_class != "valid"
+        or actual is None
+        or candidate is None
+    ):
         block["_public_version_status"] = (
             "pair_suppressed_invalid_or_overlong_display"
         )
@@ -1056,11 +1080,21 @@ def _finish_failure_block(block: dict[str, Any]) -> dict[str, Any]:
     public_version_state = block.pop("_public_version_state", "disabled")
     public_version_status = block.pop("_public_version_status", None)
     block.pop("_public_version_actual_candidate", None)
-    block.pop("_public_version_invalid_candidate", None)
     if (
         block.get("name") == VERSION_OUTPUT_SELECTOR
         and public_version_state != "disabled"
     ):
+        for side in ("actual", "expected"):
+            side_class = block.pop(f"_public_version_{side}_class", "not_parsed")
+            if side_class not in PUBLIC_VERSION_SIDE_CLASSES:
+                side_class = "not_parsed"
+            prefix_match = block.pop(
+                f"_public_version_{side}_codex_prefix_match", False
+            )
+            block[f"public_version_{side}_class"] = side_class
+            block[f"public_version_{side}_codex_prefix_match"] = (
+                prefix_match if isinstance(prefix_match, bool) else False
+            )
         if public_version_display is not None:
             public_version_status = "pair_emitted"
             block["public_version_display"] = public_version_display
@@ -2150,6 +2184,10 @@ def _safe_failure_evidence(
                 "numeric_captures",
                 "public_version_display",
                 "public_version_status",
+                "public_version_actual_class",
+                "public_version_expected_class",
+                "public_version_actual_codex_prefix_match",
+                "public_version_expected_codex_prefix_match",
             ),
         )
         projected.update(
@@ -2165,11 +2203,33 @@ def _safe_failure_evidence(
             public_version_status = block.get("public_version_status")
             if public_version_status in PUBLIC_VERSION_STATUSES:
                 projected["public_version_status"] = public_version_status
+                for side in ("actual", "expected"):
+                    side_class = block.get(f"public_version_{side}_class")
+                    if side_class not in PUBLIC_VERSION_SIDE_CLASSES:
+                        side_class = "not_parsed"
+                    projected[f"public_version_{side}_class"] = side_class
+                    prefix_match = block.get(
+                        f"public_version_{side}_codex_prefix_match"
+                    )
+                    projected[
+                        f"public_version_{side}_codex_prefix_match"
+                    ] = prefix_match if isinstance(prefix_match, bool) else False
                 if public_version_status == "pair_emitted":
                     public_version_display = _safe_public_version_pair(
                         block.get("public_version_display")
                     )
-                    if public_version_display is None:
+                    side_projection_matches = all(
+                        projected.get(f"public_version_{side}_class") == "valid"
+                        and projected.get(
+                            f"public_version_{side}_codex_prefix_match"
+                        )
+                        is True
+                        for side in ("actual", "expected")
+                    )
+                    if (
+                        public_version_display is None
+                        or not side_projection_matches
+                    ):
                         projected[
                             "public_version_status"
                         ] = "pair_suppressed_invalid_or_overlong_display"

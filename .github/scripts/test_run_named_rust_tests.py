@@ -397,6 +397,121 @@ class NamedFailureObserverTests(unittest.TestCase):
         self.assertNotIn("public_version_display", encoded_safe)
         self.assertNotIn("RAW_PRIVATE_STATUS", encoded_safe)
 
+    def test_public_version_side_classes_are_bounded_and_selector_scoped(self) -> None:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        valid = "codex Sedna v1.2.3-rc.1+build.7"
+        invalid_actual = "codex Sedna PRIVATE_ACTUAL_SENTINEL"
+        invalid_expected = "Sedna v1.2.3"
+        overlong = "codex Sedna " + "x" * 117
+        cases = (
+            (
+                invalid_actual,
+                valid,
+                "invalid",
+                "valid",
+                True,
+                True,
+                None,
+            ),
+            (
+                valid,
+                invalid_expected,
+                "valid",
+                "invalid",
+                True,
+                False,
+                None,
+            ),
+            (overlong, valid, "overlong", "valid", True, True, None),
+            (valid, overlong, "valid", "overlong", True, True, None),
+            (
+                valid,
+                valid,
+                "valid",
+                "not_parsed",
+                True,
+                False,
+                (f'  left: "{valid}"',),
+            ),
+        )
+
+        for (
+            actual,
+            expected,
+            actual_class,
+            expected_class,
+            actual_prefix,
+            expected_prefix,
+            rows,
+        ) in cases:
+            with self.subTest(
+                actual_class=actual_class, expected_class=expected_class
+            ):
+                evidence, safe = self._version_display_projection(
+                    actual, expected, rows=rows
+                )
+                for block in (evidence["blocks"][0], safe["blocks"][0]):
+                    self.assertEqual(
+                        block["public_version_actual_class"], actual_class
+                    )
+                    self.assertEqual(
+                        block["public_version_expected_class"], expected_class
+                    )
+                    self.assertEqual(
+                        block["public_version_actual_codex_prefix_match"],
+                        actual_prefix,
+                    )
+                    self.assertEqual(
+                        block["public_version_expected_codex_prefix_match"],
+                        expected_prefix,
+                    )
+                    self.assertNotIn("public_version_display", block)
+
+                encoded_evidence = json.dumps(evidence, sort_keys=True)
+                encoded_safe = json.dumps(safe, sort_keys=True)
+                self.assertNotIn(actual, encoded_evidence)
+                self.assertNotIn(expected, encoded_evidence)
+                self.assertNotIn(actual, encoded_safe)
+                self.assertNotIn(expected, encoded_safe)
+
+        evidence, safe = self._version_display_projection(
+            invalid_actual, valid, requested=()
+        )
+        for value in (evidence, safe):
+            encoded = json.dumps(value, sort_keys=True)
+            self.assertNotIn("public_version_actual_class", encoded)
+            self.assertNotIn("public_version_expected_class", encoded)
+            self.assertNotIn(
+                "public_version_actual_codex_prefix_match", encoded
+            )
+            self.assertNotIn(
+                "public_version_expected_codex_prefix_match", encoded
+            )
+
+        evidence, _ = self._version_display_projection(valid, valid)
+        evidence["blocks"][0]["public_version_actual_class"] = "RAW_PRIVATE_CLASS"
+        evidence["blocks"][0]["public_version_actual_codex_prefix_match"] = (
+            "RAW_PRIVATE_PREFIX_STATE"
+        )
+        safe = named_tests._safe_failure_evidence(
+            evidence, {selector}, {selector}
+        )
+        safe_block = safe["blocks"][0]
+        self.assertEqual(
+            safe_block["public_version_status"],
+            "pair_suppressed_invalid_or_overlong_display",
+        )
+        self.assertEqual(
+            safe_block["public_version_actual_class"], "not_parsed"
+        )
+        self.assertFalse(
+            safe_block["public_version_actual_codex_prefix_match"]
+        )
+        self.assertNotIn("public_version_display", safe_block)
+        encoded_safe = json.dumps(safe, sort_keys=True)
+        self.assertNotIn("RAW_PRIVATE_CLASS", encoded_safe)
+        self.assertNotIn("RAW_PRIVATE_PREFIX_STATE", encoded_safe)
+
     def test_version_display_projection_suppresses_invalid_unrequested_and_non_equality_values(self) -> None:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
         valid = "codex Sedna dev"
@@ -425,6 +540,8 @@ class NamedFailureObserverTests(unittest.TestCase):
                 if not requested:
                     self.assertNotIn("public_version_status", encoded_evidence)
                     self.assertNotIn("public_version_status", encoded_safe)
+                    self.assertNotIn("public_version_actual_class", encoded_evidence)
+                    self.assertNotIn("public_version_actual_class", encoded_safe)
                 elif assertion == "assertion `left != right` failed":
                     self.assertEqual(
                         evidence["blocks"][0]["public_version_status"],
