@@ -391,7 +391,6 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
     drop(forked_logger);
     runtime.close().await;
 
-    let repo_root = codex_utils_cargo_bin::repo_root()?;
     let harness =
         codex_utils_cargo_bin::find_resource!("../../scripts/test_codex_usage_report.py")?;
     let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");
@@ -399,8 +398,6 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         .arg(&harness)
         .arg("--database")
         .arg(sqlite.usage_db_path())
-        .arg("--repo-root")
-        .arg(&repo_root)
         .arg("--root-thread-id")
         .arg(&root_id)
         .arg("--child-thread-id")
@@ -411,7 +408,6 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("TZ", "UTC")
-        .current_dir(&repo_root)
         .output()?;
     anyhow::ensure!(
         output.status.success(),

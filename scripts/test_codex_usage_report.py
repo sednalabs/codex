@@ -1132,16 +1132,12 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
-    parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--root-thread-id", default="root-thread")
     parser.add_argument("--child-thread-id", default="child-thread")
     parser.add_argument("--scale", action="store_true")
     args = parser.parse_args()
     database = args.database.resolve(strict=True)
     repo_root = Path(__file__).resolve().parent.parent
-    requested_repo_root = args.repo_root.resolve(strict=True)
-    if not requested_repo_root.samefile(repo_root):
-        parser.error("--repo-root must identify this checkout")
     with tempfile.TemporaryDirectory(
         prefix="codex-usage-report-qualification-"
     ) as temporary:
