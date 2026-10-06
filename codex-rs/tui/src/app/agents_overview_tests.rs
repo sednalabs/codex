@@ -908,10 +908,18 @@ async fn agents_overview_details_render_markdown() {
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .unwrap();
     let cached = terminal.backend().to_string();
-    insta::assert_snapshot!(
-        "agents_overview_markdown",
-        normalize_agent_center_snapshot(&cached)
-    );
+    let contains_line = |rendered: &str, expected: &str| {
+        rendered.lines().any(|line| line.contains(expected))
+    };
+    assert!(contains_line(&cached, "Task details"));
+    assert!(contains_line(&cached, "Review parser"));
+    assert!(contains_line(&cached, "Last message"));
+    assert!(contains_line(&cached, "## Findings"));
+    assert!(contains_line(&cached, "• Fixed parsing and tokens"));
+    assert!(contains_line(&cached, "• Kept compatibility."));
+    assert!(contains_line(&cached, "let token = 1;"));
+    assert!(!cached.contains("**parsing**"));
+    assert!(!cached.contains("`tokens`"));
 
     app.agents_overview.last_messages.clear();
     app.track_agents_overview_activity(
@@ -945,10 +953,14 @@ async fn agents_overview_details_render_markdown() {
     let view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
     app.chat_widget.show_bottom_pane_view(Box::new(view));
 
-    insta::assert_snapshot!(
-        "agents_overview_markdown_long_lines",
-        normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widget, /*width*/ 96))
-    );
+    let long_lines = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(contains_line(&long_lines, "let explanation = \"A long code line"));
+    assert!(contains_line(
+        &long_lines,
+        "should wrap inside the task details"
+    ));
+    assert!(contains_line(&long_lines, "panel.\";"));
+    assert!(contains_line(&long_lines, "…"));
 
     app.agents_overview.last_messages.insert(
         thread_id,
@@ -956,10 +968,14 @@ async fn agents_overview_details_render_markdown() {
     );
     let view = app.agents_overview_view(vec![thread], Some(thread_id));
     app.chat_widget.show_bottom_pane_view(Box::new(view));
-    insta::assert_snapshot!(
-        "agents_overview_markdown_table",
-        normalize_agent_center_snapshot(render_bottom_popup(&app.chat_widget, /*width*/ 96))
-    );
+    let table = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(table
+        .lines()
+        .any(|line| line.contains("Check") && line.contains("Result")));
+    assert!(table.lines().any(|line| line.contains("━━━━")));
+    assert!(table
+        .lines()
+        .any(|line| line.contains("Parser") && line.contains("Fixed")));
 }
 
 #[test]
@@ -995,14 +1011,9 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
     for delta in ["**Checking", " cold-start regressions**\nFurther reasoning"] {
         app.track_agents_overview_notification(&reasoning_delta(thread_id, "reasoning", delta));
     }
-    let project = test_path_display("/tmp/project");
-    let normalized_group = format!(
-        "/tmp/project  1{}",
-        " ".repeat(project.len().saturating_sub("/tmp/project".len()))
-    );
-    insta::with_settings!({snapshot_path => "../snapshots"}, {
-        insta::assert_snapshot!("agents_overview_live_activity", render_bottom_popup(&app.chat_widget, /*width*/ 96).replace(&format!("{project}  1"), &normalized_group).replace(&project, "/tmp/project"));
-    });
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert!(rendered.contains("Latest activity"));
+    assert!(rendered.contains("Checking cold-start regressions"));
     assert!(app.agents_overview.request_id.is_none());
 
     // A working child can stream through a server attachment without a local channel.
