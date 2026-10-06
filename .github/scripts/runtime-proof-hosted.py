@@ -97,6 +97,22 @@ EXPECTED_CLI_TESTS = [
 EXPECTED_MCP_TESTS = [
     "protected_http_client_tests::retained_protected_http_client_rejects_a_send_after_imported_auth_expiry"
 ]
+ROOT_FIXTURE_STAGE = re.compile(r"^runtime-proof-root-stage:([a-z_]+)$")
+ROOT_FIXTURE_STAGE_NAMES = {
+    "started",
+    "fixture_started",
+    "cli_succeeded",
+    "cli_failed",
+    "claims_validated",
+    "wait_targets_validated",
+    "wait_result_validated",
+    "proofs_validated",
+    "model_redaction_validated",
+    "auth_headers_validated",
+    "cli_output_redacted",
+    "fixture_storage_clean",
+    "complete",
+}
 EXPECTED_HARNESS_PATHS = [
     ".github/workflows/runtime-proof-source-preparation.yml",
     ".github/scripts/runtime-proof-hosted.py",
@@ -2254,7 +2270,19 @@ def run_ignored_root_test(
         ):
             refuse("retained-client fixture did not produce one successful child and terminal outer test")
     elif result.returncode != 0 or summaries != [success]:
-        refuse(f"explicit synthetic root fixture was not exactly one successful executed test: {test_name}")
+        details = ""
+        if test_name == EXPECTED_CLI_TESTS[0]:
+            stages = []
+            for line in result.stdout.splitlines():
+                match = ROOT_FIXTURE_STAGE.fullmatch(line.strip())
+                if match is not None and match.group(1) in ROOT_FIXTURE_STAGE_NAMES:
+                    stages.append(match.group(1))
+            last_stage = stages[-1] if stages else "none"
+            details = f"; exit_code={result.returncode}; last_stage={last_stage}"
+        refuse(
+            "explicit synthetic root fixture was not exactly one successful executed test: "
+            f"{test_name}{details}"
+        )
     if sha256_file(binary) != expected_binary_sha256:
         refuse(f"root fixture binary changed during invocation: {test_name}")
     return {
