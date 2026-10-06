@@ -17,6 +17,7 @@ from app_server_harness import (
 )
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
+from artifact import FirstBinaryEvidence
 from fixtures import SmokePackage
 from package_acceptance import _mock_config
 from tui_pty import PackagedTui
@@ -156,7 +157,7 @@ def _rendered_field_matches(frame: str, label: str, expected: str) -> bool:
 
 
 def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity(
-    package: SmokePackage,
+    package: SmokePackage, artifact_evidence: FirstBinaryEvidence,
 ) -> None:
     """Render model/effort truthfully and keep private prompt data out of agent views."""
     isolated, home = _isolated(package, "tui-rich-agent-metadata")
@@ -254,6 +255,10 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             composer_screen = tui.until_screen("synthetic worker.")
             normalized_composer = _normalized_screen(composer_screen)
             assert root_command in normalized_composer, composer_screen
+            assert (
+                f"v{artifact_evidence.version}".replace(" ", "")
+                in "".join(normalized_composer.split())
+            ), composer_screen
             tui.send("\r")
             tui.until("TUI_RICH_ROOT_TERMINAL")
             active_child_route.wait_until_selected(timeout_s=30)

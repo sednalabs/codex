@@ -40,6 +40,37 @@ fn packaged_runtime_uses_manifest_version() {
     );
 }
 
+#[test]
+fn packaged_progressive_version_is_displayed_with_its_build_identity() {
+    let package = tempdir().expect("create runtime package");
+    let bin_dir = package.path().join("bin");
+    fs::create_dir(&bin_dir).expect("create runtime binary directory");
+    let executable = bin_dir.join("codex");
+    fs::write(&executable, b"").expect("create runtime binary");
+    fs::write(
+        package.path().join("codex-package.json"),
+        r#"{"version":"0.160.0-dev.sedna.1+g12345678"}"#,
+    )
+    .expect("create progressive runtime package manifest");
+
+    let context = InstallContext::from_exe(
+        cfg!(target_os = "macos"),
+        Some(&executable),
+        /*method_override*/ None,
+    );
+    let build_info = BuildInfo::resolve(&context, BUILD_COMMIT);
+
+    assert_eq!(
+        build_info.display_version(),
+        "v0.160.0-dev.sedna.1+g12345678"
+    );
+    assert_eq!(
+        build_info.build_commit(),
+        BUILD_COMMIT,
+        "the manifest label must not replace executable provenance"
+    );
+}
+
 /// Unpackaged builds expose their stamped commit and structured source version.
 #[test]
 fn unpackaged_runtime_uses_build_commit() {

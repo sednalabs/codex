@@ -1,9 +1,11 @@
 """First-binary artifact consumers; run only on native hosted Linux runners."""
 
 import json
+import re
 import shutil
 import stat
 import subprocess
+import tomllib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -83,13 +85,33 @@ def test_wrong_target_and_missing_helper_are_rejected(
 def test_banner_native_client_and_same_source_proxy_execution(
     artifact_evidence: FirstBinaryEvidence, package: SmokePackage, tmp_path: Path
 ) -> None:
+    source_root = Path(__file__).resolve().parents[4]
+    with (source_root / "codex-rs/Cargo.toml").open("rb") as manifest_file:
+        cargo_version = tomllib.load(manifest_file)["workspace"]["package"]["version"]
+    cargo_base = re.fullmatch(
+        r"(?P<base>\d+\.\d+\.\d+)(?:-dev\.sedna\.\d+)?",
+        cargo_version,
+    )
+    assert cargo_base is not None
+    producer_manifest = json.loads(
+        artifact_evidence.manifest_path.read_text(encoding="utf-8")
+    )
+    progressive_iteration = producer_manifest.get("progressive_iteration")
+    assert type(progressive_iteration) is int and progressive_iteration > 0
+    expected_package_version = (
+        f"{cargo_base.group('base')}-dev.sedna.{progressive_iteration}"
+        f"+g{artifact_evidence.target_sha[:8]}"
+    )
+    assert artifact_evidence.version == expected_package_version
+
     banner = package.run("--version").stdout.strip()
-    assert banner == f"codex Sedna v{artifact_evidence.version}", banner
+    assert banner == f"codex Sedna v{expected_package_version}", banner
     with Codex(config=CodexConfig(
         codex_bin=str(package.cli), cwd=str(package.directory), env=package.environment,
     )) as client:
         native_ua = client.metadata.userAgent
-        assert native_ua and artifact_evidence.version in native_ua
+        assert native_ua and cargo_version in native_ua
+        assert expected_package_version not in native_ua
 
     # Actions artifact ZIPs need not preserve Unix execute bits.  Execute a
     # digest-verified copy of the separately built, same-T proxy sidecar.

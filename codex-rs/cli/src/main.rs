@@ -1,5 +1,6 @@
 use clap::Args;
 use clap::CommandFactory;
+use clap::FromArgMatches;
 use clap::Parser;
 use clap_complete::Shell;
 use clap_complete::generate;
@@ -40,6 +41,7 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use supports_color::Stream;
 
 #[cfg(all(
@@ -137,6 +139,22 @@ struct MultitoolCli {
 
     #[clap(subcommand)]
     subcommand: Option<Subcommand>,
+}
+
+fn cli_display_version() -> &'static str {
+    static DISPLAY_VERSION: OnceLock<String> = OnceLock::new();
+    DISPLAY_VERSION
+        .get_or_init(|| {
+            format!(
+                "Sedna {}",
+                codex_build_info::BuildInfo::get().display_version()
+            )
+        })
+        .as_str()
+}
+
+fn command_with_build_identity() -> clap::Command {
+    MultitoolCli::command().version(cli_display_version())
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1024,13 +1042,14 @@ async fn cli_main(
     arg0_paths: Arg0DispatchPaths,
     remote_control_disabled: bool,
 ) -> anyhow::Result<()> {
+    let matches = command_with_build_identity().get_matches();
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,
         remote,
         mut interactive,
         subcommand,
-    } = MultitoolCli::parse();
+    } = MultitoolCli::from_arg_matches(&matches)?;
     // Retain the launch target through TUI exit, even if a launcher changes selection.
     let daemon_cli_executable = arg0_paths
         .codex_self_exe
@@ -2709,13 +2728,14 @@ mod tests {
 
     #[test]
     fn version_output_identifies_sedna_and_preserves_package_version() {
-        let error = MultitoolCli::try_parse_from(["codex", "--version"])
+        let error = command_with_build_identity()
+            .try_get_matches_from(["codex", "--version"])
             .expect_err("--version should exit with the version display");
 
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
         assert_eq!(
             error.to_string().trim(),
-            format!("codex Sedna v{}", env!("CARGO_PKG_VERSION"))
+            format!("codex {}", cli_display_version())
         );
     }
 
