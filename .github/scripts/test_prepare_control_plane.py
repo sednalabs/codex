@@ -253,6 +253,38 @@ class FixedContractTests(unittest.TestCase):
         self.assertEqual(contents.count("facebook/install-dotslash@"), 1)
         self.assertIn('("dotslash", "--version")', SCRIPT.read_text(encoding="utf-8"))
 
+    def test_fix_phase_requests_cargo_json_without_changing_its_recipe(self):
+        fix = next(phase for phase in prepare_control_plane.PHASES if phase[0] == "fix")
+        self.assertEqual(
+            fix,
+            (
+                "fix",
+                ".",
+                (
+                    "just",
+                    "fix",
+                    "--locked",
+                    "-p",
+                    "codex-diagnostics",
+                    "-p",
+                    "codex-cli",
+                    "-p",
+                    "codex-state",
+                    "--message-format=json",
+                ),
+            ),
+        )
+
+    def test_legacy_diagnostic_job_never_prints_cargo_log_tails(self):
+        workflow = (
+            Path(__file__).parents[1] / "workflows/validation-control-plane-prep.yml"
+        )
+        contents = workflow.read_text(encoding="utf-8")
+        self.assertNotIn('tail -n 80 "${update_log}"', contents)
+        self.assertNotIn('tail -n 120 "${fix_log}"', contents)
+        self.assertNotIn('tail -n 30 "${fix_log}"', contents)
+        self.assertIn("raw output withheld", contents)
+
     def test_metadata_covers_locked_subset_without_checksum_fiction(self):
         before = {
             "packages": [
@@ -533,6 +565,9 @@ class PrepareFlowTests(unittest.TestCase):
                     '[[package]]\nname = "inactive-dep"\nversion = "3.0"\n'
                     'source = "registry+index"\nchecksum = "checksum-b"\n'
                 ),
+                "codex-rs/state/src/control_plane_usage_reader.rs": (
+                    "pub fn fixture() {}\n"
+                ),
                 ".bazelrc": "",
                 ".bazelversion": "9.0.0\n",
                 "justfile": "",
@@ -641,6 +676,32 @@ class PrepareFlowTests(unittest.TestCase):
                     encoding="utf-8",
                 )
             if phase == fail_phase:
+                if phase == "fix":
+                    source_dir = self.product / "codex-rs/state/src"
+                    source_file = source_dir / "control_plane_usage_reader.rs"
+                    diagnostic = {
+                        "reason": "compiler-message",
+                        "message": {
+                            "level": "error",
+                            "code": {"code": "E0277"},
+                            "message": "private output",
+                            "rendered": "credential-token-canary",
+                            "spans": [
+                                {
+                                    "file_name": str(source_file),
+                                    "line_start": 41,
+                                    "column_start": 3,
+                                    "is_primary": True,
+                                }
+                            ],
+                        },
+                    }
+                    return subprocess.CompletedProcess(
+                        argv,
+                        9,
+                        json.dumps(diagnostic).encode("utf-8"),
+                        b"credential-token-canary",
+                    )
                 return subprocess.CompletedProcess(
                     argv, 9, b"private output", b"credential-token-canary"
                 )
@@ -1391,12 +1452,139 @@ class PrepareFlowTests(unittest.TestCase):
         receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["status"], "incomplete")
         self.assertEqual(receipt["failure_code"], "command_failed_fix")
-        self.assertEqual(receipt["phases"]["fix"], {"status": "failed", "exit_code": 9})
+        self.assertEqual(
+            receipt["phases"]["fix"],
+            {
+                "status": "failed",
+                "exit_code": 9,
+                "compiler_failure_projection": {
+                    "projection_status": "errors_found",
+                    "error_count": 1,
+                    "class_counts": {"trait_bound": 1},
+                    "errors": [
+                        {
+                            "class": "trait_bound",
+                            "file": "codex-rs/state/src/control_plane_usage_reader.rs",
+                            "line": 41,
+                            "column": 3,
+                        }
+                    ],
+                    "omitted_count": 0,
+                    "emitted_unlocated_count": 0,
+                    "unparsed_line_count": 0,
+                },
+            },
+        )
         self.assertEqual(receipt["phases"]["format"]["status"], "not_run")
         self.assertFalse((self.root / "candidate.patch").exists())
         serialized = (self.root / "receipt.json").read_bytes()
         self.assertNotIn(b"credential-token-canary", serialized)
         self.assertNotIn(b"private output", serialized)
+
+    def test_cargo_json_failure_projection_keeps_safe_classes_and_verified_coordinates(
+        self,
+    ):
+        source_path = self.product / "codex-rs/state/src/control_plane_usage_reader.rs"
+        records = (
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0277", "explanation": "PRIVATE_CODE_TEXT"},
+                    "message": "PRIVATE_MESSAGE_TEXT",
+                    "rendered": "PRIVATE_RENDERED_TEXT",
+                    "spans": [
+                        {
+                            "file_name": str(source_path),
+                            "line_start": 23,
+                            "column_start": 7,
+                            "is_primary": True,
+                        }
+                    ],
+                },
+            },
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0282"},
+                    "message": "PRIVATE_INFERENCE_TEXT",
+                    "rendered": "PRIVATE_INFERENCE_RENDERED",
+                    "spans": [
+                        {
+                            "file_name": "state/src/control_plane_usage_reader.rs",
+                            "line_start": 29,
+                            "column_start": 11,
+                            "is_primary": True,
+                        }
+                    ],
+                },
+            },
+            {
+                "reason": "compiler-message",
+                "message": {
+                    "level": "error",
+                    "code": {"code": "E0277"},
+                    "message": "PRIVATE_PATH_TEXT",
+                    "spans": [
+                        {
+                            "file_name": "state/src/not_a_tracked_source.rs",
+                            "line_start": 31,
+                            "column_start": 4,
+                            "is_primary": True,
+                        }
+                    ],
+                },
+            },
+        )
+        stdout = b"\n".join(json.dumps(item).encode("utf-8") for item in records)
+        projection = prepare_control_plane.cargo_json_failure_projection(
+            stdout, b"", self.product
+        )
+        self.assertEqual(
+            projection,
+            {
+                "projection_status": "errors_found",
+                "error_count": 3,
+                "class_counts": {"trait_bound": 2, "type_inference": 1},
+                "errors": [
+                    {
+                        "class": "trait_bound",
+                        "file": "codex-rs/state/src/control_plane_usage_reader.rs",
+                        "line": 23,
+                        "column": 7,
+                    },
+                    {
+                        "class": "type_inference",
+                        "file": "codex-rs/state/src/control_plane_usage_reader.rs",
+                        "line": 29,
+                        "column": 11,
+                    },
+                    {
+                        "class": "trait_bound",
+                        "file": "unavailable",
+                        "line": None,
+                        "column": None,
+                    },
+                ],
+                "omitted_count": 0,
+                "emitted_unlocated_count": 1,
+                "unparsed_line_count": 0,
+            },
+        )
+        serialized = json.dumps(projection, sort_keys=True).encode("utf-8")
+        for private_value in (
+            b"PRIVATE_CODE_TEXT",
+            b"PRIVATE_MESSAGE_TEXT",
+            b"PRIVATE_RENDERED_TEXT",
+            b"PRIVATE_INFERENCE_TEXT",
+            b"PRIVATE_INFERENCE_RENDERED",
+            b"PRIVATE_PATH_TEXT",
+            b"E0277",
+            b"E0282",
+            b"not_a_tracked_source.rs",
+        ):
+            self.assertNotIn(private_value, serialized)
 
 
 class ExecutionBoundaryTests(unittest.TestCase):

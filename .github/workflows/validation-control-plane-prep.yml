@@ -348,8 +348,7 @@ jobs:
           command_status=$?
           set -e
           if (( command_status != 0 )); then
-            echo "workspace_update failed; bounded diagnostic tail follows" >&2
-            tail -n 80 "${update_log}" >&2
+            echo "workspace_update failed with exit ${command_status}; raw output withheld" >&2
             exit "${command_status}"
           fi
           echo "workspace_update passed"
@@ -364,9 +363,7 @@ jobs:
           command_status=$?
           set -e
           if (( command_status != 0 )); then
-            echo "fix phase failed with exit ${command_status}; bounded diagnostic tail follows" >&2
-            tail -n 120 "${fix_log}" >&2
+            echo "fix phase failed with exit ${command_status}; raw output withheld" >&2
             exit "${command_status}"
           fi
-          echo "fix phase passed"
-          tail -n 30 "${fix_log}"
+          echo "fix phase passed; raw output withheld"

@@ -88,6 +88,7 @@ PHASES = (
             "codex-cli",
             "-p",
             "codex-state",
+            "--message-format=json",
         ),
     ),
     ("format", ".", ("just", "fmt")),
@@ -114,6 +115,28 @@ PHASES = (
         ),
     ),
     ("bazel_lock_check", ".", ("just", "bazel-lock-check")),
+)
+MAX_PUBLIC_FIX_ERRORS = 8
+MAX_FIX_DIAGNOSTIC_LINE_BYTES = 512 * 1024
+MAX_FIX_COORDINATE = 10_000_000
+RUST_SOURCE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+RUSTC_CODE_TO_CLASS = {
+    "E0004": "non_exhaustive_match",
+    "E0061": "argument_count",
+    "E0277": "trait_bound",
+    "E0282": "type_inference",
+    "E0308": "type_mismatch",
+    "E0382": "moved_value",
+    "E0412": "unresolved_type",
+    "E0425": "unresolved_symbol",
+    "E0432": "unresolved_import",
+    "E0433": "unresolved_path",
+    "E0502": "borrow_conflict",
+    "E0599": "missing_method",
+    "E0609": "missing_field",
+}
+RUSTC_ERROR_CLASSES = frozenset(
+    (*RUSTC_CODE_TO_CLASS.values(), "compiler_error", "uncoded_error")
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
@@ -189,6 +212,142 @@ def git(root: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
     if result.returncode:
         raise PreparationError("git_command_failed")
     return result.stdout
+
+
+def verified_rust_source_coordinate(
+    file_name: object, line: object, column: object, product: Path
+) -> dict[str, object] | None:
+    if (
+        not isinstance(file_name, str)
+        or not file_name
+        or len(file_name) > 2048
+        or type(line) is not int
+        or type(column) is not int
+        or not 1 <= line <= MAX_FIX_COORDINATE
+        or not 1 <= column <= MAX_FIX_COORDINATE
+    ):
+        return None
+    try:
+        root = product.resolve(strict=True)
+        supplied = Path(file_name)
+        if supplied.is_absolute():
+            candidate = supplied
+        elif supplied.parts[:1] == ("codex-rs",):
+            candidate = root / supplied
+        elif supplied.parts[:1] in (
+            ("cli",),
+            ("core",),
+            ("diagnostics",),
+            ("state",),
+        ):
+            candidate = root / "codex-rs" / supplied
+        else:
+            return None
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    parts = relative.parts
+    if (
+        not resolved.is_file()
+        or not parts
+        or parts[0] != "codex-rs"
+        or relative.suffix != ".rs"
+        or any(
+            part in {"", ".", ".."} or not RUST_SOURCE_COMPONENT_RE.fullmatch(part)
+            for part in parts
+        )
+    ):
+        return None
+    relative_name = relative.as_posix()
+    try:
+        git(root, "cat-file", "-e", f"HEAD:{relative_name}")
+    except (OSError, PreparationError):
+        return None
+    return {"file": relative_name, "line": line, "column": column}
+
+
+def cargo_json_failure_projection(
+    stdout: bytes, stderr: bytes, product: Path
+) -> dict[str, object]:
+    error_count = 0
+    omitted_count = 0
+    emitted_unlocated_count = 0
+    unparsed_line_count = 0
+    class_counts: Counter[str] = Counter()
+    errors: list[dict[str, object]] = []
+    for stream in (stdout, stderr):
+        for line in stream.splitlines():
+            if b'"reason"' not in line or b"compiler-message" not in line:
+                continue
+            if len(line) > MAX_FIX_DIAGNOSTIC_LINE_BYTES:
+                unparsed_line_count += 1
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
+                unparsed_line_count += 1
+                continue
+            if (
+                not isinstance(record, dict)
+                or record.get("reason") != "compiler-message"
+            ):
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict) or message.get("level") != "error":
+                continue
+            code = message.get("code")
+            raw_code = code.get("code") if isinstance(code, dict) else None
+            error_class = (
+                RUSTC_CODE_TO_CLASS.get(raw_code, "compiler_error")
+                if isinstance(raw_code, str)
+                else "uncoded_error"
+            )
+            if error_class not in RUSTC_ERROR_CLASSES:
+                error_class = "compiler_error"
+            class_counts[error_class] += 1
+            error_count += 1
+            if len(errors) >= MAX_PUBLIC_FIX_ERRORS:
+                omitted_count += 1
+                continue
+            spans = message.get("spans")
+            if not isinstance(spans, list):
+                spans = []
+            location = next(
+                (
+                    span
+                    for span in spans
+                    if isinstance(span, dict) and span.get("is_primary") is True
+                ),
+                {},
+            )
+            if not location:
+                location = next((span for span in spans if isinstance(span, dict)), {})
+            coordinate = verified_rust_source_coordinate(
+                location.get("file_name"),
+                location.get("line_start"),
+                location.get("column_start"),
+                product,
+            )
+            if coordinate is None:
+                emitted_unlocated_count += 1
+                coordinate = {"file": "unavailable", "line": None, "column": None}
+            errors.append({"class": error_class, **coordinate})
+    if error_count:
+        projection_status = "errors_found"
+    elif unparsed_line_count:
+        projection_status = "unparsed_diagnostics"
+    else:
+        projection_status = "no_error_diagnostics"
+    return {
+        "projection_status": projection_status,
+        "error_count": error_count,
+        "class_counts": dict(sorted(class_counts.items())),
+        "errors": errors,
+        "omitted_count": omitted_count,
+        "emitted_unlocated_count": emitted_unlocated_count,
+        "unparsed_line_count": unparsed_line_count,
+    }
 
 
 def minimal_env() -> dict[str, str]:
@@ -882,10 +1041,17 @@ def prepare(args: argparse.Namespace) -> int:
                 receipt["phases"][name] = {"status": "unknown", "exit_code": None}
                 persist_receipt(receipt_path, receipt)
                 raise
-            receipt["phases"][name] = {
+            phase_result: dict[str, object] = {
                 "status": "passed" if proc.returncode == 0 else "failed",
                 "exit_code": proc.returncode,
             }
+            if name == "fix" and proc.returncode:
+                phase_result["compiler_failure_projection"] = (
+                    cargo_json_failure_projection(
+                        proc.stdout or b"", proc.stderr or b"", product
+                    )
+                )
+            receipt["phases"][name] = phase_result
             persist_receipt(receipt_path, receipt)
             if proc.returncode:
                 raise PreparationError(f"command_failed_{name}")
