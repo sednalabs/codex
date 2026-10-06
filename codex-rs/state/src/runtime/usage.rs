@@ -531,6 +531,8 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() {
+        const TEST_PROVIDER: &str = "bounded-usage-report-test";
+
         let codex_home = unique_temp_dir();
         let sqlite = SqliteConfig::new_for_testing(codex_home.as_path().abs());
         let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string())
@@ -584,7 +586,7 @@ mod tests {
             "INSERT INTO usage_codex_credit_policies (policy_id, provider, billing_surface, account_plan, rate_card_kind, effective_from, effective_to, source_url, source_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind("policy-test")
-        .bind("openai")
+        .bind(TEST_PROVIDER)
         .bind("chatgpt_credits")
         .bind("plus")
         .bind("codex_token_based")
@@ -599,7 +601,7 @@ mod tests {
             "INSERT INTO usage_codex_credit_rates (rate_id, provider, model, service_tier, speed_mode, rate_card_kind, credits_per_1m_uncached_input, credits_per_1m_cached_input, credits_per_1m_output, effective_from, effective_to, source_url, source_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind("rate-before")
-        .bind("openai")
+        .bind(TEST_PROVIDER)
         .bind("gpt-6-luna")
         .bind("default")
         .bind("standard")
@@ -612,7 +614,7 @@ mod tests {
         .bind("https://example.invalid/test-card")
         .bind("2026-09-29T00:00:00Z")
         .bind("rate-after")
-        .bind("openai")
+        .bind(TEST_PROVIDER)
         .bind("gpt-6-luna")
         .bind("default")
         .bind("standard")
@@ -685,6 +687,9 @@ mod tests {
                 "2026-09-30T01:00:01Z",
             ),
         ] {
+            // Keep the synthetic rates and calls disjoint from policies and
+            // rates seeded by the real OpenAI migrations above.
+            call.provider = TEST_PROVIDER.to_string();
             call.started_at = started.to_string();
             call.completed_at = completed.to_string();
             if call.provider_call_id == "forked-call" {
