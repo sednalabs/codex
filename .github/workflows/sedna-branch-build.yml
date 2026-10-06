@@ -50,13 +50,14 @@ on:
         default: ""
         type: string
       consumer_profile:
-        description: Closed consumer test profile for consume-existing mode.
+        description: Closed consumer test profile. version-identity is restricted to package-build mode.
         required: false
         type: choice
         options:
           - pair
           - focused
           - full
+          - version-identity
         default: full
       preparation_profile:
         description: Closed source-preparation profile for prepare-only mode.
@@ -158,9 +159,16 @@ jobs:
               [[ -z "${PRODUCER_RUN_ID}${PRODUCER_WORKFLOW_HOST_SHA}${FIXTURE_SHA}${SDK_SHA}" ]] || {
                 echo "cross-run producer and source inputs are allowed only in consume-existing mode" >&2; exit 1;
               }
-              [[ "${CONSUMER_PROFILE}" == "full" ]] || {
-                echo "the consumer profile is configurable only in consume-existing mode" >&2; exit 1;
-              }
+              if [[ "${MODE}" == "build" ]]; then
+                case "${CONSUMER_PROFILE}" in
+                  full|version-identity) ;;
+                  *) echo "unsupported build consumer profile" >&2; exit 1 ;;
+                esac
+              else
+                [[ "${CONSUMER_PROFILE}" == "full" ]] || {
+                  echo "the consumer profile is configurable only in consume-existing mode" >&2; exit 1;
+                }
+              fi
               ;;
           esac
           actual_h="$(git rev-parse HEAD)"
@@ -1355,8 +1363,18 @@ jobs:
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          if [[ "${CONSUMER_PROFILE}" == "version-identity" ]]; then
+            unset CODEX_STATE_HISTORY_ACCEPTANCE
+          fi
           TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
           case "${MODE}:${CONSUMER_PROFILE}" in
+            build:version-identity)
+              TEST_ARGS=(
+                "${TEST_ROOT}/test_agent_control_tui_acceptance.py::test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
+              )
+              PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
+              FIXTURE_ARGS=(--consumer-context-file "${CONSUMER_CONTEXT}")
+              ;;
             build:*)
               TEST_ARGS=("${TEST_ROOT}")
               PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
@@ -1484,7 +1502,16 @@ jobs:
           profile = os.environ["CONSUMER_PROFILE"]
           pair_positive = {"fresh"}
           pair_negative = {"bad_checksum"}
-          if mode == "build" or profile == "full":
+          version_identity_profile = mode == "build" and profile == "version-identity"
+          version_identity_plain_case_counts = {
+              "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity": 1,
+          }
+          if version_identity_profile:
+              if positive or negative:
+                  issues.append("version-identity profile unexpectedly ran state-history cases")
+              expected_state = set()
+              expected_plain_case_counts = version_identity_plain_case_counts
+          elif mode == "build" or profile == "full":
               if len(positive) != 16 or set(positive) != expected_positive:
                   issues.append("JUnit does not contain the exact 16 positive state-history cases")
               if len(negative) != 8 or set(negative) != expected_negative:
@@ -2337,15 +2364,28 @@ jobs:
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          if [[ "${CONSUMER_PROFILE}" == "version-identity" ]]; then
+            unset CODEX_STATE_HISTORY_ACCEPTANCE
+          fi
           set +e
+          test_root="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+          case "${CONSUMER_PROFILE}" in
+            version-identity)
+              test_args=(
+                "${test_root}/test_agent_control_tui_acceptance.py::test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
+              )
+              ;;
+            full) test_args=("${test_root}") ;;
+            *) echo "unsupported build consumer profile" >&2; exit 1 ;;
+          esac
           "${UV_PATH}" run --locked \
             --project "${PRODUCT_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
             pytest -q \
-              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
-              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              --confcutdir="${test_root}" \
+              "${test_args[@]}" \
               --artifact-dir "${ARTIFACT_DIR}" \
               --artifact-id "${ARTIFACT_ID}" \
               --artifact-name "${ARTIFACT_NAME}" \
@@ -2424,19 +2464,30 @@ jobs:
 
           positive = labels(positive_prefix)
           negative = labels(negative_prefix)
-          if len(positive) != 16 or set(positive) != expected_positive:
-              issues.append("JUnit does not contain the exact 16 positive state-history cases")
-          if len(negative) != 8 or set(negative) != expected_negative:
-              issues.append("JUnit does not contain the exact 8 negative state-history cases")
-          issues.extend(plain_test_inventory_issues(cases, CURRENT_BUILD_PLAIN_TEST_CASES))
-          expected_case_count = len(expected_positive | expected_negative) + sum(CURRENT_BUILD_PLAIN_TEST_CASES.values())
+          version_identity_profile = os.environ["CONSUMER_PROFILE"] == "version-identity"
+          if version_identity_profile:
+              if positive or negative:
+                  issues.append("version-identity profile unexpectedly ran state-history cases")
+              expected_state = set()
+              expected_plain_case_counts = {
+                  "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity": 1,
+              }
+          else:
+              if len(positive) != 16 or set(positive) != expected_positive:
+                  issues.append("JUnit does not contain the exact 16 positive state-history cases")
+              if len(negative) != 8 or set(negative) != expected_negative:
+                  issues.append("JUnit does not contain the exact 8 negative state-history cases")
+              expected_state = expected_positive | expected_negative
+              expected_plain_case_counts = CURRENT_BUILD_PLAIN_TEST_CASES
+          issues.extend(plain_test_inventory_issues(cases, expected_plain_case_counts))
+          expected_case_count = len(expected_state) + sum(expected_plain_case_counts.values())
           if len(cases) != expected_case_count:
-              issues.append("JUnit executed-case count differs from the exact selected profile")
+            issues.append("JUnit executed-case count differs from the exact selected profile")
 
           witness_paths = sorted((basetemp / "state-history-witnesses").glob("*.json"))
           witness_hashes: dict[str, str] = {}
           witness_cases: set[str] = set()
-          expected_cases = expected_positive | expected_negative
+          expected_cases = expected_state
           for path in witness_paths:
               try:
                   witness = json.loads(path.read_text(encoding="utf-8"))
@@ -2464,8 +2515,8 @@ jobs:
               if any(witness.get(key) != value for key, value in expected_fields.items()):
                   issues.append(f"state-history witness {case_name} identity mismatch")
               witness_hashes[case_name] = hashlib.sha256(path.read_bytes()).hexdigest()
-          if len(witness_paths) != 24 or witness_cases != expected_cases:
-              issues.append("expected all 24 redacted state-history witness records")
+          if len(witness_paths) != len(expected_cases) or witness_cases != expected_cases:
+              issues.append("state-history witness inventory differs from the exact selected profile")
 
           test_result = {
               "pytest_exit_code": pytest_exit,
@@ -2497,9 +2548,11 @@ jobs:
           if issues:
               raise SystemExit(1)
           PY
-          PYTEST_EXIT_CODE="${pytest_status}" \
-            python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
-              --verify-consumer-results
+          if [[ "${CONSUMER_PROFILE}" == "full" ]]; then
+            PYTEST_EXIT_CODE="${pytest_status}" \
+              python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+                --verify-consumer-results
+          fi
       - name: Upload consumer result and redacted state witnesses
         if: ${{ always() && inputs.mode == 'build' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
