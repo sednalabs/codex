@@ -208,6 +208,7 @@ TEST_RESULT_RE = re.compile(
     r"(?P<ignored>\d+) ignored;\s+"
     r"(?P<measured>\d+) measured;\s+"
     r"(?P<filtered>\d+) filtered out"
+    r"(?:; finished in (?P<finished_seconds>\d{1,12}\.\d{2}s))?"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 FAILURE_HEADER_RE = re.compile(

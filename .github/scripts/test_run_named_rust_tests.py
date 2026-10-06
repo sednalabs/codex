@@ -2388,8 +2388,13 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                    "tests": names}
         inventory = "\n".join(f"{name}: test" for name in names) + "\n"
         outcomes = "\n".join(f"test {name} ... ok" for name in names)
-        full = ("test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n")
-        auxiliary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out\n"
+        full = ("test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; "
+                "finished in 0.25s\n")
+        full_without_duration = (
+            "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        )
+        auxiliary = ("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; "
+                     "finished in 0.01s\n")
 
         accepted = json.loads(named_tests.public_artifact_bytes(
             self._run(
@@ -2401,6 +2406,13 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                           len(accepted["tests"])), ("success", 10, 10))
         self.assertTrue(all(item["execution_reconciled"] for item in accepted["tests"]))
 
+        accepted_without_duration = json.loads(named_tests.public_artifact_bytes(
+            self._run(request, inventory, outcomes + "\n" + full_without_duration)))
+        self.assertEqual(
+            (accepted_without_duration["status"], accepted_without_duration["failure_code"]),
+            ("success", None),
+        )
+
         rejected = (
             outcomes + "\n" + auxiliary,
             outcomes + "\n" + full + full,
@@ -2409,6 +2421,7 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
             outcomes + "\n" + full + "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered\n",
             outcomes + "\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
             outcomes + "\ntest result: FAILED. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+            outcomes + "\n" + full.replace("finished in 0.25s", "finished in 0.25s; unexpected"),
             outcomes.replace(f"test {names[-1]} ... ok", "") + "\n" + full,
         )
         for output in rejected:
