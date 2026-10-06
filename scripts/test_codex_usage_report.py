@@ -524,8 +524,7 @@ def _correctness(
         "valid parent/fork lineage",
     )
     _assert(
-        all_report["summary"]["token_missing_call_count"]["uncached_input_tokens"]
-        == 1,
+        all_report["summary"]["token_missing_call_count"]["uncached_input_tokens"] == 1,
         "missing usage count",
     )
     _assert(

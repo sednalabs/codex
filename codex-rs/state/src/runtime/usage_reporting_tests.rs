@@ -70,8 +70,8 @@ async fn start_logger(
         source,
         Some(thread_source),
         forked_from_id,
-        None,
-        None,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
     )
     .await?)
 }
@@ -164,15 +164,23 @@ async fn provider_writer_batch_seconds(indexed_for_reporting: bool) -> Result<f6
         runtime.clone(),
         ThreadId::new(),
         SessionSource::Cli,
-        None,
-        None,
-        None,
+        /*forked_from_id*/ None,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
     )
     .await?;
     let started = std::time::Instant::now();
     for index in 0..250 {
         let turn_id = format!("writer-turn-{index:04}");
-        record_completed_response(&mut logger, &turn_id, 100, 20, 10, 130).await;
+        record_completed_response(
+            &mut logger,
+            &turn_id,
+            /*uncached_input_tokens*/ 100,
+            /*cached_input_tokens*/ 20,
+            /*output_tokens*/ 10,
+            /*total_tokens*/ 130,
+        )
+        .await;
     }
     let elapsed = started.elapsed().as_secs_f64();
     drop(logger);
@@ -198,7 +206,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         root_id,
         SessionSource::Cli,
         ThreadSource::User,
-        None,
+        /*forked_from_id*/ None,
     )
     .await?;
     let mut child_logger = start_logger(
@@ -212,7 +220,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
             agent_path: None,
         }),
         ThreadSource::Subagent,
-        None,
+        /*forked_from_id*/ None,
     )
     .await?;
     let mut grandchild_logger = start_logger(
@@ -226,7 +234,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
             agent_path: None,
         }),
         ThreadSource::Subagent,
-        None,
+        /*forked_from_id*/ None,
     )
     .await?;
     let zero_call_logger = start_logger(
@@ -240,7 +248,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
             agent_path: None,
         }),
         ThreadSource::Subagent,
-        None,
+        /*forked_from_id*/ None,
     )
     .await?;
     let mut forked_logger = start_logger(
@@ -269,11 +277,51 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
     .execute(pool.as_ref())
     .await?;
 
-    record_completed_response(&mut root_logger, "root-call", 100, 20, 10, 130).await;
-    record_completed_response(&mut child_logger, "child-call", 50, 10, 5, 65).await;
-    record_completed_response(&mut grandchild_logger, "grandchild-call", 1, 0, 1, 2).await;
-    record_completed_response(&mut forked_logger, "forked-call", 1, 0, 1, 2).await;
-    record_completed_response(&mut child_logger, "end-boundary-call", 1, 0, 1, 2).await;
+    record_completed_response(
+        &mut root_logger,
+        "root-call",
+        /*uncached_input_tokens*/ 100,
+        /*cached_input_tokens*/ 20,
+        /*output_tokens*/ 10,
+        /*total_tokens*/ 130,
+    )
+    .await;
+    record_completed_response(
+        &mut child_logger,
+        "child-call",
+        /*uncached_input_tokens*/ 50,
+        /*cached_input_tokens*/ 10,
+        /*output_tokens*/ 5,
+        /*total_tokens*/ 65,
+    )
+    .await;
+    record_completed_response(
+        &mut grandchild_logger,
+        "grandchild-call",
+        /*uncached_input_tokens*/ 1,
+        /*cached_input_tokens*/ 0,
+        /*output_tokens*/ 1,
+        /*total_tokens*/ 2,
+    )
+    .await;
+    record_completed_response(
+        &mut forked_logger,
+        "forked-call",
+        /*uncached_input_tokens*/ 1,
+        /*cached_input_tokens*/ 0,
+        /*output_tokens*/ 1,
+        /*total_tokens*/ 2,
+    )
+    .await;
+    record_completed_response(
+        &mut child_logger,
+        "end-boundary-call",
+        /*uncached_input_tokens*/ 1,
+        /*cached_input_tokens*/ 0,
+        /*output_tokens*/ 1,
+        /*total_tokens*/ 2,
+    )
+    .await;
 
     let root_id = root_id.to_string();
     let child_id = child_id.to_string();
@@ -286,7 +334,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         "2026-09-30T00:00:00.000Z",
         "2026-09-30T00:00:01Z",
         Some("gpt-6-luna"),
-        None,
+        /*reported_credits*/ None,
     )
     .await?;
     set_call_window(
@@ -305,8 +353,8 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         "grandchild-call",
         "2026-09-30T00:40:00Z",
         "2026-09-30T00:40:01Z",
-        None,
-        None,
+        /*actual_model*/ None,
+        /*reported_credits*/ None,
     )
     .await?;
     sqlx::query(
@@ -321,8 +369,8 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         "forked-call",
         "2026-09-30T00:50:00Z",
         "2026-09-30T00:50:01Z",
-        None,
-        None,
+        /*actual_model*/ None,
+        /*reported_credits*/ None,
     )
     .await?;
     set_call_window(
@@ -332,7 +380,7 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         "2026-09-30T01:00:00Z",
         "2026-09-30T01:00:01Z",
         Some("gpt-6-luna"),
-        None,
+        /*reported_credits*/ None,
     )
     .await?;
     drop(pool);
@@ -385,8 +433,10 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
         Some(3)
     );
 
-    let indexed_writer_seconds = provider_writer_batch_seconds(true).await?;
-    let legacy_writer_seconds = provider_writer_batch_seconds(false).await?;
+    let indexed_writer_seconds =
+        provider_writer_batch_seconds(/*indexed_for_reporting*/ true).await?;
+    let legacy_writer_seconds =
+        provider_writer_batch_seconds(/*indexed_for_reporting*/ false).await?;
     println!(
         "CODEX_USAGE_REAL_WRITER_COMPARISON={}",
         serde_json::json!({
