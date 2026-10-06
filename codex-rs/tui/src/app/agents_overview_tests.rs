@@ -973,6 +973,14 @@ async fn agents_overview_details_render_markdown() {
 
     thread.preview = format!("```\n{}\n```", "long prompt ".repeat(25));
     app.agents_overview.activity.clear();
+    app.agents_overview.last_messages.remove(&thread_id);
+    let view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
+    app.chat_widget.show_bottom_pane_view(Box::new(view));
+
+    let prompt_lines = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    assert_tui_diagnostic!("long_prompt_clipped", contains_line(&prompt_lines, "…"));
+
+    thread.preview = "Review details".into();
     app.agents_overview.last_messages.insert(
         thread_id,
         "```\nlet explanation = \"A long code line should wrap inside the task details panel.\";\n```".into(),
@@ -998,8 +1006,6 @@ async fn agents_overview_details_render_markdown() {
         "long_code_final_segment",
         contains_line(&long_lines, "panel.\";")
     );
-    assert_tui_diagnostic!("long_prompt_clipped", contains_line(&long_lines, "…"));
-
     app.agents_overview.last_messages.insert(
         thread_id,
         "```md\n| Check | Result |\n| --- | --- |\n| Parser | Fixed |\n```".into(),
