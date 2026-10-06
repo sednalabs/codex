@@ -264,6 +264,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             response_id="browser-visual-fixture-followup",
         )
         with PackagedTui(isolated) as tui:
+            tui.until("Ask Codex to do anything")
             tui.send("Inspect the configured synthetic Browser page and report its capture labels.\n")
             final = tui.until("browser synthetic consumer complete")
             assert "browser synthetic consumer complete" in final
