@@ -59,11 +59,20 @@ TEST_RESULT_RE = re.compile(
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 SOURCE_LOCATION_RE = re.compile(
-    r"(?:thread '[^'\r\n]+' panicked at |(?:^|\s)at\s+)"
+    r"^thread '(?P<thread>[^'\r\n]+)' panicked at "
     r"(?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
     r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
     r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
-    r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
+    r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})"
+    r"(?::)?[ \t]*\r?$",
+    re.MULTILINE,
+)
+BACKTRACE_LOCATION_RE = re.compile(
+    r"^[ \t]*\d+:[ \t]+(?P<frame>[^\r\n]+)\r?\n"
+    r"[ \t]+at[ \t]+(?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
+    r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
+    r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
+    r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})[ \t]*$",
     re.MULTILINE,
 )
 SNAPSHOT_FILE_RE = re.compile(
@@ -95,6 +104,14 @@ def verified_repo_location(
         return None
     if resolved.suffix != ".rs":
         return None
+    try:
+        source_lines = resolved.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    if line > len(source_lines):
+        return None
+    if column > len(source_lines[line - 1].encode("utf-8")) + 1:
+        return None
     return f"{candidate_path.as_posix()}:{line}:{column}"
 
 
@@ -117,7 +134,10 @@ def failure_projection(
         failure_class = "test_failure"
 
     source_location = None
+    expected_thread_suffix = selector
     for match in SOURCE_LOCATION_RE.finditer(projection_input):
+        if not match.group("thread").endswith(expected_thread_suffix):
+            continue
         source_location = verified_repo_location(
             match.group("path"),
             int(match.group("line")),
@@ -126,6 +146,22 @@ def failure_projection(
         )
         if source_location:
             break
+    if source_location is None:
+        expected_frame_name = selector.rsplit("::", 1)[-1]
+        for match in BACKTRACE_LOCATION_RE.finditer(projection_input):
+            if not re.search(
+                rf"::{re.escape(expected_frame_name)}(?:::|$)",
+                match.group("frame"),
+            ):
+                continue
+            source_location = verified_repo_location(
+                match.group("path"),
+                int(match.group("line")),
+                int(match.group("column")),
+                repo_root,
+            )
+            if source_location:
+                break
 
     allowed_snapshot_names = TUI_DIAGNOSTIC_SNAPSHOT_NAMES.get(selector, set())
     observed_snapshot_names = set()
@@ -485,6 +521,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # This diagnostic-only setting is restricted to the exact TUI selectors.
         diagnostic_env = env.copy()
         diagnostic_env["INSTA_OUTPUT"] = "summary"
+        # Backtraces stay captured; failure_projection emits only a verified location.
         diagnostic_env["RUST_BACKTRACE"] = "1"
         for name in request["tests"]:
             # Inventory above proves each requested name is unique in this target.
