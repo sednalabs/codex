@@ -674,6 +674,13 @@ def _migrate_and_measure(connection: sqlite3.Connection, migration_path: Path) -
 
 
 def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
+    helper_spec = importlib.util.spec_from_file_location(
+        "codex_usage_report", repo_root / "scripts" / "codex_usage_report.py"
+    )
+    if helper_spec is None or helper_spec.loader is None:
+        raise AssertionError("could not import the exact tested reporter source")
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
     migration = repo_root / "codex-rs" / "state" / "usage_migrations" / "0020_bounded_usage_reporting_indexes.sql"
     full_old = temp_root / "history-old.sqlite"
     connection = _prepare_old_schema_copy(database, full_old)
@@ -725,8 +732,22 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         )
     _assert(max(instruction_counts) <= min(instruction_counts) * 1.25 + 5_000, "indexed read work should not grow with out-of-window history")
 
+    call_limit_database = temp_root / "call-limit.sqlite"
+    _copy_database(database, call_limit_database)
+    call_limit_writer = sqlite3.connect(call_limit_database)
+    try:
+        call_limit_writer.executemany(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, started_at, status) VALUES (?, ?, ?, ?)",
+            (
+                (f"c{index:07d}", "x", "2020-01-01T00:00:00Z", "ok")
+                for index in range(helper.MAX_CALLS + 1)
+            ),
+        )
+        call_limit_writer.commit()
+    finally:
+        call_limit_writer.close()
     cap, _cap_diagnostic = _report(
-        full_old,
+        call_limit_database,
         repo_root,
         start="2020-01-01T00:00:00Z",
         end="2020-01-02T00:00:00Z",
