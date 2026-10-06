@@ -17,6 +17,7 @@ on:
       - codex-rs/exec/src/lib.rs
       - codex-rs/runtime-proof/Cargo.toml
       - codex-rs/runtime-proof/src/auth.rs
+      - codex-rs/runtime-proof/src/auth_tests.rs
       - codex-rs/runtime-proof/src/signer.rs
       - codex-rs/runtime-proof/src/signer_tests.rs
       - codex-rs/runtime-proof/src/startup.rs
