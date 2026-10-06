@@ -35,6 +35,15 @@ def _copy_database(source: Path, destination: Path) -> None:
         source_connection.close()
 
 
+def _diagnostic_excerpt(value: str, max_chars: int = 512) -> str:
+    if len(value) <= max_chars:
+        return value
+    prefix_chars = max_chars // 2
+    suffix_chars = max_chars - prefix_chars
+    omitted_chars = len(value) - max_chars
+    return f"{value[:prefix_chars]}...[{omitted_chars} chars omitted]...{value[-suffix_chars:]}"
+
+
 def _report(
     database: Path,
     repo_root: Path,
@@ -86,12 +95,23 @@ def _report(
     )
     if expected_exit is not None and completed.returncode != expected_exit:
         raise AssertionError(
-            f"reporter exit {completed.returncode} != {expected_exit}: {completed.stdout}\n{completed.stderr}"
+            "reporter exit mismatch: "
+            f"actual={completed.returncode} expected={expected_exit} "
+            f"stdout_bytes={len(completed.stdout.encode('utf-8'))} "
+            f"stdout_excerpt={_diagnostic_excerpt(completed.stdout)!r} "
+            f"stderr_bytes={len(completed.stderr.encode('utf-8'))} "
+            f"stderr_excerpt={_diagnostic_excerpt(completed.stderr)!r}"
         )
     try:
         report = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise AssertionError(f"reporter did not return JSON: {completed.stdout}\n{completed.stderr}") from exc
+        raise AssertionError(
+            f"reporter did not return JSON at char {exc.pos}: {exc.msg}; "
+            f"stdout_bytes={len(completed.stdout.encode('utf-8'))} "
+            f"stdout_excerpt={_diagnostic_excerpt(completed.stdout)!r} "
+            f"stderr_bytes={len(completed.stderr.encode('utf-8'))} "
+            f"stderr_excerpt={_diagnostic_excerpt(completed.stderr)!r}"
+        ) from exc
     diagnostic: dict[str, Any] = {}
     for line in completed.stderr.splitlines():
         prefix = "CODEX_USAGE_REPORT_DIAGNOSTICS="
