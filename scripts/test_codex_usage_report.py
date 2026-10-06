@@ -247,7 +247,8 @@ def _correctness(
         database,
         helper.parse_utc(START),
         helper.parse_utc(END),
-        helper.ZoneInfo("UTC"),
+        helper.UTC,
+        "UTC",
         "all",
         None,
         "both",
@@ -477,6 +478,10 @@ def _correctness(
     _assert(
         all_report["summary"]["provider_call_count"] == 4,
         "all scope must include exactly four in-window calls",
+    )
+    _assert(
+        all_report["window"]["presentation_timezone"] == "UTC",
+        "UTC presentation timezone must be preserved",
     )
     _assert(
         all_report["summary"]["provider_reported_credits"]["call_count"] == 1,
@@ -959,11 +964,19 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         if vm is None:
             raise AssertionError("diagnostics omitted SQLite work estimate")
         instruction_counts.append(int(vm))
-        rss = diagnostic.get("max_rss_platform_units")
-        _assert(
-            rss is not None and int(rss) <= 64 * 1024,
-            "hosted Python process must remain within the 64 MiB RSS target",
-        )
+        rss = diagnostic.get("max_rss_kib")
+        if rss is None:
+            _assert(
+                sys.platform == "win32",
+                "hosted Python process must expose RSS outside Windows",
+            )
+            rss_observation = "unavailable_windows_resource_module"
+        else:
+            _assert(
+                int(rss) <= 64 * 1024,
+                "hosted Python process must remain within the 64 MiB RSS target",
+            )
+            rss_observation = "measured"
         plans = [
             detail for plan in diagnostic["query_plans"] for detail in plan["details"]
         ]
@@ -985,8 +998,8 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
                 "selected_call_count": diagnostic["selected_call_rows"],
                 "sqlite_vm_instruction_estimate": vm,
                 "elapsed_seconds": diagnostic["elapsed_seconds"],
-                "max_rss_platform_units": diagnostic.get("max_rss_platform_units"),
-                "max_rss_unit": "KiB on the standard Ubuntu hosted runner",
+                "max_rss_kib": rss,
+                "max_rss_observation": rss_observation,
             }
         )
     _assert(

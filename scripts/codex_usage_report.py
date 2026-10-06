@@ -526,7 +526,8 @@ class UsageReporter:
         database: Path,
         start: dt.datetime,
         end: dt.datetime,
-        timezone: ZoneInfo,
+        timezone: dt.tzinfo,
+        timezone_name: str,
         scope: str,
         thread_id: str | None,
         credit_mode: str,
@@ -536,6 +537,7 @@ class UsageReporter:
         self.start = start
         self.end = end
         self.timezone = timezone
+        self.timezone_name = timezone_name
         self.scope = scope
         self.thread_id = thread_id
         self.credit_mode = credit_mode
@@ -1454,7 +1456,7 @@ class UsageReporter:
                 "window": {
                     "start_utc_inclusive": _iso_utc(self.start),
                     "end_utc_exclusive": _iso_utc(self.end),
-                    "presentation_timezone": self.timezone.key,
+                    "presentation_timezone": self.timezone_name,
                     "presentation_bounds": window_local,
                 },
                 "snapshot": {
@@ -1544,17 +1546,21 @@ class UsageReporter:
                 self.conn = None
 
     def _write_diagnostics(self, started: float) -> None:
+        max_rss_kib = None
+        if resource is not None:
+            max_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            # Linux reports ru_maxrss in KiB; macOS reports bytes.
+            if sys.platform == "darwin":
+                max_rss_kib = (max_rss + 1023) // 1024
+            else:
+                max_rss_kib = max_rss
         payload = {
             "selected_call_rows": self.selected_rows,
             "lineage_nodes": self.lineage_nodes,
             "rate_policy_rows": self.rate_policy_rows,
             "sqlite_vm_instruction_estimate": self.vm_instructions,
             "elapsed_seconds": round(time.monotonic() - started, 6),
-            "max_rss_platform_units": (
-                int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-                if resource is not None
-                else None
-            ),
+            "max_rss_kib": max_rss_kib,
             "query_plans": self.query_plans,
         }
         print(
@@ -1602,7 +1608,10 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     try:
         args.timezone_value = ZoneInfo(args.timezone)
     except ZoneInfoNotFoundError:
-        parser.error("--timezone must name an installed IANA timezone")
+        if args.timezone == "UTC":
+            args.timezone_value = UTC
+        else:
+            parser.error("--timezone must name an installed IANA timezone")
     return args
 
 
@@ -1629,7 +1638,7 @@ def _error_report(
             {
                 "start_utc_inclusive": _iso_utc(args.start),
                 "end_utc_exclusive": _iso_utc(args.end),
-                "presentation_timezone": args.timezone_value.key,
+                "presentation_timezone": args.timezone,
             }
             if args is not None
             else None
@@ -1677,6 +1686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             start=args.start,
             end=args.end,
             timezone=args.timezone_value,
+            timezone_name=args.timezone,
             scope=args.scope,
             thread_id=args.thread_id,
             credit_mode=args.credit_mode,
