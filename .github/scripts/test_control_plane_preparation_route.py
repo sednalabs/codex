@@ -812,7 +812,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^      ([a-z_]+):$", call, re.M), ["target_sha", "base_sha", "base_ref"])
         self.assertLess(reusable.index("id: preflight"), reusable.index("Set up pinned Rust toolchain"))
         self.assertIn("id: prepare", reusable)
-        self.assertEqual(reusable.count("retention-days: 3"), 2)
+        self.assertEqual(reusable.count("retention-days: 3"), 3)
         self.assertIn(".route.json", reusable)
         self.assertNotIn("secrets: inherit", reusable)
 
