@@ -898,7 +898,7 @@ jobs:
             exit 1
           }
           bazel_args=(--ignore_all_rc_files "--output_base=${RUNNER_TEMP}/computer-use-bazel")
-          [[ "$(bazel "${bazel_args[@]}" --version)" == "bazel 9.0.0" ]] || {
+          [[ "$(bazel --version)" == "bazel 9.0.0" ]] || {
             echo "module resolver did not select Bazel 9.0.0" >&2
             exit 1
           }
