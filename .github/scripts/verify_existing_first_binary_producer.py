@@ -35,6 +35,7 @@ PERMANENTLY_DIAGNOSTIC_PRODUCER_RUN_IDS = frozenset({36800811941})
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[1-9][0-9]*\Z")
+BASE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
 ARCHES = {
     "x86_64": {
         "target": "x86_64-unknown-linux-gnu",
@@ -1211,6 +1212,21 @@ def _required_env(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def validate_consumer_base_ref(mode: str, base_ref: str) -> None:
+    """Keep cross-run refs pinned while allowing a verified same-run build ref.
+
+    A build-mode ref is only accepted after verify_build_artifact confirms this
+    run's standard runner-policy and architecture package jobs succeeded. The
+    package job's H/B/T gate resolves BASE_REF and compares it with BASE_SHA
+    before writing the artifact manifest. consume-existing remains main-only.
+    """
+    _require(isinstance(base_ref, str) and BASE_REF.fullmatch(base_ref) is not None, "comparison base ref is invalid")
+    if mode == "consume-existing":
+        _require(base_ref == "main", "consumer route requires the pinned main comparison ref")
+        return
+    _require(mode == "build", "consumer jobs may run only for build or consume-existing modes")
+
+
 def main() -> int:
     env = os.environ
     mode = _required_env(env, "MODE")
@@ -1222,8 +1238,7 @@ def main() -> int:
     base_sha = _required_env(env, "BASE_SHA")
     if not SHA.fullmatch(product_sha) or not SHA.fullmatch(base_sha):
         raise ValueError("workflow target/base must be full lowercase SHAs")
-    if base_ref != "main":
-        raise ValueError("consumer route requires the pinned main comparison ref")
+    validate_consumer_base_ref(mode, base_ref)
 
     api_url = _required_env(env, "API_URL")
     api = urlsplit(api_url)

@@ -80,6 +80,7 @@ from verify_existing_first_binary_producer import (
     RUN_ID,
     SHA,
     verify_build_artifact,
+    validate_consumer_base_ref,
     verify_current_consumer,
     verify_existing_producer,
     reconcile_consumer_results,
@@ -2810,6 +2811,18 @@ class CurrentConsumerIdentityTests(unittest.TestCase):
 
 
 class BackwardsCompatibleBuildModeTests(unittest.TestCase):
+    def test_build_mode_accepts_safe_non_main_base_ref_for_same_run_gate(self) -> None:
+        validate_consumer_base_ref("build", "validation/interrupt-guardian-fixture-8389-20261004")
+
+    def test_consume_existing_remains_pinned_to_main(self) -> None:
+        validate_consumer_base_ref("consume-existing", "main")
+        with self.assertRaises(ValueError):
+            validate_consumer_base_ref("consume-existing", "validation/candidate")
+
+    def test_unsupported_consumer_mode_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_consumer_base_ref("prepare-only", "main")
+
     def test_same_run_native_build_artifact_is_still_accepted(self) -> None:
         architecture = "x86_64"
         branch = "reconstruct/first-increment-20261001"
@@ -2863,6 +2876,26 @@ class BackwardsCompatibleBuildModeTests(unittest.TestCase):
             architecture=architecture,
         )
         self.assertEqual(result["id"], 42)
+
+        for failed_job_name in (
+            "Verify standard runner graph and exact identities",
+            ARCHES[architecture]["package_job"],
+        ):
+            failed_jobs = copy.deepcopy(jobs)
+            next(job for job in failed_jobs["jobs"] if job["name"] == failed_job_name)["conclusion"] = "failure"
+            with self.subTest(failed_job=failed_job_name), self.assertRaises(ValueError):
+                verify_build_artifact(
+                    run,
+                    workflow,
+                    failed_jobs,
+                    {"total_count": 1, "artifacts": [artifact]},
+                    run_id=run_id,
+                    workflow_host_sha=host,
+                    branch=branch,
+                    product_sha=product,
+                    base_sha=base,
+                    architecture=architecture,
+                )
 
     def test_same_run_wrong_runner_is_rejected(self) -> None:
         architecture = "x86_64"
