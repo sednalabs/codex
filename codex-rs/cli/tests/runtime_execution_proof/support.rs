@@ -346,10 +346,10 @@ impl Respond for McpResponder {
                 authorization: authorization.clone(),
             });
         }
-        if method == "tools/call" {
-            if let Ok(mut headers) = self.authorization_headers.lock() {
-                headers.push(authorization);
-            }
+        if method == "tools/call"
+            && let Ok(mut headers) = self.authorization_headers.lock()
+        {
+            headers.push(authorization);
         }
         let response = match method {
             "initialize" => serde_json::json!({
@@ -438,7 +438,6 @@ pub struct ProtectedRuntimeFixture {
     mcp_request_records: Arc<Mutex<Vec<McpRequestRecord>>>,
     followed_redirects: Arc<AtomicUsize>,
     wait_targets: Arc<Mutex<Vec<String>>>,
-    wait_call_ids: Arc<Mutex<Vec<String>>>,
     accepted_wait_results: Arc<Mutex<Vec<(bool, bool)>>>,
     delay_first_claim: bool,
     expiring_provider_token: Arc<Mutex<Option<String>>>,
@@ -446,19 +445,43 @@ pub struct ProtectedRuntimeFixture {
 
 impl ProtectedRuntimeFixture {
     pub async fn start() -> Result<Self> {
-        Self::start_config(false, false, false, true).await
+        Self::start_config(
+            /*redirect_claims*/ false,
+            /*delay_first_claim*/ false,
+            /*error_claims*/ false,
+            /*spawn_child*/ true,
+        )
+        .await
     }
 
     pub async fn start_with_redirect(redirect_claims: bool) -> Result<Self> {
-        Self::start_config(redirect_claims, false, false, true).await
+        Self::start_config(
+            redirect_claims,
+            /*delay_first_claim*/ false,
+            /*error_claims*/ false,
+            /*spawn_child*/ true,
+        )
+        .await
     }
 
     pub async fn start_delayed_response_expiry() -> Result<Self> {
-        Self::start_config(false, true, false, false).await
+        Self::start_config(
+            /*redirect_claims*/ false,
+            /*delay_first_claim*/ true,
+            /*error_claims*/ false,
+            /*spawn_child*/ false,
+        )
+        .await
     }
 
     pub async fn start_with_mcp_error() -> Result<Self> {
-        Self::start_config(false, false, true, true).await
+        Self::start_config(
+            /*redirect_claims*/ false,
+            /*delay_first_claim*/ false,
+            /*error_claims*/ true,
+            /*spawn_child*/ true,
+        )
+        .await
     }
 
     async fn start_config(
@@ -552,9 +575,7 @@ impl ProtectedRuntimeFixture {
         let provider_token = synthetic_access_token(provider_expires_at)?;
         fs::write(
             home.join("agents/proof-child.toml"),
-            format!(
-                "model_provider = \"openai\"\nopenai_base_url = {overridden_provider:?}\n"
-            ),
+            format!("model_provider = \"openai\"\nopenai_base_url = {overridden_provider:?}\n"),
         )?;
         fs::write(
             home.join("config.toml"),
@@ -601,7 +622,6 @@ impl ProtectedRuntimeFixture {
             mcp_request_records,
             followed_redirects,
             wait_targets,
-            wait_call_ids,
             accepted_wait_results,
             delay_first_claim,
             expiring_provider_token,
@@ -609,7 +629,7 @@ impl ProtectedRuntimeFixture {
     }
 
     pub async fn run_cli(&self) -> Result<Output> {
-        self.run_cli_with_prompt_and_auth_fault("root-claim", None)
+        self.run_cli_with_prompt_and_auth_fault("root-claim", /*fault*/ None)
             .await
     }
 
@@ -619,7 +639,7 @@ impl ProtectedRuntimeFixture {
     }
 
     pub async fn run_cli_with_prompt(&self, prompt: &str) -> Result<Output> {
-        self.run_cli_with_prompt_and_auth_fault(prompt, None).await
+        self.run_cli_with_prompt_and_auth_fault(prompt, /*fault*/ None).await
     }
 
     pub fn model_request_paths(&self) -> Vec<String> {
@@ -634,12 +654,12 @@ impl ProtectedRuntimeFixture {
         prompt: &str,
         fault: Option<AuthFault>,
     ) -> Result<Output> {
-        self.run_cli_with_prompt_fault_and_log_filter(prompt, fault, None)
+        self.run_cli_with_prompt_fault_and_log_filter(prompt, fault, /*log_filter*/ None)
             .await
     }
 
     pub async fn run_cli_with_log_filter(&self, prompt: &str, log_filter: &str) -> Result<Output> {
-        self.run_cli_with_prompt_fault_and_log_filter(prompt, None, Some(log_filter))
+        self.run_cli_with_prompt_fault_and_log_filter(prompt, /*fault*/ None, Some(log_filter))
             .await
     }
 
@@ -754,7 +774,8 @@ impl ProtectedRuntimeFixture {
                 *self
                     .expiring_provider_token
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(access_token.clone());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(access_token.clone());
                 auth_packet["provider"]["access_token"] = serde_json::json!(access_token);
             }
             Some(AuthFault::ProviderRecipient) => {
@@ -901,10 +922,6 @@ impl ProtectedRuntimeFixture {
 
     pub fn work_item_ref(&self) -> &str {
         WORK_ITEM_REF
-    }
-
-    pub fn codex_home(&self) -> PathBuf {
-        self.home.clone()
     }
 
     pub fn fixture_root(&self) -> PathBuf {

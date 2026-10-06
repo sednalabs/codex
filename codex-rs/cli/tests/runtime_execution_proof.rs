@@ -151,10 +151,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             "failed"
         }
     );
-    anyhow::ensure!(
-        result.status.success(),
-        "codex exec exited unsuccessfully"
-    );
+    anyhow::ensure!(result.status.success(), "codex exec exited unsuccessfully");
     let calls = fixture.claim_calls();
     anyhow::ensure!(
         calls.len() == 2,
@@ -714,7 +711,7 @@ async fn delegate_provider_override_is_rejected_before_credential_egress() -> Re
 #[ignore = "requires an explicitly invoked disposable Linux root fixture"]
 async fn protected_mcp_redirect_is_stopped_before_recipient_change() -> Result<()> {
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
-    let fixture = ProtectedRuntimeFixture::start_with_redirect(true).await?;
+    let fixture = ProtectedRuntimeFixture::start_with_redirect(/*redirect_claims*/ true).await?;
     let _ = fixture.run_cli().await?;
     anyhow::ensure!(
         fixture.claim_calls().len() == 2,

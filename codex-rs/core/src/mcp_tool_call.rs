@@ -402,17 +402,10 @@ async fn handle_approved_mcp_tool_call(
                 if let McpToolApprovalApplication::Apply { decision, policy } =
                     &approval_application
                 {
-                    let session_approval_key = session_mcp_tool_approval_key(
-                        &invocation,
-                        Some(&metadata),
-                        policy.mode,
-                    );
+                    let session_approval_key =
+                        session_mcp_tool_approval_key(&invocation, Some(&metadata), policy.mode);
                     let persistent_approval_key = if policy.allow_persistent {
-                        persistent_mcp_tool_approval_key(
-                            &invocation,
-                            Some(&metadata),
-                            policy.mode,
-                        )
+                        persistent_mcp_tool_approval_key(&invocation, Some(&metadata), policy.mode)
                     } else {
                         None
                     };
@@ -425,8 +418,7 @@ async fn handle_approved_mcp_tool_call(
                     )
                     .await;
                 }
-                maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call)
-                    .await;
+                maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call).await;
                 let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
                     sess,
                     turn_context,
@@ -444,10 +436,8 @@ async fn handle_approved_mcp_tool_call(
                     call_id,
                     Some(&metadata),
                 );
-                let request_meta = with_mcp_tool_call_thread_id_meta(
-                    request_meta,
-                    &sess.thread_id.to_string(),
-                );
+                let request_meta =
+                    with_mcp_tool_call_thread_id_meta(request_meta, &sess.thread_id.to_string());
                 let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
                     step_context,
                     &prepared_call,
@@ -480,12 +470,11 @@ async fn handle_approved_mcp_tool_call(
                     );
                 }
                 if protected_call {
-                    runtime_redaction_context =
-                        codex_runtime_proof::capture_mcp_redaction_context(
-                            &server,
-                            transport_url.as_deref().unwrap_or_default(),
-                            proof.as_ref(),
-                        )?;
+                    runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
+                        &server,
+                        transport_url.as_deref().unwrap_or_default(),
+                        proof.as_ref(),
+                    )?;
                 }
                 let request_meta = add_runtime_proof_meta(request_meta, proof)?;
                 Ok((rewritten_arguments, request_meta))

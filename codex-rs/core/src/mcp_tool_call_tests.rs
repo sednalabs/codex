@@ -1569,7 +1569,7 @@ fn runtime_proof_metadata_preserves_trace_fields_and_rejects_collision() {
     assert!(
         add_runtime_proof_meta(
             Some(serde_json::json!({ "runtime/execution-proof": "caller" })),
-            None,
+            /*proof*/ None,
         )
         .is_err()
     );
