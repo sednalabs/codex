@@ -283,8 +283,18 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
 
         requests = [request for request in server.requests() if request.path == "/v1/responses"]
         assert len(requests) == 2, f"expected one call and one typed-output follow-up: {requests!r}"
-        advertised = requests[0].body_json().get("tools")
-        assert isinstance(advertised, list)
+        request_body = requests[0].body_json()
+        advertised = request_body.get("tools")
+        if not isinstance(advertised, list):
+            advertised = []
+        # Responses Lite places model-visible tools in an input item instead.
+        input_items = request_body.get("input", [])
+        if isinstance(input_items, list):
+            for item in input_items:
+                if isinstance(item, dict) and item.get("type") == "additional_tools":
+                    additional_tools = item.get("tools", [])
+                    if isinstance(additional_tools, list):
+                        advertised.extend(additional_tools)
         browser_namespace = next(
             (
                 tool for tool in advertised
