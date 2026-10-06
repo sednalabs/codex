@@ -26,6 +26,7 @@ SCHEMA_VERSION = "rust-tests-v1"
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 TEST_RE = re.compile(r"^[A-Za-z0-9_:.\-]{1,255}$")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ALLOWED_PROFILES = {"rust_minimal", "rust_integration"}
 ALLOWED_TARGET_KINDS = {"lib", "integration"}
 ALLOWED_EXECUTION_MODES = {"full_target", "exact_tests"}
@@ -58,7 +59,7 @@ TEST_RESULT_RE = re.compile(
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 SOURCE_LOCATION_RE = re.compile(
-    r"^thread '[^'\r\n]+' panicked at (?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
+    r"thread '[^'\r\n]+' panicked at (?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
     r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
     r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
     r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
@@ -101,7 +102,8 @@ def failure_projection(
 ) -> dict[str, Any]:
     """Project failures to fixed classes and narrowly verified public evidence."""
 
-    lowered = output.lower()
+    projection_input = ANSI_ESCAPE_RE.sub("", output)
+    lowered = projection_input.lower()
     if "snapshot assertion" in lowered or "snapshot mismatch" in lowered:
         failure_class = "snapshot_assertion_failed"
     elif "assertion left == right failed" in lowered:
@@ -114,7 +116,7 @@ def failure_projection(
         failure_class = "test_failure"
 
     source_location = None
-    for match in SOURCE_LOCATION_RE.finditer(output):
+    for match in SOURCE_LOCATION_RE.finditer(projection_input):
         source_location = verified_repo_location(
             match.group("path"),
             int(match.group("line")),
@@ -126,7 +128,7 @@ def failure_projection(
 
     allowed_snapshot_names = TUI_DIAGNOSTIC_SNAPSHOT_NAMES.get(selector, set())
     observed_snapshot_names = set()
-    for match in SNAPSHOT_FILE_RE.finditer(output):
+    for match in SNAPSHOT_FILE_RE.finditer(projection_input):
         snapshot_name = PurePosixPath(
             match.group("path").replace("\\", "/")
         ).name
