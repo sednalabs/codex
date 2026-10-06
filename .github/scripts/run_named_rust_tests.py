@@ -202,7 +202,7 @@ VALIDATION_IDENTITY_ENV = {
     "run_id": "GITHUB_RUN_ID", "run_attempt": "GITHUB_RUN_ATTEMPT",
 }
 TEST_RESULT_RE = re.compile(
-    r"test result:\s+\w+\.\s+"
+    r"test result:\s+(?P<status>\w+)\.\s+"
     r"(?P<passed>\d+) passed;\s+"
     r"(?P<failed>\d+) failed;\s+"
     r"(?P<ignored>\d+) ignored;\s+"
@@ -428,6 +428,54 @@ def test_result_counts(output: str) -> dict[str, int] | None:
         name: int(match.group(name))
         for name in ("passed", "failed", "ignored", "measured", "filtered")
     }
+
+
+def full_target_result_counts(
+    output: str, inventory_names: list[str]
+) -> dict[str, int] | None:
+    """Reconcile one complete, unfiltered Cargo summary to the full inventory."""
+
+    inventory = set(inventory_names)
+    if not inventory or len(inventory) != len(inventory_names):
+        return None
+    outcomes = test_outcomes(output)
+    if set(outcomes) != inventory or any(
+        len(values) != 1 for values in outcomes.values()
+    ):
+        return None
+    observed = {
+        "passed": sum(
+            values == ["ok"] for values in outcomes.values()
+        ),
+        "failed": sum(
+            values == ["FAILED"] for values in outcomes.values()
+        ),
+        "ignored": sum(
+            values == ["ignored"] for values in outcomes.values()
+        ),
+        "measured": 0,
+    }
+    qualifying = []
+    for match in TEST_RESULT_RE.finditer(output):
+        count_names = ("passed", "failed", "ignored", "measured", "filtered")
+        if any(
+            len(match.group(name)) > MAX_CARGO_SUMMARY_COUNT_DIGITS
+            for name in count_names
+        ):
+            continue
+        counts = {
+            name: int(match.group(name))
+            for name in count_names
+        }
+        summary_status = "ok" if counts["failed"] == 0 else "FAILED"
+        if (
+            match.group("status") == summary_status
+            and counts["filtered"] == 0
+            and sum(counts[name] for name in observed) == len(inventory)
+            and all(counts[name] == observed[name] for name in observed)
+        ):
+            qualifying.append(counts)
+    return qualifying[0] if len(qualifying) == 1 else None
 
 
 def cargo_summary_channel_evidence(output: str) -> dict[str, Any]:
@@ -1634,6 +1682,14 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         counts[name] = counts.get(name, 0) + 1
     missing = [name for name in request["tests"] if counts.get(name, 0) == 0]
     ambiguous = [name for name in request["tests"] if counts.get(name, 0) != 1]
+    full_mcp_library = (
+        request["package"], request["target_kind"], request["target"]
+    ) == ("codex-mcp", "lib", "")
+    invalid_full_inventory = full_mcp_library and (
+        not names
+        or len(set(names)) != len(names)
+        or any(not TEST_RE.fullmatch(name) for name in names)
+    )
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "status": "success",
@@ -1653,7 +1709,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         },
         "tests": [],
     }
-    if missing or ambiguous:
+    if missing or ambiguous or invalid_full_inventory:
         result.update(
             {
                 "status": "failure",
@@ -1686,7 +1742,11 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     output = "\n".join(
         value for value in (completed.stdout, completed.stderr) if value
     )
-    counts = test_result_counts(output)
+    counts = (
+        full_target_result_counts(output, names)
+        if full_mcp_library
+        else test_result_counts(output)
+    )
     outcomes = test_outcomes(output)
     outcome_lines = test_outcome_lines(output)
     result["failure_evidence"] = failure_evidence(

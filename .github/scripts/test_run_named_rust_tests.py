@@ -2382,6 +2382,42 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                 if "suite::other ... FAILED" in output:
                     self.assertEqual(public["failure_evidence"]["failed_names"]["names"], ["suite::other"])
 
+    def test_codex_mcp_requires_one_inventory_reconciled_unfiltered_summary(self) -> None:
+        names = [f"mcp::test_{index}" for index in range(10)]
+        request = {**self.request, "package": "codex-mcp", "target_kind": "lib", "target": "",
+                   "tests": names}
+        inventory = "\n".join(f"{name}: test" for name in names) + "\n"
+        outcomes = "\n".join(f"test {name} ... ok" for name in names)
+        full = ("test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n")
+        auxiliary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out\n"
+
+        accepted = json.loads(named_tests.public_artifact_bytes(
+            self._run(request, inventory, outcomes + "\n" + auxiliary + full)))
+        self.assertEqual((accepted["status"], accepted["inventory"]["test_count"],
+                          len(accepted["tests"])), ("success", 10, 10))
+        self.assertTrue(all(item["execution_reconciled"] for item in accepted["tests"]))
+
+        rejected = (
+            outcomes + "\n" + auxiliary,
+            outcomes + "\n" + full + full,
+            outcomes + "\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+            outcomes + "\ntest result: FAILED. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+            outcomes.replace(f"test {names[-1]} ... ok", "") + "\n" + full,
+        )
+        for output in rejected:
+            with self.subTest(output=output[-100:]):
+                result = json.loads(named_tests.public_artifact_bytes(
+                    self._run(request, inventory, output)))
+                self.assertEqual((result["status"], result["failure_code"]),
+                                 ("failure", "execution_reconciliation_failed"))
+
+        for invalid_inventory in ("", inventory + f"{names[0]}: test\n"):
+            with self.subTest(inventory=invalid_inventory[-40:]):
+                result = json.loads(named_tests.public_artifact_bytes(
+                    self._run(request, invalid_inventory, outcomes + "\n" + full)))
+                self.assertEqual((result["status"], result["failure_code"]),
+                                 ("failure", "inventory_reconciliation_failed"))
+
     def test_whole_bytes_omit_canaries_on_every_nested_surface(self) -> None:
         private = "PRIVATE_BODY credential-token /home/private/file https://private.invalid/secret"
         text = "permission denied (os error 13) HTTP status 503 exit code: 7 " + private
