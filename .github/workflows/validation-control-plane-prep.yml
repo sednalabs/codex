@@ -348,7 +348,7 @@ jobs:
           fix_log="${RUNNER_TEMP}/control-plane-fix.log"
           set +e
           (
-            cd product
+            cd product/codex-rs
             run_isolated cargo clippy --fix --tests --allow-dirty --locked \
               -p codex-diagnostics -p codex-cli -p codex-state
           ) >"${fix_log}" 2>&1
