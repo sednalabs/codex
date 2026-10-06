@@ -25,6 +25,10 @@ use codex_tools::ToolSpec;
 use codex_tools::default_namespace_description;
 use codex_tools::dynamic_tool_to_responses_api_tool;
 use serde_json::Value;
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::warn;
@@ -125,6 +129,7 @@ impl DynamicToolHandler {
             payload,
             ..
         } = invocation;
+        let diagnostic_call_id = call_id.clone();
 
         let arguments = match payload {
             ToolPayload::Function { arguments } => arguments,
@@ -143,12 +148,13 @@ impl DynamicToolHandler {
             self.tool_name.clone(),
             args,
         )
-        .await
-        .ok_or_else(|| {
-            FunctionCallError::RespondToModel(
+        .await;
+        let Some(response) = response else {
+            record_browser_core_output_stage(&diagnostic_call_id, false, false, 0);
+            return Err(FunctionCallError::RespondToModel(
                 "dynamic tool call was cancelled before receiving a response".to_string(),
-            )
-        })?;
+            ));
+        };
 
         let DynamicToolResponse {
             content_items,
@@ -158,10 +164,45 @@ impl DynamicToolHandler {
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        Ok(boxed_tool_output(FunctionToolOutput::from_content(
+        let output_item_count = body.len();
+        let output = boxed_tool_output(FunctionToolOutput::from_content(
             body,
             Some(success),
-        )))
+        ));
+        record_browser_core_output_stage(&diagnostic_call_id, true, true, output_item_count);
+        Ok(output)
+    }
+}
+
+fn record_browser_core_output_stage(
+    call_id: &str,
+    response_received: bool,
+    function_output_constructed: bool,
+    output_item_count: usize,
+) {
+    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (Ok(expected_call_id), Some(codex_home)) = (
+        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
+        env::var_os("CODEX_HOME"),
+    ) else {
+        return;
+    };
+    let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let observation = serde_json::json!({
+        "stage": "core_function_output",
+        "call_id_matches_fixture": call_id == expected_call_id.as_str(),
+        "core_response_received": response_received,
+        "core_function_output_constructed": function_output_constructed,
+        "core_output_item_count": output_item_count,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&observation) {
+        line.push(b'\n');
+        let _ = file.write_all(&line);
     }
 }
 

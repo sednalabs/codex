@@ -11,6 +11,8 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
+use std::env;
+use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -217,8 +219,60 @@ async fn run_command_provider(
     params: &DynamicToolCallParams,
     command: &CommandProviderConfig,
 ) -> Result<DynamicToolCallResponse, String> {
-    let output = run_provider_process(&command.argv, params, &[]).await?;
-    parse_provider_response(&output)
+    let output = match run_provider_process(&command.argv, params, &[]).await {
+        Ok(output) => output,
+        Err(error) => {
+            record_browser_provider_stage(&params.call_id, false, false, 0);
+            return Err(error);
+        }
+    };
+    match parse_provider_response(&output) {
+        Ok(response) => {
+            record_browser_provider_stage(
+                &params.call_id,
+                true,
+                true,
+                response.content_items.len(),
+            );
+            Ok(response)
+        }
+        Err(error) => {
+            record_browser_provider_stage(&params.call_id, true, false, 0);
+            Err(error)
+        }
+    }
+}
+
+fn record_browser_provider_stage(
+    call_id: &str,
+    process_exit_success: bool,
+    json_parse_success: bool,
+    content_item_count: usize,
+) {
+    if env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (Ok(expected_call_id), Some(codex_home)) = (
+        env::var("CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"),
+        env::var_os("CODEX_HOME"),
+    ) else {
+        return;
+    };
+    let path = PathBuf::from(codex_home).join("browser-output-stage-diagnostic.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let observation = json!({
+        "stage": "browser_provider",
+        "call_id_matches_fixture": call_id == expected_call_id.as_str(),
+        "provider_process_exit_success": process_exit_success,
+        "provider_json_parse_success": json_parse_success,
+        "provider_content_item_count": content_item_count,
+    });
+    if let Ok(mut line) = serde_json::to_vec(&observation) {
+        line.push(b'\n');
+        let _ = file.write_all(&line);
+    }
 }
 
 async fn run_playwright_provider(

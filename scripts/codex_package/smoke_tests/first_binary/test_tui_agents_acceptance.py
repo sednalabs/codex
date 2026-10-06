@@ -108,6 +108,26 @@ json.dump({"success": True, "contentItems": content}, sys.stdout)
 
 _BROWSER_FIXTURE_CALL_ID = "browser-visual-fixture-call"
 _BROWSER_TOOL_NAMES = {"browser_observe", "browser_step"}
+_BROWSER_SOURCE_STAGE_FIELDS = {
+    "browser_provider": {
+        "call_id_matches_fixture",
+        "provider_process_exit_success",
+        "provider_json_parse_success",
+        "provider_content_item_count",
+    },
+    "app_server_response": {
+        "call_id_matches_fixture",
+        "app_server_response_accepted",
+        "app_server_response_submitted",
+        "app_server_accepted_item_count",
+    },
+    "core_function_output": {
+        "call_id_matches_fixture",
+        "core_response_received",
+        "core_function_output_constructed",
+        "core_output_item_count",
+    },
+}
 
 
 @pytest.fixture
@@ -144,7 +164,7 @@ def browser_output_diagnostic(record_property):
     for item in call_outputs:
         call_id = item.get("call_id")
         call_ids.append(
-            _BROWSER_FIXTURE_CALL_ID
+            "<fixture>"
             if call_id == _BROWSER_FIXTURE_CALL_ID
             else "<other>" if isinstance(call_id, str) else "<missing>"
         )
@@ -171,6 +191,49 @@ def browser_output_diagnostic(record_property):
                 else "<other>"
             )
 
+    source_stage_observations = []
+    stage_observation_path = home / "browser-output-stage-diagnostic.jsonl"
+    try:
+        stage_lines = stage_observation_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        stage_lines = []
+    for line in stage_lines:
+        try:
+            observation = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(observation, dict):
+            continue
+        stage = observation.get("stage")
+        if not isinstance(stage, str):
+            continue
+        expected_fields = _BROWSER_SOURCE_STAGE_FIELDS.get(stage)
+        if expected_fields is None or set(observation) != expected_fields | {"stage"}:
+            continue
+        scalar_values = {
+            key: value for key, value in observation.items() if key != "stage"
+        }
+        if type(scalar_values.get("call_id_matches_fixture")) is not bool:
+            continue
+        result_keys = expected_fields - {
+            "call_id_matches_fixture",
+            next(
+                key for key in expected_fields
+                if key.endswith("_item_count")
+            ),
+        }
+        if any(type(scalar_values.get(key)) is not bool for key in result_keys):
+            continue
+        count_key = next(key for key in expected_fields if key.endswith("_item_count"))
+        if type(scalar_values.get(count_key)) is not int or scalar_values[count_key] < 0:
+            continue
+        source_stage_observations.append({
+            "stage": stage,
+            **{key: scalar_values[key] for key in sorted(expected_fields)},
+        })
+        if len(source_stage_observations) >= 32:
+            break
+
     diagnostic = {
         "fixture_function_call_emitted": state["fixture_function_call_emitted"],
         "responses_request_count": len(requests),
@@ -181,6 +244,7 @@ def browser_output_diagnostic(record_property):
         "function_call_output_tool_names": tool_names,
         "synthetic_browser_provider_invoked": provider_invoked,
         "synthetic_browser_provider_tool_name": provider_tool_name,
+        "source_stage_observations": source_stage_observations,
     }
     record_property(
         "browser_output_diagnostic_json",
@@ -296,6 +360,10 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         },
     )
     isolated.environment["CODEX_TEST_BROWSER_THREAD_START_OBSERVATION"] = "1"
+    isolated.environment["CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC"] = "1"
+    isolated.environment["CODEX_TEST_BROWSER_OUTPUT_DIAGNOSTIC_CALL_ID"] = (
+        _BROWSER_FIXTURE_CALL_ID
+    )
     fixture_dir = home / "browser-fixture"
     fixture_dir.mkdir()
     image_bytes = [_png(220, 20, 20), _png(20, 20, 220)]
