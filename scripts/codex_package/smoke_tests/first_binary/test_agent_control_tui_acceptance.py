@@ -255,8 +255,12 @@ def test_packaged_tui_agents_details_render_configured_identity_and_unknown_effe
             composer_screen = tui.until_screen("synthetic worker.")
             normalized_composer = _normalized_screen(composer_screen)
             assert root_command in normalized_composer, composer_screen
+            # The narrow startup header prioritizes the upstream version and
+            # progressive iteration; the trailing source-hash metadata may be
+            # ellipsized at 40 columns.
+            visible_version_prefix = f"v{artifact_evidence.version}".split("+", 1)[0]
             assert (
-                f"v{artifact_evidence.version}".replace(" ", "")
+                visible_version_prefix.replace(" ", "")
                 in "".join(normalized_composer.split())
             ), composer_screen
             tui.send("\r")
