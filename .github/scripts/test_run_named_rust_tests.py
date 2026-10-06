@@ -2382,9 +2382,9 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
                 if "suite::other ... FAILED" in output:
                     self.assertEqual(public["failure_evidence"]["failed_names"]["names"], ["suite::other"])
 
-    def test_codex_mcp_requires_one_inventory_reconciled_unfiltered_summary(self) -> None:
+    def test_rmcp_client_requires_one_inventory_reconciled_unfiltered_summary(self) -> None:
         names = [f"mcp::test_{index}" for index in range(10)]
-        request = {**self.request, "package": "codex-mcp", "target_kind": "lib", "target": "",
+        request = {**self.request, "package": "codex-rmcp-client", "target_kind": "lib", "target": "",
                    "tests": names}
         inventory = "\n".join(f"{name}: test" for name in names) + "\n"
         outcomes = "\n".join(f"test {name} ... ok" for name in names)

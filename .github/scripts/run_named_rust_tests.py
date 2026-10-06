@@ -1684,7 +1684,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     ambiguous = [name for name in request["tests"] if counts.get(name, 0) != 1]
     full_mcp_library = (
         request["package"], request["target_kind"], request["target"]
-    ) == ("codex-mcp", "lib", "")
+    ) == ("codex-rmcp-client", "lib", "")
     invalid_full_inventory = full_mcp_library and (
         not names
         or len(set(names)) != len(names)
