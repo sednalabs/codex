@@ -265,7 +265,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         )
         with PackagedTui(isolated) as tui:
             tui.until("Ask Codex to do anything")
-            tui.send("Inspect the configured synthetic Browser page and report its capture labels.\n")
+            tui.send("Inspect the configured synthetic Browser page and report its capture labels.\r")
             server.wait_for_requests(2, timeout_s=30)
 
         requests = [request for request in server.requests() if request.path == "/v1/responses"]
