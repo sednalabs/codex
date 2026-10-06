@@ -103,14 +103,18 @@ def parse_utc(value: str) -> dt.datetime:
     try:
         parsed = dt.datetime.fromisoformat(raw)
     except ValueError as exc:
-        raise ValueError("timestamp must be ISO-8601 with an explicit UTC offset") from exc
+        raise ValueError(
+            "timestamp must be ISO-8601 with an explicit UTC offset"
+        ) from exc
     if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
         raise ValueError("timestamp must use UTC")
     return parsed.astimezone(UTC)
 
 
 def _iso_utc(value: dt.datetime) -> str:
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return (
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
 
 
 def _supported_utc_text(value: str) -> dt.datetime:
@@ -158,7 +162,11 @@ def _nonnegative_integer(value: Any) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if math.isfinite(value) and value >= 0 and value.is_integer() else None
+        return (
+            int(value)
+            if math.isfinite(value) and value >= 0 and value.is_integer()
+            else None
+        )
     text = str(value).strip()
     if not re.fullmatch(r"[0-9]+", text):
         return None
@@ -182,7 +190,9 @@ def _key(value: Any) -> str | None:
     return text.lower() if text is not None else None
 
 
-def _sql_chunks(values: Sequence[str], size: int = SQL_CHUNK) -> Iterator[Sequence[str]]:
+def _sql_chunks(
+    values: Sequence[str], size: int = SQL_CHUNK
+) -> Iterator[Sequence[str]]:
     for offset in range(0, len(values), size):
         yield values[offset : offset + size]
 
@@ -194,7 +204,11 @@ def _add_bounded_key(keys: set[Any], key: Any, limit: int, reason: str) -> None:
 
 
 def _sqlite_authorizer(
-    action: int, arg1: str | None, arg2: str | None, _database: str | None, _trigger: str | None
+    action: int,
+    arg1: str | None,
+    arg2: str | None,
+    _database: str | None,
+    _trigger: str | None,
 ) -> int:
     deny_names = (
         "SQLITE_INSERT",
@@ -266,22 +280,31 @@ def _new_metrics() -> dict[str, Any]:
     }
 
 
-def _add_call(metrics: dict[str, Any], call: dict[str, Any], actual: dict[str, Any], standard: dict[str, Any]) -> None:
+def _add_call(
+    metrics: dict[str, Any],
+    call: dict[str, Any],
+    actual: dict[str, Any],
+    standard: dict[str, Any],
+) -> None:
     metrics["provider_call_count"] += 1
     if call.get("status") != "ok":
         metrics["missing_usage_calls"] += 1
     observed_model = _blank_to_none(call.get("actual_model_used"))
     metrics["actual_model_evidence"][observed_model or "<unavailable>"] += 1
-    metrics["model_identity_evidence"][(
-        _blank_to_none(call.get("requested_model")),
-        observed_model,
-    )] += 1
+    metrics["model_identity_evidence"][
+        (
+            _blank_to_none(call.get("requested_model")),
+            observed_model,
+        )
+    ] += 1
     observed_tier = _blank_to_none(call.get("actual_service_tier"))
     metrics["actual_service_tier_evidence"][observed_tier or "<unavailable>"] += 1
     tier_source = _blank_to_none(call.get("actual_service_tier_source"))
     metrics["service_tier_source_evidence"][tier_source or "<unavailable>"] += 1
     fast_mode = call.get("fast_mode_used")
-    fast_evidence = "fast" if fast_mode == 1 else "standard" if fast_mode == 0 else "<unavailable>"
+    fast_evidence = (
+        "fast" if fast_mode == 1 else "standard" if fast_mode == 0 else "<unavailable>"
+    )
     metrics["fast_mode_used_evidence"][fast_evidence] += 1
     for output_name, column in TOKEN_FIELDS.items():
         value = call.get(column)
@@ -343,14 +366,20 @@ def _merge_metrics(items: Iterable[dict[str, Any]]) -> dict[str, Any]:
         for key in merged["token_sums"]:
             merged["token_sums"][key] += item["token_sums"][key]
             merged["token_missing_calls"][key] += item["token_missing_calls"][key]
-        merged["provider_reported"]["call_count"] += item["provider_reported"]["call_count"]
-        merged["provider_reported"]["credits_subtotal"] += item["provider_reported"]["credits_subtotal"]
+        merged["provider_reported"]["call_count"] += item["provider_reported"][
+            "call_count"
+        ]
+        merged["provider_reported"]["credits_subtotal"] += item["provider_reported"][
+            "credits_subtotal"
+        ]
         for mode in ("actual_mode", "standard_scenario"):
             merged[mode]["covered_call_count"] += item[mode]["covered_call_count"]
             merged[mode]["uncovered_call_count"] += item[mode]["uncovered_call_count"]
             merged[mode]["credits_subtotal"] += item[mode]["credits_subtotal"]
             if mode == "actual_mode":
-                merged[mode]["rate_estimated_call_count"] += item[mode]["rate_estimated_call_count"]
+                merged[mode]["rate_estimated_call_count"] += item[mode][
+                    "rate_estimated_call_count"
+                ]
                 for policy_id, count in item[mode]["policy_id_counts"].items():
                     merged[mode]["policy_id_counts"][policy_id] += count
             for rate_id, count in item[mode]["rate_id_counts"].items():
@@ -389,39 +418,68 @@ def _json_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
         ],
-        "actual_service_tier_evidence": dict(sorted(metrics["actual_service_tier_evidence"].items())),
-        "service_tier_source_evidence": dict(sorted(metrics["service_tier_source_evidence"].items())),
-        "fast_mode_used_evidence": dict(sorted(metrics["fast_mode_used_evidence"].items())),
+        "actual_service_tier_evidence": dict(
+            sorted(metrics["actual_service_tier_evidence"].items())
+        ),
+        "service_tier_source_evidence": dict(
+            sorted(metrics["service_tier_source_evidence"].items())
+        ),
+        "fast_mode_used_evidence": dict(
+            sorted(metrics["fast_mode_used_evidence"].items())
+        ),
         "provider_reported_credits": {
             "call_count": metrics["provider_reported"]["call_count"],
-            "credits_subtotal": _credit_string(metrics["provider_reported"]["credits_subtotal"]),
-            "complete": metrics["provider_reported"]["call_count"] == metrics["provider_call_count"],
+            "credits_subtotal": _credit_string(
+                metrics["provider_reported"]["credits_subtotal"]
+            ),
+            "complete": metrics["provider_reported"]["call_count"]
+            == metrics["provider_call_count"],
         },
         "actual_mode": {
             "covered_call_count": metrics["actual_mode"]["covered_call_count"],
-            "rate_estimated_call_count": metrics["actual_mode"]["rate_estimated_call_count"],
+            "rate_estimated_call_count": metrics["actual_mode"][
+                "rate_estimated_call_count"
+            ],
             "uncovered_call_count": metrics["actual_mode"]["uncovered_call_count"],
-            "credits_subtotal": _credit_string(metrics["actual_mode"]["credits_subtotal"]),
+            "credits_subtotal": _credit_string(
+                metrics["actual_mode"]["credits_subtotal"]
+            ),
             "complete_total": (
                 _credit_string(metrics["actual_mode"]["credits_subtotal"])
-                if metrics["actual_mode"]["covered_call_count"] == metrics["provider_call_count"]
+                if metrics["actual_mode"]["covered_call_count"]
+                == metrics["provider_call_count"]
                 else None
             ),
-            "uncovered_reasons": dict(sorted(metrics["actual_mode"]["uncovered_reasons"].items())),
-            "rate_id_call_counts": dict(sorted(metrics["actual_mode"]["rate_id_counts"].items())),
-            "policy_id_call_counts": dict(sorted(metrics["actual_mode"]["policy_id_counts"].items())),
+            "uncovered_reasons": dict(
+                sorted(metrics["actual_mode"]["uncovered_reasons"].items())
+            ),
+            "rate_id_call_counts": dict(
+                sorted(metrics["actual_mode"]["rate_id_counts"].items())
+            ),
+            "policy_id_call_counts": dict(
+                sorted(metrics["actual_mode"]["policy_id_counts"].items())
+            ),
         },
         "standard_scenario": {
             "covered_call_count": metrics["standard_scenario"]["covered_call_count"],
-            "uncovered_call_count": metrics["standard_scenario"]["uncovered_call_count"],
-            "credits_subtotal": _credit_string(metrics["standard_scenario"]["credits_subtotal"]),
+            "uncovered_call_count": metrics["standard_scenario"][
+                "uncovered_call_count"
+            ],
+            "credits_subtotal": _credit_string(
+                metrics["standard_scenario"]["credits_subtotal"]
+            ),
             "complete_total": (
                 _credit_string(metrics["standard_scenario"]["credits_subtotal"])
-                if metrics["standard_scenario"]["covered_call_count"] == metrics["provider_call_count"]
+                if metrics["standard_scenario"]["covered_call_count"]
+                == metrics["provider_call_count"]
                 else None
             ),
-            "uncovered_reasons": dict(sorted(metrics["standard_scenario"]["uncovered_reasons"].items())),
-            "rate_id_call_counts": dict(sorted(metrics["standard_scenario"]["rate_id_counts"].items())),
+            "uncovered_reasons": dict(
+                sorted(metrics["standard_scenario"]["uncovered_reasons"].items())
+            ),
+            "rate_id_call_counts": dict(
+                sorted(metrics["standard_scenario"]["rate_id_counts"].items())
+            ),
             "assumption": "OpenAI standard/default Codex token-rate scenario; not provider-reported billing, public API spend, or quota debit.",
         },
     }
@@ -526,7 +584,9 @@ class UsageReporter:
             set_limit(length_limit, MAX_SQLITE_ROW_BYTES)
         except sqlite3.Error as exc:
             conn.close()
-            raise ReportProblem("unavailable", "bounded_text_limit_unavailable") from exc
+            raise ReportProblem(
+                "unavailable", "bounded_text_limit_unavailable"
+            ) from exc
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         conn.set_authorizer(_sqlite_authorizer)
@@ -535,11 +595,15 @@ class UsageReporter:
         self.conn = conn
         return conn
 
-    def _execute(self, name: str, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
+    def _execute(
+        self, name: str, sql: str, params: Sequence[Any] = ()
+    ) -> sqlite3.Cursor:
         self.check_deadline()
         assert self.conn is not None
         if self.diagnostics_enabled:
-            plan_rows = self.conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()
+            plan_rows = self.conn.execute(
+                "EXPLAIN QUERY PLAN " + sql, params
+            ).fetchall()
             self.query_plans.append(
                 {"query": name, "details": [str(row["detail"]) for row in plan_rows]}
             )
@@ -599,7 +663,9 @@ class UsageReporter:
             remaining -= batch_count
         return children
 
-    def _walk_subtree(self, anchor: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:
+    def _walk_subtree(
+        self, anchor: dict[str, Any]
+    ) -> tuple[dict[str, dict[str, Any]], bool]:
         nodes = {anchor["thread_id"]: anchor}
         frontier = [anchor["thread_id"]]
         cycle_seen = False
@@ -637,7 +703,9 @@ class UsageReporter:
                 f"SELECT {CALL_COLUMNS} FROM usage_provider_calls INDEXED BY {STARTED_INDEX} "
                 "WHERE started_at >= ? AND started_at < ? LIMIT ?"
             )
-            cursor = self._execute("window_calls", sql, (seek_start, seek_end, MAX_CALLS + 1))
+            cursor = self._execute(
+                "window_calls", sql, (seek_start, seek_end, MAX_CALLS + 1)
+            )
             for row in cursor:
                 self._account_output_text(row)
                 if len(calls) >= MAX_CALLS:
@@ -672,7 +740,9 @@ class UsageReporter:
     ) -> tuple[dict[str, dict[str, Any]], set[str]]:
         metadata = dict(existing)
         missing: set[str] = set()
-        frontier_depths = {thread_id: 0 for thread_id in set(initial_ids) - set(metadata)}
+        frontier_depths = {
+            thread_id: 0 for thread_id in set(initial_ids) - set(metadata)
+        }
         for row in metadata.values():
             parent, _parent_source = self._effective_parent(row)
             if parent is not None and parent not in metadata and parent not in missing:
@@ -699,7 +769,11 @@ class UsageReporter:
             metadata.update(fetched)
             for row in fetched.values():
                 parent, _parent_source = self._effective_parent(row)
-                if parent is not None and parent not in metadata and parent not in missing:
+                if (
+                    parent is not None
+                    and parent not in metadata
+                    and parent not in missing
+                ):
                     next_depth = depth + 1
                     previous_depth = frontier_depths.get(parent)
                     if previous_depth is None or next_depth < previous_depth:
@@ -738,7 +812,11 @@ class UsageReporter:
             visited.add(current)
             row = metadata.get(current)
             if row is None:
-                status = "missing_thread_metadata" if current == thread_id else "missing_ancestor"
+                status = (
+                    "missing_thread_metadata"
+                    if current == thread_id
+                    else "missing_ancestor"
+                )
                 return {
                     "resolved_root_thread_id": None,
                     "lineage_status": status,
@@ -757,7 +835,9 @@ class UsageReporter:
                     "lineage_source": source,
                 }
             if parent is None:
-                if recorded == current and (not recorded_roots or recorded_roots == {current}):
+                if recorded == current and (
+                    not recorded_roots or recorded_roots == {current}
+                ):
                     return {
                         "resolved_root_thread_id": current,
                         "lineage_status": "resolved_self_root",
@@ -813,7 +893,9 @@ class UsageReporter:
                 "WHERE provider = ? AND billing_surface = ? AND account_plan = ? LIMIT ?"
             )
             rows = []
-            for row in self._execute("credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)):
+            for row in self._execute(
+                "credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)
+            ):
                 self._account_output_text(row)
                 if total >= MAX_RATE_POLICY_ROWS:
                     raise WorkLimitReached("rate_policy_row_limit_exceeded")
@@ -830,17 +912,36 @@ class UsageReporter:
     ) -> dict[tuple[str, str, str, str, str], list[dict[str, Any]]]:
         keys: set[tuple[str, str, str, str, str]] = set()
         for call in calls:
-            if self.credit_mode in {"observed_or_effective_rate", "both"} and call.get("provider_reported_credits") is None:
+            if (
+                self.credit_mode in {"observed_or_effective_rate", "both"}
+                and call.get("provider_reported_credits") is None
+            ):
                 provider = _key(call.get("provider"))
                 model = _key(call.get("actual_model_used"))
                 tier = _key(call.get("actual_service_tier"))
-                speed = "fast" if call.get("fast_mode_used") == 1 else "standard" if call.get("fast_mode_used") == 0 else None
-                policy_key = (_key(call.get("provider")), _key(call.get("billing_surface")), _key(call.get("account_plan")))
+                speed = (
+                    "fast"
+                    if call.get("fast_mode_used") == 1
+                    else "standard"
+                    if call.get("fast_mode_used") == 0
+                    else None
+                )
+                policy_key = (
+                    _key(call.get("provider")),
+                    _key(call.get("billing_surface")),
+                    _key(call.get("account_plan")),
+                )
                 for policy in policies.get(policy_key, []):
                     if provider and model and tier and speed:
                         _add_bounded_key(
                             keys,
-                            (provider, model, tier, speed, _key(policy.get("rate_card_kind")) or ""),
+                            (
+                                provider,
+                                model,
+                                tier,
+                                speed,
+                                _key(policy.get("rate_card_kind")) or "",
+                            ),
                             MAX_RATE_POLICY_ROWS,
                             "rate_policy_key_limit_exceeded",
                         )
@@ -864,7 +965,9 @@ class UsageReporter:
                 "AND speed_mode = ? AND rate_card_kind = ? LIMIT ?"
             )
             rows = []
-            for row in self._execute("credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)):
+            for row in self._execute(
+                "credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)
+            ):
                 self._account_output_text(row)
                 if total >= MAX_RATE_POLICY_ROWS:
                     raise WorkLimitReached("rate_policy_row_limit_exceeded")
@@ -884,7 +987,9 @@ class UsageReporter:
             try:
                 start = _supported_utc_text(str(row["effective_from"]))
                 end_text = row.get("effective_to")
-                end = _supported_utc_text(str(end_text)) if end_text is not None else None
+                end = (
+                    _supported_utc_text(str(end_text)) if end_text is not None else None
+                )
             except (ValueError, TypeError):
                 invalid_interval = True
                 continue
@@ -938,7 +1043,10 @@ class UsageReporter:
         if len(policy_matches) > 1:
             return {"covered": False, "reason": "ambiguous_credit_policy"}
         if not policy_matches:
-            return {"covered": False, "reason": "credit_policy_missing_or_not_effective"}
+            return {
+                "covered": False,
+                "reason": "credit_policy_missing_or_not_effective",
+            }
         if not model:
             return {"covered": False, "reason": "actual_model_missing"}
         if not tier or not tier_source:
@@ -996,7 +1104,10 @@ class UsageReporter:
         if int(call["input_tokens_cache_write"]) != 0:
             return {"covered": False, "reason": "cache_write_unsupported"}
         if _key(call.get("provider")) != "openai":
-            return {"covered": False, "reason": "standard_scenario_provider_unsupported"}
+            return {
+                "covered": False,
+                "reason": "standard_scenario_provider_unsupported",
+            }
         model = _key(call.get("actual_model_used"))
         if not model:
             return {"covered": False, "reason": "actual_model_missing"}
@@ -1008,7 +1119,9 @@ class UsageReporter:
         if len(matches) > 1:
             return {"covered": False, "reason": "ambiguous_standard_rate"}
         if not matches:
-            reason = "standard_rate_not_effective" if rows else "standard_model_rate_missing"
+            reason = (
+                "standard_rate_not_effective" if rows else "standard_model_rate_missing"
+            )
             return {"covered": False, "reason": reason}
         rate = matches[0]
         rate_amounts = [
@@ -1090,7 +1203,11 @@ class UsageReporter:
             if len(scope_nodes) > MAX_OUTPUT_GROUPS:
                 raise WorkLimitReached("output_group_limit_exceeded")
             participating = set(scope_nodes) if self.scope == "subtree" else set()
-            if self.scope == "thread" and self.thread_id and self.thread_id not in participating:
+            if (
+                self.scope == "thread"
+                and self.thread_id
+                and self.thread_id not in participating
+            ):
                 if len(participating) >= MAX_OUTPUT_GROUPS:
                     raise WorkLimitReached("output_group_limit_exceeded")
                 participating.add(self.thread_id)
@@ -1123,7 +1240,9 @@ class UsageReporter:
             lineage: dict[str, dict[str, Any]] = {}
             for thread_id in sorted(participating):
                 thread_metrics[thread_id] = _new_metrics()
-                lineage[thread_id] = self._resolve_lineage(thread_id, metadata, missing_metadata)
+                lineage[thread_id] = self._resolve_lineage(
+                    thread_id, metadata, missing_metadata
+                )
 
             all_calls_metrics = _new_metrics()
             rate_evidence: dict[str, dict[str, Any]] = {}
@@ -1150,7 +1269,11 @@ class UsageReporter:
                     ("supplied_standard_scenario", standard),
                 ):
                     rate = priced.get("rate")
-                    if priced.get("covered") and rate is not None and rate.get("rate_id") is not None:
+                    if (
+                        priced.get("covered")
+                        and rate is not None
+                        and rate.get("rate_id") is not None
+                    ):
                         rate_id = str(rate["rate_id"])
                         evidence = rate_evidence.setdefault(
                             rate_id,
@@ -1158,7 +1281,11 @@ class UsageReporter:
                         )
                         evidence["used_by_modes"][mode_name] += 1
                     policy = priced.get("policy")
-                    if priced.get("covered") and policy is not None and policy.get("policy_id") is not None:
+                    if (
+                        priced.get("covered")
+                        and policy is not None
+                        and policy.get("policy_id") is not None
+                    ):
                         policy_id = str(policy["policy_id"])
                         evidence = policy_evidence.setdefault(
                             policy_id,
@@ -1167,10 +1294,15 @@ class UsageReporter:
                         evidence["used_call_count"] += 1
                 thread_id = str(call["thread_id"])
                 if thread_id not in thread_metrics:
-                    if thread_id not in participating and len(participating) >= MAX_OUTPUT_GROUPS:
+                    if (
+                        thread_id not in participating
+                        and len(participating) >= MAX_OUTPUT_GROUPS
+                    ):
                         raise WorkLimitReached("output_group_limit_exceeded")
                     thread_metrics[thread_id] = _new_metrics()
-                    lineage[thread_id] = self._resolve_lineage(thread_id, metadata, missing_metadata)
+                    lineage[thread_id] = self._resolve_lineage(
+                        thread_id, metadata, missing_metadata
+                    )
                     participating.add(thread_id)
                 _add_call(thread_metrics[thread_id], call, actual, standard)
 
@@ -1190,19 +1322,39 @@ class UsageReporter:
                     thread_id, metadata, missing_metadata
                 )
                 metric = thread_metrics.get(thread_id, _new_metrics())
-                parent, parent_source = self._effective_parent(row) if row else (None, "unknown")
+                parent, parent_source = (
+                    self._effective_parent(row) if row else (None, "unknown")
+                )
                 thread_rows.append(
                     {
                         "thread_id": thread_id,
-                        "parent_thread_id": _blank_to_none(row.get("parent_thread_id")) if row else None,
-                        "fork_parent_thread_id": _blank_to_none(row.get("fork_parent_thread_id")) if row else None,
+                        "parent_thread_id": _blank_to_none(row.get("parent_thread_id"))
+                        if row
+                        else None,
+                        "fork_parent_thread_id": _blank_to_none(
+                            row.get("fork_parent_thread_id")
+                        )
+                        if row
+                        else None,
                         "effective_parent_thread_id": parent,
-                        "lineage_source": thread_lineage["lineage_source"] if row else "unknown",
+                        "lineage_source": thread_lineage["lineage_source"]
+                        if row
+                        else "unknown",
                         "lineage_status": thread_lineage["lineage_status"],
-                        "recorded_root_thread_id": _blank_to_none(row.get("root_thread_id")) if row else None,
-                        "resolved_root_thread_id": thread_lineage["resolved_root_thread_id"],
-                        "agent_nickname": _blank_to_none(row.get("agent_nickname")) if row else None,
-                        "agent_role": _blank_to_none(row.get("agent_role")) if row else None,
+                        "recorded_root_thread_id": _blank_to_none(
+                            row.get("root_thread_id")
+                        )
+                        if row
+                        else None,
+                        "resolved_root_thread_id": thread_lineage[
+                            "resolved_root_thread_id"
+                        ],
+                        "agent_nickname": _blank_to_none(row.get("agent_nickname"))
+                        if row
+                        else None,
+                        "agent_role": _blank_to_none(row.get("agent_role"))
+                        if row
+                        else None,
                         "source": _blank_to_none(row.get("source")) if row else None,
                         "created_at": row.get("created_at") if row else None,
                         "metrics": self._serialize_metric(metric),
@@ -1213,9 +1365,13 @@ class UsageReporter:
             for thread_id in sorted(participating):
                 root_id = lineage.get(thread_id, {}).get("resolved_root_thread_id")
                 if root_id is None:
-                    root_buckets["unresolved"].append(thread_metrics.get(thread_id, _new_metrics()))
+                    root_buckets["unresolved"].append(
+                        thread_metrics.get(thread_id, _new_metrics())
+                    )
                 else:
-                    root_buckets[root_id].append(thread_metrics.get(thread_id, _new_metrics()))
+                    root_buckets[root_id].append(
+                        thread_metrics.get(thread_id, _new_metrics())
+                    )
             disjoint_roots = {
                 root: self._serialize_metric(_merge_metrics(items))
                 for root, items in sorted(root_buckets.items())
@@ -1225,13 +1381,20 @@ class UsageReporter:
                 direct_ids = [
                     thread_id
                     for thread_id in participating
-                    if thread_id != anchor_id and call_parent.get(thread_id) == anchor_id
+                    if thread_id != anchor_id
+                    and call_parent.get(thread_id) == anchor_id
                 ]
-                descendant_ids = [thread_id for thread_id in participating if thread_id != anchor_id]
+                descendant_ids = [
+                    thread_id for thread_id in participating if thread_id != anchor_id
+                ]
                 own = thread_metrics.get(anchor_id, _new_metrics())
-                direct = _merge_metrics(thread_metrics.get(thread_id, _new_metrics()) for thread_id in direct_ids)
+                direct = _merge_metrics(
+                    thread_metrics.get(thread_id, _new_metrics())
+                    for thread_id in direct_ids
+                )
                 descendants = _merge_metrics(
-                    thread_metrics.get(thread_id, _new_metrics()) for thread_id in descendant_ids
+                    thread_metrics.get(thread_id, _new_metrics())
+                    for thread_id in descendant_ids
                 )
                 tree = _merge_metrics(thread_metrics.values())
                 scope_contributions = {
@@ -1240,7 +1403,8 @@ class UsageReporter:
                     "direct_children": self._serialize_metric(direct),
                     "descendants_excluding_anchor": self._serialize_metric(descendants),
                     "tree_including_anchor": self._serialize_metric(tree),
-                    "disjoint_call_counts_reconcile": tree["provider_call_count"] == all_calls_metrics["provider_call_count"],
+                    "disjoint_call_counts_reconcile": tree["provider_call_count"]
+                    == all_calls_metrics["provider_call_count"],
                 }
             else:
                 scope_contributions = None
@@ -1267,10 +1431,15 @@ class UsageReporter:
             ) and self.credit_mode in {"observed_or_effective_rate", "both"}:
                 report_status = "incomplete"
                 reasons.append("actual_credit_coverage_incomplete")
-            if all_calls_metrics["token_missing_calls"] and any(all_calls_metrics["token_missing_calls"].values()):
+            if all_calls_metrics["token_missing_calls"] and any(
+                all_calls_metrics["token_missing_calls"].values()
+            ):
                 report_status = "incomplete"
                 reasons.append("token_coverage_incomplete")
-            if self.credit_mode in {"supplied_standard_scenario", "both"} and all_calls_metrics["standard_scenario"]["uncovered_call_count"]:
+            if (
+                self.credit_mode in {"supplied_standard_scenario", "both"}
+                and all_calls_metrics["standard_scenario"]["uncovered_call_count"]
+            ):
                 report_status = "incomplete"
                 reasons.append("standard_scenario_coverage_incomplete")
             window_local = {
@@ -1303,18 +1472,27 @@ class UsageReporter:
                     "rates": [
                         {
                             **value,
-                            "used_by_modes": dict(sorted(value["used_by_modes"].items())),
+                            "used_by_modes": dict(
+                                sorted(value["used_by_modes"].items())
+                            ),
                         }
                         for _key_id, value in sorted(rate_evidence.items())
                     ],
-                    "policies": [value for _key_id, value in sorted(policy_evidence.items())],
+                    "policies": [
+                        value for _key_id, value in sorted(policy_evidence.items())
+                    ],
                 },
                 "scope_contributions": scope_contributions,
                 "lineage_coverage": {
                     "participating_thread_count": len(participating),
                     "unresolved_thread_count": unresolved_lineage,
                     "known_zero_call_thread_count": sum(
-                        1 for thread_id in participating if thread_metrics.get(thread_id, _new_metrics())["provider_call_count"] == 0
+                        1
+                        for thread_id in participating
+                        if thread_metrics.get(thread_id, _new_metrics())[
+                            "provider_call_count"
+                        ]
+                        == 0
                     ),
                 },
                 "credit_mode": self.credit_mode,
@@ -1327,21 +1505,29 @@ class UsageReporter:
             raise
         except sqlite3.OperationalError as exc:
             message = str(exc).lower()
-            if getattr(exc, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_TOOBIG", -1):
+            if getattr(exc, "sqlite_errorcode", None) == getattr(
+                sqlite3, "SQLITE_TOOBIG", -1
+            ):
                 raise WorkLimitReached("output_size_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
             if "no such index" in message or "no query solution" in message:
-                raise ReportProblem("unavailable", "required_reporting_index_missing") from exc
+                raise ReportProblem(
+                    "unavailable", "required_reporting_index_missing"
+                ) from exc
             if "no such table" in message or "no such column" in message:
                 raise ReportProblem("unavailable", "ledger_schema_mismatch") from exc
             if "not authorized" in message:
-                raise ReportProblem("unavailable", "read_only_policy_denied_query") from exc
+                raise ReportProblem(
+                    "unavailable", "read_only_policy_denied_query"
+                ) from exc
             if "locked" in message or "busy" in message:
                 raise ReportProblem("unavailable", "ledger_busy") from exc
             raise ReportProblem("unavailable", "sqlite_query_failed") from exc
         except sqlite3.Error as exc:
-            if getattr(exc, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_TOOBIG", -1):
+            if getattr(exc, "sqlite_errorcode", None) == getattr(
+                sqlite3, "SQLITE_TOOBIG", -1
+            ):
                 raise WorkLimitReached("output_size_limit_exceeded") from exc
             if self.vm_stop_reason:
                 raise WorkLimitReached(self.vm_stop_reason) from exc
@@ -1351,6 +1537,8 @@ class UsageReporter:
                 try:
                     self.conn.rollback()
                 except sqlite3.Error:
+                    # Closing below discards this read-only transaction; avoid
+                    # replacing the report's primary result with cleanup noise.
                     pass
                 self.conn.close()
                 self.conn = None
@@ -1369,14 +1557,23 @@ class UsageReporter:
             ),
             "query_plans": self.query_plans,
         }
-        print("CODEX_USAGE_REPORT_DIAGNOSTICS=" + json.dumps(payload, sort_keys=True), file=sys.stderr)
+        print(
+            "CODEX_USAGE_REPORT_DIAGNOSTICS=" + json.dumps(payload, sort_keys=True),
+            file=sys.stderr,
+        )
 
 
 def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", required=True, help="exact SQLite usage-ledger file path")
-    parser.add_argument("--start-utc", required=True, help="inclusive ISO-8601 UTC timestamp")
-    parser.add_argument("--end-utc", required=True, help="exclusive ISO-8601 UTC timestamp")
+    parser.add_argument(
+        "--database", required=True, help="exact SQLite usage-ledger file path"
+    )
+    parser.add_argument(
+        "--start-utc", required=True, help="inclusive ISO-8601 UTC timestamp"
+    )
+    parser.add_argument(
+        "--end-utc", required=True, help="exclusive ISO-8601 UTC timestamp"
+    )
     parser.add_argument("--timezone", required=True, help="IANA presentation timezone")
     parser.add_argument("--scope", required=True, choices=("all", "thread", "subtree"))
     parser.add_argument("--thread-id")
@@ -1409,10 +1606,14 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _error_report(problem: ReportProblem, args: argparse.Namespace | None) -> dict[str, Any]:
+def _error_report(
+    problem: ReportProblem, args: argparse.Namespace | None
+) -> dict[str, Any]:
     scope = None
     if args is not None:
-        thread_id_omitted = args.thread_id is not None and len(args.thread_id) > MAX_TEXT_FIELD_CHARS
+        thread_id_omitted = (
+            args.thread_id is not None and len(args.thread_id) > MAX_TEXT_FIELD_CHARS
+        )
         scope = {
             "kind": args.scope,
             "thread_id": None if thread_id_omitted else args.thread_id,
@@ -1447,8 +1648,11 @@ def _write_error_json(problem: ReportProblem, args: argparse.Namespace | None) -
 def _write_bounded_json(
     report: dict[str, Any], output: Any, check_deadline: Any | None = None
 ) -> None:
-    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    encoder = json.JSONEncoder(
+        sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True
+    )
     encoded_chars = 0
+    chunks: list[str] = []
     for chunk in encoder.iterencode(report):
         # ensure_ascii makes every encoded character one UTF-8 byte.
         encoded_chars += len(chunk)
@@ -1456,9 +1660,10 @@ def _write_bounded_json(
             raise WorkLimitReached("output_size_limit_exceeded")
         if check_deadline is not None:
             check_deadline()
+        chunks.append(chunk)
     if check_deadline is not None:
         check_deadline()
-    for chunk in encoder.iterencode(report):
+    for chunk in chunks:
         output.write(chunk)
     output.write("\n")
 

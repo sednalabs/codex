@@ -83,16 +83,29 @@ def _bounded_report_summary(stdout: str) -> str:
         incomplete_reasons = []
     status = report.get("status")
     context = {
-        "status": status if isinstance(status, str) and status in {"complete", "incomplete", "unavailable"} else None,
-        "incomplete_reasons": [reason[:80] for reason in incomplete_reasons[:8] if isinstance(reason, str)],
+        "status": status
+        if isinstance(status, str)
+        and status in {"complete", "incomplete", "unavailable"}
+        else None,
+        "incomplete_reasons": [
+            reason[:80] for reason in incomplete_reasons[:8] if isinstance(reason, str)
+        ],
         "provider_call_count": count(summary.get("provider_call_count")),
-        "token_missing_call_count": reason_counts(summary.get("token_missing_call_count")),
+        "token_missing_call_count": reason_counts(
+            summary.get("token_missing_call_count")
+        ),
         "actual_mode": mode_summary("actual_mode"),
         "standard_scenario": mode_summary("standard_scenario"),
         "lineage_coverage": {
             key: count(report.get("lineage_coverage", {}).get(key))
-            for key in ("participating_thread_count", "unresolved_thread_count", "known_zero_call_thread_count")
-        } if isinstance(report.get("lineage_coverage"), dict) else {},
+            for key in (
+                "participating_thread_count",
+                "unresolved_thread_count",
+                "known_zero_call_thread_count",
+            )
+        }
+        if isinstance(report.get("lineage_coverage"), dict)
+        else {},
     }
     return json.dumps(context, sort_keys=True, separators=(",", ":"))[:1_024]
 
@@ -110,7 +123,7 @@ def _report(
     diagnostics: bool = False,
     expected_exit: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    cli = repo_root / "scripts" / "codex_usage_report.py"
+    cli = Path(__file__).resolve().with_name("codex_usage_report.py")
     argv = [
         sys.executable,
         str(cli),
@@ -142,6 +155,7 @@ def _report(
         cwd=repo_root,
         env=env,
         check=False,
+        shell=False,
         capture_output=True,
         text=True,
         timeout=8,
@@ -195,12 +209,19 @@ def _correctness(
     helper_spec.loader.exec_module(helper)
     bounded_keys: set[str] = {"first"}
     try:
-        helper._add_bounded_key(bounded_keys, "overflow", 1, "rate_policy_key_limit_exceeded")
+        helper._add_bounded_key(
+            bounded_keys, "overflow", 1, "rate_policy_key_limit_exceeded"
+        )
     except helper.WorkLimitReached as exc:
-        _assert(exc.reason == "rate_policy_key_limit_exceeded", "bounded key overflow must be typed incomplete")
+        _assert(
+            exc.reason == "rate_policy_key_limit_exceeded",
+            "bounded key overflow must be typed incomplete",
+        )
     else:
         raise AssertionError("bounded key accumulator retained an over-limit key")
-    _assert(bounded_keys == {"first"}, "over-limit key must be rejected before retention")
+    _assert(
+        bounded_keys == {"first"}, "over-limit key must be rejected before retention"
+    )
     original_output_limit = helper.MAX_OUTPUT_BYTES
     bounded_output = io.StringIO()
     helper.MAX_OUTPUT_BYTES = 128
@@ -208,10 +229,18 @@ def _correctness(
         try:
             helper._write_bounded_json({"synthetic": "x" * 1_024}, bounded_output)
         except helper.WorkLimitReached as exc:
-            _assert(exc.reason == "output_size_limit_exceeded", "JSON byte overflow must be typed incomplete")
+            _assert(
+                exc.reason == "output_size_limit_exceeded",
+                "JSON byte overflow must be typed incomplete",
+            )
         else:
-            raise AssertionError("synthetic oversized JSON unexpectedly passed its output cap")
-        _assert(bounded_output.getvalue() == "", "oversized JSON must be rejected before emitting partial output")
+            raise AssertionError(
+                "synthetic oversized JSON unexpectedly passed its output cap"
+            )
+        _assert(
+            bounded_output.getvalue() == "",
+            "oversized JSON must be rejected before emitting partial output",
+        )
     finally:
         helper.MAX_OUTPUT_BYTES = original_output_limit
     writer_guard = helper.UsageReporter(
@@ -232,18 +261,32 @@ def _correctness(
         try:
             writer_guard._account_output_text(oversized_text)
         except helper.WorkLimitReached as exc:
-            _assert(exc.reason == "output_size_limit_exceeded", "oversized source text must be typed incomplete")
+            _assert(
+                exc.reason == "output_size_limit_exceeded",
+                "oversized source text must be typed incomplete",
+            )
         else:
-            raise AssertionError("synthetic oversized source text unexpectedly passed its field cap")
+            raise AssertionError(
+                "synthetic oversized source text unexpectedly passed its field cap"
+            )
         original_text_limit = helper.MAX_OUTPUT_TEXT_CHARS
         helper.MAX_OUTPUT_TEXT_CHARS = 3
-        writer_guard._account_output_text(text_connection.execute("SELECT ?", ("ab",)).fetchone())
+        writer_guard._account_output_text(
+            text_connection.execute("SELECT ?", ("ab",)).fetchone()
+        )
         try:
-            writer_guard._account_output_text(text_connection.execute("SELECT ?", ("cd",)).fetchone())
+            writer_guard._account_output_text(
+                text_connection.execute("SELECT ?", ("cd",)).fetchone()
+            )
         except helper.WorkLimitReached as exc:
-            _assert(exc.reason == "output_size_limit_exceeded", "aggregate report text must be typed incomplete")
+            _assert(
+                exc.reason == "output_size_limit_exceeded",
+                "aggregate report text must be typed incomplete",
+            )
         else:
-            raise AssertionError("synthetic aggregate output text unexpectedly passed its cap")
+            raise AssertionError(
+                "synthetic aggregate output text unexpectedly passed its cap"
+            )
         finally:
             helper.MAX_OUTPUT_TEXT_CHARS = original_text_limit
     finally:
@@ -294,7 +337,10 @@ def _correctness(
         credit_mode="supplied_standard_scenario",
         expected_exit=2,
     )
-    _assert(oversized_text["status"] == "incomplete", "oversized source text must return typed incomplete")
+    _assert(
+        oversized_text["status"] == "incomplete",
+        "oversized source text must return typed incomplete",
+    )
     _assert(
         oversized_text["error"]["reason"] == "output_size_limit_exceeded",
         "SQLite text-value limit must not allocate or emit an oversized report",
@@ -337,7 +383,10 @@ def _correctness(
         credit_mode="supplied_standard_scenario",
         expected_exit=2,
     )
-    _assert(long_thread_error["status"] == "incomplete", "long-thread error must remain incomplete")
+    _assert(
+        long_thread_error["status"] == "incomplete",
+        "long-thread error must remain incomplete",
+    )
     _assert(
         long_thread_error["error"]["reason"] == "output_size_limit_exceeded",
         "long thread id must trigger bounded text accounting",
@@ -347,10 +396,21 @@ def _correctness(
         and long_thread_error["scope"]["thread_id_omitted"] is True,
         "error JSON must disclose that an overlong thread id was omitted",
     )
-    bounded_error_bytes = len(
-        json.dumps(long_thread_error, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    ) + 1
-    _assert(bounded_error_bytes <= helper.MAX_OUTPUT_BYTES, "CLI error response must stay within the JSON output cap")
+    bounded_error_bytes = (
+        len(
+            json.dumps(
+                long_thread_error,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        )
+        + 1
+    )
+    _assert(
+        bounded_error_bytes <= helper.MAX_OUTPUT_BYTES,
+        "CLI error response must stay within the JSON output cap",
+    )
 
     subtree_text_database = temp_root / "subtree-output-text-limit.sqlite"
     _copy_database(database, subtree_text_database)
@@ -360,7 +420,16 @@ def _correctness(
         thread_sql = "INSERT INTO usage_threads(thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         subtree_writer.execute(
             thread_sql,
-            (subtree_root_id, None, subtree_root_id, None, "root", "agent", "synthetic", "2026-09-30T00:00:00Z"),
+            (
+                subtree_root_id,
+                None,
+                subtree_root_id,
+                None,
+                "root",
+                "agent",
+                "synthetic",
+                "2026-09-30T00:00:00Z",
+            ),
         )
         subtree_writer.executemany(
             thread_sql,
@@ -389,37 +458,89 @@ def _correctness(
         credit_mode="supplied_standard_scenario",
         expected_exit=2,
     )
-    _assert(subtree_text_limit["status"] == "incomplete", "subtree text overflow must return typed incomplete")
+    _assert(
+        subtree_text_limit["status"] == "incomplete",
+        "subtree text overflow must return typed incomplete",
+    )
     _assert(
         subtree_text_limit["error"]["reason"] == "output_size_limit_exceeded",
         "subtree metadata text overflow must stop during row streaming without global fallback",
     )
 
-    all_report, all_diagnostic = _report(database, repo_root, diagnostics=True, expected_exit=2)
-    _assert(all_report["status"] == "incomplete", "missing usage/model evidence must be incomplete")
-    _assert(all_report["summary"]["provider_call_count"] == 4, "all scope must include exactly four in-window calls")
-    _assert(all_report["summary"]["provider_reported_credits"]["call_count"] == 1, "reported credit count")
-    _assert(all_report["summary"]["provider_reported_credits"]["credits_subtotal"] == "4.25", "reported credit subtotal")
-    actual = all_report["summary"]["actual_mode"]
-    _assert(actual["covered_call_count"] == 2, "reported and exact-rate actual-mode coverage")
-    _assert(actual["rate_estimated_call_count"] == 1, "provider report must take precedence over a rate")
-    _assert(actual["credits_subtotal"] == "174.25", "actual-mode subtotal")
-    _assert(actual["complete_total"] is None, "partial actual subtotal must not be called a total")
-    _assert(actual["rate_id_call_counts"] == {"rate-before": 1}, "actual mode must expose the applied rate id")
-    scenario = all_report["summary"]["standard_scenario"]
-    _assert(scenario["covered_call_count"] == 2, "standard scenario uses only actual model and supported token rows")
-    _assert(scenario["credits_subtotal"] == "255", "standard scenario subtotal")
-    _assert(scenario["complete_total"] is None, "partial scenario subtotal must not be called a total")
-    _assert(scenario["rate_id_call_counts"] == {"rate-before": 1, "rate-after": 1}, "half-open rate boundary selection")
-    _assert(all_report["lineage_coverage"]["unresolved_thread_count"] == 0, "valid parent/fork lineage")
-    _assert(all_report["summary"]["token_missing_call_count"]["uncached_input_tokens"] == 1, "missing usage count")
+    all_report, all_diagnostic = _report(
+        database, repo_root, diagnostics=True, expected_exit=2
+    )
     _assert(
-        {entry["actual_model_used"] for entry in all_report["summary"]["actual_model_evidence"]}
+        all_report["status"] == "incomplete",
+        "missing usage/model evidence must be incomplete",
+    )
+    _assert(
+        all_report["summary"]["provider_call_count"] == 4,
+        "all scope must include exactly four in-window calls",
+    )
+    _assert(
+        all_report["summary"]["provider_reported_credits"]["call_count"] == 1,
+        "reported credit count",
+    )
+    _assert(
+        all_report["summary"]["provider_reported_credits"]["credits_subtotal"]
+        == "4.25",
+        "reported credit subtotal",
+    )
+    actual = all_report["summary"]["actual_mode"]
+    _assert(
+        actual["covered_call_count"] == 2,
+        "reported and exact-rate actual-mode coverage",
+    )
+    _assert(
+        actual["rate_estimated_call_count"] == 1,
+        "provider report must take precedence over a rate",
+    )
+    _assert(actual["credits_subtotal"] == "174.25", "actual-mode subtotal")
+    _assert(
+        actual["complete_total"] is None,
+        "partial actual subtotal must not be called a total",
+    )
+    _assert(
+        actual["rate_id_call_counts"] == {"rate-before": 1},
+        "actual mode must expose the applied rate id",
+    )
+    scenario = all_report["summary"]["standard_scenario"]
+    _assert(
+        scenario["covered_call_count"] == 2,
+        "standard scenario uses only actual model and supported token rows",
+    )
+    _assert(scenario["credits_subtotal"] == "255", "standard scenario subtotal")
+    _assert(
+        scenario["complete_total"] is None,
+        "partial scenario subtotal must not be called a total",
+    )
+    _assert(
+        scenario["rate_id_call_counts"] == {"rate-before": 1, "rate-after": 1},
+        "half-open rate boundary selection",
+    )
+    _assert(
+        all_report["lineage_coverage"]["unresolved_thread_count"] == 0,
+        "valid parent/fork lineage",
+    )
+    _assert(
+        all_report["summary"]["token_missing_call_count"]["uncached_input_tokens"]
+        == 1,
+        "missing usage count",
+    )
+    _assert(
+        {
+            entry["actual_model_used"]
+            for entry in all_report["summary"]["actual_model_evidence"]
+        }
         == {"gpt-6-luna", None},
         "report must use and retain response-observed model evidence",
     )
     _assert(
-        {entry["actual_model_used"] for entry in all_report["summary"]["requested_to_actual_model_evidence"]}
+        {
+            entry["actual_model_used"]
+            for entry in all_report["summary"]["requested_to_actual_model_evidence"]
+        }
         == {"gpt-6-luna", None},
         "requested model must remain visibly distinct from the response-observed model",
     )
@@ -428,7 +549,15 @@ def _correctness(
         == {"rate-before", "rate-after"},
         "applied rate intervals and sources must be included",
     )
-    _assert(any("SEARCH usage_provider_calls USING INDEX usage_provider_calls_started_at_idx" in detail for plan in all_diagnostic["query_plans"] for detail in plan["details"]), "all-window calls must use the started_at index")
+    _assert(
+        any(
+            "SEARCH usage_provider_calls USING INDEX usage_provider_calls_started_at_idx"
+            in detail
+            for plan in all_diagnostic["query_plans"]
+            for detail in plan["details"]
+        ),
+        "all-window calls must use the started_at index",
+    )
 
     subtree, subtree_diagnostic = _report(
         database,
@@ -439,21 +568,53 @@ def _correctness(
         expected_exit=2,
     )
     contributions = subtree["scope_contributions"]
-    _assert(subtree["summary"]["provider_call_count"] == 4, "subtree must include all parent and fork descendants")
+    _assert(
+        subtree["summary"]["provider_call_count"] == 4,
+        "subtree must include all parent and fork descendants",
+    )
     _assert(contributions["own"]["provider_call_count"] == 1, "anchor's own usage")
-    _assert(contributions["direct_children"]["provider_call_count"] == 1, "direct child attribution")
-    _assert(contributions["descendants_excluding_anchor"]["provider_call_count"] == 3, "all descendants excluding anchor")
-    _assert(contributions["tree_including_anchor"]["provider_call_count"] == 4, "tree attribution reconciliation")
-    _assert(subtree["lineage_coverage"]["known_zero_call_thread_count"] == 1, "known zero-call descendant retained")
-    _assert(any("SEARCH usage_threads USING INDEX usage_threads_reporting_parent_idx" in detail for plan in subtree_diagnostic["query_plans"] for detail in plan["details"]), "subtree must use normalized-parent index")
+    _assert(
+        contributions["direct_children"]["provider_call_count"] == 1,
+        "direct child attribution",
+    )
+    _assert(
+        contributions["descendants_excluding_anchor"]["provider_call_count"] == 3,
+        "all descendants excluding anchor",
+    )
+    _assert(
+        contributions["tree_including_anchor"]["provider_call_count"] == 4,
+        "tree attribution reconciliation",
+    )
+    _assert(
+        subtree["lineage_coverage"]["known_zero_call_thread_count"] == 1,
+        "known zero-call descendant retained",
+    )
+    _assert(
+        any(
+            "SEARCH usage_threads USING INDEX usage_threads_reporting_parent_idx"
+            in detail
+            for plan in subtree_diagnostic["query_plans"]
+            for detail in plan["details"]
+        ),
+        "subtree must use normalized-parent index",
+    )
 
     thread, _thread_diagnostic = _report(
         database, repo_root, scope="thread", thread_id=child_thread_id, expected_exit=0
     )
     _assert(thread["summary"]["provider_call_count"] == 1, "exact-thread scope")
-    _assert(thread["summary"]["actual_mode"]["complete_total"] == "4.25", "provider credit wins for exact thread")
-    _assert(thread["status"] == "complete", "thread scope must resolve the preloaded child anchor's ancestry")
-    _assert(thread["lineage_coverage"]["unresolved_thread_count"] == 0, "child-thread ancestor is complete")
+    _assert(
+        thread["summary"]["actual_mode"]["complete_total"] == "4.25",
+        "provider credit wins for exact thread",
+    )
+    _assert(
+        thread["status"] == "complete",
+        "thread scope must resolve the preloaded child anchor's ancestry",
+    )
+    _assert(
+        thread["lineage_coverage"]["unresolved_thread_count"] == 0,
+        "child-thread ancestor is complete",
+    )
     _assert(
         thread["threads"][0]["resolved_root_thread_id"] == root_thread_id,
         "thread scope must follow the persisted parent to its recorded root",
@@ -487,15 +648,26 @@ def _correctness(
             "ok",
         ),
     )
-    before_commit, _before_commit_diagnostic = _report(wal_database, repo_root, expected_exit=2)
-    _assert(before_commit["summary"]["provider_call_count"] == 4, "WAL reader must not expose an uncommitted writer row")
+    before_commit, _before_commit_diagnostic = _report(
+        wal_database, repo_root, expected_exit=2
+    )
     _assert(
-        before_commit["snapshot"]["last_persisted_call_rowid"] == all_report["snapshot"]["last_persisted_call_rowid"],
+        before_commit["summary"]["provider_call_count"] == 4,
+        "WAL reader must not expose an uncommitted writer row",
+    )
+    _assert(
+        before_commit["snapshot"]["last_persisted_call_rowid"]
+        == all_report["snapshot"]["last_persisted_call_rowid"],
         "uncommitted call must not advance the snapshot watermark",
     )
     writer.commit()
-    after_commit, _after_commit_diagnostic = _report(wal_database, repo_root, expected_exit=2)
-    _assert(after_commit["summary"]["provider_call_count"] == 5, "WAL reader must see a committed row on the next snapshot")
+    after_commit, _after_commit_diagnostic = _report(
+        wal_database, repo_root, expected_exit=2
+    )
+    _assert(
+        after_commit["summary"]["provider_call_count"] == 5,
+        "WAL reader must see a committed row on the next snapshot",
+    )
     writer.close()
 
     at_rate_boundary, _boundary_diagnostic = _report(
@@ -506,7 +678,11 @@ def _correctness(
         expected_exit=0,
     )
     _assert(at_rate_boundary["summary"]["provider_call_count"] == 1, "end is exclusive")
-    _assert(at_rate_boundary["summary"]["actual_mode"]["rate_id_call_counts"] == {"rate-before": 1}, "rate interval boundary is half-open")
+    _assert(
+        at_rate_boundary["summary"]["actual_mode"]["rate_id_call_counts"]
+        == {"rate-before": 1},
+        "rate interval boundary is half-open",
+    )
 
     dst, _dst_diagnostic = _report(
         database,
@@ -528,7 +704,11 @@ def _correctness(
         thread_id="unknown-thread",
         expected_exit=3,
     )
-    _assert(unknown["status"] == "unavailable" and unknown["error"]["reason"] == "unknown_thread_id", "unknown id is unavailable, not a zero report")
+    _assert(
+        unknown["status"] == "unavailable"
+        and unknown["error"]["reason"] == "unknown_thread_id",
+        "unknown id is unavailable, not a zero report",
+    )
 
     missing_index = temp_root / "missing-index.sqlite"
     _copy_database(database, missing_index)
@@ -536,7 +716,10 @@ def _correctness(
         connection.execute("DROP INDEX usage_provider_calls_started_at_idx")
     missing, _missing_diagnostic = _report(missing_index, repo_root, expected_exit=3)
     _assert(missing["status"] == "unavailable", "required-index loss must fail closed")
-    _assert(missing["error"]["reason"] == "required_reporting_index_missing", "missing index must not fall back to a broad query")
+    _assert(
+        missing["error"]["reason"] == "required_reporting_index_missing",
+        "missing index must not fall back to a broad query",
+    )
 
     cap, _cap_diagnostic = _report(
         database,
@@ -554,30 +737,53 @@ def _correctness(
     rollback_connection = sqlite3.connect(rollback, isolation_level=None)
     rollback_connection.execute("DROP INDEX usage_provider_calls_started_at_idx")
     rollback_connection.execute("DROP INDEX usage_provider_calls_thread_started_at_idx")
-    rollback_connection.execute("CREATE INDEX usage_provider_calls_thread_idx ON usage_provider_calls(thread_id)")
+    rollback_connection.execute(
+        "CREATE INDEX usage_provider_calls_thread_idx ON usage_provider_calls(thread_id)"
+    )
     rollback_connection.execute(
         "CREATE INDEX usage_provider_calls_thread_started_at_idx ON usage_provider_calls(provider_call_id)"
     )
-    rows_before = rollback_connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
+    rows_before = rollback_connection.execute(
+        "SELECT COUNT(*) FROM usage_provider_calls"
+    ).fetchone()[0]
     try:
         rollback_connection.executescript(
             "BEGIN IMMEDIATE;\n"
-            + (repo_root / "codex-rs" / "state" / "usage_migrations" / "0015_bounded_usage_reporting_indexes.sql").read_text(encoding="utf-8")
+            + (
+                repo_root
+                / "codex-rs"
+                / "state"
+                / "usage_migrations"
+                / "0015_bounded_usage_reporting_indexes.sql"
+            ).read_text(encoding="utf-8")
             + "\nCOMMIT;"
         )
     except sqlite3.Error:
         if rollback_connection.in_transaction:
             rollback_connection.rollback()
     else:
-        raise AssertionError("deliberately conflicting migration unexpectedly succeeded")
+        raise AssertionError(
+            "deliberately conflicting migration unexpectedly succeeded"
+        )
     rollback_indexes = {
         row[1]
-        for row in rollback_connection.execute("PRAGMA index_list('usage_provider_calls')").fetchall()
+        for row in rollback_connection.execute(
+            "PRAGMA index_list('usage_provider_calls')"
+        ).fetchall()
     }
-    _assert("usage_provider_calls_started_at_idx" not in rollback_indexes, "failed migration must roll back earlier DDL")
-    _assert("usage_provider_calls_thread_idx" in rollback_indexes, "failed migration must preserve prior index")
     _assert(
-        rollback_connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0] == rows_before,
+        "usage_provider_calls_started_at_idx" not in rollback_indexes,
+        "failed migration must roll back earlier DDL",
+    )
+    _assert(
+        "usage_provider_calls_thread_idx" in rollback_indexes,
+        "failed migration must preserve prior index",
+    )
+    _assert(
+        rollback_connection.execute(
+            "SELECT COUNT(*) FROM usage_provider_calls"
+        ).fetchone()[0]
+        == rows_before,
         "failed migration must preserve usage rows",
     )
     rollback_connection.close()
@@ -587,7 +793,9 @@ def _correctness(
         "subtree_call_count": subtree["summary"]["provider_call_count"],
         "actual_covered_calls": actual["covered_call_count"],
         "scenario_covered_calls": scenario["covered_call_count"],
-        "diagnostic_vm_instructions": all_diagnostic.get("sqlite_vm_instruction_estimate"),
+        "diagnostic_vm_instructions": all_diagnostic.get(
+            "sqlite_vm_instruction_estimate"
+        ),
         "wal_writer_visibility": "passed",
         "migration_rollback": "passed",
         "oversized_text_status": oversized_text["error"]["reason"],
@@ -630,14 +838,22 @@ def _prepare_old_schema_copy(source: Path, destination: Path) -> sqlite3.Connect
     connection.execute("DROP INDEX usage_provider_calls_started_at_idx")
     connection.execute("DROP INDEX usage_provider_calls_thread_started_at_idx")
     connection.execute("DROP INDEX usage_threads_reporting_parent_idx")
-    connection.execute("CREATE INDEX usage_provider_calls_thread_idx ON usage_provider_calls(thread_id)")
+    connection.execute(
+        "CREATE INDEX usage_provider_calls_thread_idx ON usage_provider_calls(thread_id)"
+    )
     return connection
 
 
-def _migrate_and_measure(connection: sqlite3.Connection, migration_path: Path) -> dict[str, Any]:
-    before_rows = connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
+def _migrate_and_measure(
+    connection: sqlite3.Connection, migration_path: Path
+) -> dict[str, Any]:
+    before_rows = connection.execute(
+        "SELECT COUNT(*) FROM usage_provider_calls"
+    ).fetchone()[0]
     before_pages = connection.execute("PRAGMA page_count").fetchone()[0]
-    before_bytes = Path(connection.execute("PRAGMA database_list").fetchone()[2]).stat().st_size
+    before_bytes = (
+        Path(connection.execute("PRAGMA database_list").fetchone()[2]).stat().st_size
+    )
     started = time.perf_counter()
     sql = migration_path.read_text(encoding="utf-8")
     try:
@@ -652,20 +868,31 @@ def _migrate_and_measure(connection: sqlite3.Connection, migration_path: Path) -
     wal_path = Path(str(database_path) + "-wal")
     indexes = {
         row[1]
-        for row in connection.execute("PRAGMA index_list('usage_provider_calls')").fetchall()
+        for row in connection.execute(
+            "PRAGMA index_list('usage_provider_calls')"
+        ).fetchall()
     }
     required = {
         "usage_provider_calls_started_at_idx",
         "usage_provider_calls_thread_started_at_idx",
         "usage_provider_calls_thread_idx",
     }
-    _assert(required.intersection(indexes) == required - {"usage_provider_calls_thread_idx"}, "migration index set")
+    _assert(
+        required.intersection(indexes)
+        == required - {"usage_provider_calls_thread_idx"},
+        "migration index set",
+    )
     thread_indexes = {
         row[1]
         for row in connection.execute("PRAGMA index_list('usage_threads')").fetchall()
     }
-    _assert("usage_threads_reporting_parent_idx" in thread_indexes, "migration parent index")
-    after_rows = connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
+    _assert(
+        "usage_threads_reporting_parent_idx" in thread_indexes,
+        "migration parent index",
+    )
+    after_rows = connection.execute(
+        "SELECT COUNT(*) FROM usage_provider_calls"
+    ).fetchone()[0]
     _assert(after_rows == before_rows, "migration preserves exact usage row count")
     return {
         "migration_seconds": round(migration_seconds, 6),
@@ -674,7 +901,9 @@ def _migrate_and_measure(connection: sqlite3.Connection, migration_path: Path) -
         "page_count_before": before_pages,
         "page_count_after": after_pages,
         "usage_rows_preserved": after_rows,
-        "wal_bytes_after_migration": wal_path.stat().st_size if wal_path.exists() else 0,
+        "wal_bytes_after_migration": wal_path.stat().st_size
+        if wal_path.exists()
+        else 0,
         "index_names": sorted(indexes),
     }
 
@@ -687,12 +916,20 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         raise AssertionError("could not import the exact tested reporter source")
     helper = importlib.util.module_from_spec(helper_spec)
     helper_spec.loader.exec_module(helper)
-    migration = repo_root / "codex-rs" / "state" / "usage_migrations" / "0015_bounded_usage_reporting_indexes.sql"
+    migration = (
+        repo_root
+        / "codex-rs"
+        / "state"
+        / "usage_migrations"
+        / "0015_bounded_usage_reporting_indexes.sql"
+    )
     full_old = temp_root / "history-old.sqlite"
     connection = _prepare_old_schema_copy(database, full_old)
     snapshots: list[tuple[int, Path]] = []
     for count in (10_000, 90_000, 900_000):
-        before = connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
+        before = connection.execute(
+            "SELECT COUNT(*) FROM usage_provider_calls"
+        ).fetchone()[0]
         _insert_history(connection, before, count)
         snapshot = temp_root / f"history-{before + count}.sqlite"
         destination = sqlite3.connect(snapshot)
@@ -716,16 +953,33 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
             migration_connection.execute("PRAGMA wal_autocheckpoint=0")
             _migrate_and_measure(migration_connection, migration)
             migration_connection.close()
-        report, diagnostic = _report(measured_path, repo_root, diagnostics=True, expected_exit=2)
+        report, diagnostic = _report(
+            measured_path, repo_root, diagnostics=True, expected_exit=2
+        )
         vm = diagnostic.get("sqlite_vm_instruction_estimate")
         if vm is None:
             raise AssertionError("diagnostics omitted SQLite work estimate")
         instruction_counts.append(int(vm))
         rss = diagnostic.get("max_rss_platform_units")
-        _assert(rss is not None and int(rss) <= 64 * 1024, "hosted Python process must remain within the 64 MiB RSS target")
-        plans = [detail for plan in diagnostic["query_plans"] for detail in plan["details"]]
-        _assert(any("SEARCH usage_provider_calls USING INDEX usage_provider_calls_started_at_idx" in detail for detail in plans), f"history size {total}: started_at range index")
-        _assert(report["summary"]["provider_call_count"] == 4, f"history size {total}: fixed one-hour result cardinality")
+        _assert(
+            rss is not None and int(rss) <= 64 * 1024,
+            "hosted Python process must remain within the 64 MiB RSS target",
+        )
+        plans = [
+            detail for plan in diagnostic["query_plans"] for detail in plan["details"]
+        ]
+        _assert(
+            any(
+                "SEARCH usage_provider_calls USING INDEX usage_provider_calls_started_at_idx"
+                in detail
+                for detail in plans
+            ),
+            f"history size {total}: started_at range index",
+        )
+        _assert(
+            report["summary"]["provider_call_count"] == 4,
+            f"history size {total}: fixed one-hour result cardinality",
+        )
         scale_results.append(
             {
                 "historical_call_count": total,
@@ -736,7 +990,10 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
                 "max_rss_unit": "KiB on the standard Ubuntu hosted runner",
             }
         )
-    _assert(max(instruction_counts) <= min(instruction_counts) * 1.25 + 5_000, "indexed read work should not grow with out-of-window history")
+    _assert(
+        max(instruction_counts) <= min(instruction_counts) * 1.25 + 5_000,
+        "indexed read work should not grow with out-of-window history",
+    )
 
     call_limit_database = temp_root / "call-limit.sqlite"
     _copy_database(database, call_limit_database)
@@ -760,8 +1017,13 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         credit_mode="supplied_standard_scenario",
         expected_exit=2,
     )
-    _assert(cap["status"] == "incomplete", "over-limit window must return typed incomplete")
-    _assert(cap["error"]["reason"] == "call_limit_exceeded", "over-limit query must not fall back globally")
+    _assert(
+        cap["status"] == "incomplete", "over-limit window must return typed incomplete"
+    )
+    _assert(
+        cap["error"]["reason"] == "call_limit_exceeded",
+        "over-limit query must not fall back globally",
+    )
 
     group_limit_database = temp_root / "output-group-limit.sqlite"
     _copy_database(database, group_limit_database)
@@ -801,7 +1063,10 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         credit_mode="supplied_standard_scenario",
         expected_exit=2,
     )
-    _assert(group_limit["status"] == "incomplete", "excess output groups must return typed incomplete")
+    _assert(
+        group_limit["status"] == "incomplete",
+        "excess output groups must return typed incomplete",
+    )
     _assert(
         group_limit["error"]["reason"] == "output_group_limit_exceeded",
         "output group overflow must stop before per-thread aggregation without widening the query",
@@ -846,7 +1111,10 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
             credit_mode=credit_mode,
             expected_exit=2,
         )
-        _assert(pricing_key_limit["status"] == "incomplete", f"{credit_mode} key overflow must be incomplete")
+        _assert(
+            pricing_key_limit["status"] == "incomplete",
+            f"{credit_mode} key overflow must be incomplete",
+        )
         _assert(
             pricing_key_limit["error"]["reason"] == "rate_policy_key_limit_exceeded",
             f"{credit_mode} key overflow must stop without widening the query",
@@ -871,12 +1139,21 @@ def main() -> int:
     parser.add_argument("--scale", action="store_true")
     args = parser.parse_args()
     database = args.database.resolve(strict=True)
-    repo_root = args.repo_root.resolve(strict=True)
-    with tempfile.TemporaryDirectory(prefix="codex-usage-report-qualification-") as temporary:
+    repo_root = Path(__file__).resolve().parent.parent
+    requested_repo_root = args.repo_root.resolve(strict=True)
+    if requested_repo_root != repo_root:
+        parser.error("--repo-root must identify this checkout")
+    with tempfile.TemporaryDirectory(
+        prefix="codex-usage-report-qualification-"
+    ) as temporary:
         temp_root = Path(temporary)
         result = {
             "consumer": _correctness(
-                database, repo_root, temp_root, args.root_thread_id, args.child_thread_id
+                database,
+                repo_root,
+                temp_root,
+                args.root_thread_id,
+                args.child_thread_id,
             )
         }
         if args.scale:
