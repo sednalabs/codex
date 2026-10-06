@@ -363,6 +363,7 @@ class NamedFailureObserverTests(unittest.TestCase):
             {"requested": ()},
             {"assertion": "assertion failed: `(left != right)`"},
             {"diff_header": "Diff < left / other > :"},
+            {"diff_header": "\x1b[2JDiff < left / right > :"},
         )
         for index, overrides in enumerate(invalid_cases):
             with self.subTest(index=index):

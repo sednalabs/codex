@@ -235,6 +235,7 @@ PRETTY_ASSERT_DIFF_HEADER_RE = re.compile(
     r"^\s*Diff < left / right > :\s*$"
 )
 PRETTY_ASSERT_VALUE_RE = re.compile(r'^([<>])"([^"\r\n]{1,128})"$')
+SGR_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 FAILURE_MARKER_PATTERNS = (
     ("permission-denied", re.compile(r"\bpermission denied\b", re.IGNORECASE)),
     (
@@ -999,7 +1000,7 @@ def _safe_public_version_pair(value: Any) -> dict[str, str] | None:
 def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
     """Capture only left/right from the exact selector's equality assertion."""
     state = block.get("_public_version_state")
-    plain_line = ANSI_ESCAPE_RE.sub("", line)
+    plain_line = SGR_ESCAPE_RE.sub("", line)
     if state == "search":
         if RUST_ASSERT_EQ_RE.fullmatch(line):
             block["_public_version_state"] = "left"
