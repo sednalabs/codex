@@ -44,6 +44,59 @@ def _diagnostic_excerpt(value: str, max_chars: int = 512) -> str:
     return f"{value[:prefix_chars]}...[{omitted_chars} chars omitted]...{value[-suffix_chars:]}"
 
 
+def _bounded_report_summary(stdout: str) -> str:
+    try:
+        report = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return "unavailable"
+    if not isinstance(report, dict):
+        return "unavailable"
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    def count(value: Any) -> int | None:
+        return value if type(value) is int and 0 <= value <= 1_000_000 else None
+
+    def reason_counts(value: Any) -> dict[str, int]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, int] = {}
+        for key, raw_amount in sorted(value.items())[:8]:
+            amount = count(raw_amount)
+            if isinstance(key, str) and amount is not None:
+                result[key[:80]] = amount
+        return result
+
+    def mode_summary(name: str) -> dict[str, Any]:
+        mode = summary.get(name)
+        if not isinstance(mode, dict):
+            return {}
+        return {
+            "covered_call_count": count(mode.get("covered_call_count")),
+            "uncovered_call_count": count(mode.get("uncovered_call_count")),
+            "uncovered_reasons": reason_counts(mode.get("uncovered_reasons")),
+        }
+
+    incomplete_reasons = report.get("incomplete_reasons")
+    if not isinstance(incomplete_reasons, list):
+        incomplete_reasons = []
+    status = report.get("status")
+    context = {
+        "status": status if isinstance(status, str) and status in {"complete", "incomplete", "unavailable"} else None,
+        "incomplete_reasons": [reason[:80] for reason in incomplete_reasons[:8] if isinstance(reason, str)],
+        "provider_call_count": count(summary.get("provider_call_count")),
+        "token_missing_call_count": reason_counts(summary.get("token_missing_call_count")),
+        "actual_mode": mode_summary("actual_mode"),
+        "standard_scenario": mode_summary("standard_scenario"),
+        "lineage_coverage": {
+            key: count(report.get("lineage_coverage", {}).get(key))
+            for key in ("participating_thread_count", "unresolved_thread_count", "known_zero_call_thread_count")
+        } if isinstance(report.get("lineage_coverage"), dict) else {},
+    }
+    return json.dumps(context, sort_keys=True, separators=(",", ":"))[:1_024]
+
+
 def _report(
     database: Path,
     repo_root: Path,
@@ -100,7 +153,8 @@ def _report(
             f"stdout_bytes={len(completed.stdout.encode('utf-8'))} "
             f"stdout_excerpt={_diagnostic_excerpt(completed.stdout)!r} "
             f"stderr_bytes={len(completed.stderr.encode('utf-8'))} "
-            f"stderr_excerpt={_diagnostic_excerpt(completed.stderr)!r}"
+            f"stderr_excerpt={_diagnostic_excerpt(completed.stderr)!r} "
+            f"report_summary={_bounded_report_summary(completed.stdout)}"
         )
     try:
         report = json.loads(completed.stdout)
