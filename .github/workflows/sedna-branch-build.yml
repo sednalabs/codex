@@ -142,11 +142,11 @@ jobs:
                 echo "cross-run producer inputs are allowed only in consume-existing mode" >&2; exit 1;
               }
               if [[ "${MODE}" == "build" && "${CONSUMER_PROFILE}" == "browser-diagnostic" ]]; then
-                [[ "${FIXTURE_SHA}" == "18a678acf0702aaaebe6908aceda6d60d3d540f1" && "${SDK_SHA}" == "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a" ]] || {
+                [[ "${FIXTURE_SHA}" == "dd245e49f474cd014c0248bff51b828a446510e3" && "${SDK_SHA}" == "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a" ]] || {
                   echo "Browser diagnostic requires its exact fixture and SDK source pair" >&2
                   exit 1
                 }
-                [[ "${TARGET_SHA}" == "18a678acf0702aaaebe6908aceda6d60d3d540f1" && "${BASE_REF}" == "validation/interrupt-guardian-fixture-8389-20261004" && "${BASE_SHA}" == "8389b61d82cb6fb936e4e500b977f31682441ffe" ]] || {
+                [[ "${TARGET_SHA}" == "dd245e49f474cd014c0248bff51b828a446510e3" && "${BASE_REF}" == "validation/interrupt-guardian-fixture-8389-20261004" && "${BASE_SHA}" == "8389b61d82cb6fb936e4e500b977f31682441ffe" ]] || {
                   echo "Browser diagnostic requires its exact package target and comparison base" >&2
                   exit 1
                 }
