@@ -64,7 +64,7 @@ async fn start_logger(
     thread_source: ThreadSource,
     forked_from_id: Option<ThreadId>,
 ) -> Result<UsageLogger> {
-    Ok(UsageLogger::try_new_with_thread_source(
+    UsageLogger::try_new_with_thread_source(
         runtime.clone(),
         thread_id,
         source,
@@ -73,7 +73,7 @@ async fn start_logger(
         /*agent_nickname*/ None,
         /*agent_role*/ None,
     )
-    .await?)
+    .await
 }
 
 async fn record_completed_response(
@@ -391,13 +391,9 @@ async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() -> Re
     drop(forked_logger);
     runtime.close().await;
 
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("codex-state crate must be nested in the repository")
-        .to_path_buf();
-    let harness = repo_root.join("scripts/test_codex_usage_report.py");
+    let repo_root = codex_utils_cargo_bin::repo_root()?;
+    let harness =
+        codex_utils_cargo_bin::find_resource!("../../scripts/test_codex_usage_report.py")?;
     let python_path = std::env::var_os("PATH").expect("hosted Python must be on PATH");
     let output = std::process::Command::new("python3")
         .arg(&harness)
