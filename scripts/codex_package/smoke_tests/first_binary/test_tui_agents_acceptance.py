@@ -189,6 +189,16 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     package: SmokePackage,
 ) -> None:
     isolated, home = _isolated(package, "tui-browser-visual")
+    # The synthetic home config must be authoritative; inherited provider
+    # variables can override it, including selecting a real Browser provider.
+    isolated = replace(
+        isolated,
+        environment={
+            key: value
+            for key, value in isolated.environment.items()
+            if not key.startswith("CODEX_BROWSER_")
+        },
+    )
     fixture_dir = home / "browser-fixture"
     fixture_dir.mkdir()
     image_bytes = [_png(220, 20, 20), _png(20, 20, 220)]
