@@ -716,6 +716,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           from pathlib import Path
 
@@ -724,7 +725,31 @@ jobs:
           package_manifest = json.loads((package_out / "codex-package.json").read_text())
           expected_version = os.environ["PACKAGE_VERSION"]
           if package_manifest.get("version") != expected_version:
-              raise SystemExit("package manifest does not match the hosted progressive version")
+              version_identifier = (
+                  r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+              )
+              public_semver = re.compile(
+                  r"(?:0|[1-9][0-9]*)\."
+                  r"(?:0|[1-9][0-9]*)\."
+                  r"(?:0|[1-9][0-9]*)"
+                  rf"(?:-{version_identifier}(?:\.{version_identifier})*)?"
+                  r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+              )
+
+              def safe_version(value):
+                  if (
+                      isinstance(value, str)
+                      and len(value) <= 128
+                      and public_semver.fullmatch(value)
+                  ):
+                      return value
+                  return "<suppressed>"
+
+              raise SystemExit(
+                  "package manifest version mismatch "
+                  f"(actual={safe_version(package_manifest.get('version'))}, "
+                  f"expected={safe_version(expected_version)})"
+              )
           package_dir = Path(os.environ["RUNNER_TEMP"]) / f"codex-package-{target}"
           cli_result = subprocess.run(
               [str(package_dir / "bin/codex"), "--version"],
@@ -935,6 +960,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           from pathlib import Path
 
@@ -943,7 +969,31 @@ jobs:
           package_manifest = json.loads((package_out / "codex-package.json").read_text())
           expected_version = os.environ["PACKAGE_VERSION"]
           if package_manifest.get("version") != expected_version:
-              raise SystemExit("package manifest does not match the hosted progressive version")
+              version_identifier = (
+                  r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+              )
+              public_semver = re.compile(
+                  r"(?:0|[1-9][0-9]*)\."
+                  r"(?:0|[1-9][0-9]*)\."
+                  r"(?:0|[1-9][0-9]*)"
+                  rf"(?:-{version_identifier}(?:\.{version_identifier})*)?"
+                  r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+              )
+
+              def safe_version(value):
+                  if (
+                      isinstance(value, str)
+                      and len(value) <= 128
+                      and public_semver.fullmatch(value)
+                  ):
+                      return value
+                  return "<suppressed>"
+
+              raise SystemExit(
+                  "package manifest version mismatch "
+                  f"(actual={safe_version(package_manifest.get('version'))}, "
+                  f"expected={safe_version(expected_version)})"
+              )
           package_dir = Path(os.environ["RUNNER_TEMP"]) / f"codex-package-{target}"
           cli_result = subprocess.run(
               [str(package_dir / "bin/codex"), "--version"],
