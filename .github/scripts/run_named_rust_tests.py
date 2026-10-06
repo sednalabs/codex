@@ -3,9 +3,10 @@
 
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
-tests to reconcile.  The runner inventories the target first, refuses to run
-when a requested name is missing or ambiguous, and executes only the
-catalog-owned target argv.  This prevents request data from reaching Cargo.
+tests to run. The runner inventories the target first, refuses to run when a
+requested name is missing or ambiguous, then passes each verified name as an
+exact libtest selector. Failure output is projected to fixed classes and
+verified repository locations; raw test output is never published.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import json
 import os
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -29,7 +30,6 @@ MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
 MAX_REQUEST_CHARS = 32768
-MAX_DIAGNOSTIC_CHARS = 4096
 TEST_RESULT_RE = re.compile(
     r"test result:\s+\w+\.\s+"
     r"(?P<passed>\d+) passed;\s+"
@@ -39,22 +39,70 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out"
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
+SOURCE_LOCATION_RE = re.compile(
+    r"^thread '[^'\r\n]+' panicked at (?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
+    r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
+    r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
+    r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
+    re.MULTILINE,
+)
 
 
-def bounded_diagnostic(value: str | None) -> str:
-    """Keep failure evidence actionable without duplicating unbounded logs."""
+def verified_repo_location(
+    raw_path: str, line: int, column: int, repo_root: Path
+) -> str | None:
+    """Return only an existing repo-relative TUI source location."""
 
-    text = str(value or "").strip()
-    if len(text) <= MAX_DIAGNOSTIC_CHARS:
-        return text
-    return "...[truncated; see hosted job log]...\n" + text[-MAX_DIAGNOSTIC_CHARS:]
+    marker = "codex-rs/tui/src/"
+    if marker in raw_path:
+        relative = marker + raw_path.split(marker, 1)[1]
+    elif raw_path.startswith("tui/src/"):
+        relative = "codex-rs/" + raw_path
+    elif raw_path.startswith("src/app/"):
+        relative = "codex-rs/tui/" + raw_path
+    else:
+        return None
+    candidate_path = PurePosixPath(relative)
+    if candidate_path.is_absolute() or ".." in candidate_path.parts:
+        return None
+    root = repo_root.resolve()
+    resolved = (root / Path(*candidate_path.parts)).resolve()
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    if resolved.suffix != ".rs":
+        return None
+    return f"{candidate_path.as_posix()}:{line}:{column}"
 
 
-def command_diagnostics(completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+def failure_projection(output: str, repo_root: Path) -> dict[str, Any]:
+    """Project failure output to fixed classes and verified public locations."""
+
+    lowered = output.lower()
+    if "snapshot assertion" in lowered or "snapshot mismatch" in lowered:
+        failure_class = "snapshot_assertion_failed"
+    elif "assertion left == right failed" in lowered:
+        failure_class = "assertion_equal_failed"
+    elif "assertion failed" in lowered:
+        failure_class = "assertion_failed"
+    elif "panicked at" in lowered:
+        failure_class = "panic"
+    else:
+        failure_class = "test_failure"
+
+    source_location = None
+    for match in SOURCE_LOCATION_RE.finditer(output):
+        source_location = verified_repo_location(
+            match.group("path"),
+            int(match.group("line")),
+            int(match.group("column")),
+            repo_root,
+        )
+        if source_location:
+            break
+
     return {
-        "exit_code": completed.returncode,
-        "stdout_tail": bounded_diagnostic(completed.stdout),
-        "stderr_tail": bounded_diagnostic(completed.stderr),
+        "class": failure_class,
+        "source_location": source_location,
     }
 
 
@@ -248,19 +296,17 @@ def cargo_args(
     request: dict[str, Any],
     *,
     list_only: bool,
-    test_name: str = "",
+    exact_test: str = "",
     command_record: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Return a complete argv tuple from the closed target command catalog.
+    """Return a closed command tuple with at most one verified exact selector."""
 
-    A test name is a reconciliation selector, not an argv fragment.  The
-    runner executes the immutable target command once and matches requested
-    names against its exact per-test output.  Rejecting ``test_name`` here
-    prevents callers from accidentally reintroducing a request-derived sink.
-    """
-
-    if test_name:
-        raise ValueError("test selectors are not command arguments")
+    if exact_test and (
+        list_only
+        or not TEST_RE.fullmatch(exact_test)
+        or exact_test not in request["tests"]
+    ):
+        raise ValueError("exact test selector was not validated by inventory")
     record = command_record
     if record is None:
         manifest_root = Path(__file__).resolve().parents[2]
@@ -269,7 +315,10 @@ def cargo_args(
     command = record.get(key)
     if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
         raise ValueError("command catalog entry is not a complete argv tuple")
-    return list(command)
+    result = list(command)
+    if exact_test:
+        result.extend(["--exact", exact_test])
+    return result
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -324,7 +373,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         result["inventory"] = {
             "status": "failure",
             "tests": [],
-            "diagnostics": command_diagnostics(inventory),
+            "exit_code": inventory.returncode,
         }
         return result
     counts: dict[str, int] = {}
@@ -357,26 +406,30 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    # Run the complete immutable target command.  This keeps the command
-    # surface closed while the requested names remain exact post-run selectors.
-    test_command = cargo_args(
-        request, list_only=False, command_record=command_record
-    )
-    completed = subprocess.run(
-        test_command,
-        cwd=manifest_root,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        shell=False,
-    )
-    output = "\n".join(
-        value for value in (completed.stdout, completed.stderr) if value
-    )
-    counts = test_result_counts(output)
-    outcomes = test_outcomes(output)
     for name in request["tests"]:
+        # Inventory above proves each requested name is unique in this target.
+        # Run each one with libtest exact matching; request values never reach a
+        # shell and are appended only after the safe-name and inventory checks.
+        test_command = cargo_args(
+            request,
+            list_only=False,
+            exact_test=name,
+            command_record=command_record,
+        )
+        completed = subprocess.run(
+            test_command,
+            cwd=manifest_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        output = "\n".join(
+            value for value in (completed.stdout, completed.stderr) if value
+        )
+        counts = test_result_counts(output)
+        outcomes = test_outcomes(output)
         observed = outcomes.get(name, [])
         outcome = observed[0] if len(observed) == 1 else ""
         execution_reconciled = (
@@ -403,17 +456,24 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
                 "execution_reconciled": execution_reconciled,
                 "observed_outcomes": observed,
                 "result_counts": counts,
-                "diagnostics": command_diagnostics(completed),
+                "diagnostics": (
+                    {"exit_code": completed.returncode}
+                    if execution_reconciled
+                    else {
+                        "exit_code": completed.returncode,
+                        **failure_projection(output, repo_root),
+                    }
+                ),
             }
         )
         if status != "success":
             result["status"] = "failure"
-            result["failure_code"] = failure_code
-            result["message"] = (
-                "named test did not produce exactly one non-ignored passing result; "
-                "see bounded diagnostics and the hosted job log"
-            )
-            break
+            if "failure_code" not in result:
+                result["failure_code"] = failure_code
+                result["message"] = (
+                    "one or more named tests did not produce exactly one "
+                    "non-ignored passing result"
+                )
     return result
 
 
