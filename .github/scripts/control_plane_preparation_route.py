@@ -16,8 +16,8 @@ import prepare_control_plane as preparation
 
 BASE_SHA = "2b34a5d5da9d7d171de722aebfa19b38fa2e3861"
 BASE_TREE = "47fe6716626cdfd7c565c3752ee0192350d05ff0"
-TARGET_SHA = "24dc1f584957c61cb1fe70038be9d4e0634427b1"
-TARGET_TREE = "fae83aa3946dcbcf0f267fd7d7901bb9a7469eee"
+TARGET_SHA = "03944ff2990a22131f288751cadc05d3f9e987da"
+TARGET_TREE = "281d4c579001f71ac7876e34096fb86e53e7f2ee"
 REPOSITORY = "sednalabs/codex"
 CALLER = ".github/workflows/sedna-branch-build.yml"
 CALLEE = ".github/workflows/validation-control-plane-prep.yml"
