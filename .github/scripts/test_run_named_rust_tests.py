@@ -267,6 +267,74 @@ class NamedFailureObserverTests(unittest.TestCase):
             output,
         )
 
+    def _version_display_projection(
+        self,
+        actual: str,
+        expected: str,
+        *,
+        requested: tuple[str, ...] = (named_tests.VERSION_OUTPUT_SELECTOR,),
+        assertion: str = "assertion `left == right` failed",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        output = (
+            f"test {selector} ... FAILED\n"
+            f"---- {selector} stdout ----\n"
+            f"{assertion}\n"
+            f'  left: "{actual}"\n'
+            f'  right: "{expected}"\n'
+            "failures:\n"
+        )
+        evidence = self._evidence(
+            output, requested=requested, known={selector}
+        )
+        safe = named_tests._safe_failure_evidence(
+            evidence, {selector}, set(requested)
+        )
+        return evidence, safe
+
+    def test_exact_version_selector_projects_only_valid_public_display_pair(self) -> None:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        actual = "codex Sedna v" + "a" * 40
+        expected = "codex Sedna 1.2.3-rc.1+build.7"
+
+        evidence, safe = self._version_display_projection(actual, expected)
+
+        self.assertEqual(
+            evidence["blocks"][0]["public_version_display"],
+            {"actual": actual, "expected": expected},
+        )
+        self.assertEqual(
+            safe["blocks"][0]["public_version_display"],
+            {"actual": actual, "expected": expected},
+        )
+        self.assertEqual(safe["blocks"][0]["name"], selector)
+
+    def test_version_display_projection_suppresses_invalid_unrequested_and_non_equality_values(self) -> None:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        valid = "codex Sedna dev"
+        overlong = "codex Sedna v1.2.3+" + "x" * 120
+        invalid_pairs = [
+            ("codex Sedna /invalid", valid, (selector,), "assertion `left == right` failed"),
+            (valid, "codex Sedna /invalid", (selector,), "assertion `left == right` failed"),
+            (overlong, valid, (selector,), "assertion `left == right` failed"),
+            ("codex Sedna v1.02.3", valid, (selector,), "assertion `left == right` failed"),
+            ("codex Sedna v" + "A" * 40, valid, (selector,), "assertion `left == right` failed"),
+            (valid, valid, (), "assertion `left == right` failed"),
+            (valid, valid, (selector,), "assertion `left != right` failed"),
+        ]
+
+        for actual, expected, requested, assertion in invalid_pairs:
+            with self.subTest(requested=bool(requested), assertion=assertion):
+                evidence, safe = self._version_display_projection(
+                    actual, expected, requested=requested, assertion=assertion
+                )
+                encoded_evidence = json.dumps(evidence, sort_keys=True)
+                encoded_safe = json.dumps(safe, sort_keys=True)
+                self.assertNotIn("public_version_display", encoded_evidence)
+                self.assertNotIn("public_version_display", encoded_safe)
+                self.assertNotIn(actual, encoded_evidence)
+                self.assertNotIn(expected, encoded_evidence)
+
     def test_failed_name_counts_keep_safe_459_inventory_names(self) -> None:
         names = [f"suite::test_{index:03}" for index in range(459)]
         output = "\n".join(

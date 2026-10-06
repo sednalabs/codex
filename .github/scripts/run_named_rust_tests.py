@@ -213,6 +213,21 @@ TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|i
 FAILURE_HEADER_RE = re.compile(
     r"^---- (?P<name>.{1,256}) (?P<channel>stdout|stderr) ----$"
 )
+VERSION_OUTPUT_SELECTOR = (
+    "tests::version_output_identifies_sedna_and_preserves_package_version"
+)
+SEMVER_IDENTIFIER_RE = (
+    r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+)
+SEMVER_RE = re.compile(
+    rf"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    rf"(?:-(?:{SEMVER_IDENTIFIER_RE})(?:\.(?:{SEMVER_IDENTIFIER_RE}))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+RUST_ASSERT_EQ_RE = re.compile(r"^\s*assertion `left == right` failed\s*$")
+RUST_ASSERT_VALUE_RE = re.compile(
+    r'^\s+(left|right): "([^"\r\n]{1,128})"$'
+)
 FAILURE_MARKER_PATTERNS = (
     ("permission-denied", re.compile(r"\bpermission denied\b", re.IGNORECASE)),
     (
@@ -945,7 +960,75 @@ def _failure_markers_for_line(line: str) -> tuple[set[str], set[tuple[str, int]]
     return markers, numeric_captures
 
 
+def _safe_public_version_display(value: Any) -> str | None:
+    """Accept only the bounded, public Codex display used by one named test."""
+    if (
+        not isinstance(value, str)
+        or len(value) > 128
+        or not value.startswith("codex Sedna ")
+    ):
+        return None
+    suffix = value[len("codex Sedna ") :]
+    if suffix == "dev":
+        return value
+    if suffix.startswith("v"):
+        version = suffix[1:]
+        if re.fullmatch(r"[0-9a-f]{40}", version) or SEMVER_RE.fullmatch(
+            version
+        ):
+            return value
+    return None
+
+
+def _safe_public_version_pair(value: Any) -> dict[str, str] | None:
+    source = value if isinstance(value, dict) else {}
+    actual = _safe_public_version_display(source.get("actual"))
+    expected = _safe_public_version_display(source.get("expected"))
+    if actual is None or expected is None:
+        return None
+    return {"actual": actual, "expected": expected}
+
+
+def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
+    """Capture only left/right from the exact selector's equality assertion."""
+    state = block.get("_public_version_state")
+    if state == "search":
+        if RUST_ASSERT_EQ_RE.fullmatch(line):
+            block["_public_version_state"] = "left"
+        return
+    if state not in ("left", "right"):
+        return
+    if not line.strip():
+        return
+    match = RUST_ASSERT_VALUE_RE.fullmatch(line)
+    expected_field = "left" if state == "left" else "right"
+    if match is None or match.group(1) != expected_field:
+        block["_public_version_state"] = "suppressed"
+        block.pop("_public_version_actual_candidate", None)
+        return
+    if state == "left":
+        block["_public_version_actual_candidate"] = match.group(2)
+        block["_public_version_state"] = "right"
+        return
+    pair = _safe_public_version_pair(
+        {
+            "actual": block.pop("_public_version_actual_candidate", None),
+            "expected": match.group(2),
+        }
+    )
+    if pair is not None:
+        block["_public_version_display"] = pair
+    block["_public_version_state"] = "done"
+
+
 def _finish_failure_block(block: dict[str, Any]) -> dict[str, Any]:
+    public_version_display = _safe_public_version_pair(
+        block.pop("_public_version_display", None)
+    )
+    block.pop("_public_version_state", None)
+    block.pop("_public_version_actual_candidate", None)
+    if public_version_display is not None:
+        block["public_version_display"] = public_version_display
     markers = sorted(block.pop("_markers"))
     numeric_captures = sorted(block.pop("_numeric_captures"))
     markers_truncated = len(markers) > MAX_FAILURE_MARKERS_PER_BLOCK
@@ -977,7 +1060,10 @@ def _finish_failure_block(block: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_failure_blocks(
-    stdout: str, stderr: str, known_test_names: set[str]
+    stdout: str,
+    stderr: str,
+    known_test_names: set[str],
+    requested_test_names: set[str] | None = None,
 ) -> dict[str, Any]:
     """Extract bounded, safe observations from captured Rust failure blocks.
 
@@ -986,6 +1072,7 @@ def parse_failure_blocks(
     """
 
     parsed_blocks: list[dict[str, Any]] = []
+    requested_test_names = requested_test_names or set()
     stream_metadata: dict[str, dict[str, int | str]] = {}
     for stream_name, source in (("stdout", stdout), ("stderr", stderr)):
         candidate_count = 0
@@ -1026,10 +1113,17 @@ def parse_failure_blocks(
                     "original_char_count": 0,
                     "_markers": set(),
                     "_numeric_captures": set(),
+                    "_public_version_state": (
+                        "search"
+                        if match.group("name") == VERSION_OUTPUT_SELECTOR
+                        and VERSION_OUTPUT_SELECTOR in requested_test_names
+                        else "disabled"
+                    ),
                 }
                 continue
             if active is not None:
                 active["original_char_count"] += len(raw_line)
+                _capture_public_version_pair(active, line)
                 markers, numeric_captures = _failure_markers_for_line(line)
                 active["_markers"].update(markers)
                 active["_numeric_captures"].update(numeric_captures)
@@ -1112,7 +1206,16 @@ def failure_evidence(
         *(name for name in safe_failed_names if name not in requested_failed_names),
     ]
 
-    blocks = parse_failure_blocks(stdout, stderr, known_test_names)
+    requested_tests = request.get("tests")
+    requested_version_names = (
+        {VERSION_OUTPUT_SELECTOR}
+        if isinstance(requested_tests, list)
+        and VERSION_OUTPUT_SELECTOR in requested_tests
+        else set()
+    )
+    blocks = parse_failure_blocks(
+        stdout, stderr, known_test_names, requested_version_names
+    )
     requested_order = {
         name: index for index, name in enumerate(requested_failed_names)
     }
@@ -1949,8 +2052,11 @@ def _safe_test_results(value: Any, known: set[str], repo_root: Path | None = Non
     return {"records": tests, "original_count": len(values), "omitted_count": len(values) - len(tests), "truncated": len(values) > len(tests)}
 
 
-def _safe_failure_evidence(value: Any, known: set[str]) -> dict[str, Any]:
+def _safe_failure_evidence(
+    value: Any, known: set[str], requested_test_names: set[str] | None = None
+) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
+    requested_test_names = requested_test_names or set()
     safe = _safe_fields(source, counts=(
         "parsed_block_count", "emitted_block_count", "omitted_block_count", "unrecognized_block_count",
         "failed_name_occurrence_count", "failed_name_distinct_count", "safe_failed_name_count",
@@ -1980,8 +2086,34 @@ def _safe_failure_evidence(value: Any, known: set[str]) -> dict[str, Any]:
     for block in values:
         if not isinstance(block, dict) or not isinstance(block.get("name"), str) or block["name"] not in known:
             continue
-        projected = _safe_fields(block, counts=("stream_ordinal", "original_char_count", "evidence_char_count"), booleans=("requested_failed_selector", "markers_truncated", "numeric_captures_truncated", "evidence_truncated"), enums={"source_stream": {"stdout", "stderr"}, "channel": {"stdout", "stderr"}}, handled=("name", "markers", "numeric_captures"))
-        projected.update({"name": block["name"], "markers": _safe_markers(block.get("markers")), "numeric_captures": _safe_numeric_captures(block.get("numeric_captures"))})
+        projected = _safe_fields(
+            block,
+            counts=("stream_ordinal", "original_char_count", "evidence_char_count"),
+            booleans=(
+                "requested_failed_selector",
+                "markers_truncated",
+                "numeric_captures_truncated",
+                "evidence_truncated",
+            ),
+            enums={
+                "source_stream": {"stdout", "stderr"},
+                "channel": {"stdout", "stderr"},
+            },
+            handled=("name", "markers", "numeric_captures", "public_version_display"),
+        )
+        projected.update(
+            {
+                "name": block["name"],
+                "markers": _safe_markers(block.get("markers")),
+                "numeric_captures": _safe_numeric_captures(
+                    block.get("numeric_captures")
+                ),
+            }
+        )
+        if block["name"] == VERSION_OUTPUT_SELECTOR and VERSION_OUTPUT_SELECTOR in requested_test_names:
+            public_version_display = _safe_public_version_pair(block.get("public_version_display"))
+            if public_version_display is not None:
+                projected["public_version_display"] = public_version_display
         projected["size_scope"] = "pre_projection_structured_source"
         safe["blocks"].append(projected)
         if len(safe["blocks"]) == MAX_FAILURE_BLOCKS:
@@ -2227,7 +2359,14 @@ def public_safe_result(result: dict[str, Any], repo_root: Path | None = None) ->
     if "runtime_preparation" in result:
         safe["runtime_preparation"] = _safe_runtime_preparation(result["runtime_preparation"], repo_root)
     if "failure_evidence" in result:
-        safe["failure_evidence"] = _safe_failure_evidence(result["failure_evidence"], known)
+        requested_names = (
+            set(request.get("tests", []))
+            if request.get("catalog_validated")
+            else set()
+        )
+        safe["failure_evidence"] = _safe_failure_evidence(
+            result["failure_evidence"], known, requested_names
+        )
     if result.get("missing_tests") or result.get("ambiguous_tests"):
         safe["inventory_reconciliation"] = _safe_reconciliation(result, known)
     if safe["status"] == "success":
