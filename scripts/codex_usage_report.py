@@ -32,6 +32,8 @@ MAX_LINEAGE_DEPTH = 128
 MAX_RATE_POLICY_ROWS = 512
 MAX_OUTPUT_GROUPS = 1_000
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_TEXT_FIELD_CHARS = 8_192
+MAX_OUTPUT_TEXT_CHARS = 1_000_000
 SQL_CHUNK = 250
 PROGRESS_INTERVAL = 1_000
 
@@ -477,6 +479,7 @@ class UsageReporter:
         self.selected_rows = 0
         self.rate_policy_rows = 0
         self.lineage_nodes = 0
+        self.output_text_chars = 0
         self.conn: sqlite3.Connection | None = None
 
     def check_deadline(self) -> None:
@@ -521,6 +524,16 @@ class UsageReporter:
             )
         return self.conn.execute(sql, params)
 
+    def _account_output_text(self, row: sqlite3.Row) -> None:
+        for value in row:
+            if not isinstance(value, str):
+                continue
+            if len(value) > MAX_TEXT_FIELD_CHARS:
+                raise WorkLimitReached("output_size_limit_exceeded")
+            self.output_text_chars += len(value)
+            if self.output_text_chars > MAX_OUTPUT_TEXT_CHARS:
+                raise WorkLimitReached("output_size_limit_exceeded")
+
     def _fetch_threads(self, thread_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
         ids = sorted(set(thread_ids))
@@ -529,12 +542,15 @@ class UsageReporter:
             placeholders = ",".join("?" for _ in batch)
             sql = f"SELECT {THREAD_COLUMNS} FROM usage_threads WHERE thread_id IN ({placeholders})"
             for row in self._execute("thread_metadata", sql, batch):
+                self._account_output_text(row)
                 result[row["thread_id"]] = dict(row)
         return result
 
     def _fetch_anchor(self, thread_id: str) -> dict[str, Any] | None:
         sql = f"SELECT {THREAD_COLUMNS} FROM usage_threads WHERE thread_id = ?"
         row = self._execute("thread_anchor", sql, (thread_id,)).fetchone()
+        if row is not None:
+            self._account_output_text(row)
         return dict(row) if row is not None else None
 
     def _fetch_children(
@@ -551,6 +567,8 @@ class UsageReporter:
                 f"WHERE {PARENT_EXPR} IN ({placeholders}) LIMIT ?"
             )
             rows = self._execute("lineage_children", sql, (*batch, remaining + 1)).fetchmany(remaining + 1)
+            for row in rows:
+                self._account_output_text(row)
             children.extend(dict(row) for row in rows)
             remaining -= len(rows)
             if remaining < 0:
@@ -597,6 +615,7 @@ class UsageReporter:
             )
             cursor = self._execute("window_calls", sql, (seek_start, seek_end, MAX_CALLS + 1))
             for row in cursor:
+                self._account_output_text(row)
                 calls.append(dict(row))
                 if len(calls) > MAX_CALLS:
                     raise WorkLimitReached("call_limit_exceeded")
@@ -615,6 +634,7 @@ class UsageReporter:
             )
             params = (*batch, seek_start, seek_end, remaining + 1)
             for row in self._execute("thread_window_calls", sql, params):
+                self._account_output_text(row)
                 calls.append(dict(row))
                 if len(calls) > MAX_CALLS:
                     raise WorkLimitReached("call_limit_exceeded")
@@ -755,7 +775,10 @@ class UsageReporter:
                 "INDEXED BY usage_codex_credit_policies_lookup_idx "
                 "WHERE provider = ? AND billing_surface = ? AND account_plan = ? LIMIT ?"
             )
-            rows = [dict(row) for row in self._execute("credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS + 1))]
+            rows = []
+            for row in self._execute("credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS + 1)):
+                self._account_output_text(row)
+                rows.append(dict(row))
             total += len(rows)
             if total > MAX_RATE_POLICY_ROWS:
                 raise WorkLimitReached("rate_policy_row_limit_exceeded")
@@ -795,10 +818,10 @@ class UsageReporter:
                 "WHERE provider = ? AND model = ? AND service_tier = ? "
                 "AND speed_mode = ? AND rate_card_kind = ? LIMIT ?"
             )
-            rows = [
-                dict(row)
-                for row in self._execute("credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS + 1))
-            ]
+            rows = []
+            for row in self._execute("credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS + 1)):
+                self._account_output_text(row)
+                rows.append(dict(row))
             total += len(rows)
             if total > MAX_RATE_POLICY_ROWS:
                 raise WorkLimitReached("rate_policy_row_limit_exceeded")
@@ -1020,6 +1043,13 @@ class UsageReporter:
             if self.scope in {"thread", "subtree"} and not scope_nodes and not calls:
                 raise ReportProblem("unavailable", "unknown_thread_id")
             call_thread_ids = sorted({str(call["thread_id"]) for call in calls})
+            participating = set(scope_nodes) if self.scope == "subtree" else set()
+            participating.update(call_thread_ids)
+            if self.scope == "thread" and self.thread_id:
+                participating.add(self.thread_id)
+            if len(participating) > MAX_OUTPUT_GROUPS:
+                raise WorkLimitReached("output_group_limit_exceeded")
+
             initial_metadata = dict(scope_nodes)
             missing_anchor = self.scope in {"thread", "subtree"} and not scope_nodes
             metadata, missing_metadata = self._fetch_ancestors(
@@ -1036,10 +1066,6 @@ class UsageReporter:
 
             thread_metrics: dict[str, dict[str, Any]] = {}
             lineage: dict[str, dict[str, Any]] = {}
-            participating = set(scope_nodes) if self.scope == "subtree" else set()
-            participating.update(call_thread_ids)
-            if self.scope == "thread" and self.thread_id:
-                participating.add(self.thread_id)
             for thread_id in sorted(participating):
                 thread_metrics[thread_id] = _new_metrics()
                 lineage[thread_id] = self._resolve_lineage(thread_id, metadata, missing_metadata)
@@ -1091,8 +1117,6 @@ class UsageReporter:
                     participating.add(thread_id)
                 _add_call(thread_metrics[thread_id], call, actual, standard)
 
-            if len(participating) > MAX_OUTPUT_GROUPS:
-                raise WorkLimitReached("output_group_limit_exceeded")
             if not calls and self.scope == "all":
                 all_calls_metrics = _new_metrics()
             if self.scope in {"thread", "subtree"} and not scope_nodes and calls:
@@ -1346,6 +1370,25 @@ def _error_report(problem: ReportProblem, args: argparse.Namespace | None) -> di
     }
 
 
+def _write_bounded_json(
+    report: dict[str, Any], output: Any, check_deadline: Any | None = None
+) -> None:
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    encoded_chars = 0
+    for chunk in encoder.iterencode(report):
+        # ensure_ascii makes every encoded character one UTF-8 byte.
+        encoded_chars += len(chunk)
+        if encoded_chars > MAX_OUTPUT_BYTES:
+            raise WorkLimitReached("output_size_limit_exceeded")
+        if check_deadline is not None:
+            check_deadline()
+    if check_deadline is not None:
+        check_deadline()
+    for chunk in encoder.iterencode(report):
+        output.write(chunk)
+    output.write("\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args: argparse.Namespace | None = None
     try:
@@ -1364,13 +1407,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = reporter.run()
         reporter.check_deadline()
         status = report["status"]
-        encoded = json.dumps(report, sort_keys=True, separators=(",", ":"), default=str)
-        reporter.check_deadline()
-        if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            problem = WorkLimitReached("output_size_limit_exceeded")
-            encoded = json.dumps(_error_report(problem, args), sort_keys=True, separators=(",", ":"))
-            status = "incomplete"
-        print(encoded)
+        _write_bounded_json(report, sys.stdout, reporter.check_deadline)
         return 0 if status == "complete" else 2
     except WorkLimitReached as exc:
         print(json.dumps(_error_report(exc, args), sort_keys=True, separators=(",", ":")))

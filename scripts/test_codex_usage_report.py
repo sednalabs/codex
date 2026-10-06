@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 import sqlite3
@@ -112,6 +113,19 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         raise AssertionError("could not import the exact tested reporter source")
     helper = importlib.util.module_from_spec(helper_spec)
     helper_spec.loader.exec_module(helper)
+    original_output_limit = helper.MAX_OUTPUT_BYTES
+    bounded_output = io.StringIO()
+    helper.MAX_OUTPUT_BYTES = 128
+    try:
+        try:
+            helper._write_bounded_json({"synthetic": "x" * 1_024}, bounded_output)
+        except helper.WorkLimitReached as exc:
+            _assert(exc.reason == "output_size_limit_exceeded", "JSON byte overflow must be typed incomplete")
+        else:
+            raise AssertionError("synthetic oversized JSON unexpectedly passed its output cap")
+        _assert(bounded_output.getvalue() == "", "oversized JSON must be rejected before emitting partial output")
+    finally:
+        helper.MAX_OUTPUT_BYTES = original_output_limit
     writer_guard = helper.UsageReporter(
         database,
         helper.parse_utc(START),
@@ -122,6 +136,30 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         "both",
         False,
     )
+    text_connection = sqlite3.connect(":memory:")
+    try:
+        oversized_text = text_connection.execute(
+            "SELECT ?", ("x" * (helper.MAX_TEXT_FIELD_CHARS + 1),)
+        ).fetchone()
+        try:
+            writer_guard._account_output_text(oversized_text)
+        except helper.WorkLimitReached as exc:
+            _assert(exc.reason == "output_size_limit_exceeded", "oversized source text must be typed incomplete")
+        else:
+            raise AssertionError("synthetic oversized source text unexpectedly passed its field cap")
+        original_text_limit = helper.MAX_OUTPUT_TEXT_CHARS
+        helper.MAX_OUTPUT_TEXT_CHARS = 3
+        writer_guard._account_output_text(text_connection.execute("SELECT ?", ("ab",)).fetchone())
+        try:
+            writer_guard._account_output_text(text_connection.execute("SELECT ?", ("cd",)).fetchone())
+        except helper.WorkLimitReached as exc:
+            _assert(exc.reason == "output_size_limit_exceeded", "aggregate report text must be typed incomplete")
+        else:
+            raise AssertionError("synthetic aggregate output text unexpectedly passed its cap")
+        finally:
+            helper.MAX_OUTPUT_TEXT_CHARS = original_text_limit
+    finally:
+        text_connection.close()
     guarded_connection = writer_guard.open()
     try:
         guarded_connection.execute("DELETE FROM usage_provider_calls")
@@ -471,11 +509,56 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
     _assert(cap["status"] == "incomplete", "over-limit window must return typed incomplete")
     _assert(cap["error"]["reason"] == "call_limit_exceeded", "over-limit query must not fall back globally")
 
+    group_limit_database = temp_root / "output-group-limit.sqlite"
+    _copy_database(database, group_limit_database)
+    group_writer = sqlite3.connect(group_limit_database)
+    try:
+        group_writer.executemany(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, provider, actual_model_used, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    f"output-group-call-{index}",
+                    f"output-group-thread-{index}",
+                    "openai",
+                    "gpt-6-luna",
+                    "default",
+                    "runtime_contract",
+                    0,
+                    "chatgpt_credits",
+                    "plus",
+                    "2026-09-30T00:45:00Z",
+                    "2026-09-30T00:45:01Z",
+                    1,
+                    0,
+                    0,
+                    1,
+                    2,
+                    "ok",
+                )
+                for index in range(1_001)
+            ),
+        )
+        group_writer.commit()
+    finally:
+        group_writer.close()
+    group_limit, _group_limit_diagnostic = _report(
+        group_limit_database,
+        repo_root,
+        credit_mode="supplied_standard_scenario",
+        expected_exit=2,
+    )
+    _assert(group_limit["status"] == "incomplete", "excess output groups must return typed incomplete")
+    _assert(
+        group_limit["error"]["reason"] == "output_group_limit_exceeded",
+        "output group overflow must stop before per-thread aggregation without widening the query",
+    )
+
     return {
         "scale_status": "passed",
         "history_queries": scale_results,
         "largest_history_migration": migration_measurement,
         "call_cap_status": cap["error"]["reason"],
+        "output_group_cap_status": group_limit["error"]["reason"],
         "qualification_note": "migration/storage measurements are synthetic hosted evidence; writer-index timing is measured separately with the real runtime writer by the Rust consumer test",
     }
 
