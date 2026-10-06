@@ -471,60 +471,12 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
     _assert(cap["status"] == "incomplete", "over-limit window must return typed incomplete")
     _assert(cap["error"]["reason"] == "call_limit_exceeded", "over-limit query must not fall back globally")
 
-    writer_comparison = _writer_index_comparison(snapshots[0][1], repo_root, temp_root)
     return {
         "scale_status": "passed",
         "history_queries": scale_results,
         "largest_history_migration": migration_measurement,
         "call_cap_status": cap["error"]["reason"],
-        "synthetic_raw_insert_index_comparison": writer_comparison,
-        "qualification_note": "migration/storage and raw-index-write measurements are synthetic hosted evidence; not live-database or provider-performance claims",
-    }
-
-
-def _writer_index_comparison(old_schema_source: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
-    old_path = temp_root / "writer-old.sqlite"
-    new_path = temp_root / "writer-new.sqlite"
-    _copy_database(old_schema_source, old_path)
-    _copy_database(old_schema_source, new_path)
-    new_connection = sqlite3.connect(new_path, isolation_level=None)
-    new_connection.execute("PRAGMA journal_mode=WAL")
-    new_connection.execute("PRAGMA wal_autocheckpoint=0")
-    _migrate_and_measure(
-        new_connection,
-        repo_root / "codex-rs" / "state" / "usage_migrations" / "0020_bounded_usage_reporting_indexes.sql",
-    )
-    old_connection = sqlite3.connect(old_path, isolation_level=None)
-    old_connection.execute("PRAGMA journal_mode=WAL")
-    old_connection.execute("PRAGMA wal_autocheckpoint=0")
-
-    old_count = old_connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
-    new_count = new_connection.execute("SELECT COUNT(*) FROM usage_provider_calls").fetchone()[0]
-    rows_old = list(_history_rows(old_count, 5_000))
-    rows_new = list(_history_rows(new_count, 5_000))
-    started = time.perf_counter()
-    old_connection.execute("BEGIN IMMEDIATE")
-    old_connection.executemany(
-        "INSERT INTO usage_provider_calls(provider_call_id, thread_id, started_at, status) VALUES (?, ?, ?, ?)",
-        rows_old,
-    )
-    old_connection.commit()
-    old_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    new_connection.execute("BEGIN IMMEDIATE")
-    new_connection.executemany(
-        "INSERT INTO usage_provider_calls(provider_call_id, thread_id, started_at, status) VALUES (?, ?, ?, ?)",
-        rows_new,
-    )
-    new_connection.commit()
-    new_seconds = time.perf_counter() - started
-    old_connection.close()
-    new_connection.close()
-    return {
-        "rows_per_variant": 5_000,
-        "legacy_thread_index_seconds": round(old_seconds, 6),
-        "reporting_indexes_seconds": round(new_seconds, 6),
-        "measurement_kind": "synthetic raw provider-call inserts; not full runtime writer latency",
+        "qualification_note": "migration/storage measurements are synthetic hosted evidence; writer-index timing is measured separately with the real runtime writer by the Rust consumer test",
     }
 
 

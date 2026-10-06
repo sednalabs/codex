@@ -476,6 +476,59 @@ mod tests {
         }
     }
 
+    async fn provider_writer_batch_seconds(
+        codex_home: &std::path::Path,
+        indexed_for_reporting: bool,
+        id_prefix: &str,
+    ) -> f64 {
+        let sqlite = SqliteConfig::new_for_testing(codex_home.abs());
+        let runtime = StateRuntime::init(sqlite, "openai".to_string())
+            .await
+            .expect("initialize isolated writer benchmark runtime");
+        if !indexed_for_reporting {
+            for statement in [
+                "DROP INDEX usage_provider_calls_started_at_idx",
+                "DROP INDEX usage_provider_calls_thread_started_at_idx",
+                "DROP INDEX usage_threads_reporting_parent_idx",
+                "CREATE INDEX usage_provider_calls_thread_idx ON usage_provider_calls(thread_id)",
+            ] {
+                sqlx::query(statement)
+                    .execute(runtime.usage_pool().as_ref())
+                    .await
+                    .expect("prepare legacy index shape in temporary benchmark DB");
+            }
+        }
+        runtime
+            .record_usage_thread(&UsageThreadRecord {
+                thread_id: "writer-thread".to_string(),
+                parent_thread_id: None,
+                root_thread_id: Some("writer-thread".to_string()),
+                fork_parent_thread_id: None,
+                source: Some("test".to_string()),
+            })
+            .await
+            .expect("persist benchmark thread before timing the writer");
+
+        let started = std::time::Instant::now();
+        for index in 0..250 {
+            let call_id = format!("{id_prefix}-call-{index:04}");
+            let response_id = format!("{id_prefix}-response-{index:04}");
+            runtime
+                .record_provider_call_usage(&completed_record(
+                    &call_id,
+                    "writer-thread",
+                    &response_id,
+                    "ok",
+                    Some((100, 20, 0, 10, 130)),
+                ))
+                .await
+                .expect("measure the production completed-response writer");
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        runtime.close().await;
+        elapsed
+    }
+
     #[tokio::test]
     async fn bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale() {
         let codex_home = unique_temp_dir();
@@ -684,6 +737,24 @@ mod tests {
         assert_eq!(evidence["consumer"]["correctness_status"], "passed");
         assert_eq!(evidence["scale"]["scale_status"], "passed");
         assert_eq!(evidence["scale"]["history_queries"].as_array().map(Vec::len), Some(3));
+
+        let indexed_writer_home = unique_temp_dir();
+        let legacy_writer_home = unique_temp_dir();
+        let indexed_writer_seconds =
+            provider_writer_batch_seconds(indexed_writer_home.as_path(), true, "indexed").await;
+        let legacy_writer_seconds =
+            provider_writer_batch_seconds(legacy_writer_home.as_path(), false, "legacy").await;
+        println!(
+            "CODEX_USAGE_REAL_WRITER_COMPARISON={}",
+            serde_json::json!({
+                "rows_per_variant": 250,
+                "legacy_index_seconds": legacy_writer_seconds,
+                "reporting_indexes_seconds": indexed_writer_seconds,
+                "measurement_kind": "actual StateRuntime::record_provider_call_usage batches on separate temporary SQLite databases"
+            })
+        );
+        let _ = tokio::fs::remove_dir_all(indexed_writer_home).await;
+        let _ = tokio::fs::remove_dir_all(legacy_writer_home).await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
