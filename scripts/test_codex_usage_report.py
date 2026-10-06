@@ -446,6 +446,12 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
     )
     _assert(thread["summary"]["provider_call_count"] == 1, "exact-thread scope")
     _assert(thread["summary"]["actual_mode"]["complete_total"] == "4.25", "provider credit wins for exact thread")
+    _assert(thread["status"] == "complete", "thread scope must resolve the preloaded child anchor's ancestry")
+    _assert(thread["lineage_coverage"]["unresolved_thread_count"] == 0, "child-thread ancestor is complete")
+    _assert(
+        thread["threads"][0]["resolved_root_thread_id"] == "root-thread",
+        "thread scope must follow the persisted parent to its recorded root",
+    )
 
     wal_database = temp_root / "wal-concurrency.sqlite"
     _copy_database(database, wal_database)

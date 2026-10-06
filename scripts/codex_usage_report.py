@@ -672,29 +672,39 @@ class UsageReporter:
     ) -> tuple[dict[str, dict[str, Any]], set[str]]:
         metadata = dict(existing)
         missing: set[str] = set()
-        frontier = sorted(set(initial_ids) - set(metadata))
-        depth = 0
-        while frontier:
+        frontier_depths = {thread_id: 0 for thread_id in set(initial_ids) - set(metadata)}
+        for row in metadata.values():
+            parent, _parent_source = self._effective_parent(row)
+            if parent is not None and parent not in metadata and parent not in missing:
+                previous_depth = frontier_depths.get(parent)
+                if previous_depth is None or previous_depth > 1:
+                    frontier_depths[parent] = 1
+
+        while frontier_depths:
             self.check_deadline()
-            if len(metadata) + len(missing) + len(frontier) > MAX_LINEAGE_NODES:
+            depth = min(frontier_depths.values())
+            if depth > MAX_LINEAGE_DEPTH:
+                raise WorkLimitReached("lineage_depth_limit_exceeded")
+            if len(metadata) + len(missing) + len(frontier_depths) > MAX_LINEAGE_NODES:
                 raise WorkLimitReached("lineage_node_limit_exceeded")
+            frontier = sorted(
+                thread_id
+                for thread_id, candidate_depth in frontier_depths.items()
+                if candidate_depth == depth
+            )
+            for thread_id in frontier:
+                del frontier_depths[thread_id]
             fetched = self._fetch_threads(frontier)
             missing.update(set(frontier) - set(fetched))
             metadata.update(fetched)
-            next_ids: set[str] = set()
             for row in fetched.values():
-                parent = _blank_to_none(row.get("parent_thread_id"))
-                if parent is None:
-                    parent = _blank_to_none(row.get("fork_parent_thread_id"))
+                parent, _parent_source = self._effective_parent(row)
                 if parent is not None and parent not in metadata and parent not in missing:
-                    next_ids.add(parent)
-            if not next_ids:
-                break
-            depth += 1
-            if depth > MAX_LINEAGE_DEPTH:
-                raise WorkLimitReached("lineage_depth_limit_exceeded")
-            frontier = sorted(next_ids)
-            if len(metadata) + len(missing) + len(frontier) > MAX_LINEAGE_NODES:
+                    next_depth = depth + 1
+                    previous_depth = frontier_depths.get(parent)
+                    if previous_depth is None or next_depth < previous_depth:
+                        frontier_depths[parent] = next_depth
+            if len(metadata) + len(missing) + len(frontier_depths) > MAX_LINEAGE_NODES:
                 raise WorkLimitReached("lineage_node_limit_exceeded")
         self.lineage_nodes = len(metadata)
         return metadata, missing
