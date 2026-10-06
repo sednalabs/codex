@@ -2538,7 +2538,13 @@ class AcceptedInputManifestTests(unittest.TestCase):
         for selector in focused_selectors:
             for job_name, _expected_runner, job in consumer_jobs:
                 with self.subTest(job=job_name, selector=selector):
-                    self.assertEqual(1, job.count(f"::{selector}\""))
+                    expected_occurrences = (
+                        2
+                        if job_name == "consume-linux-x86_64"
+                        and selector == "test_packaged_tui_agents_details_render_configured_identity_and_unknown_effective_identity"
+                        else 1
+                    )
+                    self.assertEqual(expected_occurrences, job.count(f"::{selector}\""))
 
     def test_existing_consumer_verifier_env_binds_every_required_input(self) -> None:
         workflow_path = ACCEPTED_INPUTS_PATH.parent / "workflows" / "sedna-branch-build.yml"
@@ -3274,6 +3280,13 @@ class ConsumerResultTests(unittest.TestCase):
                     self.assertTrue(any("skipped" in issue for issue in result["issues"]))
                 elif mutation == "wrong_generation":
                     self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                elif mutation == "extra":
+                    self.assertTrue(
+                        any(
+                            "JUnit plain-test name is not an exact selected case" in issue
+                            for issue in result["issues"]
+                        )
+                    )
                 else:
                     self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
 
@@ -3341,6 +3354,8 @@ class ConsumerResultTests(unittest.TestCase):
                     self.assertIn("pytest exited with status 1", result["issues"])
                 elif mutation == "wrong_generation":
                     self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                elif mutation == "extra":
+                    self.assertTrue(any("JUnit plain-test name is not an exact selected case" in issue for issue in result["issues"]))
                 else:
                     self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
 
@@ -3408,6 +3423,8 @@ class ConsumerResultTests(unittest.TestCase):
                     self.assertIn("pytest exited with status 1", result["issues"])
                 elif mutation == "wrong_generation":
                     self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                elif mutation == "extra":
+                    self.assertTrue(any("JUnit plain-test name is not an exact selected case" in issue for issue in result["issues"]))
                 else:
                     self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
 
@@ -4017,6 +4034,8 @@ class ConsumerResultTests(unittest.TestCase):
                     self.assertTrue(any("skipped" in issue for issue in result["issues"]))
                 elif mutation == "wrong_generation":
                     self.assertTrue(any("no exact consume-existing test inventory" in issue for issue in result["issues"]))
+                elif mutation == "extra":
+                    self.assertTrue(any("JUnit plain-test name is not an exact selected case" in issue for issue in result["issues"]))
                 else:
                     self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
 
