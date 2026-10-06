@@ -59,7 +59,8 @@ TEST_RESULT_RE = re.compile(
 )
 TEST_OUTCOME_RE = re.compile(r"^test (?P<name>.+?) \.\.\. (?P<status>ok|FAILED|ignored)$")
 SOURCE_LOCATION_RE = re.compile(
-    r"thread '[^'\r\n]+' panicked at (?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
+    r"(?:thread '[^'\r\n]+' panicked at |(?:^|\s)at\s+)"
+    r"(?P<path>(?:(?:/[A-Za-z0-9_.-]+)*/)?"
     r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
     r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
     r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
@@ -484,6 +485,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         # This diagnostic-only setting is restricted to the exact TUI selectors.
         diagnostic_env = env.copy()
         diagnostic_env["INSTA_OUTPUT"] = "summary"
+        diagnostic_env["RUST_BACKTRACE"] = "1"
         for name in request["tests"]:
             # Inventory above proves each requested name is unique in this target.
             # Request values are appended only after safe-name and inventory checks.
