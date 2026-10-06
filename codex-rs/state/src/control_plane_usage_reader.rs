@@ -120,7 +120,9 @@ pub(crate) fn project_call(row: sqlx::sqlite::SqliteRow, include_standard_scenar
         .try_get::<Option<String>, _>("request_id")
         .map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
         .and_then(bounded_identifier);
-    let provider: Option<String> = row.try_get("provider").map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
+    let provider: Option<String> = row
+        .try_get::<Option<String>, _>("provider")
+        .map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
         .and_then(bounded_identifier);
     let identity = read_response_identity(&row, &call_id, &thread_id, provider.as_deref(), response_id.as_deref())?;
     let lineage_thread: Option<String> = row.try_get("lineage_thread_id").map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?;
