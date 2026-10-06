@@ -1718,6 +1718,59 @@ class PublicArtifactTests(unittest.TestCase):
                 {"x": "y" * prepare_control_plane.MAX_RECEIPT_BYTES}
             )
 
+    def test_self_test_failure_receipt_projects_only_known_contract_location(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            helper = Path(tempdir)
+            test_file = helper / prepare_control_plane.SELF_TEST_SOURCE
+            test_file.parent.mkdir(parents=True)
+            test_file.write_text(
+                "import unittest\n"
+                "class ProjectionTests(unittest.TestCase):\n"
+                "    def test_expected_contract(self):\n"
+                "        self.assertEqual(1, 2)\n",
+                encoding="utf-8",
+            )
+            stderr = (
+                b"FAIL: test_expected_contract "
+                b"(test_prepare_control_plane.ProjectionTests.test_expected_contract)\n"
+                b"Traceback (most recent call last):\n"
+                b'  File "/home/runner/private/.github/scripts/'
+                b'test_prepare_control_plane.py", line 4, in test_expected_contract\n'
+                b"AssertionError: PRIVATE_ASSERTION_CANARY\n"
+                b"FAIL: test_untrusted_canary "
+                b"(test_prepare_control_plane.Private.test_untrusted_canary)\n"
+            )
+            receipt = {"self_tests": {"status": "not_run", "exit_code": None}}
+            receipt_path = helper / "receipt.json"
+            completed = subprocess.CompletedProcess(
+                args=("python3",), returncode=1, stdout=b"", stderr=stderr
+            )
+            with mock.patch.object(
+                prepare_control_plane, "run", return_value=completed
+            ):
+                prepare_control_plane.run_preflight(
+                    "self_tests",
+                    prepare_control_plane.SELF_TEST_ARGV,
+                    helper,
+                    {},
+                    receipt,
+                    receipt_path,
+                )
+
+            expected = [
+                {
+                    "test": "test_expected_contract",
+                    "status": "assertion_failure",
+                    "file": prepare_control_plane.SELF_TEST_SOURCE,
+                    "line": 4,
+                }
+            ]
+            self.assertEqual(receipt["self_test_failures"], expected)
+            serialized = receipt_path.read_bytes()
+            self.assertNotIn(b"PRIVATE_ASSERTION_CANARY", serialized)
+            self.assertNotIn(b"/home/runner/private", serialized)
+            self.assertNotIn(b"test_untrusted_canary", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

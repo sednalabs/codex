@@ -7,6 +7,7 @@ are constants, not request data.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ SELF_TEST_ARGV = (
     "-p",
     "test_prepare_control_plane.py",
 )
+SELF_TEST_SOURCE = ".github/scripts/test_prepare_control_plane.py"
 SOURCE_STYLE_ARGV = (
     "uv",
     "run",
@@ -814,6 +816,68 @@ def persist_receipt(path: Path, receipt: dict) -> None:
         raise PreparationError("receipt_persist_failed") from None
 
 
+def self_test_failure_projection(
+    stderr: bytes, helper: Path
+) -> list[dict[str, object]]:
+    try:
+        source = (helper / SELF_TEST_SOURCE).read_text(encoding="utf-8")
+        output = stderr.decode("utf-8")
+        tree = ast.parse(source)
+    except (OSError, UnicodeError, SyntaxError):
+        return []
+
+    locations: dict[str, tuple[int, int]] = {}
+    for class_node in tree.body:
+        if not isinstance(class_node, ast.ClassDef):
+            continue
+        for member in class_node.body:
+            if not isinstance(member, ast.FunctionDef) or not member.name.startswith(
+                "test_"
+            ):
+                continue
+            if member.name in locations:
+                return []
+            locations[member.name] = (member.lineno, member.end_lineno or member.lineno)
+
+    header_pattern = re.compile(
+        r"^(FAIL|ERROR): (test_[A-Za-z0-9_]+) \([A-Za-z_][A-Za-z0-9_.]*\)$"
+    )
+    location_pattern = re.compile(
+        r'^\s*File "[^"\n]*[\\/]test_prepare_control_plane\.py", '
+        r"line ([0-9]+), in (test_[A-Za-z0-9_]+)$"
+    )
+    failures: dict[str, dict[str, object]] = {}
+    current_test: str | None = None
+    for line in output.splitlines():
+        header = header_pattern.fullmatch(line)
+        if header:
+            current_test = header.group(2)
+            location = locations.get(current_test)
+            if location is not None:
+                failures[current_test] = {
+                    "test": current_test,
+                    "status": (
+                        "assertion_failure"
+                        if header.group(1) == "FAIL"
+                        else "test_error"
+                    ),
+                    "file": SELF_TEST_SOURCE,
+                    "line": location[0],
+                }
+            continue
+        if line.startswith(("FAIL:", "ERROR:")):
+            current_test = None
+            continue
+        trace = location_pattern.fullmatch(line)
+        if trace and current_test == trace.group(2):
+            location = locations.get(current_test)
+            line_number = int(trace.group(1))
+            if location is not None and location[0] <= line_number <= location[1]:
+                failures[current_test]["line"] = line_number
+
+    return [failures[name] for name in sorted(failures)]
+
+
 def run_preflight(
     name: str,
     argv: tuple[str, ...],
@@ -835,6 +899,8 @@ def run_preflight(
         status="passed" if proc.returncode == 0 else "failed",
         exit_code=proc.returncode,
     )
+    if name == "self_tests" and proc.returncode:
+        receipt["self_test_failures"] = self_test_failure_projection(proc.stderr, cwd)
     receipt["preflight_current_phase"] = None
     persist_receipt(receipt_path, receipt)
     return proc
