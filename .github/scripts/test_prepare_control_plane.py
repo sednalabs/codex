@@ -58,6 +58,7 @@ class FixedContractTests(unittest.TestCase):
                 "codex-cli",
                 "-p",
                 "codex-state",
+                "--message-format=json",
             ),
         )
         for _, _, argv in prepare_control_plane.PHASES:
