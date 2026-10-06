@@ -171,7 +171,10 @@ def _nonnegative_integer(value: Any) -> int | None:
 def _credit_string(value: decimal.Decimal) -> str:
     if not value:
         return "0"
-    return format(value, "f")
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _key(value: Any) -> str | None:
