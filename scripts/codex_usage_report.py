@@ -573,18 +573,21 @@ class UsageReporter:
             if not batch:
                 continue
             self.check_deadline()
+            batch_count = 0
             placeholders = ",".join("?" for _ in batch)
             sql = (
                 f"SELECT {THREAD_COLUMNS} FROM usage_threads INDEXED BY {PARENT_INDEX} "
                 f"WHERE {PARENT_EXPR} IN ({placeholders}) LIMIT ?"
             )
-            rows = self._execute("lineage_children", sql, (*batch, remaining + 1)).fetchmany(remaining + 1)
-            for row in rows:
+            cursor = self._execute("lineage_children", sql, (*batch, remaining + 1))
+            for row in cursor:
+                self.check_deadline()
+                if batch_count >= remaining:
+                    raise WorkLimitReached("lineage_node_limit_exceeded")
                 self._account_output_text(row)
-            children.extend(dict(row) for row in rows)
-            remaining -= len(rows)
-            if remaining < 0:
-                raise WorkLimitReached("lineage_node_limit_exceeded")
+                children.append(dict(row))
+                batch_count += 1
+            remaining -= batch_count
         return children
 
     def _walk_subtree(self, anchor: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:

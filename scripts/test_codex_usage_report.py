@@ -264,6 +264,49 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
     ) + 1
     _assert(bounded_error_bytes <= helper.MAX_OUTPUT_BYTES, "CLI error response must stay within the JSON output cap")
 
+    subtree_text_database = temp_root / "subtree-output-text-limit.sqlite"
+    _copy_database(database, subtree_text_database)
+    subtree_root_id = "subtree-output-budget-root"
+    subtree_writer = sqlite3.connect(subtree_text_database)
+    try:
+        thread_sql = "INSERT INTO usage_threads(thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        subtree_writer.execute(
+            thread_sql,
+            (subtree_root_id, None, subtree_root_id, None, "root", "agent", "synthetic", "2026-09-30T00:00:00Z"),
+        )
+        subtree_writer.executemany(
+            thread_sql,
+            (
+                (
+                    f"subtree-output-child-{index}",
+                    subtree_root_id,
+                    subtree_root_id,
+                    None,
+                    "n" * helper.MAX_TEXT_FIELD_CHARS,
+                    "agent",
+                    "synthetic",
+                    "2026-09-30T00:00:00Z",
+                )
+                for index in range(256)
+            ),
+        )
+        subtree_writer.commit()
+    finally:
+        subtree_writer.close()
+    subtree_text_limit, _subtree_text_diagnostic = _report(
+        subtree_text_database,
+        repo_root,
+        scope="subtree",
+        thread_id=subtree_root_id,
+        credit_mode="supplied_standard_scenario",
+        expected_exit=2,
+    )
+    _assert(subtree_text_limit["status"] == "incomplete", "subtree text overflow must return typed incomplete")
+    _assert(
+        subtree_text_limit["error"]["reason"] == "output_size_limit_exceeded",
+        "subtree metadata text overflow must stop during row streaming without global fallback",
+    )
+
     all_report, all_diagnostic = _report(database, repo_root, diagnostics=True, expected_exit=2)
     _assert(all_report["status"] == "incomplete", "missing usage/model evidence must be incomplete")
     _assert(all_report["summary"]["provider_call_count"] == 4, "all scope must include exactly four in-window calls")
@@ -455,6 +498,7 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         "migration_rollback": "passed",
         "oversized_text_status": oversized_text["error"]["reason"],
         "long_thread_error_status": long_thread_error["status"],
+        "subtree_text_limit_status": subtree_text_limit["error"]["reason"],
     }
 
 
