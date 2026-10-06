@@ -294,7 +294,7 @@ fn validate_protected_runtime_config(
         );
     }
     if layers
-        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, false)
+        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, /*include_disabled*/ false)
         .iter()
         .any(|layer| matches!(&layer.name, ConfigLayerSource::Project { .. }))
     {

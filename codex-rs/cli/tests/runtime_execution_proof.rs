@@ -137,14 +137,23 @@ fn assert_no_auth_files(path: &Path) -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an explicitly invoked disposable Linux root fixture"]
 async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Result<()> {
+    eprintln!("runtime-proof-root-stage:started");
     anyhow::ensure!(unsafe { libc::geteuid() } == 0, "fixture must run as root");
     let fixture = ProtectedRuntimeFixture::start().await?;
+    eprintln!("runtime-proof-root-stage:fixture_started");
     let result = fixture.run_cli().await?;
 
+    eprintln!(
+        "runtime-proof-root-stage:cli_{}",
+        if result.status.success() {
+            "succeeded"
+        } else {
+            "failed"
+        }
+    );
     anyhow::ensure!(
         result.status.success(),
-        "codex exec failed: {}",
-        String::from_utf8_lossy(&result.stderr)
+        "codex exec exited unsuccessfully"
     );
     let calls = fixture.claim_calls();
     anyhow::ensure!(
@@ -152,6 +161,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         "expected root and delegate claim requests, got {}",
         calls.len()
     );
+    eprintln!("runtime-proof-root-stage:claims_validated");
     anyhow::ensure!(
         !fixture.wait_targets().is_empty()
             && fixture
@@ -160,10 +170,12 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
                 .all(|target| !target.is_empty()),
         "root did not wait on the spawned delegate before finalizing"
     );
+    eprintln!("runtime-proof-root-stage:wait_targets_validated");
     anyhow::ensure!(
         fixture.accepted_wait_results() == vec![(true, false)],
         "root did not consume a non-timeout successful terminal result for the exact child"
     );
+    eprintln!("runtime-proof-root-stage:wait_result_validated");
     let issuer_key = fixture.issuer_verifying_key();
     let mut invocation_nonces = Vec::new();
     let mut execution_nonces = Vec::new();
@@ -329,6 +341,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
         provider_thread_ids.push(invocation_claims.provider_thread_id);
         proofs.push((certificate.to_string(), invocation.to_string()));
     }
+    eprintln!("runtime-proof-root-stage:proofs_validated");
     anyhow::ensure!(
         invocation_nonces[0] != invocation_nonces[1],
         "per-call proof nonces were reused"
@@ -406,6 +419,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             );
         }
     }
+    eprintln!("runtime-proof-root-stage:model_redaction_validated");
     let expected_model_auth = format!("Bearer {}", fixture.provider_token());
     let expected_mcp_auth = format!(
         "Bearer {}",
@@ -433,6 +447,7 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             .all(|header| header.as_deref() == Some(expected_mcp_auth.as_str())),
         "synthetic Ops bearer did not reach the selected MCP transport"
     );
+    eprintln!("runtime-proof-root-stage:auth_headers_validated");
     let emitted = format!(
         "{}{}",
         String::from_utf8_lossy(&result.stdout),
@@ -444,9 +459,12 @@ async fn protected_cli_root_and_delegate_calls_are_signed_and_redacted() -> Resu
             "proof echoed to CLI events or output"
         );
     }
+    eprintln!("runtime-proof-root-stage:cli_output_redacted");
     assert_no_secret(&fixture.fixture_root(), &secrets)?;
     assert_no_auth_files(&fixture.fixture_root())?;
+    eprintln!("runtime-proof-root-stage:fixture_storage_clean");
     write_interoperability_vector_if_requested(&calls, &fixture.fixture_root())?;
+    eprintln!("runtime-proof-root-stage:complete");
     Ok(())
 }
 

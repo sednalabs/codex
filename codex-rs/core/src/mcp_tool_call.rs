@@ -397,126 +397,122 @@ async fn handle_approved_mcp_tool_call(
             McpServerTransportConfig::Stdio { .. } => None,
         });
     let mut result = async {
-        let result = async {
-            let result = prepared_call
-                .call_with_preparation(|| async {
-                    if let McpToolApprovalApplication::Apply { decision, policy } =
-                        &approval_application
-                    {
-                        let session_approval_key = session_mcp_tool_approval_key(
+        let result = prepared_call
+            .call_with_preparation(|| async {
+                if let McpToolApprovalApplication::Apply { decision, policy } =
+                    &approval_application
+                {
+                    let session_approval_key = session_mcp_tool_approval_key(
+                        &invocation,
+                        Some(&metadata),
+                        policy.mode,
+                    );
+                    let persistent_approval_key = if policy.allow_persistent {
+                        persistent_mcp_tool_approval_key(
                             &invocation,
                             Some(&metadata),
                             policy.mode,
-                        );
-                        let persistent_approval_key = if policy.allow_persistent {
-                            persistent_mcp_tool_approval_key(
-                                &invocation,
-                                Some(&metadata),
-                                policy.mode,
-                            )
-                        } else {
-                            None
-                        };
-                        apply_mcp_tool_approval_decision(
-                            sess,
-                            turn_context,
-                            decision,
-                            session_approval_key,
-                            persistent_approval_key,
                         )
-                        .await;
-                    }
-                    maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call)
-                        .await;
-                    let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
+                    } else {
+                        None
+                    };
+                    apply_mcp_tool_approval_decision(
                         sess,
                         turn_context,
-                        arguments_value,
-                        metadata.openai_file_input_optional_fields.as_ref(),
+                        decision,
+                        session_approval_key,
+                        persistent_approval_key,
                     )
-                    .await
-                    .map_err(anyhow::Error::msg)?;
-                    if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
-                        tool_input = rewritten_arguments.clone();
-                    }
-                    let request_meta = build_mcp_tool_call_request_meta(
-                        turn_context,
-                        &server,
-                        call_id,
-                        Some(&metadata),
-                    );
-                    let request_meta = with_mcp_tool_call_thread_id_meta(
-                        request_meta,
-                        &sess.thread_id.to_string(),
-                    );
-                    let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
-                        step_context,
-                        &prepared_call,
-                        request_meta,
-                    )
-                    .await?;
-                    let mcp_call_trace = sess
-                        .services
-                        .rollout_thread_trace
-                        .start_mcp_call_trace(call_id);
-                    let request_meta = mcp_call_trace.add_request_meta(request_meta);
-                    if let Some(recipient) = transport_url.as_deref() {
-                        protected_call =
-                            codex_runtime_proof::is_protected_mcp_target(&server, recipient)
-                                .map_err(anyhow::Error::msg)?;
-                    }
-                    let empty_arguments = JsonValue::Null;
-                    let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
-                    let proof = codex_runtime_proof::sign_claim_proof(
-                        &sess.execution_nonce,
-                        &sess.thread_id.to_string(),
-                        &server,
-                        transport_url.as_deref(),
-                        &tool_name,
-                        proof_parameters,
-                    )?;
-                    if protected_call && proof.is_none() {
-                        anyhow::bail!(
-                            "protected MCP operation is outside its issuer-bound claim scope"
-                        );
-                    }
-                    if protected_call {
-                        runtime_redaction_context =
-                            codex_runtime_proof::capture_mcp_redaction_context(
-                                &server,
-                                transport_url.as_deref().unwrap_or_default(),
-                                proof.as_ref(),
-                            )?;
-                    }
-                    let request_meta = add_runtime_proof_meta(request_meta, proof)?;
-                    Ok((rewritten_arguments, request_meta))
-                })
+                    .await;
+                }
+                maybe_mark_thread_memory_mode_polluted(sess, turn_context, &prepared_call)
+                    .await;
+                let rewritten_arguments = rewrite_mcp_tool_arguments_for_openai_files(
+                    sess,
+                    turn_context,
+                    arguments_value,
+                    metadata.openai_file_input_optional_fields.as_ref(),
+                )
                 .await
-                .map_err(|error| {
-                    if protected_call {
-                        "protected runtime proof MCP call failed".to_string()
-                    } else {
-                        format!("tool call error: {error:?}")
-                    }
-                })?;
-            let mut result = sanitize_mcp_tool_result_for_model(
-                &turn_context.model_info.input_modalities,
-                Ok(result),
-            )?;
-            redact_protected_call_tool_result(&mut result, runtime_redaction_context.as_ref());
-            Ok(maybe_request_codex_apps_auth_elicitation(
-                sess,
-                turn_context,
-                prepared_call.config().approval_policy.value(),
-                call_id,
-                &invocation.server,
-                Some(&metadata),
-                result,
-            )
-            .await)
-        }
-        .await;
-        result
+                .map_err(anyhow::Error::msg)?;
+                if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
+                    tool_input = rewritten_arguments.clone();
+                }
+                let request_meta = build_mcp_tool_call_request_meta(
+                    turn_context,
+                    &server,
+                    call_id,
+                    Some(&metadata),
+                );
+                let request_meta = with_mcp_tool_call_thread_id_meta(
+                    request_meta,
+                    &sess.thread_id.to_string(),
+                );
+                let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
+                    step_context,
+                    &prepared_call,
+                    request_meta,
+                )
+                .await?;
+                let mcp_call_trace = sess
+                    .services
+                    .rollout_thread_trace
+                    .start_mcp_call_trace(call_id);
+                let request_meta = mcp_call_trace.add_request_meta(request_meta);
+                if let Some(recipient) = transport_url.as_deref() {
+                    protected_call =
+                        codex_runtime_proof::is_protected_mcp_target(&server, recipient)
+                            .map_err(anyhow::Error::msg)?;
+                }
+                let empty_arguments = JsonValue::Null;
+                let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
+                let proof = codex_runtime_proof::sign_claim_proof(
+                    &sess.execution_nonce,
+                    &sess.thread_id.to_string(),
+                    &server,
+                    transport_url.as_deref(),
+                    &tool_name,
+                    proof_parameters,
+                )?;
+                if protected_call && proof.is_none() {
+                    anyhow::bail!(
+                        "protected MCP operation is outside its issuer-bound claim scope"
+                    );
+                }
+                if protected_call {
+                    runtime_redaction_context =
+                        codex_runtime_proof::capture_mcp_redaction_context(
+                            &server,
+                            transport_url.as_deref().unwrap_or_default(),
+                            proof.as_ref(),
+                        )?;
+                }
+                let request_meta = add_runtime_proof_meta(request_meta, proof)?;
+                Ok((rewritten_arguments, request_meta))
+            })
+            .await
+            .map_err(|error| {
+                if protected_call {
+                    "protected runtime proof MCP call failed".to_string()
+                } else {
+                    format!("tool call error: {error:?}")
+                }
+            })?;
+        let mut result = sanitize_mcp_tool_result_for_model(
+            &turn_context.model_info.input_modalities,
+            Ok(result),
+        )?;
+        redact_protected_call_tool_result(&mut result, runtime_redaction_context.as_ref());
+        Ok(maybe_request_codex_apps_auth_elicitation(
+            sess,
+            turn_context,
+            prepared_call.config().approval_policy.value(),
+            call_id,
+            &invocation.server,
+            Some(&metadata),
+            result,
+        )
+        .await)
     }
     .instrument(mcp_tool_call_span(
         sess,

@@ -55,7 +55,7 @@ fn canonical_claim_digest_uses_jcs_utf16_key_order() {
 fn canonical_claim_digest_rejects_unsafe_integers_and_floats() {
     let max_safe = serde_json::json!({ "generation": (1_u64 << 53) - 1 });
     let too_large = serde_json::json!({ "generation": 1_u64 << 53 });
-    let too_small = serde_json::json!({ "generation": -((1_i64 << 53) as i64) });
+    let too_small = serde_json::json!({ "generation": -(1_i64 << 53) });
     let float = serde_json::json!({ "generation": 1.5 });
     assert!(wire::canonical_operation("work_item_claim", &max_safe).is_ok());
     assert!(wire::canonical_operation("work_item_claim", &too_large).is_err());

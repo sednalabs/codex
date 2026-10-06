@@ -238,16 +238,8 @@ fn launch_protected_child() -> anyhow::Result<()> {
                 || dup2(auth_fd, AUTH_FD) < 0
                 || fcntl(AUTH_FD, F_SETFD, /*argument*/ 0) < 0
                 || setgroups(/*size*/ 0, std::ptr::null()) != 0
-                || setresgid(
-                    /*real*/ 65534,
-                    /*effective*/ 65534,
-                    /*saved*/ 65534,
-                ) != 0
-                || setresuid(
-                    /*real*/ 65534,
-                    /*effective*/ 65534,
-                    /*saved*/ 65534,
-                ) != 0
+                || setresgid(/*real*/ 65534, /*effective*/ 65534, /*saved*/ 65534) != 0
+                || setresuid(/*real*/ 65534, /*effective*/ 65534, /*saved*/ 65534) != 0
                 || prctl(
                     PR_SET_NO_NEW_PRIVS,
                     /*arg2*/ 1,

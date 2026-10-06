@@ -101,7 +101,7 @@ impl Respond for ModelResponder {
                 let mut calls = self
                     .delegate_calls
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if *calls == 0 {
                     *calls += 1;
                     (
@@ -119,7 +119,7 @@ impl Respond for ModelResponder {
                 let mut calls = self
                     .root_calls
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if *calls == 0 {
                     *calls += 1;
                     (
@@ -180,7 +180,7 @@ impl Respond for ModelResponder {
                         if accepted {
                             self.accepted_wait_results
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .push((!expects_provider_rejection, expects_provider_rejection));
                         }
                         accepted
@@ -192,16 +192,16 @@ impl Respond for ModelResponder {
                         let wait_number = self
                             .wait_call_ids
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .len();
                         let call_id = format!("root-wait-call-{wait_number}");
                         self.wait_targets
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(target.clone());
                         self.wait_call_ids
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push(call_id.clone());
                         (
                             "multi_agent_v1",
@@ -218,7 +218,7 @@ impl Respond for ModelResponder {
             } else {
                 ("", "", String::new(), "final".to_string())
             };
-        let response_id = format!("response-{}", call_id);
+        let response_id = format!("response-{call_id}");
         let mut events =
             vec![serde_json::json!({"type":"response.created","response":{"id":response_id}})];
         if namespace.is_empty() {
@@ -394,11 +394,11 @@ impl Respond for McpResponder {
                     return ResponseTemplate::new(200).set_body_json(serde_json::json!({
                         "jsonrpc":"2.0","id":id,"error":{
                             "code":-32000,
-                            "message":format!("{} {OPS_BEARER_TOKEN}", proof)
+                            "message":format!("{proof} {OPS_BEARER_TOKEN}")
                         }
                     }));
                 }
-                let echo = format!("{} {OPS_BEARER_TOKEN}", proof);
+                let echo = format!("{proof} {OPS_BEARER_TOKEN}");
                 serde_json::json!({
                     "jsonrpc":"2.0","id":id,"result":{
                         "content":[{"type":"text","text":echo}],
@@ -553,8 +553,7 @@ impl ProtectedRuntimeFixture {
         fs::write(
             home.join("agents/proof-child.toml"),
             format!(
-                "model_provider = \"openai\"\nopenai_base_url = {:?}\n",
-                overridden_provider
+                "model_provider = \"openai\"\nopenai_base_url = {overridden_provider:?}\n"
             ),
         )?;
         fs::write(
@@ -755,7 +754,7 @@ impl ProtectedRuntimeFixture {
                 *self
                     .expiring_provider_token
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(access_token.clone());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(access_token.clone());
                 auth_packet["provider"]["access_token"] = serde_json::json!(access_token);
             }
             Some(AuthFault::ProviderRecipient) => {
@@ -820,28 +819,28 @@ impl ProtectedRuntimeFixture {
     pub fn claim_calls(&self) -> Vec<Value> {
         self.claim_calls
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn model_requests(&self) -> Vec<Value> {
         self.model_requests
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn model_authorization_headers(&self) -> Vec<Option<String>> {
         self.model_authorization_headers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn model_account_headers(&self) -> Vec<Option<String>> {
         self.model_account_headers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -852,21 +851,21 @@ impl ProtectedRuntimeFixture {
     pub fn expiring_provider_token(&self) -> Option<String> {
         self.expiring_provider_token
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn mcp_authorization_headers(&self) -> Vec<Option<String>> {
         self.mcp_authorization_headers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn mcp_request_records(&self) -> Vec<McpRequestRecord> {
         self.mcp_request_records
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -877,14 +876,14 @@ impl ProtectedRuntimeFixture {
     pub fn wait_targets(&self) -> Vec<String> {
         self.wait_targets
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
     pub fn accepted_wait_results(&self) -> Vec<(bool, bool)> {
         self.accepted_wait_results
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -988,10 +987,12 @@ fn hash_file(path: &std::path::Path) -> Result<String> {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
     let mut output = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     for byte in bytes {
-        write!(output, "{byte:02x}").expect("writing to String cannot fail");
+        let byte = *byte;
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
 }
