@@ -2400,6 +2400,9 @@ class PublicArtifactBoundaryTests(unittest.TestCase):
         rejected = (
             outcomes + "\n" + auxiliary,
             outcomes + "\n" + full + full,
+            outcomes + "\n" + full + "test result: FAILED. 9 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
+            outcomes + "\n" + full + "test result: malformed; 0 filtered out\n",
+            outcomes + "\n" + full + "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered\n",
             outcomes + "\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
             outcomes + "\ntest result: FAILED. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
             outcomes.replace(f"test {names[-1]} ... ok", "") + "\n" + full,

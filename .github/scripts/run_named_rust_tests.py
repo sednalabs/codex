@@ -455,8 +455,23 @@ def full_target_result_counts(
         ),
         "measured": 0,
     }
+    summaries = []
+    for line in output.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("test result:"):
+            continue
+        match = TEST_RESULT_RE.fullmatch(stripped)
+        if match is None:
+            return None
+        summaries.append(match)
+    unfiltered = [
+        match for match in summaries if not match.group("filtered").strip("0")
+    ]
+    if len(unfiltered) != 1:
+        return None
+
     qualifying = []
-    for match in TEST_RESULT_RE.finditer(output):
+    for match in unfiltered:
         count_names = ("passed", "failed", "ignored", "measured", "filtered")
         if any(
             len(match.group(name)) > MAX_CARGO_SUMMARY_COUNT_DIGITS
@@ -470,7 +485,6 @@ def full_target_result_counts(
         summary_status = "ok" if counts["failed"] == 0 else "FAILED"
         if (
             match.group("status") == summary_status
-            and counts["filtered"] == 0
             and sum(counts[name] for name in observed) == len(inventory)
             and all(counts[name] == observed[name] for name in observed)
         ):
