@@ -2742,7 +2742,7 @@ mod tests {
             .expect_err("--version should exit with the version display");
 
         let rendered = error.to_string();
-        assert_eq!(
+        std::assert_eq!(
             rendered.trim(),
             format!("codex {}", cli_display_version())
         );
