@@ -1967,7 +1967,7 @@ fs.writeFile = async (file, ...args) => {
         let hints: Value = serde_json::from_str(hints_json).expect("valid page hint JSON");
         assert!(hints["controls"].as_array().unwrap().iter().any(|control| {
             control["selectors"].as_array().unwrap().iter().any(|selector| {
-                selector.as_str() == Some(r#"[aria-label="Save \22 draft\22 \5c  now"]"#)
+                selector.as_str() == Some(r#"[aria-label="Save \22 draft\22  \5c  now"]"#)
             })
         }), "quotes and backslashes in control labels are CSS-escaped");
 
