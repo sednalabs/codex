@@ -1211,6 +1211,16 @@ def _required_env(env: Mapping[str, str], name: str) -> str:
     return value
 
 
+def _validate_comparison_base_ref(mode: str, base_ref: str) -> None:
+    # The hosted runner-graph gate has already fetched BASE_REF and verified
+    # that it resolves to BASE_SHA. Only cross-run consumption is pinned to the
+    # accepted producer manifest's main comparison ref.
+    if mode not in {"build", "consume-existing"}:
+        raise ValueError("consumer jobs may run only for build or consume-existing modes")
+    if mode == "consume-existing" and base_ref != "main":
+        raise ValueError("consume-existing route requires the pinned main comparison ref")
+
+
 def main() -> int:
     env = os.environ
     mode = _required_env(env, "MODE")
@@ -1222,8 +1232,7 @@ def main() -> int:
     base_sha = _required_env(env, "BASE_SHA")
     if not SHA.fullmatch(product_sha) or not SHA.fullmatch(base_sha):
         raise ValueError("workflow target/base must be full lowercase SHAs")
-    if base_ref != "main":
-        raise ValueError("consumer route requires the pinned main comparison ref")
+    _validate_comparison_base_ref(mode, base_ref)
 
     api_url = _required_env(env, "API_URL")
     api = urlsplit(api_url)

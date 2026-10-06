@@ -87,10 +87,33 @@ from verify_existing_first_binary_producer import (
     sdk_test_plan,
     select_accepted_record,
     _validate_manifest_record,
+    _validate_comparison_base_ref,
     _json_object_without_duplicate_keys,
     _verify_trusted_consumer_ref,
     validate_runner_policy_inputs,
 )
+
+
+class ComparisonBaseRefTests(unittest.TestCase):
+    def test_build_mode_accepts_the_runner_verified_comparison_ref(self) -> None:
+        self.assertIsNone(
+            _validate_comparison_base_ref(
+                "build", "validation/interrupt-guardian-fixture-8389-20261004"
+            )
+        )
+
+    def test_consume_existing_remains_pinned_to_main(self) -> None:
+        self.assertIsNone(_validate_comparison_base_ref("consume-existing", "main"))
+        with self.assertRaisesRegex(ValueError, "pinned main comparison ref"):
+            _validate_comparison_base_ref(
+                "consume-existing", "validation/interrupt-guardian-fixture-8389-20261004"
+            )
+
+    def test_unknown_mode_remains_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only for build or consume-existing modes"):
+            _validate_comparison_base_ref(
+                "unexpected", "validation/interrupt-guardian-fixture-8389-20261004"
+            )
 
 
 def hosted_job(name: str, conclusion: str, runner: str, *, status: str = "completed", ran: bool = True) -> dict[str, object]:
