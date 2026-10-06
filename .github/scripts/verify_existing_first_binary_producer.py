@@ -99,6 +99,29 @@ S1_SDK_SHA = "f7151a5ce6b228b64e9421d9ec2f9567435c7a88"
 S2_SDK_SHA = "7b99a7683e96fc1824aec519f0c814f9562efc77"
 S3_SDK_SHA = "b0b13d9d4b02500f27e31e60eab06b2de36bb0d6"
 S4_SDK_SHA = "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a"
+BROWSER_DIAGNOSTIC_PROFILE = "browser-diagnostic"
+BROWSER_DIAGNOSTIC_PRODUCT_SHA = "940dcc0a6d839216d2b1604658a78a9abf00317e"
+BROWSER_DIAGNOSTIC_BASE_REF = "validation/interrupt-guardian-fixture-8389-20261004"
+BROWSER_DIAGNOSTIC_BASE_SHA = "8389b61d82cb6fb936e4e500b977f31682441ffe"
+BROWSER_DIAGNOSTIC_FIXTURE_SHA = "614ebadcd49997c10efc8a5b986ce81747b9b487"
+BROWSER_DIAGNOSTIC_SDK_SHA = S4_SDK_SHA
+BROWSER_DIAGNOSTIC_TEST_NAME = "test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate"
+BROWSER_DIAGNOSTIC_PROPERTY = "browser_output_diagnostic_json"
+BROWSER_DIAGNOSTIC_CALL_ID = "browser-visual-fixture-call"
+BROWSER_DIAGNOSTIC_TOOL_NAMES = frozenset({"browser_observe", "browser_step"})
+BROWSER_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "fixture_function_call_emitted",
+        "responses_request_count",
+        "second_request_observed",
+        "second_request_input_available",
+        "function_call_output_count",
+        "function_call_output_call_ids",
+        "function_call_output_tool_names",
+        "synthetic_browser_provider_invoked",
+        "synthetic_browser_provider_tool_name",
+    }
+)
 EXPECTED_STATE_POSITIVE = frozenset(
     {
         "fresh", "u23", "u55", "u56", "u57", "u58", "f56", "f57",
@@ -357,6 +380,97 @@ def consume_existing_test_plan(fixture_sha: str, sdk_sha: str, profile: str) -> 
     }
 
 
+def browser_diagnostic_test_plan(
+    *,
+    mode: str,
+    profile: str,
+    product_sha: str,
+    base_ref: str,
+    base_sha: str,
+    fixture_sha: str,
+    sdk_sha: str,
+) -> dict[str, Any]:
+    """Return the one closed same-run Browser diagnostic selection."""
+    _require(mode == "build", "Browser diagnostic profile is available only in same-run build mode")
+    _require(profile == BROWSER_DIAGNOSTIC_PROFILE, "Browser diagnostic profile name mismatch")
+    _require(product_sha == BROWSER_DIAGNOSTIC_PRODUCT_SHA, "Browser diagnostic product SHA is not admitted")
+    _require(base_ref == BROWSER_DIAGNOSTIC_BASE_REF, "Browser diagnostic comparison ref is not admitted")
+    _require(base_sha == BROWSER_DIAGNOSTIC_BASE_SHA, "Browser diagnostic comparison SHA is not admitted")
+    _require(fixture_sha == BROWSER_DIAGNOSTIC_FIXTURE_SHA, "Browser diagnostic fixture SHA is not admitted")
+    _require(sdk_sha == BROWSER_DIAGNOSTIC_SDK_SHA, "Browser diagnostic SDK SHA is not admitted")
+    return {"state": frozenset(), "plain": frozenset({BROWSER_DIAGNOSTIC_TEST_NAME})}
+
+
+def _browser_diagnostic_from_junit(cases: list[ET.Element], issues: list[str]) -> dict[str, Any] | None:
+    properties = [
+        prop
+        for case in cases
+        for prop in case.findall("./properties/property")
+        if prop.attrib.get("name") == BROWSER_DIAGNOSTIC_PROPERTY
+    ]
+    if len(properties) != 1:
+        issues.append("JUnit does not contain exactly one Browser diagnostic property")
+        return None
+    raw = properties[0].attrib.get("value")
+    if not isinstance(raw, str):
+        issues.append("JUnit Browser diagnostic property has no value")
+        return None
+    try:
+        diagnostic = _object(json.loads(raw), "Browser diagnostic property is malformed")
+    except (json.JSONDecodeError, ValueError):
+        issues.append("JUnit Browser diagnostic property is malformed")
+        return None
+    if frozenset(diagnostic) != BROWSER_DIAGNOSTIC_FIELDS:
+        issues.append("JUnit Browser diagnostic property has an unexpected field inventory")
+        return None
+    boolean_keys = (
+        "fixture_function_call_emitted",
+        "second_request_observed",
+        "second_request_input_available",
+        "synthetic_browser_provider_invoked",
+    )
+    if any(type(diagnostic.get(key)) is not bool for key in boolean_keys):
+        issues.append("JUnit Browser diagnostic booleans are malformed")
+        return None
+    count_keys = ("responses_request_count", "function_call_output_count")
+    if any(type(diagnostic.get(key)) is not int or diagnostic[key] < 0 for key in count_keys):
+        issues.append("JUnit Browser diagnostic counts are malformed")
+        return None
+    call_ids = diagnostic.get("function_call_output_call_ids")
+    tool_names = diagnostic.get("function_call_output_tool_names")
+    allowed_call_ids = {BROWSER_DIAGNOSTIC_CALL_ID, "<other>", "<missing>"}
+    allowed_tool_names = BROWSER_DIAGNOSTIC_TOOL_NAMES | {"<other>", "<absent>"}
+    if (
+        not isinstance(call_ids, list)
+        or len(call_ids) > 16
+        or any(not isinstance(value, str) or value not in allowed_call_ids for value in call_ids)
+        or not isinstance(tool_names, list)
+        or len(tool_names) > 16
+        or any(not isinstance(value, str) or value not in allowed_tool_names for value in tool_names)
+        or len(call_ids) != diagnostic["function_call_output_count"]
+        or len(tool_names) != diagnostic["function_call_output_count"]
+    ):
+        issues.append("JUnit Browser diagnostic call identifiers or tool names are malformed")
+        return None
+    provider_tool = diagnostic.get("synthetic_browser_provider_tool_name")
+    if provider_tool is not None and (
+        not isinstance(provider_tool, str)
+        or provider_tool not in (BROWSER_DIAGNOSTIC_TOOL_NAMES | {"<other>"})
+    ):
+        issues.append("JUnit Browser diagnostic provider tool name is malformed")
+        return None
+    if diagnostic["synthetic_browser_provider_invoked"] != (provider_tool is not None):
+        issues.append("JUnit Browser diagnostic provider flag disagrees with its sanitized tool name")
+        return None
+    if diagnostic["second_request_observed"] != (diagnostic["responses_request_count"] >= 2):
+        issues.append("JUnit Browser diagnostic second-request flag disagrees with request count")
+        return None
+    if diagnostic["function_call_output_count"] and not diagnostic["second_request_input_available"]:
+        issues.append("JUnit Browser diagnostic call outputs lack a second-request input witness")
+        return None
+    return diagnostic
+
+
 def sdk_test_plan(sdk_sha: str) -> dict[str, Any]:
     plan = SDK_TEST_PLAN_BY_SHA.get(sdk_sha)
     _require(plan is not None, "SDK source SHA has no exact hosted selector inventory")
@@ -605,6 +719,25 @@ def _verify_trusted_consumer_ref(env: Mapping[str, str], *, checkout_sha: str | 
 
 
 def validate_runner_policy_inputs(env: Mapping[str, str]) -> None:
+    if env.get("MODE") == "build" and env.get("CONSUMER_PROFILE") == BROWSER_DIAGNOSTIC_PROFILE:
+        _require(env.get("GITHUB_REPOSITORY") == REPOSITORY, "Browser diagnostic repository is not admitted")
+        browser_diagnostic_test_plan(
+            mode=env.get("MODE", ""),
+            profile=env.get("CONSUMER_PROFILE", ""),
+            product_sha=env.get("TARGET_SHA", ""),
+            base_ref=env.get("BASE_REF", ""),
+            base_sha=env.get("BASE_SHA", ""),
+            fixture_sha=env.get("FIXTURE_SHA", ""),
+            sdk_sha=env.get("SDK_SHA", ""),
+        )
+        _verify_trusted_consumer_ref(env)
+        try:
+            checkout_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            raise ValueError("cannot read checked-out workflow host SHA") from None
+        _verify_trusted_consumer_ref(env, checkout_sha=checkout_sha)
+        print("exact same-run Browser diagnostic profile admitted")
+        return
     if env.get("MODE") != "consume-existing":
         return
     _require(env.get("GITHUB_REPOSITORY") == REPOSITORY, "consume-existing repository is not admitted")
@@ -984,7 +1117,43 @@ def reconcile_consumer_results(
 
     positive = labels(positive_prefix)
     negative = labels(negative_prefix)
-    if mode == "build":
+    browser_diagnostic: dict[str, Any] | None = None
+    if mode == "build" and profile == BROWSER_DIAGNOSTIC_PROFILE:
+        try:
+            selected_plan = browser_diagnostic_test_plan(
+                mode=mode,
+                profile=profile,
+                product_sha=str(producer.get("product_sha", "")),
+                base_ref=str(producer.get("comparison_base_ref", "")),
+                base_sha=str(producer.get("comparison_base_sha", "")),
+                fixture_sha=fixture_sha,
+                sdk_sha=sdk_sha,
+            )
+        except ValueError as error:
+            issues.append(str(error))
+            selected_plan = {"state": frozenset(), "plain": frozenset()}
+        expected_state = selected_plan["state"]
+        expected_plain = selected_plan["plain"]
+        expected_consumer = {
+            "product_sha": BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+            "comparison_base_sha": BROWSER_DIAGNOSTIC_BASE_SHA,
+            "ref": f"refs/heads/{TRUSTED_CONSUMER_BRANCH}",
+            "branch": TRUSTED_CONSUMER_BRANCH,
+            "workflow_ref": f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/{TRUSTED_CONSUMER_BRANCH}",
+        }
+        if any(consumer.get(key) != value for key, value in expected_consumer.items()):
+            issues.append("Browser diagnostic consumer identity differs from its exact route")
+        expected_producer = {
+            "product_sha": BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+            "comparison_base_ref": BROWSER_DIAGNOSTIC_BASE_REF,
+            "comparison_base_sha": BROWSER_DIAGNOSTIC_BASE_SHA,
+        }
+        if any(producer.get(key) != value for key, value in expected_producer.items()):
+            issues.append("Browser diagnostic producer identity differs from its exact route")
+        if producer.get("run_id") != consumer.get("run_id") or producer.get("workflow_host_sha") != consumer.get("workflow_host_sha"):
+            issues.append("Browser diagnostic package and consumer are not from the same exact run/host")
+        browser_diagnostic = _browser_diagnostic_from_junit(cases, issues)
+    elif mode == "build":
         profile = "full"
         expected_state = expected_positive | expected_negative
         expected_plain = FULL_PLAIN_TESTS
@@ -1000,7 +1169,7 @@ def reconcile_consumer_results(
         issues.append("consumer result has an unsupported mode/profile")
         expected_state = frozenset()
         expected_plain = frozenset()
-    if profile not in {"pair", "focused", "full"}:
+    if profile not in {"pair", "focused", "full", BROWSER_DIAGNOSTIC_PROFILE}:
         issues.append("consumer result has an unsupported mode/profile")
     if mode == "consume-existing" and profile == "pair":
         if positive != ["fresh"] or negative != ["bad_checksum"]:
@@ -1110,6 +1279,7 @@ def reconcile_consumer_results(
         "state_history_negative_cases": len(negative),
         "state_history_witnesses": len(witness_hashes),
         "state_history_witness_sha256": dict(sorted(witness_hashes.items())),
+        "browser_output_diagnostic": browser_diagnostic,
         "issues": issues,
     }
     result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1176,7 +1346,19 @@ def main() -> int:
     base_sha = _required_env(env, "BASE_SHA")
     if not SHA.fullmatch(product_sha) or not SHA.fullmatch(base_sha):
         raise ValueError("workflow target/base must be full lowercase SHAs")
-    if base_ref != "main":
+    profile = env.get("CONSUMER_PROFILE", "full")
+    if mode == "build" and profile == BROWSER_DIAGNOSTIC_PROFILE:
+        browser_diagnostic_test_plan(
+            mode=mode,
+            profile=profile,
+            product_sha=product_sha,
+            base_ref=base_ref,
+            base_sha=base_sha,
+            fixture_sha=env.get("FIXTURE_SHA", ""),
+            sdk_sha=env.get("SDK_SHA", ""),
+        )
+        _verify_trusted_consumer_ref(env)
+    elif base_ref != "main":
         raise ValueError("consumer route requires the pinned main comparison ref")
 
     api_url = _required_env(env, "API_URL")
@@ -1187,7 +1369,7 @@ def main() -> int:
     _require(bool(token), "GitHub Actions API token is empty")
     repository = _required_env(env, "GITHUB_REPOSITORY")
     _require(repository == REPOSITORY, "workflow repository is not the admitted public repository")
-    if mode == "consume-existing":
+    if mode == "consume-existing" or (mode == "build" and profile == BROWSER_DIAGNOSTIC_PROFILE):
         _verify_trusted_consumer_ref(env)
         try:
             consumer_checkout_sha = subprocess.check_output(
@@ -1242,7 +1424,18 @@ def main() -> int:
         artifact = selected[architecture]
     elif mode == "build":
         _require(not env.get("PRODUCER_RUN_ID") and not env.get("PRODUCER_WORKFLOW_HOST_SHA"), "build mode must not accept cross-run producer inputs")
-        _require(not env.get("FIXTURE_SHA") and not env.get("SDK_SHA"), "build mode must not accept separate fixture/SDK revisions")
+        if profile == BROWSER_DIAGNOSTIC_PROFILE:
+            browser_diagnostic_test_plan(
+                mode=mode,
+                profile=profile,
+                product_sha=product_sha,
+                base_ref=base_ref,
+                base_sha=base_sha,
+                fixture_sha=env.get("FIXTURE_SHA", ""),
+                sdk_sha=env.get("SDK_SHA", ""),
+            )
+        else:
+            _require(not env.get("FIXTURE_SHA") and not env.get("SDK_SHA"), "build mode must not accept separate fixture/SDK revisions")
         producer_run_id = context["run_id"]
         producer_host = context["workflow_host_sha"]
         jobs_payload = current_jobs

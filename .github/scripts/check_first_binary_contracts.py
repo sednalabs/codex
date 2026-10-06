@@ -164,7 +164,11 @@ def _selected_pytest_argv(run, mode, profile, step_name):
     cases = re.findall(r'case\s+"' + re.escape(selector) + r'"\s+in\s*\n(.*?)\nesac', run, re.S)
     if len(cases) != 1:
         raise ValueError("selected argv case statement missing or duplicated")
-    label = "build:*" if mode == "build" else profile
+    label = (
+        "build:browser-diagnostic"
+        if mode == "build" and profile == "browser-diagnostic"
+        else "build:*" if mode == "build" else profile
+    )
     arms = re.findall(r"^\s*" + re.escape(label) + r"\)\s*(.*?)\s*;;", cases[0], re.M | re.S)
     if len(arms) != 1:
         raise ValueError("selected case arm {!r} missing or duplicated".format(label))
@@ -335,16 +339,28 @@ def _git_head(root, expected, mode, label, diagnostics):
 def run(args, env=None):
     env = os.environ if env is None else env
     mode = env.get("MODE", "")
+    profile = env.get("CONSUMER_PROFILE", "")
+    browser_diagnostic = mode == "build" and profile == "browser-diagnostic"
     diagnostics = Diagnostics()
     if mode not in {"build", "consume-existing"}:
         diagnostics.error(mode, "selection", "MODE", "unsupported or missing MODE; expected build or consume-existing")
         return diagnostics
+    if mode == "build" and profile not in {"full", "browser-diagnostic"}:
+        diagnostics.error(mode, "selection", "CONSUMER_PROFILE", "build profile is not admitted")
+        return diagnostics
     roots = {"workflow": args.workflow_root, "source": args.source_root}
     if mode == "consume-existing":
         roots.update(sdk=args.sdk_root, producer=args.producer_root)
-    expected = {"workflow": env.get("EXPECTED_H"), "source": env.get("FIXTURE_SHA") if mode == "consume-existing" else env.get("TARGET_SHA")}
+    elif browser_diagnostic:
+        roots.update(sdk=args.sdk_root)
+    expected = {
+        "workflow": env.get("EXPECTED_H"),
+        "source": env.get("FIXTURE_SHA") if mode == "consume-existing" or browser_diagnostic else env.get("TARGET_SHA"),
+    }
+    if mode == "consume-existing" or browser_diagnostic:
+        expected["sdk"] = env.get("SDK_SHA")
     if mode == "consume-existing":
-        expected.update(sdk=env.get("SDK_SHA"), producer=env.get("PRODUCER_WORKFLOW_HOST_SHA"))
+        expected["producer"] = env.get("PRODUCER_WORKFLOW_HOST_SHA")
     for key, root in roots.items():
         if root is None:
             diagnostics.error(mode, key, "<root>", "required input root missing")
@@ -353,7 +369,7 @@ def run(args, env=None):
     if diagnostics.errors:
         return diagnostics
     verifier = None
-    if mode == "consume-existing":
+    if mode == "consume-existing" or browser_diagnostic:
         try:
             verifier = _load_verifier(args.workflow_root)
         except Exception as exc:
@@ -381,7 +397,15 @@ def run(args, env=None):
                     argv = _selected_pytest_argv(run_block, mode, env.get("CONSUMER_PROFILE", ""), step_name)
                     nodeids = _selected_nodeids(argv)
                     arch_nodeids_by_arch.append((job, nodeids))
-                    if mode == "build" and nodeids != [TEST_ROOT]:
+                    if mode == "build" and profile == "browser-diagnostic":
+                        expected_nodeid = (
+                            TEST_ROOT
+                            + "/test_tui_agents_acceptance.py::"
+                            + "test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate"
+                        )
+                        if nodeids != [expected_nodeid]:
+                            diagnostics.error(mode, job, str(workflow_path), "Browser diagnostic must select exactly its admitted nodeid")
+                    elif mode == "build" and nodeids != [TEST_ROOT]:
                         diagnostics.error(mode, job, str(workflow_path), "build must select exactly the first_binary directory")
                     if reg is not None:
                         opts = _custom_options(argv)
@@ -392,13 +416,40 @@ def run(args, env=None):
                 except ValueError as exc:
                     diagnostics.error(mode, job, str(workflow_path), str(exc))
                     arch_nodeids_by_arch.append((job, []))
-            if mode == "consume-existing" and verifier is not None:
+            if browser_diagnostic and verifier is not None:
                 try:
-                    plan = verifier.consume_existing_test_plan(env["FIXTURE_SHA"], env["SDK_SHA"], env["CONSUMER_PROFILE"])
+                    plan = verifier.browser_diagnostic_test_plan(
+                        mode=mode,
+                        profile=profile,
+                        product_sha=env["TARGET_SHA"],
+                        base_ref=env["BASE_REF"],
+                        base_sha=env["BASE_SHA"],
+                        fixture_sha=env["FIXTURE_SHA"],
+                        sdk_sha=env["SDK_SHA"],
+                    )
+                    expected_nodeid = (
+                        TEST_ROOT
+                        + "/test_tui_agents_acceptance.py::"
+                        + "test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate"
+                    )
+                    source_dir = args.source_root / TEST_ROOT
+                    for label, nodeids in arch_nodeids_by_arch:
+                        if nodeids != [expected_nodeid]:
+                            diagnostics.error(mode, label, str(workflow_path), "Browser diagnostic selector inventory differs from its exact plan")
+                        owners = _module_test_map(source_dir, ["test_tui_agents_acceptance.py"])
+                        for name in sorted(plan["plain"]):
+                            if owners.get(name) != ["test_tui_agents_acceptance.py"]:
+                                diagnostics.error(mode, label, str(source_dir), "Browser diagnostic test is missing or duplicated in its exact source module")
+                        if plan["state"]:
+                            diagnostics.error(mode, label, str(workflow_path), "Browser diagnostic plan unexpectedly contains state-history cases")
+                except Exception as exc:
+                    diagnostics.error(mode, step_name, "Browser diagnostic plan", "cannot establish exact selector/source join: {}".format(exc))
+            elif mode == "consume-existing" and verifier is not None:
+                try:
+                    plan = verifier.consume_existing_test_plan(env["FIXTURE_SHA"], env["SDK_SHA"], profile)
                     expected_plain = set(plan["plain"])
                     source_dir = args.source_root / TEST_ROOT
                     owners = _module_test_map(source_dir, sorted(path.name for path in source_dir.glob("test_*.py") if path.is_file()))
-                    profile = env["CONSUMER_PROFILE"]
                     for label, nodeids in arch_nodeids_by_arch:
                         if profile == "full":
                             if nodeids != [TEST_ROOT]:

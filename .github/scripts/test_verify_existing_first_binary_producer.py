@@ -10,10 +10,21 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+import xml.etree.ElementTree as ET
 
 from verify_existing_first_binary_producer import (
     ACCEPTED_INPUTS_PATH,
     ARCHES,
+    BROWSER_DIAGNOSTIC_BASE_REF,
+    BROWSER_DIAGNOSTIC_BASE_SHA,
+    BROWSER_DIAGNOSTIC_CALL_ID,
+    BROWSER_DIAGNOSTIC_FIELDS,
+    BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+    BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+    BROWSER_DIAGNOSTIC_PROFILE,
+    BROWSER_DIAGNOSTIC_PROPERTY,
+    BROWSER_DIAGNOSTIC_SDK_SHA,
+    BROWSER_DIAGNOSTIC_TEST_NAME,
     CROSS_RUN_ARTIFACTS,
     CROSS_RUN_PRODUCER,
     DIAGNOSTIC_RECORD,
@@ -55,6 +66,7 @@ from verify_existing_first_binary_producer import (
     S2_SDK_SHA,
     S3_SDK_SHA,
     S4_SDK_SHA,
+    TRUSTED_CONSUMER_BRANCH,
     H2_PRODUCER_JOB_NAMES,
     H2_PRODUCER_WORKFLOW_HOST_SHA,
     H9E58_PRODUCER_JOB_NAMES,
@@ -73,6 +85,7 @@ from verify_existing_first_binary_producer import (
     verify_current_consumer,
     verify_existing_producer,
     reconcile_consumer_results,
+    browser_diagnostic_test_plan,
     consume_existing_test_plan,
     sdk_test_plan,
     select_accepted_record,
@@ -2919,6 +2932,170 @@ class ConsumerResultTests(unittest.TestCase):
         self._q_sha = q_sha
         self._sdk_sha = sdk_sha
         return junit_path, consumer_path, producer_path, witness_dir, result_path
+
+    def _write_browser_diagnostic_fixture(self, root: Path, *, failed: bool = False):
+        runner_temp = root / "runner-temp"
+        runner_temp.mkdir()
+        witness_dir = runner_temp / "state-history-witnesses"
+        witness_dir.mkdir(mode=0o700)
+        os.chmod(witness_dir, 0o700)
+        run_id = 39000000000
+        host_sha = "7" * 40
+        consumer = {
+            "schema_version": "sedna-first-binary-consumer-api-v1",
+            "repository": REPOSITORY,
+            "workflow_path": WORKFLOW_PATH,
+            "workflow_host_sha": host_sha,
+            "run_id": run_id,
+            "ref": f"refs/heads/{TRUSTED_CONSUMER_BRANCH}",
+            "branch": TRUSTED_CONSUMER_BRANCH,
+            "workflow_ref": f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/{TRUSTED_CONSUMER_BRANCH}",
+            "product_sha": BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+            "comparison_base_sha": BROWSER_DIAGNOSTIC_BASE_SHA,
+            "architecture": "x86_64",
+            "runner_label": "ubuntu-24.04",
+        }
+        producer = {
+            "schema_version": "sedna-first-binary-producer-api-v1",
+            "repository": REPOSITORY,
+            "workflow_path": WORKFLOW_PATH,
+            "workflow_host_sha": host_sha,
+            "run_id": run_id,
+            "branch": TRUSTED_CONSUMER_BRANCH,
+            "product_sha": BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+            "comparison_base_ref": BROWSER_DIAGNOSTIC_BASE_REF,
+            "comparison_base_sha": BROWSER_DIAGNOSTIC_BASE_SHA,
+            "artifact_id": 42,
+            "artifact_name": f"sedna-first-binary-{BROWSER_DIAGNOSTIC_PRODUCT_SHA}-x86_64-{run_id}",
+            "artifact_digest": "sha256:" + "a" * 64,
+            "artifact_size_bytes": 1024,
+            "architecture": "x86_64",
+            "target": ARCHES["x86_64"]["target"],
+            "runner_label": "ubuntu-24.04",
+        }
+        diagnostic = {
+            "fixture_function_call_emitted": True,
+            "responses_request_count": 2,
+            "second_request_observed": True,
+            "second_request_input_available": True,
+            "function_call_output_count": 0,
+            "function_call_output_call_ids": [],
+            "function_call_output_tool_names": [],
+            "synthetic_browser_provider_invoked": False,
+            "synthetic_browser_provider_tool_name": None,
+        }
+        self.assertEqual(BROWSER_DIAGNOSTIC_FIELDS, frozenset(diagnostic))
+        consumer_path = runner_temp / "consumer.json"
+        producer_path = runner_temp / "producer.json"
+        junit_path = runner_temp / "results.xml"
+        result_path = runner_temp / "result.json"
+        consumer_path.write_text(json.dumps(consumer), encoding="utf-8")
+        producer_path.write_text(json.dumps(producer), encoding="utf-8")
+        suite = ET.Element("testsuite")
+        case = ET.SubElement(suite, "testcase", {"name": BROWSER_DIAGNOSTIC_TEST_NAME})
+        properties = ET.SubElement(case, "properties")
+        ET.SubElement(properties, "property", {
+            "name": BROWSER_DIAGNOSTIC_PROPERTY,
+            "value": json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+        })
+        if failed:
+            ET.SubElement(case, "failure", {"message": "fixture observed missing call output"})
+        ET.ElementTree(suite).write(junit_path, encoding="unicode")
+        return junit_path, consumer_path, producer_path, witness_dir, result_path
+
+    def test_browser_diagnostic_profile_is_closed_to_exact_pair_and_route(self) -> None:
+        plan = browser_diagnostic_test_plan(
+            mode="build",
+            profile=BROWSER_DIAGNOSTIC_PROFILE,
+            product_sha=BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+            base_ref=BROWSER_DIAGNOSTIC_BASE_REF,
+            base_sha=BROWSER_DIAGNOSTIC_BASE_SHA,
+            fixture_sha=BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+            sdk_sha=BROWSER_DIAGNOSTIC_SDK_SHA,
+        )
+        self.assertEqual({BROWSER_DIAGNOSTIC_TEST_NAME}, set(plan["plain"]))
+        self.assertEqual(set(), set(plan["state"]))
+        for field, value in (
+            ("fixture_sha", "f" * 40),
+            ("sdk_sha", "s" * 40),
+            ("product_sha", "t" * 40),
+            ("base_ref", "main"),
+            ("base_sha", "b" * 40),
+        ):
+            inputs = {
+                "mode": "build",
+                "profile": BROWSER_DIAGNOSTIC_PROFILE,
+                "product_sha": BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+                "base_ref": BROWSER_DIAGNOSTIC_BASE_REF,
+                "base_sha": BROWSER_DIAGNOSTIC_BASE_SHA,
+                "fixture_sha": BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+                "sdk_sha": BROWSER_DIAGNOSTIC_SDK_SHA,
+            }
+            inputs[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                browser_diagnostic_test_plan(**inputs)
+
+    def test_browser_diagnostic_result_retains_sanitized_signal_on_test_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            junit, consumer, producer, witnesses, result_path = self._write_browser_diagnostic_fixture(
+                Path(temporary), failed=True
+            )
+            result = reconcile_consumer_results(
+                junit_path=junit,
+                consumer_context_path=consumer,
+                producer_evidence_path=producer,
+                witness_dir=witnesses,
+                result_path=result_path,
+                pytest_exit=1,
+                mode="build",
+                profile=BROWSER_DIAGNOSTIC_PROFILE,
+                fixture_sha=BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+                sdk_sha=BROWSER_DIAGNOSTIC_SDK_SHA,
+                runner_temp=witnesses.parent,
+            )
+            self.assertEqual(1, result["executed_cases"])
+            self.assertEqual(1, result["failures"])
+            self.assertEqual(2, result["browser_output_diagnostic"]["responses_request_count"])
+            self.assertEqual([], result["browser_output_diagnostic"]["function_call_output_call_ids"])
+            self.assertIn("pytest exited with status 1", result["issues"])
+            self.assertIn("JUnit reports failures=1 errors=0", result["issues"])
+
+    def test_browser_diagnostic_result_rejects_extra_case_or_unsafe_observation(self) -> None:
+        for mutation in ("extra", "raw_call_id"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                junit, consumer, producer, witnesses, result_path = self._write_browser_diagnostic_fixture(
+                    Path(temporary)
+                )
+                tree = ET.parse(junit)
+                root = tree.getroot()
+                if mutation == "extra":
+                    ET.SubElement(root, "testcase", {"name": "test_unadmitted_case"})
+                else:
+                    prop = root.find("./testcase/properties/property")
+                    diagnostic = json.loads(prop.attrib["value"])
+                    diagnostic["function_call_output_count"] = 1
+                    diagnostic["function_call_output_call_ids"] = ["unredacted-unexpected-id"]
+                    diagnostic["function_call_output_tool_names"] = ["browser_observe"]
+                    prop.attrib["value"] = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+                tree.write(junit, encoding="unicode")
+                result = reconcile_consumer_results(
+                    junit_path=junit,
+                    consumer_context_path=consumer,
+                    producer_evidence_path=producer,
+                    witness_dir=witnesses,
+                    result_path=result_path,
+                    pytest_exit=0,
+                    mode="build",
+                    profile=BROWSER_DIAGNOSTIC_PROFILE,
+                    fixture_sha=BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+                    sdk_sha=BROWSER_DIAGNOSTIC_SDK_SHA,
+                    runner_temp=witnesses.parent,
+                )
+                if mutation == "extra":
+                    self.assertTrue(any("plain-test inventory differs" in issue for issue in result["issues"]))
+                else:
+                    self.assertIsNone(result["browser_output_diagnostic"])
+                    self.assertTrue(any("call identifiers or tool names are malformed" in issue for issue in result["issues"]))
 
     def test_exact_pair_result_and_witness_join_are_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -50,13 +50,14 @@ on:
         default: ""
         type: string
       consumer_profile:
-        description: Closed consumer test profile for consume-existing mode.
+        description: Closed consumer profile; browser-diagnostic is the exact same-run synthetic Browser probe.
         required: false
         type: choice
         options:
           - pair
           - focused
           - full
+          - browser-diagnostic
         default: full
 
 concurrency:
@@ -137,12 +138,30 @@ jobs:
               }
               ;;
             build|prepare-only)
-              [[ -z "${PRODUCER_RUN_ID}${PRODUCER_WORKFLOW_HOST_SHA}${FIXTURE_SHA}${SDK_SHA}" ]] || {
-                echo "cross-run producer and source inputs are allowed only in consume-existing mode" >&2; exit 1;
+              [[ -z "${PRODUCER_RUN_ID}${PRODUCER_WORKFLOW_HOST_SHA}" ]] || {
+                echo "cross-run producer inputs are allowed only in consume-existing mode" >&2; exit 1;
               }
-              [[ "${CONSUMER_PROFILE}" == "full" ]] || {
-                echo "the consumer profile is configurable only in consume-existing mode" >&2; exit 1;
-              }
+              if [[ "${MODE}" == "build" && "${CONSUMER_PROFILE}" == "browser-diagnostic" ]]; then
+                [[ "${FIXTURE_SHA}" == "614ebadcd49997c10efc8a5b986ce81747b9b487" && "${SDK_SHA}" == "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a" ]] || {
+                  echo "Browser diagnostic requires its exact fixture and SDK source pair" >&2
+                  exit 1
+                }
+                [[ "${TARGET_SHA}" == "940dcc0a6d839216d2b1604658a78a9abf00317e" && "${BASE_REF}" == "validation/interrupt-guardian-fixture-8389-20261004" && "${BASE_SHA}" == "8389b61d82cb6fb936e4e500b977f31682441ffe" ]] || {
+                  echo "Browser diagnostic requires its exact package target and comparison base" >&2
+                  exit 1
+                }
+                trusted_ref="refs/heads/reconstruct/first-binary-package-workflow-20261001"
+                trusted_workflow_ref="sednalabs/codex/.github/workflows/sedna-branch-build.yml@${trusted_ref}"
+                [[ "${GITHUB_REF}" == "${trusted_ref}" && "${GITHUB_REF_NAME}" == "reconstruct/first-binary-package-workflow-20261001" && "${GITHUB_SHA}" == "${EXPECTED_H}" && "${GITHUB_WORKFLOW_REF}" == "${trusted_workflow_ref}" ]] || {
+                  echo "Browser diagnostic is restricted to the exact trusted workflow-host ref and SHA" >&2
+                  exit 1
+                }
+              else
+                [[ -z "${FIXTURE_SHA}${SDK_SHA}" && "${CONSUMER_PROFILE}" == "full" ]] || {
+                  echo "separate source inputs and focused profiles are not admitted for this mode" >&2
+                  exit 1
+                }
+              fi
               ;;
           esac
           actual_h="$(git rev-parse HEAD)"
@@ -150,7 +169,7 @@ jobs:
             echo "workflow host checkout does not match H" >&2
             exit 1
           fi
-          if [[ "${MODE}" == "consume-existing" ]]; then
+          if [[ "${MODE}" == "consume-existing" || ( "${MODE}" == "build" && "${CONSUMER_PROFILE}" == "browser-diagnostic" ) ]]; then
             python3 .github/scripts/verify_existing_first_binary_producer.py --validate-accepted-inputs
           fi
       - name: Test static consumer contract regression controls
@@ -161,13 +180,13 @@ jobs:
         if: ${{ inputs.mode != 'prepare-only' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.mode == 'build' && inputs.target_sha || inputs.fixture_sha }}
+          ref: ${{ inputs.mode == 'build' && inputs.consumer_profile != 'browser-diagnostic' && inputs.target_sha || inputs.fixture_sha }}
           fetch-depth: 1
           persist-credentials: false
           path: .contract-source
           sparse-checkout: scripts/codex_package/smoke_tests/first_binary
       - name: Check out exact SDK source for early contracts
-        if: ${{ inputs.mode == 'consume-existing' }}
+        if: ${{ inputs.mode == 'consume-existing' || (inputs.mode == 'build' && inputs.consumer_profile == 'browser-diagnostic') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.sdk_sha }}
@@ -196,9 +215,9 @@ jobs:
           BASE_SHA: ${{ inputs.base_sha }}
           FIXTURE_SHA: ${{ inputs.fixture_sha }}
           SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
           PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
           PRODUCER_WORKFLOW_HOST_SHA: ${{ inputs.producer_workflow_host_sha }}
-          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           python3 .workflow-src/.github/scripts/check_first_binary_contracts.py \
             --workflow-root .workflow-src \
@@ -842,10 +861,10 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          if [[ "$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused" ]]; then
+          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
           fi
-          if [[ "$MODE" == "consume-existing" ]]; then
+          if [[ "$MODE" == "consume-existing" || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
             sdk_root="$GITHUB_WORKSPACE/sdk-source"
           else
@@ -870,7 +889,7 @@ jobs:
           persist-credentials: false
           path: product
       - name: Check out exact consumer fixture source (Q)
-        if: ${{ inputs.mode == 'consume-existing' }}
+        if: ${{ inputs.mode == 'consume-existing' || (inputs.mode == 'build' && inputs.consumer_profile == 'browser-diagnostic') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.fixture_sha }}
@@ -878,7 +897,7 @@ jobs:
           persist-credentials: false
           path: fixture-source
       - name: Check out exact Python SDK source (S)
-        if: ${{ inputs.mode == 'consume-existing' }}
+        if: ${{ inputs.mode == 'consume-existing' || (inputs.mode == 'build' && inputs.consumer_profile == 'browser-diagnostic') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.sdk_sha }}
@@ -895,6 +914,7 @@ jobs:
           BASE_SHA: ${{ inputs.base_sha }}
           FIXTURE_SHA: ${{ inputs.fixture_sha }}
           SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
@@ -926,7 +946,7 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
-          if [[ "${MODE}" == "consume-existing" ]]; then
+          if [[ "${MODE}" == "consume-existing" || ("${MODE}" == "build" && "${CONSUMER_PROFILE}" == "browser-diagnostic") ]]; then
             [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
             [[ "$(git -C fixture-source rev-parse HEAD)" == "${FIXTURE_SHA}" ]] || {
               echo "fixture checkout Q does not match fixture_sha" >&2; exit 1;
@@ -1155,6 +1175,11 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           BASE_REF: ${{ inputs.base_ref }}
           BASE_SHA: ${{ inputs.base_sha }}
+          CONSUMER_JUNIT: ${{ runner.temp }}/first-binary-consumer-results.xml
+          CONSUMER_CONTEXT: ${{ runner.temp }}/first-binary-consumer-context.json
+          PRODUCER_EVIDENCE: ${{ runner.temp }}/first-binary-producer-evidence.json
+          CONSUMER_RESULT: ${{ runner.temp }}/first-binary-consumer-result.json
+          STATE_WITNESS_DIR: ${{ runner.temp }}/state-history-witnesses
           ARTIFACT_ID: ${{ steps.verified_artifact.outputs.artifact_id }}
           ARTIFACT_NAME: ${{ steps.verified_artifact.outputs.artifact_name }}
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
@@ -1165,6 +1190,11 @@ jobs:
           export TMPDIR="${RUNNER_TEMP}"
           TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
           case "${MODE}:${CONSUMER_PROFILE}" in
+            build:browser-diagnostic)
+              TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
+              PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
+              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file "${CONSUMER_CONTEXT}")
+              ;;
             build:*)
               TEST_ARGS=("${TEST_ROOT}")
               PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
@@ -1217,6 +1247,12 @@ jobs:
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
+          if [[ "${CONSUMER_PROFILE}" == "browser-diagnostic" ]]; then
+            PYTEST_EXIT_CODE="${pytest_status}" \
+              python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+                --verify-consumer-results
+            exit 0
+          fi
           PYTEST_EXIT_CODE="${pytest_status}" python3 - <<'PY'
           import hashlib
           import json
@@ -1828,10 +1864,10 @@ jobs:
           printf 'PRODUCER_EVIDENCE=%s/first-binary-producer-evidence.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'CONSUMER_RESULT=%s/first-binary-consumer-result.json\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           printf 'STATE_WITNESS_DIR=%s/state-history-witnesses\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          if [[ "$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused" ]]; then
+          if [[ ("$MODE" == "consume-existing" && "$CONSUMER_PROFILE" == "focused") || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             mkdir -m 700 -- "$RUNNER_TEMP/state-history-witnesses"
           fi
-          if [[ "$MODE" == "consume-existing" ]]; then
+          if [[ "$MODE" == "consume-existing" || ("$MODE" == "build" && "$CONSUMER_PROFILE" == "browser-diagnostic") ]]; then
             printf 'FIXTURE_ROOT=%s/fixture-source\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
             sdk_root="$GITHUB_WORKSPACE/sdk-source"
           else
@@ -1855,7 +1891,7 @@ jobs:
           persist-credentials: false
           path: product
       - name: Check out exact consumer fixture source (Q)
-        if: ${{ inputs.mode == 'consume-existing' }}
+        if: ${{ inputs.mode == 'consume-existing' || (inputs.mode == 'build' && inputs.consumer_profile == 'browser-diagnostic') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.fixture_sha }}
@@ -1863,7 +1899,7 @@ jobs:
           persist-credentials: false
           path: fixture-source
       - name: Check out exact Python SDK source (S)
-        if: ${{ inputs.mode == 'consume-existing' }}
+        if: ${{ inputs.mode == 'consume-existing' || (inputs.mode == 'build' && inputs.consumer_profile == 'browser-diagnostic') }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ inputs.sdk_sha }}
@@ -1880,6 +1916,7 @@ jobs:
           BASE_SHA: ${{ inputs.base_sha }}
           FIXTURE_SHA: ${{ inputs.fixture_sha }}
           SDK_SHA: ${{ inputs.sdk_sha }}
+          CONSUMER_PROFILE: ${{ inputs.consumer_profile }}
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "aarch64" ]] || {
@@ -1911,7 +1948,7 @@ jobs:
             exit 1
           }
           git -C product cat-file -e "${BASE_SHA}^{commit}"
-          if [[ "${MODE}" == "consume-existing" ]]; then
+          if [[ "${MODE}" == "consume-existing" || ("${MODE}" == "build" && "${CONSUMER_PROFILE}" == "browser-diagnostic") ]]; then
             [[ "${FIXTURE_SHA}" =~ ^[0-9a-f]{40}$ && "${SDK_SHA}" =~ ^[0-9a-f]{40}$ ]] || exit 1
             [[ "$(git -C fixture-source rev-parse HEAD)" == "${FIXTURE_SHA}" ]] || {
               echo "fixture checkout Q does not match fixture_sha" >&2; exit 1;
@@ -2142,33 +2179,52 @@ jobs:
           ARTIFACT_ID: ${{ steps.artifact_api.outputs.artifact_id }}
           ARTIFACT_NAME: ${{ steps.artifact_api.outputs.artifact_name }}
           PRODUCER_RUN_ID: ${{ github.run_id }}
-          PYTHONPATH: ${{ github.workspace }}/product/sdk/python/src:${{ github.workspace }}/product/sdk/python/tests
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_MANAGED_PYTHON: "1"
           UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+          case "${MODE}:${CONSUMER_PROFILE}" in
+            build:browser-diagnostic)
+              TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
+              PRODUCER_ARGS=(--workflow-host-sha "${WORKFLOW_HOST_SHA}" --run-id "${PRODUCER_RUN_ID}")
+              FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file "${CONSUMER_CONTEXT}")
+              ;;
+            build:*)
+              TEST_ARGS=("${TEST_ROOT}")
+              PRODUCER_ARGS=(--workflow-host-sha "${WORKFLOW_HOST_SHA}" --run-id "${PRODUCER_RUN_ID}")
+              FIXTURE_ARGS=()
+              ;;
+            *) echo "unsupported consumer mode/profile combination" >&2; exit 1 ;;
+          esac
           set +e
           "${UV_PATH}" run --locked \
-            --project "${PRODUCT_ROOT}/sdk/python" \
+            --project "${SDK_ROOT}/sdk/python" \
             --group test \
             --python 3.12.14 \
             --with "zstandard==0.25.0" \
             pytest -q \
-              --confcutdir="${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
-              "${PRODUCT_ROOT}/scripts/codex_package/smoke_tests/first_binary" \
+              --confcutdir="${TEST_ROOT}" \
+              "${TEST_ARGS[@]}" \
               --artifact-dir "${ARTIFACT_DIR}" \
               --artifact-id "${ARTIFACT_ID}" \
               --artifact-name "${ARTIFACT_NAME}" \
               --target-sha "${TARGET_SHA}" \
               --base-ref "${BASE_REF}" \
               --base-sha "${BASE_SHA}" \
-              --workflow-host-sha "${WORKFLOW_HOST_SHA}" \
-              --run-id "${PRODUCER_RUN_ID}" \
+              "${PRODUCER_ARGS[@]}" \
+              "${FIXTURE_ARGS[@]}" \
               --junitxml "${CONSUMER_JUNIT}"
           pytest_status=$?
           set -e
+          if [[ "${CONSUMER_PROFILE}" == "browser-diagnostic" ]]; then
+            PYTEST_EXIT_CODE="${pytest_status}" \
+              python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
+                --verify-consumer-results
+            exit 0
+          fi
           PYTEST_EXIT_CODE="${pytest_status}" python3 - "${CONSUMER_JUNIT}" "${CONSUMER_IDENTITY}" "${RUNNER_TEMP}" <<'PY'
           import hashlib
           import json

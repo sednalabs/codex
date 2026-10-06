@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import check_first_binary_contracts as checker
+import verify_existing_first_binary_producer as producer_verifier
 
 
 OPTION_SOURCE = """def pytest_addoption(parser):
@@ -72,6 +73,28 @@ pytest -q \\
   --consumer-context-file context \\
   --junitxml junit
 '''
+BROWSER_DIAGNOSTIC_BUILD_RUN = '''TEST_ROOT="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
+case "${MODE}:${CONSUMER_PROFILE}" in
+  build:browser-diagnostic)
+    TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")
+    PRODUCER_ARGS=(--workflow-host-sha "${GITHUB_SHA}" --run-id "${GITHUB_RUN_ID}")
+    FIXTURE_ARGS=(--fixture-sha "${FIXTURE_SHA}" --consumer-context-file context)
+    ;;
+  *) exit 1 ;;
+esac
+pytest -q \\
+  --confcutdir="${TEST_ROOT}" \\
+  "${TEST_ARGS[@]}" \\
+  --artifact-dir pkg \\
+  --artifact-id 1 \\
+  --artifact-name pkg \\
+  --target-sha target \\
+  --base-ref validation/interrupt-guardian-fixture-8389-20261004 \\
+  --base-sha 8389b61d82cb6fb936e4e500b977f31682441ffe \\
+  "${PRODUCER_ARGS[@]}" \\
+  "${FIXTURE_ARGS[@]}" \\
+  --junitxml junit
+'''
 
 
 class CheckerFixture(unittest.TestCase):
@@ -88,6 +111,10 @@ class CheckerFixture(unittest.TestCase):
         (self.test_dir / "conftest.py").write_text(OPTION_SOURCE, encoding="utf-8")
         (self.test_dir / "test_selected.py").write_text("def test_selected(): pass\n", encoding="utf-8")
         (self.test_dir / "test_agent_control_tui_acceptance.py").write_text("", encoding="utf-8")
+        (self.test_dir / "test_tui_agents_acceptance.py").write_text(
+            "def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate(): pass\n",
+            encoding="utf-8",
+        )
         (self.sdk / "sdk/python/tests").mkdir(parents=True)
         (self.sdk / "sdk/python/tests/test_sdk.py").write_text("def test_sdk_selected(): pass\n", encoding="utf-8")
         (self.producer / ".github/workflows").mkdir(parents=True)
@@ -102,16 +129,21 @@ class CheckerFixture(unittest.TestCase):
         record_jobs = [{"name": "Job {}".format(job)} for job in ["verify", "package_x", "package_arm", "prepare", "consume_x", "consume_arm"]]
         return mock.Mock(
             consume_existing_test_plan=mock.Mock(return_value={"plain": plain or {"test_selected"}, "state": {"fresh", "bad_checksum"} if profile == "pair" else set()}),
+            browser_diagnostic_test_plan=mock.Mock(return_value={
+                "plain": {"test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate"},
+                "state": set(),
+            }),
             sdk_test_plan=mock.Mock(return_value={"selectors": ("sdk/python/tests/test_sdk.py::test_sdk_selected",)}),
             select_accepted_record=mock.Mock(return_value={"record_id": "selected-record", "jobs": record_jobs}),
             _read_manifest=mock.Mock(return_value={}),
             _accepted_inputs_from_env=mock.Mock(return_value={}),
         )
 
-    def run_checks(self, mode="consume-existing", profile="focused", step_run=None, verifier=None, check_head=None):
+    def run_checks(self, mode="consume-existing", profile="focused", step_run=None, verifier=None, check_head=None, env_override=None):
         run_text = step_run or (BUILD_RUN if mode == "build" else PAIR_RUN if profile == "pair" else TEST_RUN)
+        build_run = step_run or (BROWSER_DIAGNOSTIC_BUILD_RUN if profile == "browser-diagnostic" else BUILD_RUN)
         steps = {
-            checker.STEP_BUILD: [("Package native Linux x86_64", BUILD_RUN), ("Package native Linux ARM64", BUILD_RUN)],
+            checker.STEP_BUILD: [("Package native Linux x86_64", build_run), ("Package native Linux ARM64", build_run)],
             checker.STEP_EXISTING: [("Consume native Linux x86_64 package", run_text), ("Consume native Linux ARM64 package", run_text)],
         }
         args = mock.Mock(workflow_root=self.workflow, source_root=self.source, sdk_root=self.sdk, producer_root=self.producer)
@@ -121,6 +153,18 @@ class CheckerFixture(unittest.TestCase):
             "SDK_SHA": "s" * 40, "BASE_REF": "main", "BASE_SHA": "b" * 40,
             "PRODUCER_RUN_ID": "7", "PRODUCER_WORKFLOW_HOST_SHA": "p" * 40,
         }
+        if mode == "build" and profile == "browser-diagnostic":
+            env.update(
+                TARGET_SHA=producer_verifier.BROWSER_DIAGNOSTIC_PRODUCT_SHA,
+                FIXTURE_SHA=producer_verifier.BROWSER_DIAGNOSTIC_FIXTURE_SHA,
+                SDK_SHA=producer_verifier.BROWSER_DIAGNOSTIC_SDK_SHA,
+                BASE_REF=producer_verifier.BROWSER_DIAGNOSTIC_BASE_REF,
+                BASE_SHA=producer_verifier.BROWSER_DIAGNOSTIC_BASE_SHA,
+                PRODUCER_RUN_ID="",
+                PRODUCER_WORKFLOW_HOST_SHA="",
+            )
+        if env_override:
+            env.update(env_override)
         verifier = verifier or self.verifier(profile)
         with mock.patch.object(checker, "_git_head", side_effect=check_head or (lambda *args: True)), mock.patch.object(
             checker, "_workflow_steps", return_value=steps
@@ -160,6 +204,55 @@ class SelectedRunTests(CheckerFixture):
         self.assertIn(("source", "q" * 40), seen)
         self.assertIn(("sdk", "s" * 40), seen)
         self.assertIn(("producer", "p" * 40), seen)
+
+    def test_browser_diagnostic_profile_binds_exact_source_pair_and_nodeid(self):
+        seen = []
+
+        def check(root, expected, mode, label, diagnostics):
+            seen.append((label, expected))
+            return True
+
+        result = self.run_checks(
+            mode="build",
+            profile="browser-diagnostic",
+            verifier=producer_verifier,
+            check_head=check,
+        )
+        self.assertEqual([], result.errors)
+        self.assertIn(("source", producer_verifier.BROWSER_DIAGNOSTIC_FIXTURE_SHA), seen)
+        self.assertIn(("sdk", producer_verifier.BROWSER_DIAGNOSTIC_SDK_SHA), seen)
+
+    def test_browser_diagnostic_profile_rejects_source_pair_and_selector_substitutions(self):
+        for mutation in ("fixture", "sdk", "base", "extra_selector"):
+            with self.subTest(mutation=mutation):
+                run = BROWSER_DIAGNOSTIC_BUILD_RUN
+                env_override = {}
+                if mutation == "fixture":
+                    env_override["FIXTURE_SHA"] = "f" * 40
+                elif mutation == "sdk":
+                    env_override["SDK_SHA"] = "s" * 40
+                elif mutation == "base":
+                    env_override["BASE_REF"] = "main"
+                if mutation == "extra_selector":
+                    run = run.replace(
+                        'TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate")',
+                        'TEST_ARGS=("${TEST_ROOT}/test_tui_agents_acceptance.py::test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate" "${TEST_ROOT}/test_selected.py::test_selected")',
+                    )
+                result = self.run_checks(
+                    mode="build",
+                    profile="browser-diagnostic",
+                    step_run=run,
+                    verifier=producer_verifier,
+                    env_override=env_override,
+                )
+                if mutation == "fixture":
+                    self.assertTrue(any("fixture SHA is not admitted" in error for error in result.errors))
+                elif mutation == "sdk":
+                    self.assertTrue(any("SDK SHA is not admitted" in error for error in result.errors))
+                elif mutation == "base":
+                    self.assertTrue(any("comparison ref is not admitted" in error for error in result.errors))
+                else:
+                    self.assertTrue(any("select exactly its admitted nodeid" in error for error in result.errors))
 
     def test_consume_fixture_root_uses_fixture_sha_and_wrong_head_blocks(self):
         seen = []
