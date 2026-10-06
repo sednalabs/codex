@@ -116,7 +116,9 @@ pub(crate) fn project_call(row: sqlx::sqlite::SqliteRow, include_standard_scenar
     if !valid_identifier(&call_id) || !valid_identifier(&thread_id) {
         return Err(UsageSnapshotReadError::BoundExceeded);
     }
-    let response_id: Option<String> = row.try_get("request_id").map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
+    let response_id: Option<String> = row
+        .try_get::<Option<String>, _>("request_id")
+        .map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
         .and_then(bounded_identifier);
     let provider: Option<String> = row.try_get("provider").map_err(|_| UsageSnapshotReadError::UnsupportedSchema)?
         .and_then(bounded_identifier);

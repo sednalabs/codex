@@ -12,7 +12,9 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use log::LevelFilter;
 use sqlx::ConnectOptions;
 use sqlx::Connection;
+use sqlx::QueryBuilder;
 use sqlx::Row;
+use sqlx::Sqlite;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 
 const READ_BOUND: Duration = Duration::from_secs(5);
@@ -305,7 +307,8 @@ pub async fn read_control_plane_usage_snapshot(
         } else {
             ""
         };
-        let query = format!(r#"
+        // These optional SQL fragments are fixed literals; request data stays bound.
+        let mut query = QueryBuilder::<Sqlite>::new(r#"
             SELECT
                 p.provider_call_id, p.thread_id, p.turn_id, p.spawn_request_id,
                 p.tool_call_id, p.provider, p.request_id,
@@ -325,21 +328,23 @@ pub async fn read_control_plane_usage_snapshot(
                 c.rate_id, c.rate_card_kind, c.selected_rate_card_kind,
                 c.rate_effective_from, c.rate_effective_to, c.rate_source_observed_at,
                 c.rate_source_url,
-                {standard_columns}
+            "#);
+        query.push(standard_columns).push(r#"
             FROM usage_provider_calls AS p
             LEFT JOIN usage_response_idempotency AS i
               ON i.provider_call_id = p.provider_call_id
             LEFT JOIN usage_threads AS t ON t.thread_id = p.thread_id
             LEFT JOIN usage_provider_call_credit_estimates AS c
               ON c.provider_call_id = p.provider_call_id
-            {standard_join}
-            WHERE julianday(p.started_at) >= julianday(?1) - 0.00001
-              AND julianday(p.started_at) < julianday(?2) + 0.00001
-              AND (?3 = '[]' OR p.thread_id IN (SELECT value FROM json_each(?3)))
-              AND (?4 = '[]' OR p.provider_call_id IN (SELECT value FROM json_each(?4)))
-              AND (?5 = '[]' OR p.turn_id IN (SELECT value FROM json_each(?5)))
+            "#);
+        query.push(standard_join).push(r#"
+            WHERE julianday(p.started_at) >= julianday(?) - 0.00001
+              AND julianday(p.started_at) < julianday(?) + 0.00001
+              AND (? = '[]' OR p.thread_id IN (SELECT value FROM json_each(?)))
+              AND (? = '[]' OR p.provider_call_id IN (SELECT value FROM json_each(?)))
+              AND (? = '[]' OR p.turn_id IN (SELECT value FROM json_each(?)))
             ORDER BY p.provider_call_id
-            LIMIT ?6
+            LIMIT ?
         "#);
         let thread_json = serde_json::to_string(&request.thread_ids)
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
@@ -347,13 +352,17 @@ pub async fn read_control_plane_usage_snapshot(
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
         let turn_json = serde_json::to_string(&request.turn_ids)
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
-        let raw_rows = sqlx::query(&query)
-            .bind(started)
-            .bind(ended)
-            .bind(thread_json)
-            .bind(call_json)
-            .bind(turn_json)
-            .bind((request.limit + 1) as i64)
+        let raw_rows = query
+            .push_bind(started)
+            .push_bind(ended)
+            .push_bind(thread_json.clone())
+            .push_bind(thread_json)
+            .push_bind(call_json.clone())
+            .push_bind(call_json)
+            .push_bind(turn_json.clone())
+            .push_bind(turn_json)
+            .push_bind((request.limit + 1) as i64)
+            .build()
             .fetch_all(&mut *transaction)
             .await
             .map_err(|_| UsageSnapshotReadError::Unavailable)?;
