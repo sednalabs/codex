@@ -986,9 +986,10 @@ async fn agents_overview_details_render_markdown() {
         "```\nlet explanation = \"A long code line should wrap inside the task details panel.\";\n```".into(),
     );
     let view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
-    app.chat_widget.show_bottom_pane_view(Box::new(view));
-
-    let long_lines = render_bottom_popup(&app.chat_widget, /*width*/ 96);
+    terminal
+        .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
+        .unwrap();
+    let long_lines = terminal.backend().to_string();
     assert_tui_diagnostic!(
         "long_code_first_segment",
         contains_line(&long_lines, "let explanation = \"A long code line")
