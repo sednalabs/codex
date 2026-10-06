@@ -664,11 +664,14 @@ impl ProtectedRuntimeFixture {
         fault: Option<AuthFault>,
         log_filter: Option<&str>,
     ) -> Result<Output> {
+        eprintln!("runtime-proof-root-stage:cli_launch_begin");
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
+        eprintln!("runtime-proof-root-stage:cli_executable_ready");
         let stdout = File::create(&self.output_path)?;
         let stderr = File::create(&self.errors_path)?;
         let (mut launcher, child_socket) = seqpacket_pair()?;
         let (auth_launcher, auth_child_socket) = seqpacket_pair()?;
+        eprintln!("runtime-proof-root-stage:cli_channels_ready");
         let child_fd = child_socket.as_raw_fd();
         let auth_child_fd = auth_child_socket.as_raw_fd();
         let mut command = Command::new(executable);
@@ -705,6 +708,7 @@ impl ProtectedRuntimeFixture {
             });
         }
         let mut child = command.spawn().context("launch protected codex fixture")?;
+        eprintln!("runtime-proof-root-stage:cli_child_spawned");
         drop(child_socket);
         drop(auth_child_socket);
         child
@@ -712,6 +716,7 @@ impl ProtectedRuntimeFixture {
             .take()
             .context("open fixed protected CLI stdin")?
             .write_all(prompt.as_bytes())?;
+        eprintln!("runtime-proof-root-stage:cli_prompt_written");
         let certificate = create_certificate(
             &self.issuer_key,
             &[17_u8; 32],
@@ -724,6 +729,7 @@ impl ProtectedRuntimeFixture {
         frame.extend_from_slice(&[17_u8; 32]);
         send_packet(&launcher, &frame)?;
         frame.fill(0);
+        eprintln!("runtime-proof-root-stage:cli_bootstrap_sent");
         let mut auth_packet = serde_json::json!({
             "version": 1,
             "certificate_sha256": format!("sha256:{}", sha256_hex(certificate.as_bytes())),
@@ -800,7 +806,9 @@ impl ProtectedRuntimeFixture {
         send_packet(&auth_launcher, &auth_frame)?;
         auth_frame.fill(0);
         drop(auth_launcher);
+        eprintln!("runtime-proof-root-stage:cli_auth_sent");
         set_read_timeout(&launcher, Duration::from_secs(10))?;
+        eprintln!("runtime-proof-root-stage:cli_waiting_for_ack");
         let mut ack = [0_u8; 4];
         if let Err(error) = launcher.read_exact(&mut ack) {
             let _ = child.kill();
@@ -812,18 +820,24 @@ impl ProtectedRuntimeFixture {
             let _ = child.wait();
             anyhow::bail!("CLI bootstrap acknowledgement did not match");
         }
+        eprintln!("runtime-proof-root-stage:cli_ack_validated");
         drop(launcher);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(100);
         loop {
             if let Some(status) = child.try_wait()? {
+                eprintln!("runtime-proof-root-stage:cli_process_exited");
+                let stdout = fs::read(&self.output_path)?;
+                let stderr = fs::read(&self.errors_path)?;
+                eprintln!("runtime-proof-root-stage:cli_output_captured");
                 return Ok(Output {
                     status,
-                    stdout: fs::read(&self.output_path)?,
-                    stderr: fs::read(&self.errors_path)?,
+                    stdout,
+                    stderr,
                 });
             }
             if std::time::Instant::now() >= deadline {
+                eprintln!("runtime-proof-root-stage:cli_timed_out");
                 child.kill()?;
                 let _ = child.wait()?;
                 anyhow::bail!("protected CLI fixture timed out");
