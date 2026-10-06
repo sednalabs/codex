@@ -2742,20 +2742,10 @@ mod tests {
             .expect_err("--version should exit with the version display");
 
         let rendered = error.to_string();
-        let rendered_version = rendered
-            .trim()
-            .strip_prefix("codex ")
-            .expect("version output should begin with codex");
-        assert_eq!(rendered_version, cli_display_version());
-    }
-
-    #[test]
-    fn version_output_uses_codex_command_name() {
-        let error = command_with_build_identity()
-            .try_get_matches_from(["codex", "--version"])
-            .expect_err("--version should exit with the version display");
-
-        assert!(error.to_string().trim().starts_with("codex "));
+        assert_eq!(
+            rendered.trim(),
+            format!("codex {}", cli_display_version())
+        );
     }
 
     #[test]
