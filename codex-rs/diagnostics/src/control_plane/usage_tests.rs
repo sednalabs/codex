@@ -1,6 +1,7 @@
 use super::*;
 use super::super::types::{
-    EventInput, ProviderCallObservation, ProviderLedgerWriteOutcome, RecordedEvent,
+    EventInput, EventKind, ObservationQuality, ProviderCallObservation, ProviderLedgerWriteOutcome,
+    RecordedEvent, PROVIDER_COMPLETION_PRODUCER_BOUNDARY,
 };
 use std::time::SystemTime;
 
