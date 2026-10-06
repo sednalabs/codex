@@ -7,7 +7,8 @@ tests to reconcile. The runner inventories the target first and refuses to
 run when a requested name is missing or ambiguous. By default it runs the
 complete catalog-owned target once; an explicit exact_tests mode runs only
 the verified requested selectors. Failure output is projected to fixed
-classes and verified repository locations; raw test output is never published.
+classes, verified repository locations, and exact allowlisted snapshot
+basenames; raw test output is never published.
 """
 
 from __future__ import annotations
@@ -33,6 +34,16 @@ TUI_DIAGNOSTIC_TESTS = (
     "agents_overview_reasoning_uses_existing_events_and_expires_with_attachment",
     "app::agents_overview::tests::agents_overview_details_render_markdown",
 )
+TUI_DIAGNOSTIC_SNAPSHOT_NAMES = {
+    TUI_DIAGNOSTIC_TESTS[0]: {
+        "codex_tui__app__agents_overview__tests__agents_overview_live_activity.snap",
+    },
+    TUI_DIAGNOSTIC_TESTS[1]: {
+        "codex_tui__app__agents_overview__tests__agents_overview_markdown.snap",
+        "codex_tui__app__agents_overview__tests__agents_overview_markdown_long_lines.snap",
+        "codex_tui__app__agents_overview__tests__agents_overview_markdown_table.snap",
+    },
+}
 MANIFEST_SCHEMA_VERSION = "rust-tests-command-manifest-v1"
 MANIFEST_NAME = "validation-named-tests.json"
 MAX_TESTS = 64
@@ -51,6 +62,10 @@ SOURCE_LOCATION_RE = re.compile(
     r"(?:codex-rs/tui/src/|tui/src/|src/app/)"
     r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs):"
     r"(?P<line>[1-9][0-9]{0,6}):(?P<column>[1-9][0-9]{0,6})",
+    re.MULTILINE,
+)
+SNAPSHOT_FILE_RE = re.compile(
+    r"^Snapshot file:\s*(?P<path>[^\r\n]+?\.snap(?:\.new)?)\s*$",
     re.MULTILINE,
 )
 
@@ -81,8 +96,10 @@ def verified_repo_location(
     return f"{candidate_path.as_posix()}:{line}:{column}"
 
 
-def failure_projection(output: str, repo_root: Path) -> dict[str, Any]:
-    """Project failure output to fixed classes and verified public locations."""
+def failure_projection(
+    output: str, repo_root: Path, selector: str
+) -> dict[str, Any]:
+    """Project failures to fixed classes and narrowly verified public evidence."""
 
     lowered = output.lower()
     if "snapshot assertion" in lowered or "snapshot mismatch" in lowered:
@@ -107,9 +124,26 @@ def failure_projection(output: str, repo_root: Path) -> dict[str, Any]:
         if source_location:
             break
 
+    allowed_snapshot_names = TUI_DIAGNOSTIC_SNAPSHOT_NAMES.get(selector, set())
+    observed_snapshot_names = set()
+    for match in SNAPSHOT_FILE_RE.finditer(output):
+        snapshot_name = PurePosixPath(
+            match.group("path").replace("\\", "/")
+        ).name
+        if snapshot_name.endswith(".snap.new"):
+            snapshot_name = snapshot_name.removesuffix(".new")
+        observed_snapshot_names.add(snapshot_name)
+    matching_snapshot_names = allowed_snapshot_names & observed_snapshot_names
+    snapshot_name = (
+        next(iter(matching_snapshot_names))
+        if len(matching_snapshot_names) == 1
+        else None
+    )
+
     return {
         "class": failure_class,
         "source_location": source_location,
+        "snapshot_name": snapshot_name,
     }
 
 
@@ -444,6 +478,10 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         ],
     ] = {}
     if execution_mode == "exact_tests":
+        # Insta's summary mode emits snapshot filenames without diffs or bodies.
+        # This diagnostic-only setting is restricted to the exact TUI selectors.
+        diagnostic_env = env.copy()
+        diagnostic_env["INSTA_OUTPUT"] = "summary"
         for name in request["tests"]:
             # Inventory above proves each requested name is unique in this target.
             # Request values are appended only after safe-name and inventory checks.
@@ -456,7 +494,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             completed = subprocess.run(
                 test_command,
                 cwd=manifest_root,
-                env=env,
+                env=diagnostic_env,
                 text=True,
                 capture_output=True,
                 check=False,
@@ -522,7 +560,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             failure_code = "execution_reconciliation_failed"
         diagnostics = {"exit_code": completed.returncode}
         if not execution_reconciled and isolated:
-            diagnostics.update(failure_projection(output, repo_root))
+            diagnostics.update(failure_projection(output, repo_root, name))
         test_result = {
             "name": name,
             "status": status,
@@ -628,6 +666,13 @@ def main() -> int:
                         )
                         if verified_location == source_location:
                             safe_test["source_location"] = source_location
+                snapshot_name = diagnostics.get("snapshot_name")
+                if (
+                    isinstance(snapshot_name, str)
+                    and snapshot_name
+                    in TUI_DIAGNOSTIC_SNAPSHOT_NAMES.get(name, set())
+                ):
+                    safe_test["snapshot_name"] = snapshot_name
         safe_tests.append(safe_test)
     inventory_summary = result.get("inventory")
     if not isinstance(inventory_summary, dict):
