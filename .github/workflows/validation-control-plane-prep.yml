@@ -31,7 +31,90 @@ permissions:
   contents: read
 
 jobs:
+  fix-diagnostic:
+    if: ${{ github.ref == 'refs/heads/diagnostic/control-plane-fix-20261006' }}
+    name: Diagnose control-plane preparation fix phase on standard hosted runner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact fix-diagnostic target
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.target_sha }}
+          path: product
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Run workspace update and exact fix command with bounded failure tail
+        shell: bash
+        run: |
+          set -euo pipefail
+          isolated_home="${RUNNER_TEMP}/control-plane-home"
+          cargo_home="${isolated_home}/.cargo"
+          cargo_target="${RUNNER_TEMP}/control-plane-cargo-target"
+          rustup_home="$(rustup show home)"
+          mkdir -p "${isolated_home}" "${cargo_home}"
+          run_isolated() {
+            env -i \
+              PATH="${PATH}" \
+              HOME="${isolated_home}" \
+              RUSTUP_HOME="${rustup_home}" \
+              CARGO_HOME="${cargo_home}" \
+              CARGO_TARGET_DIR="${cargo_target}" \
+              CARGO_INCREMENTAL="0" \
+              RUST_MIN_STACK="8388608" \
+              CARGO_NET_GIT_FETCH_WITH_CLI="true" \
+              LANG=C.UTF-8 \
+              LC_ALL=C.UTF-8 \
+              PYTHONDONTWRITEBYTECODE=1 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              "$@"
+          }
+
+          update_log="${RUNNER_TEMP}/control-plane-workspace-update.log"
+          set +e
+          (cd product/codex-rs && run_isolated cargo update --workspace) >"${update_log}" 2>&1
+          command_status=$?
+          set -e
+          if (( command_status != 0 )); then
+            echo "workspace_update failed; bounded diagnostic tail follows" >&2
+            tail -n 80 "${update_log}" >&2
+            exit "${command_status}"
+          fi
+          echo "workspace_update passed"
+
+          fix_log="${RUNNER_TEMP}/control-plane-fix.log"
+          set +e
+          (
+            cd product
+            run_isolated cargo clippy --fix --tests --allow-dirty --locked \
+              -p codex-diagnostics -p codex-cli -p codex-state
+          ) >"${fix_log}" 2>&1
+          command_status=$?
+          set -e
+          if (( command_status != 0 )); then
+            echo "fix phase failed with exit ${command_status}; bounded diagnostic tail follows" >&2
+            tail -n 120 "${fix_log}" >&2
+            exit "${command_status}"
+          fi
+          echo "fix phase passed"
+          tail -n 30 "${fix_log}"
+
   prepare:
+    if: ${{ github.ref != 'refs/heads/diagnostic/control-plane-fix-20261006' }}
     name: Prepare exact candidate on standard hosted runner
     runs-on: ubuntu-24.04
     timeout-minutes: 90
