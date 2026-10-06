@@ -903,7 +903,7 @@ async fn agents_overview_details_render_markdown() {
         super::super::agents_overview_details::preview_markdown(message),
     );
     let view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
-    let mut terminal = Terminal::new(TestBackend::new(/*width*/ 96, /*height*/ 40)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(/*width*/ 96, /*height*/ 48)).unwrap();
     terminal
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .unwrap();
@@ -989,7 +989,37 @@ async fn agents_overview_details_render_markdown() {
     terminal
         .draw(|frame| view.render(frame.area(), frame.buffer_mut()))
         .unwrap();
-    let long_lines = terminal.backend().to_string();
+    let buffer = terminal.backend().buffer();
+    let width = usize::from(buffer.area.width);
+    let details_heading: Vec<String> = "Task details"
+        .chars()
+        .map(|character| character.to_string())
+        .collect();
+    let details_x = buffer
+        .content
+        .chunks(width)
+        .find_map(|row| {
+            row.windows(details_heading.len()).position(|cells| {
+                cells
+                    .iter()
+                    .zip(&details_heading)
+                    .all(|(cell, expected)| cell.symbol() == expected.as_str())
+            })
+        })
+        .expect("details pane heading is rendered");
+    // The 96-column layout allocates a 38-cell pane to the selected details.
+    let long_lines = buffer
+        .content
+        .chunks(width)
+        .map(|row| {
+            row.iter()
+                .skip(details_x)
+                .take(38)
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert_tui_diagnostic!(
         "long_code_first_segment",
         contains_line(&long_lines, "let explanation = \"A long code line")
