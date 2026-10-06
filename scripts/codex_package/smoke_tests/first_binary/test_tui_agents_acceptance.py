@@ -136,6 +136,7 @@ def browser_output_diagnostic(record_property):
     state = {
         "fixture_function_call_emitted": False,
         "provider_observation_path": None,
+        "stage_observation_path": None,
         "responses_server": None,
     }
     yield state
@@ -192,9 +193,12 @@ def browser_output_diagnostic(record_property):
             )
 
     source_stage_observations = []
-    stage_observation_path = home / "browser-output-stage-diagnostic.jsonl"
+    stage_observation_path = state["stage_observation_path"]
     try:
-        stage_lines = stage_observation_path.read_text(encoding="utf-8").splitlines()
+        stage_lines = (
+            stage_observation_path.read_text(encoding="utf-8").splitlines()
+            if isinstance(stage_observation_path, Path) else []
+        )
     except OSError:
         stage_lines = []
     for line in stage_lines:
@@ -349,6 +353,9 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
     browser_output_diagnostic,
 ) -> None:
     isolated, home = _isolated(package, "tui-browser-visual")
+    browser_output_diagnostic["stage_observation_path"] = (
+        home / "browser-output-stage-diagnostic.jsonl"
+    )
     # The synthetic home config must be authoritative; inherited provider
     # variables can override it, including selecting a real Browser provider.
     isolated = replace(
