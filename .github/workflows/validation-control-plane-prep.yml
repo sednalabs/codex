@@ -246,6 +246,15 @@ jobs:
               --patch "${PATCH_PATH}" \
               --receipt "${RECEIPT_PATH}"
 
+      - name: Upload exact workspace-update Cargo.lock diff
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: control-plane-workspace-update-lock-delta-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-${{ github.run_attempt }}.workspace-update.patch
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: Upload bounded preparation receipt
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

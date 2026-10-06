@@ -818,6 +818,17 @@ def patch_bytes(product: Path, index_path: Path) -> bytes:
     )
 
 
+def write_workspace_update_lock_delta(product: Path, output_path: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="control-plane-lock-delta-") as tempdir:
+        index = Path(tempdir) / "index"
+        changed = changed_paths(product, index)
+        if any(path != "codex-rs/Cargo.lock" for path in changed):
+            raise PreparationError("workspace_update_changed_unexpected_path")
+        patch = patch_bytes(product, index)
+    validate_patch_size(patch)
+    atomic_write(output_path, patch)
+
+
 def validate_patch_size(patch: bytes) -> None:
     if len(patch) > MAX_PATCH_BYTES:
         raise PreparationError("patch_overflow")
@@ -1047,10 +1058,14 @@ def prepare(args: argparse.Namespace) -> int:
     receipt = None
     receipt_path = None
     patch_path = None
+    workspace_update_patch_path = None
     try:
         receipt = make_receipt(args)
         receipt_path = Path(args.receipt)
         patch_path = Path(args.patch)
+        workspace_update_patch_path = patch_path.with_suffix(
+            ".workspace-update.patch"
+        )
         persist_receipt(receipt_path, receipt)
         if (
             not SHA_RE.fullmatch(args.target_sha)
@@ -1178,6 +1193,9 @@ def prepare(args: argparse.Namespace) -> int:
                     base_lock,
                     generated_lock,
                     "generated_external_package_records_changed",
+                )
+                write_workspace_update_lock_delta(
+                    product, workspace_update_patch_path
                 )
             if name == "metadata":
                 metadata_after = parse_metadata(proc.stdout)

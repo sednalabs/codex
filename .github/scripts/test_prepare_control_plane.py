@@ -276,6 +276,31 @@ class FixedContractTests(unittest.TestCase):
             ),
         )
 
+    def test_workflow_uploads_only_the_workspace_update_lock_delta(self):
+        workflow = (
+            Path(__file__).parents[1] / "workflows/validation-control-plane-prep.yml"
+        )
+        contents = workflow.read_text(encoding="utf-8")
+        marker = "      - name: Upload exact workspace-update Cargo.lock diff\n"
+        self.assertEqual(contents.count(marker), 1)
+        step = contents.split(marker, 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("if: ${{ always() && !cancelled() }}", step)
+        self.assertIn(
+            "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f",
+            step,
+        )
+        self.assertIn(
+            "name: control-plane-workspace-update-lock-delta-${{ github.run_id }}-"
+            "${{ github.run_attempt }}",
+            step,
+        )
+        self.assertIn(
+            "path: ${{ runner.temp }}/control-plane-preparation-${{ github.run_id }}-"
+            "${{ github.run_attempt }}.workspace-update.patch",
+            step,
+        )
+        self.assertIn("if-no-files-found: ignore", step)
+
     def test_legacy_diagnostic_job_never_prints_cargo_log_tails(self):
         workflow = (
             Path(__file__).parents[1] / "workflows/validation-control-plane-prep.yml"
@@ -616,6 +641,8 @@ class PrepareFlowTests(unittest.TestCase):
         interrupt_phase=None,
         interrupt_command=None,
         change_generated_lock=False,
+        change_workspace_edge=False,
+        change_workspace_path=False,
     ):
         actual_run = prepare_control_plane.run
         versions = {
@@ -675,6 +702,22 @@ class PrepareFlowTests(unittest.TestCase):
                         'checksum = "upgraded-checksum"',
                     ),
                     encoding="utf-8",
+                )
+            if phase == "workspace_update" and change_workspace_edge:
+                lock = self.product / "codex-rs/Cargo.lock"
+                content = lock.read_text(encoding="utf-8")
+                content = content.replace(
+                    'name = "workspace"\nversion = "1.0"\n',
+                    'name = "workspace"\nversion = "1.0"\n'
+                    'dependencies = [\n "codex-diagnostics",\n]\n',
+                    1,
+                )
+                lock.write_text(content, encoding="utf-8")
+            if phase == "workspace_update" and change_workspace_path:
+                generated = self.product / "docs/downstream-regression-matrix.md"
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_text(
+                    "unexpected workspace-update output\n", encoding="utf-8"
                 )
             if phase == fail_phase:
                 if phase == "fix":
@@ -1004,7 +1047,9 @@ class PrepareFlowTests(unittest.TestCase):
                 args = self.args()
                 result = prepare_control_plane.prepare(args)
         self.assertEqual(result, 0)
-        receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
+        receipt = json.loads(
+            (self.root / "receipt.json").read_text(encoding="utf-8")
+        )
         patch = (self.root / "candidate.patch").read_bytes()
         expected = self.expected_complete_receipt(
             args, patch, 1 if generate_path else 0
@@ -1051,6 +1096,70 @@ class PrepareFlowTests(unittest.TestCase):
         receipt, patch = self.run_success()
         self.assertEqual(receipt["inventory"]["changed_path_count"], 0)
         self.assertEqual(patch, b"")
+        workspace_update_patch = self.root / "candidate.workspace-update.patch"
+        self.assertTrue(workspace_update_patch.is_file())
+        self.assertEqual(workspace_update_patch.read_bytes(), b"")
+
+    def test_workspace_update_lock_delta_survives_later_fix_failure(self):
+        calls = []
+        args = self.args()
+        with isolated_runner_temp(self.root):
+            with mock.patch.object(
+                prepare_control_plane,
+                "run",
+                side_effect=self.mocked_run(
+                    fail_phase="fix",
+                    calls=calls,
+                    change_workspace_edge=True,
+                ),
+            ):
+                result = prepare_control_plane.prepare(args)
+        self.assertEqual(result, 1)
+        receipt = json.loads(
+            (self.root / "receipt.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["phases"]["workspace_update"]["status"], "passed")
+        self.assertEqual(receipt["phases"]["fix"]["status"], "failed")
+        patch_path = self.root / "candidate.workspace-update.patch"
+        patch = patch_path.read_bytes()
+        self.assertEqual(patch.count(b"diff --git "), 1)
+        self.assertIn(
+            b"diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock\n", patch
+        )
+        self.assertIn(b'+ "codex-diagnostics",\n', patch)
+        self.assertNotIn(b"docs/", patch)
+        self.assertFalse((self.root / "candidate.patch").exists())
+        phase_calls = [
+            argv
+            for argv, _ in calls
+            if argv in {phase[2] for phase in prepare_control_plane.PHASES}
+        ]
+        self.assertEqual(
+            phase_calls,
+            [prepare_control_plane.PHASES[0][2], prepare_control_plane.PHASES[1][2]],
+        )
+
+    def test_workspace_update_refuses_to_export_non_lock_changes(self):
+        calls = []
+        args = self.args()
+        with isolated_runner_temp(self.root):
+            with mock.patch.object(
+                prepare_control_plane,
+                "run",
+                side_effect=self.mocked_run(
+                    calls=calls,
+                    change_workspace_path=True,
+                ),
+            ):
+                result = prepare_control_plane.prepare(args)
+        self.assertEqual(result, 1)
+        receipt = json.loads((self.root / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            receipt["failure_code"], "workspace_update_changed_unexpected_path"
+        )
+        self.assertEqual(receipt["phases"]["workspace_update"]["status"], "passed")
+        self.assertEqual(receipt["phases"]["fix"]["status"], "not_run")
+        self.assertFalse((self.root / "candidate.workspace-update.patch").exists())
 
     def test_prepare_flow_emits_exact_complete_nonempty_patch_receipt(self):
         receipt, patch = self.run_success("docs/downstream-regression-matrix.md")
