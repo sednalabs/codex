@@ -184,6 +184,12 @@ def _sql_chunks(values: Sequence[str], size: int = SQL_CHUNK) -> Iterator[Sequen
         yield values[offset : offset + size]
 
 
+def _add_bounded_key(keys: set[Any], key: Any, limit: int, reason: str) -> None:
+    if key not in keys and len(keys) >= limit:
+        raise WorkLimitReached(reason)
+    keys.add(key)
+
+
 def _sqlite_authorizer(
     action: int, arg1: str | None, arg2: str | None, _database: str | None, _trigger: str | None
 ) -> int:
@@ -585,8 +591,8 @@ class UsageReporter:
                 if batch_count >= remaining:
                     raise WorkLimitReached("lineage_node_limit_exceeded")
                 self._account_output_text(row)
-                children.append(dict(row))
                 batch_count += 1
+                children.append(dict(row))
             remaining -= batch_count
         return children
 
@@ -631,9 +637,9 @@ class UsageReporter:
             cursor = self._execute("window_calls", sql, (seek_start, seek_end, MAX_CALLS + 1))
             for row in cursor:
                 self._account_output_text(row)
-                calls.append(dict(row))
-                if len(calls) > MAX_CALLS:
+                if len(calls) >= MAX_CALLS:
                     raise WorkLimitReached("call_limit_exceeded")
+                calls.append(dict(row))
             self.selected_rows = len(calls)
             return calls
 
@@ -650,9 +656,9 @@ class UsageReporter:
             params = (*batch, seek_start, seek_end, remaining + 1)
             for row in self._execute("thread_window_calls", sql, params):
                 self._account_output_text(row)
-                calls.append(dict(row))
-                if len(calls) > MAX_CALLS:
+                if len(calls) >= MAX_CALLS:
                     raise WorkLimitReached("call_limit_exceeded")
+                calls.append(dict(row))
         self.selected_rows = len(calls)
         return calls
 
@@ -778,9 +784,12 @@ class UsageReporter:
             billing_surface = _key(call.get("billing_surface"))
             account_plan = _key(call.get("account_plan"))
             if provider and billing_surface and account_plan:
-                keys.add((provider, billing_surface, account_plan))
-        if len(keys) > MAX_RATE_POLICY_ROWS:
-            raise WorkLimitReached("rate_policy_key_limit_exceeded")
+                _add_bounded_key(
+                    keys,
+                    (provider, billing_surface, account_plan),
+                    MAX_RATE_POLICY_ROWS,
+                    "rate_policy_key_limit_exceeded",
+                )
         result: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         total = 0
         for key in sorted(keys):
@@ -791,12 +800,12 @@ class UsageReporter:
                 "WHERE provider = ? AND billing_surface = ? AND account_plan = ? LIMIT ?"
             )
             rows = []
-            for row in self._execute("credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS + 1)):
+            for row in self._execute("credit_policies", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)):
                 self._account_output_text(row)
+                if total >= MAX_RATE_POLICY_ROWS:
+                    raise WorkLimitReached("rate_policy_row_limit_exceeded")
+                total += 1
                 rows.append(dict(row))
-            total += len(rows)
-            if total > MAX_RATE_POLICY_ROWS:
-                raise WorkLimitReached("rate_policy_row_limit_exceeded")
             result[key] = rows
         self.rate_policy_rows = total
         return result
@@ -816,13 +825,21 @@ class UsageReporter:
                 policy_key = (_key(call.get("provider")), _key(call.get("billing_surface")), _key(call.get("account_plan")))
                 for policy in policies.get(policy_key, []):
                     if provider and model and tier and speed:
-                        keys.add((provider, model, tier, speed, _key(policy.get("rate_card_kind")) or ""))
+                        _add_bounded_key(
+                            keys,
+                            (provider, model, tier, speed, _key(policy.get("rate_card_kind")) or ""),
+                            MAX_RATE_POLICY_ROWS,
+                            "rate_policy_key_limit_exceeded",
+                        )
             if self.credit_mode in {"supplied_standard_scenario", "both"}:
                 model = _key(call.get("actual_model_used"))
                 if model:
-                    keys.add(("openai", model, "default", "standard", "codex_token_based"))
-        if len(keys) > MAX_RATE_POLICY_ROWS:
-            raise WorkLimitReached("rate_policy_key_limit_exceeded")
+                    _add_bounded_key(
+                        keys,
+                        ("openai", model, "default", "standard", "codex_token_based"),
+                        MAX_RATE_POLICY_ROWS,
+                        "rate_policy_key_limit_exceeded",
+                    )
         result: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
         total = self.rate_policy_rows
         for key in sorted(keys):
@@ -834,12 +851,12 @@ class UsageReporter:
                 "AND speed_mode = ? AND rate_card_kind = ? LIMIT ?"
             )
             rows = []
-            for row in self._execute("credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS + 1)):
+            for row in self._execute("credit_rates", sql, (*key, MAX_RATE_POLICY_ROWS - total + 1)):
                 self._account_output_text(row)
+                if total >= MAX_RATE_POLICY_ROWS:
+                    raise WorkLimitReached("rate_policy_row_limit_exceeded")
+                total += 1
                 rows.append(dict(row))
-            total += len(rows)
-            if total > MAX_RATE_POLICY_ROWS:
-                raise WorkLimitReached("rate_policy_row_limit_exceeded")
             result[key] = rows
         self.rate_policy_rows = total
         return result
@@ -1057,18 +1074,28 @@ class UsageReporter:
             calls = filtered_calls
             if self.scope in {"thread", "subtree"} and not scope_nodes and not calls:
                 raise ReportProblem("unavailable", "unknown_thread_id")
-            call_thread_ids = sorted({str(call["thread_id"]) for call in calls})
-            participating = set(scope_nodes) if self.scope == "subtree" else set()
-            participating.update(call_thread_ids)
-            if self.scope == "thread" and self.thread_id:
-                participating.add(self.thread_id)
-            if len(participating) > MAX_OUTPUT_GROUPS:
+            if len(scope_nodes) > MAX_OUTPUT_GROUPS:
                 raise WorkLimitReached("output_group_limit_exceeded")
+            participating = set(scope_nodes) if self.scope == "subtree" else set()
+            if self.scope == "thread" and self.thread_id and self.thread_id not in participating:
+                if len(participating) >= MAX_OUTPUT_GROUPS:
+                    raise WorkLimitReached("output_group_limit_exceeded")
+                participating.add(self.thread_id)
+            call_thread_ids: set[str] = set()
+            for call in calls:
+                thread_id = str(call["thread_id"])
+                if thread_id in call_thread_ids:
+                    continue
+                if thread_id not in participating:
+                    if len(participating) >= MAX_OUTPUT_GROUPS:
+                        raise WorkLimitReached("output_group_limit_exceeded")
+                    participating.add(thread_id)
+                call_thread_ids.add(thread_id)
 
             initial_metadata = dict(scope_nodes)
             missing_anchor = self.scope in {"thread", "subtree"} and not scope_nodes
             metadata, missing_metadata = self._fetch_ancestors(
-                sorted(set(call_thread_ids) | set(scope_nodes)), initial_metadata
+                sorted(call_thread_ids | set(scope_nodes)), initial_metadata
             )
             if len(metadata) + len(missing_metadata) > MAX_LINEAGE_NODES:
                 raise WorkLimitReached("lineage_node_limit_exceeded")
@@ -1127,6 +1154,8 @@ class UsageReporter:
                         evidence["used_call_count"] += 1
                 thread_id = str(call["thread_id"])
                 if thread_id not in thread_metrics:
+                    if thread_id not in participating and len(participating) >= MAX_OUTPUT_GROUPS:
+                        raise WorkLimitReached("output_group_limit_exceeded")
                     thread_metrics[thread_id] = _new_metrics()
                     lineage[thread_id] = self._resolve_lineage(thread_id, metadata, missing_metadata)
                     participating.add(thread_id)

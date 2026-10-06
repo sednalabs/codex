@@ -113,6 +113,14 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         raise AssertionError("could not import the exact tested reporter source")
     helper = importlib.util.module_from_spec(helper_spec)
     helper_spec.loader.exec_module(helper)
+    bounded_keys: set[str] = {"first"}
+    try:
+        helper._add_bounded_key(bounded_keys, "overflow", 1, "rate_policy_key_limit_exceeded")
+    except helper.WorkLimitReached as exc:
+        _assert(exc.reason == "rate_policy_key_limit_exceeded", "bounded key overflow must be typed incomplete")
+    else:
+        raise AssertionError("bounded key accumulator retained an over-limit key")
+    _assert(bounded_keys == {"first"}, "over-limit key must be rejected before retention")
     original_output_limit = helper.MAX_OUTPUT_BYTES
     bounded_output = io.StringIO()
     helper.MAX_OUTPUT_BYTES = 128
@@ -691,6 +699,51 @@ def _scale(database: Path, repo_root: Path, temp_root: Path) -> dict[str, Any]:
         group_limit["error"]["reason"] == "output_group_limit_exceeded",
         "output group overflow must stop before per-thread aggregation without widening the query",
     )
+
+    pricing_key_limit_database = temp_root / "pricing-key-limit.sqlite"
+    _copy_database(database, pricing_key_limit_database)
+    pricing_key_writer = sqlite3.connect(pricing_key_limit_database)
+    try:
+        pricing_key_writer.executemany(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, provider, actual_model_used, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    f"pricing-key-call-{index}",
+                    "child-thread",
+                    "openai",
+                    f"synthetic-model-{index}",
+                    "default",
+                    "runtime_contract",
+                    0,
+                    "chatgpt_credits",
+                    f"synthetic-plan-{index}",
+                    "2026-09-30T00:45:00Z",
+                    "2026-09-30T00:45:01Z",
+                    1,
+                    0,
+                    0,
+                    1,
+                    2,
+                    "ok",
+                )
+                for index in range(helper.MAX_RATE_POLICY_ROWS + 1)
+            ),
+        )
+        pricing_key_writer.commit()
+    finally:
+        pricing_key_writer.close()
+    for credit_mode in ("observed_or_effective_rate", "supplied_standard_scenario"):
+        pricing_key_limit, _pricing_key_diagnostic = _report(
+            pricing_key_limit_database,
+            repo_root,
+            credit_mode=credit_mode,
+            expected_exit=2,
+        )
+        _assert(pricing_key_limit["status"] == "incomplete", f"{credit_mode} key overflow must be incomplete")
+        _assert(
+            pricing_key_limit["error"]["reason"] == "rate_policy_key_limit_exceeded",
+            f"{credit_mode} key overflow must stop without widening the query",
+        )
 
     return {
         "scale_status": "passed",
