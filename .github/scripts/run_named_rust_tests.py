@@ -228,6 +228,13 @@ RUST_ASSERT_EQ_RE = re.compile(r"^\s*assertion `left == right` failed\s*$")
 RUST_ASSERT_VALUE_RE = re.compile(
     r'^\s+(left|right): "([^"\r\n]{1,128})"$'
 )
+PRETTY_ASSERT_EQ_RE = re.compile(
+    r"^\s*assertion failed: `\(left == right\)`\s*$"
+)
+PRETTY_ASSERT_DIFF_HEADER_RE = re.compile(
+    r"^\s*Diff < left / right > :\s*$"
+)
+PRETTY_ASSERT_VALUE_RE = re.compile(r'^([<>])"([^"\r\n]{1,128})"$')
 FAILURE_MARKER_PATTERNS = (
     ("permission-denied", re.compile(r"\bpermission denied\b", re.IGNORECASE)),
     (
@@ -992,9 +999,45 @@ def _safe_public_version_pair(value: Any) -> dict[str, str] | None:
 def _capture_public_version_pair(block: dict[str, Any], line: str) -> None:
     """Capture only left/right from the exact selector's equality assertion."""
     state = block.get("_public_version_state")
+    plain_line = ANSI_ESCAPE_RE.sub("", line)
     if state == "search":
         if RUST_ASSERT_EQ_RE.fullmatch(line):
             block["_public_version_state"] = "left"
+        elif PRETTY_ASSERT_EQ_RE.fullmatch(plain_line):
+            block["_public_version_state"] = "pretty_header"
+        return
+    if state == "pretty_header":
+        if not plain_line.strip():
+            block["_public_version_state"] = "pretty_diff_header"
+        else:
+            block["_public_version_state"] = "suppressed"
+        return
+    if state == "pretty_diff_header":
+        if PRETTY_ASSERT_DIFF_HEADER_RE.fullmatch(plain_line):
+            block["_public_version_state"] = "pretty_left"
+        else:
+            block["_public_version_state"] = "suppressed"
+        return
+    if state in ("pretty_left", "pretty_right"):
+        match = PRETTY_ASSERT_VALUE_RE.fullmatch(plain_line)
+        expected_marker = "<" if state == "pretty_left" else ">"
+        if match is None or match.group(1) != expected_marker:
+            block["_public_version_state"] = "suppressed"
+            block.pop("_public_version_actual_candidate", None)
+            return
+        if state == "pretty_left":
+            block["_public_version_actual_candidate"] = match.group(2)
+            block["_public_version_state"] = "pretty_right"
+            return
+        pair = _safe_public_version_pair(
+            {
+                "actual": block.pop("_public_version_actual_candidate", None),
+                "expected": match.group(2),
+            }
+        )
+        if pair is not None:
+            block["_public_version_display"] = pair
+        block["_public_version_state"] = "done"
         return
     if state not in ("left", "right"):
         return

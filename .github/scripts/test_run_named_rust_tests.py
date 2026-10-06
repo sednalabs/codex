@@ -292,6 +292,35 @@ class NamedFailureObserverTests(unittest.TestCase):
         )
         return evidence, safe
 
+    def _pretty_version_display_projection(
+        self,
+        actual: str,
+        expected: str,
+        *,
+        requested: tuple[str, ...] = (named_tests.VERSION_OUTPUT_SELECTOR,),
+        assertion: str = "assertion failed: `(left == right)`",
+        diff_header: str = "Diff < left / right > :",
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        output = (
+            f"test {selector} ... FAILED\n"
+            f"---- {selector} stdout ----\n"
+            f"{assertion}\n"
+            "\n"
+            "\x1b[1mDiff\x1b[0m \x1b[31m<\x1b[0m left / right "
+            "\x1b[32m>\x1b[0m :\n"
+            f'\x1b[31m<\x1b[0m"{actual}"\n'
+            f'\x1b[32m>\x1b[0m"{expected}"\n'
+            "failures:\n"
+        )
+        evidence = self._evidence(
+            output, requested=requested, known={selector}
+        )
+        safe = named_tests._safe_failure_evidence(
+            evidence, {selector}, set(requested)
+        )
+        return evidence, safe
+
     def test_exact_version_selector_projects_only_valid_public_display_pair(self) -> None:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
         actual = "codex Sedna v" + "a" * 40
@@ -308,6 +337,42 @@ class NamedFailureObserverTests(unittest.TestCase):
             {"actual": actual, "expected": expected},
         )
         self.assertEqual(safe["blocks"][0]["name"], selector)
+
+    def test_pretty_assertions_version_selector_projects_only_valid_public_display_pair(
+        self,
+    ) -> None:
+        selector = named_tests.VERSION_OUTPUT_SELECTOR
+        actual = "codex Sedna v" + "a" * 40
+        expected = "codex Sedna v1.2.3-rc.1+build.7"
+
+        evidence, safe = self._pretty_version_display_projection(actual, expected)
+
+        expected_pair = {"actual": actual, "expected": expected}
+        self.assertEqual(
+            evidence["blocks"][0]["public_version_display"], expected_pair
+        )
+        self.assertEqual(
+            safe["blocks"][0]["public_version_display"], expected_pair
+        )
+        self.assertEqual(safe["blocks"][0]["name"], selector)
+
+        invalid_cases = (
+            {"actual": "codex Sedna /invalid"},
+            {"requested": ()},
+            {"assertion": "assertion failed: `(left != right)`"},
+            {"diff_header": "Diff < left / other > :"},
+        )
+        for index, overrides in enumerate(invalid_cases):
+            with self.subTest(index=index):
+                evidence, safe = self._pretty_version_display_projection(
+                    actual, expected, **overrides
+                )
+                encoded_evidence = json.dumps(evidence, sort_keys=True)
+                encoded_safe = json.dumps(safe, sort_keys=True)
+                self.assertNotIn("public_version_display", encoded_evidence)
+                self.assertNotIn("public_version_display", encoded_safe)
+                self.assertNotIn(actual, encoded_evidence)
+                self.assertNotIn(expected, encoded_evidence)
 
     def test_version_display_projection_suppresses_invalid_unrequested_and_non_equality_values(self) -> None:
         selector = named_tests.VERSION_OUTPUT_SELECTOR
