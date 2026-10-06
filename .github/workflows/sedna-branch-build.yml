@@ -690,7 +690,8 @@ jobs:
               / "codex-package.json"
           )
           actual = json.loads(manifest.read_text(encoding="utf-8")).get("version")
-          print(f"package_builder_manifest_matches_expected={actual == os.environ['PACKAGE_VERSION']}")
+          matches = str(actual == os.environ["PACKAGE_VERSION"]).lower()
+          print(f"package_builder_manifest_matches_expected={matches}")
           PY
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
             bash .github/scripts/build-codex-package-archive.sh \
@@ -947,7 +948,8 @@ jobs:
               / "codex-package.json"
           )
           actual = json.loads(manifest.read_text(encoding="utf-8")).get("version")
-          print(f"package_builder_manifest_matches_expected={actual == os.environ['PACKAGE_VERSION']}")
+          matches = str(actual == os.environ["PACKAGE_VERSION"]).lower()
+          print(f"package_builder_manifest_matches_expected={matches}")
           PY
           CODEX_REPO_ROOT="${PWD}" GITHUB_WORKSPACE="${PWD}" \
             bash .github/scripts/build-codex-package-archive.sh \
