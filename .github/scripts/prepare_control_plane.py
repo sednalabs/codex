@@ -826,6 +826,7 @@ def self_test_failure_projection(
     except (OSError, UnicodeError, SyntaxError):
         return []
 
+    source_line_count = len(source.splitlines())
     locations: dict[str, tuple[int, int]] = {}
     for class_node in tree.body:
         if not isinstance(class_node, ast.ClassDef):
@@ -847,11 +848,14 @@ def self_test_failure_projection(
         r"line ([0-9]+), in (test_[A-Za-z0-9_]+)$"
     )
     failures: dict[str, dict[str, object]] = {}
+    invalid_locations: set[str] = set()
     current_test: str | None = None
     for line in output.splitlines():
         header = header_pattern.fullmatch(line)
         if header:
             current_test = header.group(2)
+            if current_test in invalid_locations:
+                continue
             location = locations.get(current_test)
             if location is not None:
                 failures[current_test] = {
@@ -871,9 +875,22 @@ def self_test_failure_projection(
         trace = location_pattern.fullmatch(line)
         if trace and current_test == trace.group(2):
             location = locations.get(current_test)
-            line_number = int(trace.group(1))
+            raw_line_number = trace.group(1)
+            if len(raw_line_number) > len(str(source_line_count)):
+                invalid_locations.add(current_test)
+                failures.pop(current_test, None)
+                continue
+            try:
+                line_number = int(raw_line_number)
+            except ValueError:
+                invalid_locations.add(current_test)
+                failures.pop(current_test, None)
+                continue
             if location is not None and location[0] <= line_number <= location[1]:
                 failures[current_test]["line"] = line_number
+            else:
+                invalid_locations.add(current_test)
+                failures.pop(current_test, None)
 
     return [failures[name] for name in sorted(failures)]
 

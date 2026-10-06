@@ -1727,9 +1727,12 @@ class PublicArtifactTests(unittest.TestCase):
                 "import unittest\n"
                 "class ProjectionTests(unittest.TestCase):\n"
                 "    def test_expected_contract(self):\n"
+                "        self.assertEqual(1, 2)\n"
+                "    def test_malformed_line(self):\n"
                 "        self.assertEqual(1, 2)\n",
                 encoding="utf-8",
             )
+            malformed_line_number = b"9" * 5000
             stderr = (
                 b"FAIL: test_expected_contract "
                 b"(test_prepare_control_plane.ProjectionTests.test_expected_contract)\n"
@@ -1737,6 +1740,14 @@ class PublicArtifactTests(unittest.TestCase):
                 b'  File "/home/runner/private/.github/scripts/'
                 b'test_prepare_control_plane.py", line 4, in test_expected_contract\n'
                 b"AssertionError: PRIVATE_ASSERTION_CANARY\n"
+                b"FAIL: test_malformed_line "
+                b"(test_prepare_control_plane.ProjectionTests.test_malformed_line)\n"
+                b"Traceback (most recent call last):\n"
+                b'  File "/home/runner/private/.github/scripts/'
+                b'test_prepare_control_plane.py", line '
+                + malformed_line_number
+                + b", in test_malformed_line\n"
+                b"AssertionError: PRIVATE_MALFORMED_CANARY\n"
                 b"FAIL: test_untrusted_canary "
                 b"(test_prepare_control_plane.Private.test_untrusted_canary)\n"
             )
@@ -1766,8 +1777,11 @@ class PublicArtifactTests(unittest.TestCase):
                 }
             ]
             self.assertEqual(receipt["self_test_failures"], expected)
+            self.assertEqual(receipt["self_tests"]["status"], "failed")
+            self.assertEqual(receipt["self_tests"]["exit_code"], 1)
             serialized = receipt_path.read_bytes()
             self.assertNotIn(b"PRIVATE_ASSERTION_CANARY", serialized)
+            self.assertNotIn(b"PRIVATE_MALFORMED_CANARY", serialized)
             self.assertNotIn(b"/home/runner/private", serialized)
             self.assertNotIn(b"test_untrusted_canary", serialized)
 
