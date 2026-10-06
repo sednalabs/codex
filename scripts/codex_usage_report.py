@@ -1365,15 +1365,20 @@ def _args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def _error_report(problem: ReportProblem, args: argparse.Namespace | None) -> dict[str, Any]:
+    scope = None
+    if args is not None:
+        thread_id_omitted = args.thread_id is not None and len(args.thread_id) > MAX_TEXT_FIELD_CHARS
+        scope = {
+            "kind": args.scope,
+            "thread_id": None if thread_id_omitted else args.thread_id,
+        }
+        if thread_id_omitted:
+            scope["thread_id_omitted"] = True
     return {
         "schema_version": REPORT_VERSION,
         "status": problem.status,
         "error": {"reason": problem.reason, "message": problem.message},
-        "scope": (
-            {"kind": args.scope, "thread_id": args.thread_id}
-            if args is not None
-            else None
-        ),
+        "scope": scope,
         "window": (
             {
                 "start_utc_inclusive": _iso_utc(args.start),
@@ -1384,6 +1389,14 @@ def _error_report(problem: ReportProblem, args: argparse.Namespace | None) -> di
             else None
         ),
     }
+
+
+def _write_error_json(problem: ReportProblem, args: argparse.Namespace | None) -> None:
+    try:
+        _write_bounded_json(_error_report(problem, args), sys.stdout)
+    except WorkLimitReached:
+        fallback = WorkLimitReached("output_size_limit_exceeded")
+        _write_bounded_json(_error_report(fallback, None), sys.stdout)
 
 
 def _write_bounded_json(
@@ -1426,10 +1439,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_bounded_json(report, sys.stdout, reporter.check_deadline)
         return 0 if status == "complete" else 2
     except WorkLimitReached as exc:
-        print(json.dumps(_error_report(exc, args), sort_keys=True, separators=(",", ":")))
+        _write_error_json(exc, args)
         return 2
     except ReportProblem as exc:
-        print(json.dumps(_error_report(exc, args), sort_keys=True, separators=(",", ":")))
+        _write_error_json(exc, args)
         return 3
 
 

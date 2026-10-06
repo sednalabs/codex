@@ -211,6 +211,58 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         oversized_text["error"]["reason"] == "output_size_limit_exceeded",
         "SQLite text-value limit must not allocate or emit an oversized report",
     )
+    long_thread_id = "overlimit-thread-" + ("x" * (helper.MAX_TEXT_FIELD_CHARS + 1))
+    long_thread_database = temp_root / "long-thread-error.sqlite"
+    _copy_database(database, long_thread_database)
+    long_thread_writer = sqlite3.connect(long_thread_database)
+    try:
+        long_thread_writer.execute(
+            "INSERT INTO usage_provider_calls(provider_call_id, thread_id, provider, actual_model_used, actual_service_tier, actual_service_tier_source, fast_mode_used, billing_surface, account_plan, started_at, completed_at, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "long-thread-id-call",
+                long_thread_id,
+                "openai",
+                "gpt-6-luna",
+                "default",
+                "runtime_contract",
+                0,
+                "chatgpt_credits",
+                "plus",
+                "2026-09-30T00:45:00Z",
+                "2026-09-30T00:45:01Z",
+                1,
+                0,
+                0,
+                1,
+                2,
+                "ok",
+            ),
+        )
+        long_thread_writer.commit()
+    finally:
+        long_thread_writer.close()
+    long_thread_error, _long_thread_diagnostic = _report(
+        long_thread_database,
+        repo_root,
+        scope="thread",
+        thread_id=long_thread_id,
+        credit_mode="supplied_standard_scenario",
+        expected_exit=2,
+    )
+    _assert(long_thread_error["status"] == "incomplete", "long-thread error must remain incomplete")
+    _assert(
+        long_thread_error["error"]["reason"] == "output_size_limit_exceeded",
+        "long thread id must trigger bounded text accounting",
+    )
+    _assert(
+        long_thread_error["scope"]["thread_id"] is None
+        and long_thread_error["scope"]["thread_id_omitted"] is True,
+        "error JSON must disclose that an overlong thread id was omitted",
+    )
+    bounded_error_bytes = len(
+        json.dumps(long_thread_error, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ) + 1
+    _assert(bounded_error_bytes <= helper.MAX_OUTPUT_BYTES, "CLI error response must stay within the JSON output cap")
 
     all_report, all_diagnostic = _report(database, repo_root, diagnostics=True, expected_exit=2)
     _assert(all_report["status"] == "incomplete", "missing usage/model evidence must be incomplete")
@@ -402,6 +454,7 @@ def _correctness(database: Path, repo_root: Path, temp_root: Path) -> dict[str, 
         "wal_writer_visibility": "passed",
         "migration_rollback": "passed",
         "oversized_text_status": oversized_text["error"]["reason"],
+        "long_thread_error_status": long_thread_error["status"],
     }
 
 
