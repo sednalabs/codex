@@ -15,6 +15,7 @@ from app_server_harness import (
     ev_response_created,
     sse,
 )
+import pytest
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
 from fixtures import SmokePackage
@@ -47,8 +48,20 @@ import os
 import sys
 from pathlib import Path
 
-request = json.load(sys.stdin)
 home = Path(os.environ["CODEX_HOME"])
+provider_observation = home / "browser-provider-invocation.json"
+provider_observation.write_text(
+    json.dumps({"invoked": True, "tool_name": "<unknown>"}),
+    encoding="utf-8",
+)
+request = json.load(sys.stdin)
+tool_name = request.get("tool")
+if not isinstance(tool_name, str) or tool_name not in {"browser_observe", "browser_step"}:
+    tool_name = "<other>"
+provider_observation.write_text(
+    json.dumps({"invoked": True, "tool_name": tool_name}),
+    encoding="utf-8",
+)
 fixture_dir = home / "browser-fixture"
 manifest_path = fixture_dir / "manifest.json"
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -91,6 +104,88 @@ for capture in manifest["captures"]:
     })
 json.dump({"success": True, "contentItems": content}, sys.stdout)
 '''
+
+
+_BROWSER_FIXTURE_CALL_ID = "browser-visual-fixture-call"
+_BROWSER_TOOL_NAMES = {"browser_observe", "browser_step"}
+
+
+@pytest.fixture
+def browser_output_diagnostic(record_property):
+    """Attach a value-free round-trip snapshot to the always-uploaded JUnit."""
+    state = {
+        "fixture_function_call_emitted": False,
+        "provider_observation_path": None,
+        "responses_server": None,
+    }
+    yield state
+
+    server = state["responses_server"]
+    requests = (
+        [request for request in server.requests() if request.path == "/v1/responses"]
+        if server is not None else []
+    )
+    second_request_input_available = False
+    call_outputs = []
+    if len(requests) >= 2:
+        try:
+            input_items = requests[1].body_json().get("input")
+            if isinstance(input_items, list):
+                second_request_input_available = True
+                call_outputs = [
+                    item for item in input_items
+                    if isinstance(item, dict) and item.get("type") == "function_call_output"
+                ]
+        except (TypeError, ValueError):
+            pass
+
+    call_ids = []
+    tool_names = []
+    for item in call_outputs:
+        call_id = item.get("call_id")
+        call_ids.append(
+            _BROWSER_FIXTURE_CALL_ID
+            if call_id == _BROWSER_FIXTURE_CALL_ID
+            else "<other>" if isinstance(call_id, str) else "<missing>"
+        )
+        name = item.get("name")
+        tool_names.append(
+            name if isinstance(name, str) and name in _BROWSER_TOOL_NAMES
+            else "<other>" if isinstance(name, str) else "<absent>"
+        )
+
+    provider_invoked = False
+    provider_tool_name = None
+    observation_path = state["provider_observation_path"]
+    if observation_path is not None:
+        try:
+            observation = json.loads(observation_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            observation = {}
+        provider_invoked = isinstance(observation, dict) and observation.get("invoked") is True
+        observed_name = observation.get("tool_name") if isinstance(observation, dict) else None
+        if provider_invoked:
+            provider_tool_name = (
+                observed_name
+                if isinstance(observed_name, str) and observed_name in _BROWSER_TOOL_NAMES
+                else "<other>"
+            )
+
+    diagnostic = {
+        "fixture_function_call_emitted": state["fixture_function_call_emitted"],
+        "responses_request_count": len(requests),
+        "second_request_observed": len(requests) >= 2,
+        "second_request_input_available": second_request_input_available,
+        "function_call_output_count": len(call_outputs),
+        "function_call_output_call_ids": call_ids,
+        "function_call_output_tool_names": tool_names,
+        "synthetic_browser_provider_invoked": provider_invoked,
+        "synthetic_browser_provider_tool_name": provider_tool_name,
+    }
+    record_property(
+        "browser_output_diagnostic_json",
+        json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _isolated(package: SmokePackage, suffix: str) -> tuple[SmokePackage, Path]:
@@ -187,6 +282,7 @@ def test_actual_tui_nested_filter_clear_live_rename_and_replay(
 
 def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate(
     package: SmokePackage,
+    browser_output_diagnostic,
 ) -> None:
     isolated, home = _isolated(package, "tui-browser-visual")
     # The synthetic home config must be authoritative; inherited provider
@@ -246,8 +342,12 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
         encoding="utf-8",
     )
 
-    call_id = "browser-visual-fixture-call"
+    browser_output_diagnostic["provider_observation_path"] = (
+        home / "browser-provider-invocation.json"
+    )
+    call_id = _BROWSER_FIXTURE_CALL_ID
     with MockResponsesServer() as server:
+        browser_output_diagnostic["responses_server"] = server
         _mock_config(home, server, agent_tools=True)
         server.enqueue_sse(sse([
             ev_response_created("browser-visual-fixture-request"),
@@ -270,6 +370,7 @@ def test_packaged_tui_browser_output_keeps_images_and_manifest_metadata_separate
             },
             ev_completed("browser-visual-fixture-request"),
         ]))
+        browser_output_diagnostic["fixture_function_call_emitted"] = True
         server.enqueue_assistant_message(
             "browser synthetic consumer complete",
             response_id="browser-visual-fixture-followup",
