@@ -93,9 +93,18 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
+          fetch_log="${RUNNER_TEMP}/control-plane-fetch.log"
           if ! git -C product fetch --no-tags --depth=1 origin "${BASE_SHA}" \
-            >"${RUNNER_TEMP}/control-plane-fetch.log" 2>&1; then
-            echo "comparison fetch failed" >&2
+            >"${fetch_log}" 2>&1; then
+            fetch_failure="unclassified"
+            if grep -Eiq "couldn't find remote ref|not our ref|unadvertised object|server does not allow request for unadvertised object|not a valid object name" "${fetch_log}"; then
+              fetch_failure="base_object_unavailable"
+            elif grep -Eiq "authentication failed|permission denied|requested URL returned error: (401|403)|HTTP/2 (401|403)" "${fetch_log}"; then
+              fetch_failure="access_denied"
+            elif grep -Eiq "could not resolve|failed to connect|connection timed out|operation timed out|connection reset|TLS|SSL|HTTP/2 stream|RPC failed|early EOF|unexpected disconnect|remote end hung up" "${fetch_log}"; then
+              fetch_failure="network_transport"
+            fi
+            printf 'comparison fetch failed (%s)\n' "${fetch_failure}" >&2
             exit 2
           fi
           fetched_base="$(git -C product rev-parse 'FETCH_HEAD^{commit}')"
