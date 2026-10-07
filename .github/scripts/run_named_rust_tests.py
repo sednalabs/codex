@@ -345,7 +345,6 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
         "inventory": {
             "status": "success",
             "test_count": len(names),
-            "tests": names,
         },
         "execution_scope": "not_started",
         "tests": [],

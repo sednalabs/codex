@@ -177,7 +177,7 @@ jobs:
               print(f"- Execution scope: `{payload.get('execution_scope', 'unknown')}`")
               print(f"- Catalogued target inventory: `{(payload.get('inventory') or {}).get('test_count', 0)}`")
               requested = (payload.get('request') or {}).get('tests') or []
-              print(f"- Requested selectors reconciled: `{len(requested)}`")
+              print(f"- Requested selectors: `{len(requested)}`")
               full_target = payload.get('full_target_results') or {}
               print(f"- Full-target observed outcomes: `{full_target.get('observed_test_count', 0)}`")
               if payload.get("failure_code"):

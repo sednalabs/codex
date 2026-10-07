@@ -82,6 +82,20 @@ class NamedRustTests(TestCase):
         self.assertEqual(result["full_target_results"]["observed_test_count"], 0)
         self.assertNotIn(private_output, json.dumps(result))
 
+    def test_candidate_inventory_names_are_not_persisted(self) -> None:
+        private_output = "private-report-label::secret: test\n"
+        inventory = self.completed(stdout=private_output)
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=inventory),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(REQUEST, Path("/validation-target"))
+
+        self.assertEqual(result["failure_code"], "inventory_reconciliation_failed")
+        self.assertEqual(result["inventory"]["test_count"], 1)
+        self.assertNotIn(private_output.strip(), json.dumps(result))
+        self.assertNotIn("tests", result["inventory"])
+
     def test_inventory_failure_preserves_only_status_and_output_size(self) -> None:
         inventory = self.completed(stderr="manifest could not be loaded", code=101)
         with (

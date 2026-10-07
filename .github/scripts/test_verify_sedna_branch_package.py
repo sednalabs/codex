@@ -8,6 +8,7 @@ import io
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 from unittest import TestCase, main, mock
 
@@ -98,6 +99,32 @@ class PackageArchiveTests(TestCase):
             self.assertEqual(failure.exception.code, "archive_expansion_limit")
             self.assertEqual(list(destination.iterdir()), [])
 
+    def test_pax_and_gnu_extension_headers_are_rejected_before_extraction(self) -> None:
+        for archive_format, name in (
+            (tarfile.PAX_FORMAT, "p" * 120),
+            (tarfile.GNU_FORMAT, "g" * 120),
+        ):
+            with self.subTest(archive_format=archive_format):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    archive = root / "package.tar.gz"
+                    member = tarfile.TarInfo(name)
+                    member.size = 1
+                    with tarfile.open(
+                        archive, "w:gz", format=archive_format
+                    ) as bundle:
+                        bundle.addfile(member, io.BytesIO(b"x"))
+                    destination = root / "extract"
+                    destination.mkdir()
+
+                    with self.assertRaises(MODULE.ConsumerFailure) as failure:
+                        MODULE.extract_binaries(archive, destination)
+
+                    self.assertEqual(
+                        failure.exception.code, "archive_header_extension_rejected"
+                    )
+                    self.assertEqual(list(destination.iterdir()), [])
+
     def test_packaged_command_output_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(MODULE.ConsumerFailure) as failure:
@@ -111,6 +138,26 @@ class PackageArchiveTests(TestCase):
                 )
 
         self.assertEqual(failure.exception.code, "packaged_command_output_limit")
+
+    def test_packaged_command_cleans_descendants_after_leader_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "surviving-child"
+            child_code = (
+                "import time; from pathlib import Path; time.sleep(0.4); "
+                f"Path({str(marker)!r}).write_text('alive')"
+            )
+            parent_code = (
+                "import subprocess, sys; "
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL); print('parent-exited')"
+            )
+            completed = MODULE.command_ok(
+                [sys.executable, "-c", parent_code], cwd=Path(directory)
+            )
+            self.assertEqual(completed.stdout.strip(), "parent-exited")
+            time.sleep(0.5)
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

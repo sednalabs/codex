@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -30,6 +31,10 @@ MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4  # Three binaries, plus an optional root directory.
 MAX_BINARY_BYTES = 1024 * 1024 * 1024
 MAX_TOTAL_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
+TAR_BLOCK_BYTES = 512
+MAX_ARCHIVE_EXPANDED_BYTES = MAX_TOTAL_EXTRACTED_BYTES + (
+    MAX_ARCHIVE_MEMBERS + 20
+) * TAR_BLOCK_BYTES
 MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 MAX_COMMAND_RUNTIME_SECONDS = 45
 COMMAND_READ_CHUNK_BYTES = 64 * 1024
@@ -111,13 +116,16 @@ def command_ok(arguments: list[str], *, cwd: Path) -> subprocess.CompletedProces
     finally:
         selector.close()
         if process is not None:
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
+            try:
+                # The leader may exit while a descendant remains in its
+                # process group, including after closing inherited pipes.
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if process.poll() is None:
                     process.kill()
+            if process.poll() is None:
                 process.wait()
             for stream in (process.stdout, process.stderr):
                 if stream is not None and not stream.closed:
@@ -172,10 +180,89 @@ def read_manifest(artifact_dir: Path, archive_base: str) -> tuple[dict[str, Any]
     return manifest, archive
 
 
+def _tar_octal(field: bytes) -> int:
+    value = field.strip(b"\x00 ")
+    if not value:
+        return 0
+    if any(byte < ord("0") or byte > ord("7") for byte in value):
+        raise ConsumerFailure("archive_header_invalid")
+    return int(value, 8)
+
+
+def validate_tar_headers(archive: Path) -> None:
+    """Reject extensions before tarfile can materialize their declared payloads."""
+
+    expanded_bytes = 0
+    member_count = 0
+    end_marker_seen = False
+    end_marker_blocks = 0
+    try:
+        with gzip.open(archive, "rb") as stream:
+            while True:
+                header = stream.read(TAR_BLOCK_BYTES)
+                if not header:
+                    break
+                if len(header) != TAR_BLOCK_BYTES:
+                    raise ConsumerFailure("archive_header_invalid")
+                expanded_bytes += TAR_BLOCK_BYTES
+                if expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES:
+                    raise ConsumerFailure("archive_expansion_limit")
+                if header == bytes(TAR_BLOCK_BYTES):
+                    end_marker_seen = True
+                    end_marker_blocks += 1
+                    continue
+                if end_marker_seen:
+                    raise ConsumerFailure("archive_header_invalid")
+
+                checksum = _tar_octal(header[148:156])
+                actual_checksum = (
+                    sum(header[:148])
+                    + (8 * ord(" "))
+                    + sum(header[156:])
+                )
+                if checksum != actual_checksum:
+                    raise ConsumerFailure("archive_header_invalid")
+
+                # This package format needs only regular files and the root
+                # directory. Reject PAX/GNU extensions before tarfile parses
+                # their potentially huge declared header payloads.
+                typeflag = header[156:157]
+                if typeflag not in (b"\x00", b"0", b"5"):
+                    raise ConsumerFailure("archive_header_extension_rejected")
+                member_count += 1
+                if member_count > MAX_ARCHIVE_MEMBERS:
+                    raise ConsumerFailure("archive_member_limit")
+
+                size = _tar_octal(header[124:136])
+                if typeflag == b"5" and size != 0:
+                    raise ConsumerFailure("archive_header_invalid")
+                if size > MAX_BINARY_BYTES or size > MAX_TOTAL_EXTRACTED_BYTES:
+                    raise ConsumerFailure("archive_expansion_limit")
+                padded_size = (
+                    (size + TAR_BLOCK_BYTES - 1) // TAR_BLOCK_BYTES
+                ) * TAR_BLOCK_BYTES
+                if expanded_bytes + padded_size > MAX_ARCHIVE_EXPANDED_BYTES:
+                    raise ConsumerFailure("archive_expansion_limit")
+                remaining = padded_size
+                while remaining:
+                    block = stream.read(min(64 * 1024, remaining))
+                    if not block:
+                        raise ConsumerFailure("archive_header_invalid")
+                    expanded_bytes += len(block)
+                    remaining -= len(block)
+    except ConsumerFailure:
+        raise
+    except (OSError, EOFError) as exc:
+        raise ConsumerFailure("archive_invalid") from exc
+    if end_marker_blocks < 2:
+        raise ConsumerFailure("archive_header_invalid")
+
+
 def extract_binaries(archive: Path, destination: Path) -> None:
     try:
         if archive.stat().st_size > MAX_ARCHIVE_BYTES:
             raise ConsumerFailure("archive_size_limit")
+        validate_tar_headers(archive)
         with tarfile.open(archive, mode="r|gz") as bundle:
             observed: set[str] = set()
             member_count = 0

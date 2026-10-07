@@ -1392,7 +1392,7 @@ jobs:
     uses: ./.github/workflows/_validation-named-tests.yml
     with:
       target_sha: ${{ needs.metadata.outputs.head_sha }}
-      base_ref: ${{ needs.metadata.outputs.base_ref }}
+      base_ref: ${{ needs.metadata.outputs.base_sha }}
       base_sha: ${{ needs.metadata.outputs.base_sha }}
       harness_sha: ${{ needs.metadata.outputs.harness_sha }}
       profile: ${{ inputs.test_profile || 'rust_minimal' }}

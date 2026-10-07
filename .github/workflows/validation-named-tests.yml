@@ -10,10 +10,9 @@ on:
         description: Exact 40-character candidate commit SHA to validate
         required: true
         type: string
-      base_ref:
-        description: Comparison base ref recorded in the H/B/T receipt
+      base_sha:
+        description: Exact full comparison-base commit SHA
         required: true
-        default: main
         type: string
       profile:
         description: Hosted environment profile
@@ -29,7 +28,7 @@ on:
         type: string
 
 concurrency:
-  group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
+  group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_sha }}/${{ inputs.profile }}
   cancel-in-progress: false
 
 permissions:
@@ -40,7 +39,8 @@ jobs:
     uses: ./.github/workflows/_validation-named-tests.yml
     with:
       target_sha: ${{ inputs.target_sha }}
-      base_ref: ${{ inputs.base_ref }}
+      base_ref: ${{ inputs.base_sha }}
+      base_sha: ${{ inputs.base_sha }}
       harness_sha: ${{ github.sha }}
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
