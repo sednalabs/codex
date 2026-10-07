@@ -748,7 +748,6 @@ mod tests {
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
             "device_authorization_endpoint": {"unexpected": "object"},
-            "registration_endpoint": 42,
             "grant_types_supported": "not-an-array",
         }))
         .await;
@@ -768,6 +767,29 @@ mod tests {
         assert_eq!(discovery.device_authorization_endpoint, None);
         assert_eq!(discovery.registration_endpoint, None);
         assert_eq!(discovery.grant_types_supported, None);
+    }
+
+    #[tokio::test]
+    async fn malformed_registration_metadata_is_not_advertised_as_usable() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "authorization_endpoint": "https://example.com/authorize",
+            "token_endpoint": "https://example.com/token",
+            "registration_endpoint": 42,
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            test_http_client().await,
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        .expect("malformed typed registration metadata falls back without OAuth discovery");
+
+        assert!(discovery.is_none());
     }
 
     #[tokio::test]
