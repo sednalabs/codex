@@ -140,6 +140,7 @@ mod assistant_directives;
 mod auto_review_denials;
 mod android_computer_use_provider;
 mod browser_dynamic_tools;
+mod desktop_computer_use_provider;
 mod cwd_prompt;
 mod debug_config;
 mod diff_model;

@@ -79,6 +79,21 @@ impl ThreadToolTransport {
                 ),
             ));
         }
+        if !crate::desktop_computer_use_provider::specs_for_codex_home(config.codex_home.as_path())
+            .is_empty()
+            && config
+                .mcp_servers
+                .get()
+                .contains_key(crate::desktop_computer_use_provider::NAMESPACE)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "MCP server key `{}` is reserved by Desktop dynamic tools; rename that server before starting this thread",
+                    crate::desktop_computer_use_provider::NAMESPACE
+                ),
+            ));
+        }
         if let Self::Mcp(server) = self
             && config.mcp_servers.get().contains_key(server.namespace)
         {
@@ -97,6 +112,7 @@ impl ThreadToolTransport {
     ) -> Result<(), String> {
         crate::browser_dynamic_tools::validate_no_reserved_name_conflict(params)?;
         crate::android_computer_use_provider::validate_no_reserved_name_conflict(params)?;
+        crate::desktop_computer_use_provider::validate_no_reserved_name_conflict(params)?;
         let mut specs = match self {
             Self::Disabled => Vec::new(),
             Self::Dynamic => dynamic_tools::non_delegation_tool_specs(),
@@ -109,6 +125,9 @@ impl ThreadToolTransport {
             codex_home,
         ));
         specs.extend(crate::android_computer_use_provider::specs_for_codex_home(
+            codex_home,
+        ));
+        specs.extend(crate::desktop_computer_use_provider::specs_for_codex_home(
             codex_home,
         ));
         params.dynamic_tools = (!specs.is_empty()).then_some(specs);
@@ -460,6 +479,11 @@ mod native_computer_use_registration_tests {
             r#"{"mcp_url":"http://127.0.0.1:1/mcp"}"#,
         )
         .expect("write Android config");
+        std::fs::write(
+            home.path().join("desktop-computer-use.json"),
+            r#"{"provider":"command","command":["not-executed"]}"#,
+        )
+        .expect("write Desktop config");
         home
     }
 
@@ -507,6 +531,10 @@ mod native_computer_use_registration_tests {
                 "android_install_build_from_run".to_string()
             ]
         );
+        assert_eq!(
+            namespace_tool_names(&disabled, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
+        );
         assert!(!has_task_tools(&disabled));
 
         let mut dynamic = ThreadStartParams::default();
@@ -526,6 +554,10 @@ mod native_computer_use_registration_tests {
                 "android_step".to_string(),
                 "android_install_build_from_run".to_string()
             ]
+        );
+        assert_eq!(
+            namespace_tool_names(&dynamic, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
         );
         assert!(has_task_tools(&dynamic));
 
@@ -547,6 +579,10 @@ mod native_computer_use_registration_tests {
                 "android_step".to_string(),
                 "android_install_build_from_run".to_string()
             ]
+        );
+        assert_eq!(
+            namespace_tool_names(&mcp, crate::desktop_computer_use_provider::NAMESPACE),
+            vec!["desktop_observe".to_string(), "desktop_step".to_string()]
         );
         assert!(has_task_tools(&mcp));
         assert!(
@@ -590,5 +626,41 @@ mod native_computer_use_registration_tests {
         ThreadToolTransport::Disabled
             .validate_config(&unconfigured)
             .expect("unclaimed Android namespace must not reject an unrelated MCP server");
+    }
+
+    #[tokio::test]
+    async fn persisted_desktop_server_collision_is_rejected_only_when_provider_is_configured() {
+        let home = tempfile::tempdir().expect("temporary Codex home");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.codex_desktop]\nurl = 'http://127.0.0.1:1/mcp'\n",
+        )
+        .expect("write persisted MCP server config");
+        std::fs::write(
+            home.path().join("desktop-computer-use.json"),
+            r#"{"provider":"command","command":["not-executed"]}"#,
+        )
+        .expect("write Desktop provider config");
+
+        let configured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with both namespace claimants");
+        let error = ThreadToolTransport::Disabled
+            .validate_config(&configured)
+            .expect_err("persisted MCP claimant must not mask the Desktop provider");
+        assert!(error.to_string().contains("codex_desktop"));
+
+        std::fs::remove_file(home.path().join("desktop-computer-use.json"))
+            .expect("remove Desktop provider config");
+        let unconfigured = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config with only the MCP server");
+        ThreadToolTransport::Disabled
+            .validate_config(&unconfigured)
+            .expect("unclaimed Desktop namespace must not reject an unrelated MCP server");
     }
 }

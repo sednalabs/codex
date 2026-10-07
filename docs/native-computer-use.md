@@ -5,10 +5,10 @@ functions. The provider owns environment-specific interaction; Codex owns
 session registration, request correlation, failure projection and forwarding
 native `InputImage` content to the active model turn. Browser remains the
 separate `codex_browser` adapter; the Android carry restores the isolated
-`codex_android` provider namespace. Namespace collisions fail closed; a
-persisted `[mcp_servers.codex_android]` entry is rejected before thread startup
-when the Android provider is configured. There is no generic provider registry
-or fallback.
+`codex_android` namespace and Desktop uses its own opt-in `codex_desktop`
+namespace. Namespace collisions fail closed; persisted MCP entries for a
+native namespace are rejected before thread startup when that provider is
+configured. There is no generic provider registry or fallback.
 
 ## Android
 
@@ -38,6 +38,30 @@ the supported action discriminator and its selector, coordinate, text, key,
 wait, or pointer fields; and `android_install_build_from_run` requires a
 `workflow_run_id`, with optional repository, artifact, and serial
 selectors. A configured device serial is used when no per-call serial is given.
+
+## Desktop
+
+The optional `codex_desktop` namespace exposes `desktop_observe` and
+`desktop_step` only when a command provider is configured. Configuration is
+read from `desktop-computer-use.json` or the compatibility filename
+`desktop-dynamic-tools.json` in the selected Codex home. The command may be a
+string parsed into arguments or an explicit argument array; Codex starts that
+program directly, without an implicit shell, default executable, or provider
+fallback. `CODEX_DESKTOP_COMPUTER_USE_PROVIDER`,
+`CODEX_DESKTOP_COMPUTER_USE_COMMAND`, and
+`CODEX_DESKTOP_COMPUTER_USE_TIMEOUT_SECS` are the only environment overrides.
+An absent or unsupported provider remains unavailable.
+
+Requests are capped at 65,536 serialized JSON bytes before spawn. The default
+deadline is 120 seconds; configured deadlines above 300 seconds fail without
+clamping. Stdout is capped at 50,331,648 bytes and overflow is failure with an
+unknown action result, never truncated success. Stderr capture is capped at
+16,384 bytes while excess output is drained and reported as truncated. Timeout,
+cancellation, partial input, and uncertain command results are not replayed
+automatically; use `desktop_observe` to recover state. Successful visual
+responses must include native `InputImage` content rather than only text or an
+artifact path. These interfaces do not imply permission to contact a real
+desktop or execute a configured real command.
 
 ## Shared boundary
 
