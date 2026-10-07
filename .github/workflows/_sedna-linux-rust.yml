@@ -69,6 +69,14 @@ on:
         required: false
         type: string
         default: ""
+      smoke_artifact_name:
+        required: false
+        type: string
+        default: ""
+      smoke_artifact_path:
+        required: false
+        type: string
+        default: ""
       release_version:
         required: false
         type: string
@@ -454,6 +462,15 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_path }}
+          retention-days: 3
+
+      - name: Upload SmokePackage consumer input
+        if: ${{ steps.run_lane.outcome == 'success' && inputs.smoke_artifact_name != '' && inputs.smoke_artifact_path != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.smoke_artifact_name }}
+          path: ${{ inputs.smoke_artifact_path }}
+          if-no-files-found: error
           retention-days: 3
 
       - name: Check post-lane disk headroom

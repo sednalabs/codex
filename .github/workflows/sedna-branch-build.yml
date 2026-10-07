@@ -48,6 +48,7 @@ jobs:
       preview_version: ${{ steps.meta.outputs.preview_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
       source_sha: ${{ steps.meta.outputs.source_sha }}
+      source_tree: ${{ steps.meta.outputs.source_tree }}
       workflow_sha: ${{ steps.meta.outputs.workflow_sha }}
     steps:
       - name: Validate immutable source identity
@@ -108,6 +109,7 @@ jobs:
             echo "display_ref=source-${short_sha}"
             echo "preview_version=${preview_version}"
             echo "source_sha=$(git rev-parse HEAD)"
+            echo "source_tree=$(git rev-parse 'HEAD^{tree}')"
             echo "workflow_sha=${WORKFLOW_SHA}"
             echo "artifact_name=sedna-branch-${short_sha}"
           } >> "$GITHUB_OUTPUT"
@@ -125,7 +127,9 @@ jobs:
         if: ${{ inputs.platform == 'linux-pair' || inputs.prepare_lock_only }}
         working-directory: .workflow-src
         shell: bash
-        run: python3 .github/scripts/test_verify_sedna_branch_package.py
+        run: |
+          python3 .github/scripts/test_verify_sedna_branch_package.py
+          python3 .github/scripts/test_verify_sedna_smoke_package.py
 
   prepare-cargo-lock:
     name: Prepare exact source Cargo.lock delta
@@ -296,6 +300,8 @@ jobs:
       target: x86_64-unknown-linux-gnu
       artifact_name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-unknown-linux-gnu
       artifact_path: dist/*
+      smoke_artifact_name: ${{ inputs.platform == 'linux-pair' && format('{0}-smoke-x86_64-unknown-linux-gnu', needs.metadata.outputs.artifact_name) || '' }}
+      smoke_artifact_path: ${{ inputs.platform == 'linux-pair' && 'smoke-output/x86_64-unknown-linux-gnu/*' || '' }}
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
         if [[ '${{ inputs.host_only }}' == 'true' ]]; then
@@ -362,7 +368,14 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target x86_64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        if [[ '${{ inputs.platform }}' == 'linux-pair' ]]; then
+          cargo build --locked --target x86_64-unknown-linux-gnu --release \
+            --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy \
+            --bin codex-app-server --bin bwrap
+        else
+          cargo build --locked --target x86_64-unknown-linux-gnu --release \
+            --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        fi
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/x86_64-unknown-linux-gnu"
@@ -429,6 +442,11 @@ jobs:
         sys.stdout.write("\n")
         PY
 
+        if [[ '${{ inputs.platform }}' == 'linux-pair' ]]; then
+          bash ../.workflow-src/.github/scripts/build_sedna_smoke_packages.sh \
+            x86_64-unknown-linux-gnu target/x86_64-unknown-linux-gnu/release
+        fi
+
   build-linux-aarch64:
     needs: metadata
     if: ${{ !inputs.prepare_lock_only && (inputs.platform == 'linux-aarch64' || inputs.platform == 'linux-pair') }}
@@ -442,6 +460,8 @@ jobs:
       release_version: ${{ needs.metadata.outputs.preview_version }}
       artifact_name: ${{ needs.metadata.outputs.artifact_name }}-aarch64-unknown-linux-gnu
       artifact_path: dist/*
+      smoke_artifact_name: ${{ inputs.platform == 'linux-pair' && format('{0}-smoke-aarch64-unknown-linux-gnu', needs.metadata.outputs.artifact_name) || '' }}
+      smoke_artifact_path: ${{ inputs.platform == 'linux-pair' && 'smoke-output/aarch64-unknown-linux-gnu/*' || '' }}
       display_ref: ${{ needs.metadata.outputs.display_ref }}
       run_command: |
         source_status="$(git status --porcelain --untracked-files=normal)"
@@ -450,7 +470,14 @@ jobs:
           printf '%s\n' "${source_status}" >&2
           exit 1
         fi
-        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        if [[ '${{ inputs.platform }}' == 'linux-pair' ]]; then
+          cargo build --locked --target aarch64-unknown-linux-gnu --release \
+            --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy \
+            --bin codex-app-server --bin bwrap
+        else
+          cargo build --locked --target aarch64-unknown-linux-gnu --release \
+            --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        fi
         mkdir -p ../dist
 
         stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
@@ -516,6 +543,11 @@ jobs:
         sys.stdout.write("\n")
         PY
 
+        if [[ '${{ inputs.platform }}' == 'linux-pair' ]]; then
+          bash ../.workflow-src/.github/scripts/build_sedna_smoke_packages.sh \
+            aarch64-unknown-linux-gnu target/aarch64-unknown-linux-gnu/release
+        fi
+
   consume-linux-pair:
     name: Consume packaged ${{ matrix.target }} preview
     needs:
@@ -575,6 +607,126 @@ jobs:
         if: ${{ steps.package_consumer.outcome == 'failure' }}
         shell: bash
         run: exit 1
+
+  consume-smoke-linux-pair:
+    name: SmokePackage consumers - ${{ matrix.target }}
+    needs:
+      - metadata
+      - build-linux-x86_64
+      - build-linux-aarch64
+    if: ${{ !inputs.prepare_lock_only && inputs.platform == 'linux-pair' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out trusted smoke-package verifier
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .workflow-src
+
+      - name: Check out exact source candidate
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          path: source
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Download exact SmokePackage artifact from this run
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-smoke-${{ matrix.target }}
+          path: ${{ runner.temp }}/sedna-smoke-artifact
+
+      - name: Create sanitized result directory
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/sedna-smoke-results"
+
+      - name: Verify package identity, archive safety, and packaged CLI surface
+        id: package_identity
+        continue-on-error: true
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/sedna-smoke-artifact
+          SOURCE_DIR: ${{ github.workspace }}/source
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.metadata.outputs.source_tree }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_PREVIEW_VERSION: ${{ needs.metadata.outputs.preview_version }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/package-result.json
+        run: python3 .github/scripts/verify_sedna_smoke_package.py >/dev/null 2>&1
+
+      - name: Run the exact packaged Browser consumer
+        id: browser_smoke
+        continue-on-error: true
+        if: ${{ steps.package_identity.outcome == 'success' }}
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/sedna-smoke-artifact
+          SOURCE_DIR: ${{ github.workspace }}/source
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/browser-result.json
+          JUNIT_PATH: ${{ runner.temp }}/sedna-smoke-browser-junit.xml
+        run: python3 .github/scripts/run_sedna_browser_smoke.py >/dev/null 2>&1
+
+      - name: Join sanitized package and Browser results
+        id: finalize_smoke
+        if: ${{ always() }}
+        working-directory: .workflow-src
+        shell: bash
+        env:
+          PACKAGE_RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/package-result.json
+          BROWSER_RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/browser-result.json
+          FINAL_RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/consumer-result.json
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: python3 .github/scripts/finalize_sedna_smoke_consumer.py >/dev/null 2>&1 || true
+
+      - name: Upload only sanitized package-consumer results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-smoke-consumer-${{ matrix.target }}
+          path: ${{ runner.temp }}/sedna-smoke-results/*
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Preserve failed SmokePackage consumer result
+        if: ${{ always() && steps.finalize_smoke.outcome == 'success' }}
+        shell: bash
+        env:
+          FINAL_RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/consumer-result.json
+        run: |
+          set -euo pipefail
+          if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if not d.get("failure_codes") else 1)' "${FINAL_RESULT_PATH}" >/dev/null 2>&1; then
+            exit 1
+          fi
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
