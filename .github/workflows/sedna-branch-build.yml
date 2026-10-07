@@ -1504,11 +1504,14 @@ jobs:
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
           MODE: ${{ inputs.mode }}
+          STATUS_ONLY_JUNIT: ${{ runner.temp }}/first-binary-consumer-results.status-only.xml
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          rm -f -- "${STATUS_ONLY_JUNIT}"
           test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
           pytest_privacy_args=(--tb=auto --show-capture=all)
+          exact_status_run=false
           if [[ "${MODE}" == "consume-existing" \
             && "${CONSUMER_PROFILE}" == "full" \
             && "${TARGET_SHA}" == "8d3f61c3f8750641fc9675d50bf65fc775364226" \
@@ -1518,6 +1521,7 @@ jobs:
             && "${SDK_SHA}" == "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a" \
             && "${PRODUCER_RUN_ID}" == "37558769081" \
             && "${PRODUCER_WORKFLOW_HOST_SHA}" == "aa625ac365c7488c56c2061d64e24c241436b421" ]]; then
+            exact_status_run=true
             pytest_privacy_args=(--tb=no --show-capture=no)
           fi
           case "${CONSUMER_PROFILE}" in
@@ -1565,6 +1569,9 @@ jobs:
           PYTEST_EXIT_CODE="${pytest_status}" \
             python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
               --verify-consumer-results
+          if [[ "${exact_status_run}" == true ]]; then
+            cp -- "${CONSUMER_JUNIT}" "${STATUS_ONLY_JUNIT}"
+          fi
       - name: Upload consumer result and redacted state witnesses
         if: ${{ always() && inputs.mode == 'build' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -1601,7 +1608,7 @@ jobs:
             ${{ runner.temp }}/first-binary-consumer-context.json
             ${{ runner.temp }}/first-binary-producer-evidence.json
             ${{ runner.temp }}/first-binary-consumer-result.json
-            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/first-binary-consumer-results${{ inputs.mode == 'consume-existing' && inputs.consumer_profile == 'full' && inputs.target_sha == '8d3f61c3f8750641fc9675d50bf65fc775364226' && inputs.base_ref == 'validation/interrupt-guardian-fixture-8389-20261004' && inputs.base_sha == '8389b61d82cb6fb936e4e500b977f31682441ffe' && inputs.fixture_sha == 'd9d97bc01abbbced71b72997368e743bb698ee2c' && inputs.sdk_sha == 'e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a' && inputs.producer_run_id == '37558769081' && inputs.producer_workflow_host_sha == 'aa625ac365c7488c56c2061d64e24c241436b421' && '.status-only' || '' }}.xml
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
@@ -2451,11 +2458,14 @@ jobs:
           CODEX_STATE_HISTORY_ACCEPTANCE: "1"
           UV_PATH: ${{ steps.setup_uv.outputs.uv-path }}
           MODE: ${{ inputs.mode }}
+          STATUS_ONLY_JUNIT: ${{ runner.temp }}/first-binary-consumer-results.status-only.xml
         run: |
           set -euo pipefail
           export TMPDIR="${RUNNER_TEMP}"
+          rm -f -- "${STATUS_ONLY_JUNIT}"
           test_root="${FIXTURE_ROOT}/scripts/codex_package/smoke_tests/first_binary"
           pytest_privacy_args=(--tb=auto --show-capture=all)
+          exact_status_run=false
           if [[ "${MODE}" == "consume-existing" \
             && "${CONSUMER_PROFILE}" == "full" \
             && "${TARGET_SHA}" == "8d3f61c3f8750641fc9675d50bf65fc775364226" \
@@ -2465,6 +2475,7 @@ jobs:
             && "${SDK_SHA}" == "e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a" \
             && "${PRODUCER_RUN_ID}" == "37558769081" \
             && "${PRODUCER_WORKFLOW_HOST_SHA}" == "aa625ac365c7488c56c2061d64e24c241436b421" ]]; then
+            exact_status_run=true
             pytest_privacy_args=(--tb=no --show-capture=no)
           fi
           case "${CONSUMER_PROFILE}" in
@@ -2512,6 +2523,9 @@ jobs:
           PYTEST_EXIT_CODE="${pytest_status}" \
             python3 .workflow-src/.github/scripts/verify_existing_first_binary_producer.py \
               --verify-consumer-results
+          if [[ "${exact_status_run}" == true ]]; then
+            cp -- "${CONSUMER_JUNIT}" "${STATUS_ONLY_JUNIT}"
+          fi
       - name: Restore original Linux user-namespace settings
         if: ${{ always() && inputs.mode == 'consume-existing' && (inputs.consumer_profile == 'pair' || inputs.consumer_profile == 'full' || inputs.consumer_profile == 'focused') && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
         shell: bash
@@ -2534,7 +2548,7 @@ jobs:
             ${{ runner.temp }}/first-binary-consumer-context.json
             ${{ runner.temp }}/first-binary-producer-evidence.json
             ${{ runner.temp }}/first-binary-consumer-result.json
-            ${{ runner.temp }}/first-binary-consumer-results.xml
+            ${{ runner.temp }}/first-binary-consumer-results${{ inputs.mode == 'consume-existing' && inputs.consumer_profile == 'full' && inputs.target_sha == '8d3f61c3f8750641fc9675d50bf65fc775364226' && inputs.base_ref == 'validation/interrupt-guardian-fixture-8389-20261004' && inputs.base_sha == '8389b61d82cb6fb936e4e500b977f31682441ffe' && inputs.fixture_sha == 'd9d97bc01abbbced71b72997368e743bb698ee2c' && inputs.sdk_sha == 'e8bec7e6dc09de16d81c6b105e0cbed9f24bfa1a' && inputs.producer_run_id == '37558769081' && inputs.producer_workflow_host_sha == 'aa625ac365c7488c56c2061d64e24c241436b421' && '.status-only' || '' }}.xml
             ${{ runner.temp }}/state-history-witnesses/*.json
           if-no-files-found: warn
           retention-days: 7
