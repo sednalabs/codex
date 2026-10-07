@@ -36,6 +36,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
+COMMIT_TREE_SHA_CACHE = {}
 
 
 class GhCommandError(RuntimeError):
@@ -569,6 +570,27 @@ def is_commit_ancestor(repo, ancestor_sha, descendant_sha, *, timeout_seconds=No
     }
 
 
+def fetch_commit_tree_sha(repo, commit_sha, *, timeout_seconds=None):
+    cache_key = (repo.lower(), commit_sha.lower())
+    cached_tree_sha = COMMIT_TREE_SHA_CACHE.get(cache_key)
+    if cached_tree_sha is not None:
+        return cached_tree_sha
+    payload = gh_json(
+        ["api", f"repos/{repo}/git/commits/{commit_sha}"],
+        timeout_seconds=timeout_seconds,
+    )
+    if not isinstance(payload, dict):
+        raise GhCommandError(f"Commit '{commit_sha}' returned an unexpected payload.")
+    tree = payload.get("tree")
+    if not isinstance(tree, dict):
+        raise GhCommandError(f"Commit '{commit_sha}' returned an unexpected tree.")
+    tree_sha = tree.get("sha")
+    if not isinstance(tree_sha, str) or not FULL_SHA_RE.fullmatch(tree_sha):
+        raise GhCommandError(f"Commit '{commit_sha}' did not return a full tree SHA.")
+    COMMIT_TREE_SHA_CACHE[cache_key] = tree_sha
+    return tree_sha
+
+
 def observation_timeout_stop(args):
     return DeliveryStop(
         "stop_merge_observation_timeout",
@@ -613,6 +635,29 @@ def verify_candidate_association(repo, candidate_sha, pr, args, *, deadline=None
                 else None
             ),
         )
+        candidate_tree_matches_expected_head = False
+        if not includes_expected_head and includes_current_base:
+            candidate_tree_sha = fetch_commit_tree_sha(
+                repo,
+                candidate_sha,
+                timeout_seconds=(
+                    remaining_observation_seconds(deadline, args)
+                    if deadline is not None
+                    else None
+                ),
+            )
+            expected_head_tree_sha = fetch_commit_tree_sha(
+                repo,
+                args.expected_head_sha,
+                timeout_seconds=(
+                    remaining_observation_seconds(deadline, args)
+                    if deadline is not None
+                    else None
+                ),
+            )
+            candidate_tree_matches_expected_head = (
+                candidate_tree_sha.lower() == expected_head_tree_sha.lower()
+            )
     except GhCommandDeadlineExceeded as err:
         raise observation_timeout_stop(args) from err
     except GhCommandError as err:
@@ -620,16 +665,19 @@ def verify_candidate_association(repo, candidate_sha, pr, args, *, deadline=None
             "stop_merge_group_candidate_uncorrelatable",
             "GitHub could not establish the merge-group candidate commit ancestry.",
         ) from err
-    if not includes_expected_head or not includes_current_base:
+    if not includes_current_base or not (
+        includes_expected_head or candidate_tree_matches_expected_head
+    ):
         raise DeliveryStop(
             "stop_merge_group_candidate_stale",
             f"Merge-group candidate {candidate_sha} does not contain PR #{args.pr}'s "
-            "current expected head and base.",
+            "current expected head and base, or an equivalent result tree on that base.",
         )
     return {
         "expected_pr_head_sha": args.expected_head_sha,
         "expected_base_sha": expected_base_sha,
-        "candidate_contains_expected_head": True,
+        "candidate_contains_expected_head": includes_expected_head,
+        "candidate_tree_matches_expected_head": candidate_tree_matches_expected_head,
         "candidate_contains_current_base": True,
     }
 
