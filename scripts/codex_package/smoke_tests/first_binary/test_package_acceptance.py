@@ -211,7 +211,7 @@ def test_packaged_model_list_exposes_bundled_gpt6_descriptors(
             model.description,
             model.default_reasoning_effort,
             tuple(
-                (option.effort, option.description)
+                (option.reasoning_effort, option.description)
                 for option in model.supported_reasoning_efforts
             ),
             model.multi_agent_version,
