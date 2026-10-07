@@ -33,6 +33,7 @@ pub(crate) struct AgentRegistry {
 struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
     thread_paths: HashMap<ThreadId, RegisteredAgent>,
+    reserved_thread_ids: HashSet<ThreadId>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
 }
@@ -106,24 +107,36 @@ impl AgentRegistry {
             active: true,
             reserved_agent_nickname: None,
             reserved_agent_path: None,
+            reserved_thread_id: None,
         })
     }
 
-    /// Reserve every slot and path for a restore batch before callers assign
-    /// nicknames, so a later path collision cannot consume earlier names.
-    pub(crate) fn reserve_restore_batch_paths(
+    /// Reserve every slot, thread ID, and path for a restore batch before
+    /// callers assign nicknames, so a later collision cannot consume names.
+    pub(crate) fn reserve_restore_batch(
         self: &Arc<Self>,
-        paths: impl IntoIterator<Item = Option<AgentPath>>,
+        agents: impl IntoIterator<Item = (ThreadId, Option<AgentPath>)>,
     ) -> Result<Vec<SpawnReservation>> {
         let mut reservations = Vec::new();
-        for agent_path in paths {
-            let mut reservation = self.reserve_spawn_slot(/*max_threads*/ None)?;
+        for (thread_id, agent_path) in agents {
+            let mut reservation =
+                self.reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)?;
             if let Some(agent_path) = agent_path {
                 reservation.reserve_agent_path(&agent_path)?;
             }
             reservations.push(reservation);
         }
         Ok(reservations)
+    }
+
+    pub(crate) fn reserve_spawn_slot_for_thread(
+        self: &Arc<Self>,
+        thread_id: ThreadId,
+        max_threads: Option<usize>,
+    ) -> Result<SpawnReservation> {
+        let mut reservation = self.reserve_spawn_slot(max_threads)?;
+        reservation.reserve_thread_id(thread_id)?;
+        Ok(reservation)
     }
 
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
@@ -248,6 +261,31 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::insert_spawned_thread(&mut active_agents, thread_id, agent_metadata);
+    }
+
+    fn register_reserved_spawned_thread(
+        &self,
+        reserved_thread_id: ThreadId,
+        agent_metadata: AgentMetadata,
+    ) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(agent_metadata.agent_id, Some(reserved_thread_id));
+        let was_reserved = active_agents
+            .reserved_thread_ids
+            .remove(&reserved_thread_id);
+        debug_assert!(was_reserved);
+        Self::insert_spawned_thread(&mut active_agents, reserved_thread_id, agent_metadata);
+    }
+
+    fn insert_spawned_thread(
+        active_agents: &mut ActiveAgents,
+        thread_id: ThreadId,
+        agent_metadata: AgentMetadata,
+    ) {
         let key = agent_metadata
             .agent_path
             .as_ref()
@@ -333,6 +371,29 @@ impl AgentRegistry {
         }
     }
 
+    fn reserve_thread_id(&self, thread_id: ThreadId) -> Result<()> {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active_agents.thread_paths.contains_key(&thread_id)
+            || !active_agents.reserved_thread_ids.insert(thread_id)
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "agent thread `{thread_id}` is already registered or reserved"
+            )));
+        }
+        Ok(())
+    }
+
+    fn release_reserved_thread_id(&self, thread_id: ThreadId) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents.reserved_thread_ids.remove(&thread_id);
+    }
+
     fn release_reserved_agent_path(&self, agent_path: &AgentPath) {
         let mut active_agents = self
             .active_agents
@@ -371,6 +432,7 @@ pub(crate) struct SpawnReservation {
     active: bool,
     reserved_agent_nickname: Option<String>,
     reserved_agent_path: Option<AgentPath>,
+    reserved_thread_id: Option<ThreadId>,
 }
 
 impl SpawnReservation {
@@ -396,10 +458,21 @@ impl SpawnReservation {
         Ok(())
     }
 
+    fn reserve_thread_id(&mut self, thread_id: ThreadId) -> Result<()> {
+        self.state.reserve_thread_id(thread_id)?;
+        self.reserved_thread_id = Some(thread_id);
+        Ok(())
+    }
+
     pub(crate) fn commit(mut self, agent_metadata: AgentMetadata) {
         self.reserved_agent_nickname = None;
         self.reserved_agent_path = None;
-        self.state.register_spawned_thread(agent_metadata);
+        if let Some(thread_id) = self.reserved_thread_id.take() {
+            self.state
+                .register_reserved_spawned_thread(thread_id, agent_metadata);
+        } else {
+            self.state.register_spawned_thread(agent_metadata);
+        }
         self.active = false;
     }
 }
@@ -409,6 +482,9 @@ impl Drop for SpawnReservation {
         if self.active {
             if let Some(agent_path) = self.reserved_agent_path.take() {
                 self.state.release_reserved_agent_path(&agent_path);
+            }
+            if let Some(thread_id) = self.reserved_thread_id.take() {
+                self.state.release_reserved_thread_id(thread_id);
             }
             self.state.total_count.fetch_sub(1, Ordering::AcqRel);
         }

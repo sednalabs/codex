@@ -4848,6 +4848,82 @@ async fn resume_thread_subagent_restores_stored_metadata() {
 }
 
 #[tokio::test]
+async fn resume_registered_child_rejects_mismatched_persisted_parent() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let agent_path = AgentPath::from_string("/root/researcher".to_string())
+        .expect("test agent path should be valid");
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("hello child"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path),
+                agent_nickname: None,
+                agent_role: Some("explorer".to_string()),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+
+    let state_db = child_thread
+        .state_db()
+        .expect("sqlite state db should be available");
+    let mut stored_thread = state_db
+        .get_thread(child_thread_id)
+        .await
+        .expect("child metadata query should succeed")
+        .expect("child metadata should exist");
+    assert_eq!(stored_thread.parent_thread_id, Some(parent_thread_id));
+    stored_thread.parent_thread_id = Some(ThreadId::new());
+    state_db
+        .upsert_thread(&stored_thread)
+        .await
+        .expect("mismatched child metadata should persist");
+
+    let error = harness
+        .control
+        .resume_agent_from_rollout(
+            harness.config.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect_err("registered child must reject a different persisted parent");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match the resumed child identity")
+    );
+
+    stored_thread.parent_thread_id = Some(parent_thread_id);
+    state_db
+        .upsert_thread(&stored_thread)
+        .await
+        .expect("restore consistent child metadata");
+    let _ = harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("tree shutdown should succeed");
+}
+
+#[tokio::test]
 async fn resume_agent_from_rollout_reads_archived_rollout_path() {
     let harness = AgentControlHarness::new().await;
     let child_thread_id = harness

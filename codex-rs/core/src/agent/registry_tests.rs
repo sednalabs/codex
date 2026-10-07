@@ -83,6 +83,56 @@ fn reservation_drop_releases_slot() {
 }
 
 #[test]
+fn thread_id_reservation_prevents_duplicate_restore_and_releases_on_drop() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+    let reservation = registry
+        .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+        .expect("reserve thread ID");
+
+    assert!(
+        registry
+            .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+            .is_err()
+    );
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 1);
+    drop(reservation);
+
+    let reservation = registry
+        .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+        .expect("dropped reservation should release thread ID");
+    reservation.commit(agent_metadata(thread_id));
+
+    assert!(
+        registry
+            .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+            .is_err()
+    );
+    registry.release_spawned_thread(thread_id);
+    let reservation = registry
+        .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+        .expect("releasing the registered thread should free its ID");
+    drop(reservation);
+}
+
+#[test]
+fn restore_batch_duplicate_thread_id_drops_all_reservations() {
+    let registry = Arc::new(AgentRegistry::default());
+    let thread_id = ThreadId::new();
+
+    assert!(
+        registry
+            .reserve_restore_batch([(thread_id, None), (thread_id, None)])
+            .is_err()
+    );
+    assert_eq!(registry.total_count.load(Ordering::Acquire), 0);
+    let reservation = registry
+        .reserve_spawn_slot_for_thread(thread_id, /*max_threads*/ None)
+        .expect("failed batch should release earlier thread ID reservations");
+    drop(reservation);
+}
+
+#[test]
 fn commit_holds_slot_until_release() {
     let registry = Arc::new(AgentRegistry::default());
     let reservation = registry.reserve_spawn_slot(Some(1)).expect("reserve slot");
@@ -403,9 +453,9 @@ fn restore_batch_path_failure_releases_slots_before_nickname_allocation() {
 
     assert!(
         registry
-            .reserve_restore_batch_paths([
-                Some(first_path.clone()),
-                Some(conflicting_path.clone()),
+            .reserve_restore_batch([
+                (ThreadId::new(), Some(first_path.clone())),
+                (ThreadId::new(), Some(conflicting_path.clone())),
             ])
             .is_err()
     );

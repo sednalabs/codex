@@ -323,8 +323,10 @@ impl LocalAgentControl {
             return;
         }
 
-        let path_reservations = match registry.reserve_restore_batch_paths(
-            pending.iter().map(|(_, path, _, _, _)| path.clone()),
+        let restore_reservations = match registry.reserve_restore_batch(
+            pending
+                .iter()
+                .map(|(thread_id, path, _, _, _)| (*thread_id, path.clone())),
         ) {
             Ok(reservations) => reservations,
             Err(err) => {
@@ -337,7 +339,7 @@ impl LocalAgentControl {
         for (
             (thread_id, path, role, preferred_nickname, candidate_names),
             mut reservation,
-        ) in pending.into_iter().zip(path_reservations)
+        ) in pending.into_iter().zip(restore_reservations)
         {
             let candidate_name_refs: Vec<&str> =
                 candidate_names.iter().map(String::as_str).collect();
@@ -1556,7 +1558,7 @@ impl LocalAgentControl {
             Some(
                 self.runtime
                     .registry
-                    .reserve_spawn_slot(agent_max_threads)?,
+                    .reserve_spawn_slot_for_thread(thread_id, agent_max_threads)?,
             )
         } else {
             None
@@ -1571,18 +1573,23 @@ impl LocalAgentControl {
             }) => {
                 let requested_agent_path = agent_path.or(resumed_agent_path.clone());
                 if let Some(metadata) = already_registered_metadata.as_ref() {
-                    let registered_parent_matches = match metadata.agent_path.as_ref() {
-                        Some(agent_path) => agent_path
-                            .as_str()
-                            .rsplit_once('/')
-                            .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-                            .and_then(|parent| self.runtime.registry.agent_id_for_path(&parent))
-                            == Some(parent_thread_id),
-                        None => persisted_parent_thread_id == Some(parent_thread_id),
+                    let registered_path_parent_matches = match metadata.agent_path.as_ref() {
+                        Some(agent_path) => {
+                            agent_path
+                                .as_str()
+                                .rsplit_once('/')
+                                .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
+                                .and_then(|parent| {
+                                    self.runtime.registry.agent_id_for_path(&parent)
+                                })
+                                == Some(parent_thread_id)
+                        }
+                        None => true,
                     };
                     if metadata.agent_id != Some(thread_id)
                         || metadata.agent_path.as_ref() != requested_agent_path.as_ref()
-                        || !registered_parent_matches
+                        || persisted_parent_thread_id != Some(parent_thread_id)
+                        || !registered_path_parent_matches
                     {
                         return Err(CodexErr::InvalidRequest(format!(
                             "registered agent metadata for {thread_id} does not match the resumed child identity"
