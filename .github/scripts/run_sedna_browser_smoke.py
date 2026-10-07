@@ -67,6 +67,45 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _child_environment(source_root: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (
+            str(source_root / "sdk/python/src"),
+            str(source_root / "sdk/python/tests"),
+        )
+    )
+    for key in tuple(environment):
+        if key in {
+            "RESULT_PATH",
+            "JUNIT_PATH",
+            "ARTIFACT_DIR",
+            "SOURCE_DIR",
+            "RUNNER_TEMP",
+            "EXPECTED_SOURCE_SHA",
+            "EXPECTED_WORKFLOW_SHA",
+            "EXPECTED_TARGET",
+            "GITHUB_RUN_ID",
+            "GITHUB_SHA",
+            "GITHUB_WORKSPACE",
+            "GITHUB_REPOSITORY",
+            "GITHUB_SERVER_URL",
+        } or key.startswith("CODEX_BROWSER_"):
+            environment.pop(key, None)
+    return environment
+
+
+def _write_result_exclusive(path: Path, result: dict[str, object]) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("safe result creation is unavailable")
+    flags |= os.O_NOFOLLOW
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        output.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+
+
 def _bounded_count(value: object) -> bool:
     return type(value) is int and 0 <= value <= MAX_DIAGNOSTIC_COUNT
 
@@ -263,18 +302,12 @@ def main() -> int:
         "--app-server-archive",
         str(Path(_required_env("ARTIFACT_DIR")) / "codex-app-server-package.tar.gz"),
         "--symbols-archive",
-        str(Path(_required_env("ARTIFACT_DIR")) / "codex-symbols.tar.gz"),
+        # The upstream conftest requires this option, but this exact Browser
+        # selector does not request the symbol fixture; no symbol archive is
+        # produced, bound, extracted, or qualified by this route.
+        str(Path(_required_env("RUNNER_TEMP")) / "symbols-excluded-not-qualified.tar.gz"),
     ]
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        (
-            str(source_root / "sdk/python/src"),
-            str(source_root / "sdk/python/tests"),
-        )
-    )
-    for key in tuple(environment):
-        if key.startswith("CODEX_BROWSER_"):
-            environment.pop(key, None)
+    environment = _child_environment(source_root)
     process: subprocess.Popen[bytes] | None = None
     return_code: int | None = None
     try:
@@ -307,9 +340,7 @@ def main() -> int:
         "target": target,
         **_junit_result(junit_path, return_code=return_code),
     }
-    result_path.write_text(
-        json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_result_exclusive(result_path, result)
     junit_path.unlink(missing_ok=True)
     return 0
 

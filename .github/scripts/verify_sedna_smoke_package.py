@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
 import platform
@@ -11,6 +12,7 @@ import re
 import tarfile
 import tempfile
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -32,6 +34,8 @@ MAX_MEMBER_BYTES = 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 3 * 1024 * 1024 * 1024
 MAX_MEMBERS = 32
 MAX_MANIFEST_BYTES = 64 * 1024
+TAR_BLOCK_BYTES = 512
+MAX_ARCHIVE_EXPANDED_BYTES = MAX_TOTAL_BYTES + (MAX_MEMBERS + 20) * TAR_BLOCK_BYTES
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -118,6 +122,92 @@ def _expected_package_paths(variant: str) -> tuple[set[str], set[str], set[str]]
     return directories, required_files, optional_files
 
 
+def _tar_octal(field: bytes) -> int:
+    value = field.strip(b"\x00 ")
+    if not value:
+        return 0
+    if any(byte < ord("0") or byte > ord("7") for byte in value):
+        raise SmokePackageFailure("package_archive_header_invalid")
+    return int(value, 8)
+
+
+def _validate_tar_headers(archive_path: Path) -> None:
+    """Bound decompression and reject tar extensions before tarfile parses them."""
+
+    expanded_bytes = 0
+    total_size = 0
+    member_count = 0
+    zero_blocks = 0
+    try:
+        with gzip.open(archive_path, "rb") as stream:
+            while True:
+                header = stream.read(TAR_BLOCK_BYTES)
+                if not header:
+                    break
+                if len(header) != TAR_BLOCK_BYTES:
+                    raise SmokePackageFailure("package_archive_header_invalid")
+                expanded_bytes += TAR_BLOCK_BYTES
+                if expanded_bytes > MAX_ARCHIVE_EXPANDED_BYTES:
+                    raise SmokePackageFailure("package_archive_expansion_limit")
+                if header == bytes(TAR_BLOCK_BYTES):
+                    zero_blocks += 1
+                    continue
+                if zero_blocks:
+                    raise SmokePackageFailure("package_archive_header_invalid")
+
+                checksum = _tar_octal(header[148:156])
+                actual_checksum = sum(header[:148]) + (8 * ord(" ")) + sum(header[156:])
+                if checksum != actual_checksum:
+                    raise SmokePackageFailure("package_archive_header_invalid")
+
+                # SmokePackage archives need only short ASCII names, regular
+                # files and directories. Reject PAX/GNU extensions before
+                # tarfile can materialize their declared payloads.
+                typeflag = header[156:157]
+                if typeflag not in (b"\x00", b"0", b"5"):
+                    raise SmokePackageFailure("package_archive_header_extension_rejected")
+                if header[345:500].strip(b"\x00"):
+                    raise SmokePackageFailure("package_archive_header_extension_rejected")
+                name_bytes = header[:100].split(b"\x00", 1)[0]
+                try:
+                    name = name_bytes.decode("ascii")
+                except UnicodeDecodeError as exc:
+                    raise SmokePackageFailure("package_archive_header_invalid") from exc
+                if not name:
+                    raise SmokePackageFailure("package_archive_header_invalid")
+
+                member_count += 1
+                if member_count > MAX_MEMBERS:
+                    raise SmokePackageFailure("package_archive_member_limit")
+                size = _tar_octal(header[124:136])
+                if typeflag == b"5":
+                    if size != 0:
+                        raise SmokePackageFailure("package_archive_header_invalid")
+                else:
+                    if name == "codex-package.json" and size > MAX_MANIFEST_BYTES:
+                        raise SmokePackageFailure("package_manifest_invalid")
+                    if size > MAX_MEMBER_BYTES or total_size + size > MAX_TOTAL_BYTES:
+                        raise SmokePackageFailure("package_archive_expansion_limit")
+                    total_size += size
+
+                padded_size = ((size + TAR_BLOCK_BYTES - 1) // TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
+                if expanded_bytes + padded_size > MAX_ARCHIVE_EXPANDED_BYTES:
+                    raise SmokePackageFailure("package_archive_expansion_limit")
+                remaining = padded_size
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise SmokePackageFailure("package_archive_header_invalid")
+                    expanded_bytes += len(chunk)
+                    remaining -= len(chunk)
+    except SmokePackageFailure:
+        raise
+    except (OSError, EOFError) as exc:
+        raise SmokePackageFailure("package_archive_invalid") from exc
+    if zero_blocks < 2:
+        raise SmokePackageFailure("package_archive_header_invalid")
+
+
 def _safe_extract_package(
     archive_path: Path,
     destination: Path,
@@ -128,12 +218,14 @@ def _safe_extract_package(
         raise SmokePackageFailure("package_archive_missing")
     if archive_path.stat().st_size > MAX_ARCHIVE_BYTES:
         raise SmokePackageFailure("package_archive_size_limit")
+    _validate_tar_headers(archive_path)
     directories, required_files, optional_files = _expected_package_paths(variant)
     expected_paths = directories | required_files | optional_files
-    seen: dict[str, tarfile.TarInfo] = {}
-    total_size = 0
+    seen: set[str] = set()
+    observed_files: set[str] = set()
     try:
-        with tarfile.open(archive_path, mode="r:gz") as bundle:
+        destination.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, mode="r|gz") as bundle:
             for index, member in enumerate(bundle):
                 if index >= MAX_MEMBERS:
                     raise SmokePackageFailure("package_archive_member_limit")
@@ -153,6 +245,8 @@ def _safe_extract_package(
                 if member.isdir():
                     if name not in directories or member.size != 0:
                         raise SmokePackageFailure("package_archive_member_rejected")
+                    seen.add(name)
+                    destination.joinpath(*PurePosixPath(name).parts).mkdir(parents=True, exist_ok=True)
                 else:
                     if name in directories or member.size < 0 or member.size > MAX_MEMBER_BYTES:
                         raise SmokePackageFailure("package_archive_expansion_limit")
@@ -161,36 +255,27 @@ def _safe_extract_package(
                         and not member.mode & 0o111
                     ):
                         raise SmokePackageFailure("package_archive_executable_missing")
-                    total_size += member.size
-                    if total_size > MAX_TOTAL_BYTES:
-                        raise SmokePackageFailure("package_archive_expansion_limit")
-                seen[name] = member
-            observed_files = {name for name, member in seen.items() if member.isfile()}
+                    seen.add(name)
+                    observed_files.add(name)
+                    target = destination.joinpath(*PurePosixPath(name).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = bundle.extractfile(member)
+                    if source is None:
+                        raise SmokePackageFailure("package_archive_member_unreadable")
+                    copied = 0
+                    with source, target.open("xb") as output:
+                        while copied < member.size:
+                            block = source.read(min(1024 * 1024, member.size - copied))
+                            if not block:
+                                raise SmokePackageFailure("package_archive_member_size_mismatch")
+                            output.write(block)
+                            copied += len(block)
+                    if copied != member.size:
+                        raise SmokePackageFailure("package_archive_member_size_mismatch")
+                    is_executable = name in required_files - {"codex-package.json"} or name in optional_files
+                    target.chmod(0o755 if is_executable else 0o644)
             if not required_files <= observed_files or observed_files - required_files > optional_files:
                 raise SmokePackageFailure("package_archive_inventory_mismatch")
-
-            destination.mkdir(parents=True, exist_ok=True)
-            for name, member in seen.items():
-                target = destination.joinpath(*PurePosixPath(name).parts)
-                if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                source = bundle.extractfile(member)
-                if source is None:
-                    raise SmokePackageFailure("package_archive_member_unreadable")
-                copied = 0
-                with source, target.open("xb") as output:
-                    while copied < member.size:
-                        block = source.read(min(1024 * 1024, member.size - copied))
-                        if not block:
-                            raise SmokePackageFailure("package_archive_member_size_mismatch")
-                        output.write(block)
-                        copied += len(block)
-                if copied != member.size:
-                    raise SmokePackageFailure("package_archive_member_size_mismatch")
-                is_executable = name in required_files - {"codex-package.json"} or name in optional_files
-                target.chmod(0o755 if is_executable else 0o644)
     except SmokePackageFailure:
         raise
     except (OSError, EOFError, tarfile.TarError) as exc:
@@ -210,56 +295,11 @@ def _safe_extract_package(
     return manifest
 
 
-def _validate_symbols_archive(path: Path, *, run_id: str, target: str) -> None:
-    root = f"codex-symbols-sedna-{run_id}-{target}"
-    expected_files = {
-        f"{root}/codex.debug",
-        f"{root}/codex-app-server.debug",
-        f"{root}/codex-code-mode-host.debug",
-    }
-    observed_files: set[str] = set()
-    observed_dirs: set[str] = set()
-    total_size = 0
-    try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ARCHIVE_BYTES:
-            raise SmokePackageFailure("symbols_archive_invalid")
-        with tarfile.open(path, mode="r:gz") as bundle:
-            for index, member in enumerate(bundle):
-                if index >= MAX_MEMBERS:
-                    raise SmokePackageFailure("symbols_archive_member_limit")
-                raw = PurePosixPath(member.name)
-                name = raw.as_posix()
-                if raw.is_absolute() or ".." in raw.parts or member.pax_headers:
-                    raise SmokePackageFailure("symbols_archive_member_rejected")
-                if member.isdir():
-                    if name != root or member.size != 0 or name in observed_dirs:
-                        raise SmokePackageFailure("symbols_archive_member_rejected")
-                    observed_dirs.add(name)
-                elif member.isfile():
-                    if name not in expected_files or name in observed_files:
-                        raise SmokePackageFailure("symbols_archive_member_rejected")
-                    if member.size < 0 or member.size > MAX_MEMBER_BYTES:
-                        raise SmokePackageFailure("symbols_archive_expansion_limit")
-                    total_size += member.size
-                    if total_size > MAX_TOTAL_BYTES:
-                        raise SmokePackageFailure("symbols_archive_expansion_limit")
-                    observed_files.add(name)
-                else:
-                    raise SmokePackageFailure("symbols_archive_member_rejected")
-    except SmokePackageFailure:
-        raise
-    except (OSError, EOFError, tarfile.TarError) as exc:
-        raise SmokePackageFailure("symbols_archive_invalid") from exc
-    if observed_files != expected_files or observed_dirs != {root}:
-        raise SmokePackageFailure("symbols_archive_inventory_mismatch")
-
-
 def _read_identity(artifact_dir: Path) -> dict[str, Any]:
     expected_names = {
         "smoke-package.json",
         "codex-package.tar.gz",
         "codex-app-server-package.tar.gz",
-        "codex-symbols.tar.gz",
     }
     try:
         entries = list(artifact_dir.iterdir())
@@ -312,7 +352,6 @@ def _validate_identity(record: dict[str, Any], *, artifact_dir: Path) -> None:
         raise SmokePackageFailure("trusted_workflow_identity_mismatch")
     package_version = _package_version(source_root)
     expected_workflow_url = f"{server_url}/{repository}/actions/runs/{run_id}"
-    expected_symbol_name = "codex-symbols.tar.gz"
     if set(record) != {
         "schema_version",
         "repository",
@@ -325,10 +364,11 @@ def _validate_identity(record: dict[str, Any], *, artifact_dir: Path) -> None:
         "preview_version",
         "package_version",
         "archives",
+        "excluded_artifacts",
     }:
         raise SmokePackageFailure("artifact_identity_invalid")
     expected_values = {
-        "schema_version": "sedna-smoke-package-v1",
+        "schema_version": "sedna-smoke-package-v2",
         "repository": repository,
         "run_id": run_id,
         "workflow_url": expected_workflow_url,
@@ -341,18 +381,18 @@ def _validate_identity(record: dict[str, Any], *, artifact_dir: Path) -> None:
     }
     if any(record.get(key) != value for key, value in expected_values.items()):
         raise SmokePackageFailure("artifact_identity_mismatch")
+    if record.get("excluded_artifacts") != ["symbols"]:
+        raise SmokePackageFailure("artifact_identity_invalid")
     archives = record.get("archives")
-    if not isinstance(archives, dict) or set(archives) != {"cli", "app_server", "symbols"}:
+    if not isinstance(archives, dict) or set(archives) != {"cli", "app_server"}:
         raise SmokePackageFailure("artifact_identity_invalid")
     expected_archive_names = {
         "cli": ARCHIVE_NAMES["cli"],
         "app_server": ARCHIVE_NAMES["app_server"],
-        "symbols": expected_symbol_name,
     }
     artifact_names = {
         "cli": "codex-package.tar.gz",
         "app_server": "codex-app-server-package.tar.gz",
-        "symbols": "codex-symbols.tar.gz",
     }
     for key, expected_name in expected_archive_names.items():
         value = archives.get(key)
@@ -380,8 +420,8 @@ def _classify_cli_version(actual: str, package_version: str, preview_version: st
         f"codex {package_version} (git:{short_sha})": "package_version_with_source_sha",
         f"codex {preview_version}": "preview_version",
         f"codex {preview_version} (git:{short_sha})": "preview_version_with_source_sha",
-        f"codex {package_version} (Sedna {preview_version})": "progressive_display_version",
-        f"codex {package_version} (Sedna dev g{short_sha})": "progressive_source_identity",
+        f"codex {package_version} (Sedna v{preview_version})": "progressive_display_version",
+        f"codex {package_version} (Sedna dev {short_sha})": "progressive_source_identity",
     }
     return known_forms.get(actual, "unrecognized")
 
@@ -402,6 +442,58 @@ def _manifest_for_variant(manifest: dict[str, Any], *, variant: str, target: str
         and manifest.get("layoutVersion") == 1
         and all(type(manifest.get(key)) is str and manifest[key] == value for key, value in expected.items())
     )
+
+
+@contextmanager
+def _hide_host_control_environment():
+    names = (
+        "RESULT_PATH",
+        "ARTIFACT_DIR",
+        "SOURCE_DIR",
+        "RUNNER_TEMP",
+        "EXPECTED_SOURCE_SHA",
+        "EXPECTED_SOURCE_TREE",
+        "EXPECTED_WORKFLOW_SHA",
+        "EXPECTED_PREVIEW_VERSION",
+        "EXPECTED_TARGET",
+        "GITHUB_RUN_ID",
+        "GITHUB_REPOSITORY",
+        "GITHUB_SERVER_URL",
+        "GITHUB_SHA",
+        "GITHUB_WORKSPACE",
+    )
+    saved = {name: os.environ.pop(name) for name in names if name in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+def _run_packaged_command(arguments: list[str], *, cwd: Path):
+    with _hide_host_control_environment():
+        return command_ok(arguments, cwd=cwd)
+
+
+def _invoke_app_server_help(app_server: Path, *, cwd: Path) -> bool:
+    try:
+        process = _run_packaged_command([str(app_server), "--help"], cwd=cwd)
+    except ConsumerFailure:
+        return False
+    return process.returncode == 0
+
+
+def _write_result_exclusive(path: Path, result: dict[str, Any]) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SmokePackageFailure("result_write_failed")
+    flags |= os.O_NOFOLLOW
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+    except OSError as exc:
+        raise SmokePackageFailure("result_write_failed") from exc
 
 
 def verify_and_consume() -> dict[str, Any]:
@@ -432,12 +524,6 @@ def verify_and_consume() -> dict[str, Any]:
             version=package_version,
         ):
             raise SmokePackageFailure("app_server_package_manifest_mismatch")
-        _validate_symbols_archive(
-            artifact_dir / "codex-symbols.tar.gz",
-            run_id=required_env("GITHUB_RUN_ID"),
-            target=target,
-        )
-
         cli = cli_root / "bin/codex"
         code_mode_host = cli_root / "bin/codex-code-mode-host"
         rg = cli_root / "codex-path/rg"
@@ -454,7 +540,7 @@ def verify_and_consume() -> dict[str, Any]:
                 os.environ.pop(key, None)
         os.environ["CODEX_HOME"] = str(temp_root / "isolated-codex-home")
         try:
-            version_process = command_ok([str(cli), "--version"], cwd=temp_root)
+            version_process = _run_packaged_command([str(cli), "--version"], cwd=temp_root)
             cli_version_exit_ok = version_process.returncode == 0
             version_class = (
                 _classify_cli_version(
@@ -471,7 +557,7 @@ def verify_and_consume() -> dict[str, Any]:
             version_class = exc.code
 
         try:
-            help_process = command_ok(
+            help_process = _run_packaged_command(
                 [str(cli), "mcp", "login", "--device-auth", "--help"], cwd=temp_root
             )
             help_text = f"{help_process.stdout}\n{help_process.stderr}"
@@ -482,19 +568,19 @@ def verify_and_consume() -> dict[str, Any]:
             device_auth_help_ok = False
 
         try:
-            helper_process = command_ok([str(code_mode_host), "--help"], cwd=temp_root)
+            helper_process = _run_packaged_command([str(code_mode_host), "--help"], cwd=temp_root)
             code_mode_host_help_ok = helper_process.returncode == 0
         except ConsumerFailure:
             code_mode_host_help_ok = False
 
+        app_server_help_ok = _invoke_app_server_help(app_server, cwd=temp_root)
+
     progressive_classes = {
-        "preview_version",
-        "preview_version_with_source_sha",
         "progressive_display_version",
         "progressive_source_identity",
     }
     return {
-        "schema_version": "sedna-smoke-consumer-v1",
+        "schema_version": "sedna-smoke-consumer-v2",
         "source_sha": source_sha,
         "workflow_sha": required_env("EXPECTED_WORKFLOW_SHA"),
         "run_id": required_env("GITHUB_RUN_ID"),
@@ -507,6 +593,8 @@ def verify_and_consume() -> dict[str, Any]:
         "code_mode_host_help_ok": code_mode_host_help_ok,
         "cli_companion_inventory_ok": True,
         "app_server_package_manifest_ok": True,
+        "app_server_help_ok": app_server_help_ok,
+        "symbols_artifact": "excluded_not_sanitized_or_qualified",
     }
 
 
@@ -516,7 +604,7 @@ def main() -> int:
         result = verify_and_consume()
     except SmokePackageFailure as exc:
         result = {
-            "schema_version": "sedna-smoke-consumer-v1",
+            "schema_version": "sedna-smoke-consumer-v2",
             "source_sha": os.environ.get("EXPECTED_SOURCE_SHA", ""),
             "workflow_sha": os.environ.get("EXPECTED_WORKFLOW_SHA", ""),
             "run_id": os.environ.get("GITHUB_RUN_ID", ""),
@@ -524,9 +612,9 @@ def main() -> int:
             "package_archives_verified": False,
             "failure_code": exc.code,
         }
-        result_path.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        _write_result_exclusive(result_path, result)
         return 1
-    result_path.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    _write_result_exclusive(result_path, result)
     return 0
 
 

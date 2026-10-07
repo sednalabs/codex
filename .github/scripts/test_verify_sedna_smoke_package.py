@@ -6,11 +6,14 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import tarfile
 import tempfile
+from subprocess import CompletedProcess
 from pathlib import Path
 from unittest import TestCase, main
+from unittest.mock import patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -27,9 +30,17 @@ def load_module(name: str, filename: str):
 
 VERIFY = load_module("verify_sedna_smoke_package", "verify_sedna_smoke_package.py")
 RUN_BROWSER = load_module("run_sedna_browser_smoke", "run_sedna_browser_smoke.py")
+FINALIZE = load_module("finalize_sedna_smoke_consumer", "finalize_sedna_smoke_consumer.py")
 
 
-def package_archive(path: Path, *, variant: str, extra_member: str | None = None) -> None:
+def package_archive(
+    path: Path,
+    *,
+    variant: str,
+    extra_member: str | None = None,
+    manifest_payload: bytes | None = None,
+    pax_member: bool = False,
+) -> None:
     directories, required_files, optional_files = VERIFY._expected_package_paths(variant)
     entrypoint = "codex" if variant == "codex" else "codex-app-server"
     manifest = {
@@ -45,6 +56,8 @@ def package_archive(path: Path, *, variant: str, extra_member: str | None = None
         name: (json.dumps(manifest).encode() if name == "codex-package.json" else b"binary")
         for name in required_files
     }
+    if manifest_payload is not None:
+        payloads["codex-package.json"] = manifest_payload
     with tarfile.open(path, "w:gz") as archive:
         for name in sorted(directories):
             member = tarfile.TarInfo(name)
@@ -55,34 +68,14 @@ def package_archive(path: Path, *, variant: str, extra_member: str | None = None
             member = tarfile.TarInfo(name)
             member.mode = 0o644 if name == "codex-package.json" else 0o755
             member.size = len(payload)
+            if pax_member and name == "bin/codex":
+                member.pax_headers = {"comment": "bounded fixture"}
             archive.addfile(member, io.BytesIO(payload))
         if extra_member is not None:
             member = tarfile.TarInfo(extra_member)
             member.mode = 0o644
             member.size = 1
             archive.addfile(member, io.BytesIO(b"x"))
-
-
-def symbols_archive(path: Path, *, run_id: str, target: str, extra_name: str | None = None) -> None:
-    root = f"codex-symbols-sedna-{run_id}-{target}"
-    with tarfile.open(path, "w:gz") as archive:
-        directory = tarfile.TarInfo(root)
-        directory.type = tarfile.DIRTYPE
-        directory.mode = 0o755
-        archive.addfile(directory)
-        names = [
-            f"{root}/codex.debug",
-            f"{root}/codex-app-server.debug",
-            f"{root}/codex-code-mode-host.debug",
-        ]
-        if extra_name is not None:
-            names.append(extra_name)
-        for name in names:
-            member = tarfile.TarInfo(name)
-            member.mode = 0o644
-            member.size = 1
-            archive.addfile(member, io.BytesIO(b"x"))
-
 
 class SmokePackageVerifierTests(TestCase):
     def test_exact_package_inventory_extracts(self) -> None:
@@ -100,39 +93,37 @@ class SmokePackageVerifierTests(TestCase):
             self.assertTrue((destination / "bin/codex").is_file())
             self.assertTrue((destination / "bin/codex").stat().st_mode & 0o111)
 
-    def test_exact_symbols_inventory_is_accepted(self) -> None:
+    def test_oversized_manifest_is_rejected_before_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            archive = Path(temporary) / "symbols.tar.gz"
-            symbols_archive(
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            package_archive(
                 archive,
-                run_id="123456789",
-                target="x86_64-unknown-linux-gnu",
+                variant="codex",
+                manifest_payload=b"x" * (VERIFY.MAX_MANIFEST_BYTES + 1),
             )
-
-            VERIFY._validate_symbols_archive(
-                archive,
-                run_id="123456789",
-                target="x86_64-unknown-linux-gnu",
-            )
-
-    def test_symbols_inventory_rejects_unlisted_members(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            archive = Path(temporary) / "symbols.tar.gz"
-            symbols_archive(
-                archive,
-                run_id="123456789",
-                target="x86_64-unknown-linux-gnu",
-                extra_name="codex-symbols-sedna-123456789-x86_64-unknown-linux-gnu/private.txt",
-            )
+            destination = root / "extracted"
 
             with self.assertRaises(VERIFY.SmokePackageFailure) as failure:
-                VERIFY._validate_symbols_archive(
-                    archive,
-                    run_id="123456789",
-                    target="x86_64-unknown-linux-gnu",
-                )
+                VERIFY._safe_extract_package(archive, destination, variant="codex")
 
-            self.assertEqual(failure.exception.code, "symbols_archive_member_rejected")
+            self.assertEqual(failure.exception.code, "package_manifest_invalid")
+            self.assertFalse(destination.exists())
+
+    def test_tar_extension_is_rejected_before_tarfile_parses_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "package.tar.gz"
+            package_archive(archive, variant="codex", pax_member=True)
+
+            with self.assertRaises(VERIFY.SmokePackageFailure) as failure:
+                VERIFY._safe_extract_package(archive, root / "extracted", variant="codex")
+
+            self.assertEqual(
+                failure.exception.code,
+                "package_archive_header_extension_rejected",
+            )
+            self.assertFalse((root / "extracted").exists())
 
     def test_package_parent_traversal_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -170,7 +161,7 @@ class SmokePackageVerifierTests(TestCase):
         )
         self.assertEqual(
             VERIFY._classify_cli_version(
-                "codex 0.0.0 (Sedna dev g01234567)",
+                "codex 0.0.0 (Sedna dev 01234567)",
                 "0.0.0",
                 "0.143.0-alpha.10-dev.sedna.4+g01234567",
                 source_sha,
@@ -300,6 +291,87 @@ class SmokePackageVerifierTests(TestCase):
             result = RUN_BROWSER._junit_result(junit, return_code=0)
 
             self.assertEqual(result["diagnostic_status"], "suppressed_or_unavailable")
+
+    def test_browser_child_does_not_receive_host_output_paths(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RESULT_PATH": "/private/result.json",
+                "JUNIT_PATH": "/private/results.xml",
+                "ARTIFACT_DIR": "/private/artifact",
+                "RUNNER_TEMP": "/private/temp",
+                "CODEX_BROWSER_PRIVATE": "must-not-pass",
+            },
+            clear=False,
+        ):
+            child = RUN_BROWSER._child_environment(Path("/source"))
+
+        self.assertEqual(child["PYTHONPATH"], os.pathsep.join(("/source/sdk/python/src", "/source/sdk/python/tests")))
+        self.assertNotIn("RESULT_PATH", child)
+        self.assertNotIn("JUNIT_PATH", child)
+        self.assertNotIn("ARTIFACT_DIR", child)
+        self.assertNotIn("RUNNER_TEMP", child)
+        self.assertNotIn("CODEX_BROWSER_PRIVATE", child)
+
+    def test_package_result_writer_refuses_symlink_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target.json"
+            target.write_text("unchanged", encoding="utf-8")
+            result = root / "result.json"
+            result.symlink_to(target)
+
+            with self.assertRaises(VERIFY.SmokePackageFailure) as failure:
+                VERIFY._write_result_exclusive(result, {"status": "safe"})
+
+            self.assertEqual(failure.exception.code, "result_write_failed")
+            self.assertEqual(target.read_text(encoding="utf-8"), "unchanged")
+
+    def test_finalizer_result_writer_refuses_symlink_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target.json"
+            target.write_text("unchanged", encoding="utf-8")
+            result = root / "result.json"
+            result.symlink_to(target)
+
+            with self.assertRaises(OSError):
+                FINALIZE._write_result_exclusive(result, {"status": "safe"})
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "unchanged")
+
+    def test_finalizer_requires_the_one_exact_browser_test_status(self) -> None:
+        result = {
+            "schema_version": "sedna-browser-smoke-result-v1",
+            "source_sha": "0" * 40,
+            "workflow_sha": "1" * 40,
+            "run_id": "123",
+            "target": "x86_64-unknown-linux-gnu",
+            "result": "passed",
+            "failure_code": None,
+            "observed_test_count": 1,
+            "passed": 1,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+        }
+        self.assertTrue(FINALIZE._browser_passed(result))
+        result["failed"] = 1
+        self.assertFalse(FINALIZE._browser_passed(result))
+        result["failed"] = 0
+        result["unexpected_payload"] = "not allowed"
+        self.assertFalse(FINALIZE._browser_passed(result))
+
+    def test_app_server_consumer_invokes_packaged_executable(self) -> None:
+        app_server = Path("/runner/temp/app-server/bin/codex-app-server")
+        with patch.object(
+            VERIFY,
+            "_run_packaged_command",
+            return_value=CompletedProcess([str(app_server), "--help"], 0, "", ""),
+        ) as command:
+            self.assertTrue(VERIFY._invoke_app_server_help(app_server, cwd=Path("/runner/temp")))
+
+        command.assert_called_once_with([str(app_server), "--help"], cwd=Path("/runner/temp"))
 
 
 if __name__ == "__main__":

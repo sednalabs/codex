@@ -35,23 +35,46 @@ run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
 repository="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 server_url="${GITHUB_SERVER_URL:?GITHUB_SERVER_URL is required}"
 
-source_sha="$(git -C "${source_root}" rev-parse HEAD)"
-source_tree="$(git -C "${source_root}" rev-parse 'HEAD^{tree}')"
-workflow_sha="$(git -C "${workflow_root}" rev-parse HEAD)"
+if ! source_sha="$(git -C "${source_root}" rev-parse HEAD 2>/dev/null)" \
+  || ! source_tree="$(git -C "${source_root}" rev-parse 'HEAD^{tree}' 2>/dev/null)" \
+  || ! workflow_sha="$(git -C "${workflow_root}" rev-parse HEAD 2>/dev/null)"; then
+  echo "source or trusted workflow identity could not be read." >&2
+  exit 1
+fi
 if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ || ! "${source_tree}" =~ ^[0-9a-f]{40}$ || ! "${workflow_sha}" =~ ^[0-9a-f]{40}$ || "${workflow_sha}" != "${GITHUB_SHA:?GITHUB_SHA is required}" ]]; then
   echo "source or trusted workflow identity is invalid." >&2
   exit 1
 fi
-if [[ -n "$(git -C "${source_root}" status --porcelain --untracked-files=normal)" ]]; then
+if ! source_status="$(git -C "${source_root}" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+  echo "source checkout status could not be read." >&2
+  exit 1
+fi
+if [[ -n "${source_status}" ]]; then
   echo "refusing to package from a dirty source checkout." >&2
   exit 1
 fi
 
-mkdir -p "${output_dir}"
-input_dir="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/sedna-smoke-input-${target}.XXXXXX")"
-package_dir="$(mktemp -d "${RUNNER_TEMP}/sedna-smoke-packages-${target}.XXXXXX")"
+if ! mkdir -p "${output_dir}" >/dev/null 2>&1; then
+  echo "smoke-package output directory could not be prepared." >&2
+  exit 1
+fi
+if ! input_dir="$(mktemp -d "${RUNNER_TEMP:?RUNNER_TEMP is required}/sedna-smoke-input-${target}.XXXXXX" 2>/dev/null)"; then
+  echo "smoke-package temporary workspace could not be prepared." >&2
+  exit 1
+fi
+if ! package_dir="$(mktemp -d "${RUNNER_TEMP}/sedna-smoke-packages-${target}.XXXXXX" 2>/dev/null)"; then
+  rm -rf -- "${input_dir}" >/dev/null 2>&1 || true
+  echo "smoke-package temporary workspace could not be prepared." >&2
+  exit 1
+fi
+if ! builder_log="$(mktemp "${RUNNER_TEMP}/sedna-smoke-build-${target}.XXXXXX" 2>/dev/null)"; then
+  rm -rf -- "${input_dir}" "${package_dir}" >/dev/null 2>&1 || true
+  echo "smoke-package private log could not be prepared." >&2
+  exit 1
+fi
 cleanup() {
-  rm -rf -- "${input_dir}" "${package_dir}"
+  rm -rf -- "${input_dir}" "${package_dir}" >/dev/null 2>&1 || true
+  rm -f -- "${builder_log}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -61,19 +84,13 @@ for binary in codex codex-app-server codex-code-mode-host bwrap; do
     echo "required package input is missing." >&2
     exit 1
   fi
-  install -m 0755 "${source_binary}" "${input_dir}/${binary}"
+  if ! install -m 0755 "${source_binary}" "${input_dir}/${binary}" >/dev/null 2>&1; then
+    echo "required package input could not be staged." >&2
+    exit 1
+  fi
 done
 
-symbols_name="sedna-${run_id}-${target}"
-bash "${workflow_root}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
-  --target "${target}" \
-  --artifact-name "${symbols_name}" \
-  --release-dir "${input_dir}" \
-  --archive-dir "${output_dir}" \
-  --binaries "codex codex-app-server codex-code-mode-host"
-mv "${output_dir}/codex-symbols-${symbols_name}.tar.gz" "${output_dir}/codex-symbols.tar.gz"
-
-python3 "${source_root}/scripts/build_codex_package.py" \
+if ! python3 "${source_root}/scripts/build_codex_package.py" \
   --target "${target}" \
   --variant codex \
   --entrypoint-bin "${input_dir}/codex" \
@@ -82,9 +99,12 @@ python3 "${source_root}/scripts/build_codex_package.py" \
   --cargo-profile release \
   --package-dir "${package_dir}/cli" \
   --archive-output "${output_dir}/codex-package.tar.gz" \
-  --force
+  --force >"${builder_log}" 2>&1; then
+  echo "smoke-package CLI assembly failed; private builder output was withheld." >&2
+  exit 1
+fi
 
-python3 "${source_root}/scripts/build_codex_package.py" \
+if ! python3 "${source_root}/scripts/build_codex_package.py" \
   --target "${target}" \
   --variant codex-app-server \
   --entrypoint-bin "${input_dir}/codex-app-server" \
@@ -93,8 +113,12 @@ python3 "${source_root}/scripts/build_codex_package.py" \
   --cargo-profile release \
   --package-dir "${package_dir}/app-server" \
   --archive-output "${output_dir}/codex-app-server-package.tar.gz" \
-  --force
+  --force >>"${builder_log}" 2>&1; then
+  echo "smoke-package app-server assembly failed; private builder output was withheld." >&2
+  exit 1
+fi
 
+if ! env \
 SOURCE_SHA="${source_sha}" \
 SOURCE_TREE="${source_tree}" \
 WORKFLOW_SHA="${workflow_sha}" \
@@ -106,8 +130,7 @@ TARGET="${target}" \
 CLI_PACKAGE_DIR="${package_dir}/cli" \
 APP_SERVER_PACKAGE_DIR="${package_dir}/app-server" \
 OUTPUT_DIR="${output_dir}" \
-SYMBOLS_NAME="codex-symbols.tar.gz" \
-python3 - <<'PY'
+python3 - <<'PY' >"${builder_log}" 2>&1
 import hashlib
 import json
 import os
@@ -147,7 +170,6 @@ for path, variant, entrypoint in expected_manifests:
 archives = {
     "cli": "codex-package.tar.gz",
     "app_server": "codex-app-server-package.tar.gz",
-    "symbols": os.environ["SYMBOLS_NAME"],
 }
 archive_inventory = {}
 for key, name in archives.items():
@@ -165,7 +187,7 @@ for key, name in archives.items():
     }
 
 identity = {
-    "schema_version": "sedna-smoke-package-v1",
+    "schema_version": "sedna-smoke-package-v2",
     "repository": os.environ["REPOSITORY"],
     "run_id": os.environ["RUN_ID"],
     "workflow_url": (
@@ -178,9 +200,14 @@ identity = {
     "target": target,
     "preview_version": os.environ["PREVIEW_VERSION"],
     "package_version": package_version,
+    "excluded_artifacts": ["symbols"],
     "archives": archive_inventory,
 }
 (output_dir / "smoke-package.json").write_text(
     json.dumps(identity, sort_keys=True, indent=2) + "\n", encoding="utf-8"
 )
 PY
+then
+  echo "smoke-package manifest verification failed; private builder output was withheld." >&2
+  exit 1
+fi

@@ -706,27 +706,28 @@ jobs:
           EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
           EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
           EXPECTED_TARGET: ${{ matrix.target }}
-        run: python3 .github/scripts/finalize_sedna_smoke_consumer.py >/dev/null 2>&1 || true
+        run: python3 .github/scripts/finalize_sedna_smoke_consumer.py >/dev/null 2>&1
 
       - name: Upload only sanitized package-consumer results
-        if: ${{ always() }}
+        if: ${{ always() && steps.finalize_smoke.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.metadata.outputs.artifact_name }}-smoke-consumer-${{ matrix.target }}
-          path: ${{ runner.temp }}/sedna-smoke-results/*
+          path: ${{ runner.temp }}/sedna-smoke-results/consumer-result.json
           if-no-files-found: error
           retention-days: 3
 
-      - name: Preserve failed SmokePackage consumer result
+      - name: Require all exact SmokePackage consumer gates
         if: ${{ always() && steps.finalize_smoke.outcome == 'success' }}
         shell: bash
         env:
           FINAL_RESULT_PATH: ${{ runner.temp }}/sedna-smoke-results/consumer-result.json
+          EXPECTED_SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          EXPECTED_WORKFLOW_SHA: ${{ needs.metadata.outputs.workflow_sha }}
+          EXPECTED_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if not d.get("failure_codes") else 1)' "${FINAL_RESULT_PATH}" >/dev/null 2>&1; then
-            exit 1
-          fi
+          python3 .github/scripts/finalize_sedna_smoke_consumer.py --verify >/dev/null 2>&1
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
