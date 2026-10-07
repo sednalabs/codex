@@ -42,6 +42,11 @@ impl OAuthDiscoveryTimeout {
 pub struct StreamableHttpOAuthDiscovery {
     pub scopes_supported: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub issuer: Option<String>,
+    pub device_authorization_endpoint: Option<String>,
+    pub token_endpoint: String,
+    pub registration_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +277,25 @@ async fn discover_streamable_http_oauth_with_manager(
                 callback_mode: callback_mode(&metadata)
                     .unwrap_or(McpOAuthCallbackMode::CallbackSpecific),
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
+                issuer: metadata.issuer,
+                device_authorization_endpoint: metadata
+                    .additional_fields
+                    .get("device_authorization_endpoint")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                token_endpoint: metadata.token_endpoint,
+                registration_endpoint: metadata.registration_endpoint,
+                grant_types_supported: metadata
+                    .additional_fields
+                    .get("grant_types_supported")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|grants| {
+                        grants
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect()
+                    }),
             }))
         }
         Err(AuthError::NoAuthorizationSupport) => Ok(None),
@@ -681,6 +705,9 @@ mod tests {
         let server = spawn_oauth_discovery_server(serde_json::json!({
             "authorization_endpoint": "https://example.com/authorize",
             "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+            "registration_endpoint": "https://example.com/register",
+            "grant_types_supported": ["authorization_code", "urn:ietf:params:oauth:grant-type:device_code"],
             "authorization_response_iss_parameter_supported": true,
             "scopes_supported": ["profile", " email ", "profile", "", "   "],
         }))
@@ -703,8 +730,44 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
+                issuer: Some(server.url.clone()),
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                token_endpoint: "https://example.com/token".to_string(),
+                registration_endpoint: Some("https://example.com/register".to_string()),
+                grant_types_supported: Some(vec![
+                    "authorization_code".to_string(),
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+                ]),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_device_metadata_is_not_advertised_as_usable() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "authorization_endpoint": "https://example.com/authorize",
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": {"unexpected": "object"},
+            "registration_endpoint": 42,
+            "grant_types_supported": "not-an-array",
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            test_http_client().await,
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        .expect("malformed optional device metadata does not break browser discovery")
+        .expect("OAuth support should be detected");
+
+        assert_eq!(discovery.device_authorization_endpoint, None);
+        assert_eq!(discovery.registration_endpoint, None);
+        assert_eq!(discovery.grant_types_supported, None);
     }
 
     #[tokio::test]
@@ -734,6 +797,11 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+                issuer: None,
+                device_authorization_endpoint: None,
+                token_endpoint: "https://example.com/token".to_string(),
+                registration_endpoint: None,
+                grant_types_supported: None,
             }
         );
     }
