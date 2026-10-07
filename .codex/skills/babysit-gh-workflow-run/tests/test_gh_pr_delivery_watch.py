@@ -162,6 +162,9 @@ def make_watcher_receipt(
 
 
 class PullRequestDeliveryWatchTests(unittest.TestCase):
+    def setUp(self):
+        MODULE.COMMIT_TREE_SHA_CACHE.clear()
+
     def test_success_receipt_proves_all_three_identities(self):
         args = make_args()
         candidate = make_candidate()
@@ -430,6 +433,43 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
         )
+
+    def test_merge_group_candidate_with_malformed_tree_payload_fails_closed(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True]),
+            patch.object(MODULE, "gh_json", return_value=[]),
+            self.assertRaises(MODULE.DeliveryStop) as raised,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_uncorrelatable"
+        )
+
+    def test_merge_group_candidate_tree_reads_are_cached_for_same_commit(self):
+        args = make_args()
+        with (
+            patch.object(MODULE, "is_commit_ancestor", side_effect=[False, True] * 2),
+            patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=[
+                    {"tree": {"sha": "1" * 40}},
+                    {"tree": {"sha": "1" * 40}},
+                ],
+            ) as gh_json,
+        ):
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+            MODULE.verify_candidate_association(
+                "owner/repo", CANDIDATE_SHA, make_pr(), args
+            )
+
+        self.assertEqual(gh_json.call_count, 2)
 
     def test_commit_ancestor_accepts_ahead_compare_status(self):
         with patch.object(MODULE, "gh_json", return_value={"status": "ahead"}):

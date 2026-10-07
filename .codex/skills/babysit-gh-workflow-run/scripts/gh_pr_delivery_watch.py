@@ -36,6 +36,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
+COMMIT_TREE_SHA_CACHE = {}
 
 
 class GhCommandError(RuntimeError):
@@ -570,13 +571,23 @@ def is_commit_ancestor(repo, ancestor_sha, descendant_sha, *, timeout_seconds=No
 
 
 def fetch_commit_tree_sha(repo, commit_sha, *, timeout_seconds=None):
+    cache_key = (repo.lower(), commit_sha.lower())
+    cached_tree_sha = COMMIT_TREE_SHA_CACHE.get(cache_key)
+    if cached_tree_sha is not None:
+        return cached_tree_sha
     payload = gh_json(
         ["api", f"repos/{repo}/git/commits/{commit_sha}"],
         timeout_seconds=timeout_seconds,
     )
-    tree_sha = str(((payload.get("tree") or {}).get("sha")) or "")
+    if not isinstance(payload, dict):
+        raise GhCommandError(f"Commit '{commit_sha}' returned an unexpected payload.")
+    tree = payload.get("tree")
+    if not isinstance(tree, dict):
+        raise GhCommandError(f"Commit '{commit_sha}' returned an unexpected tree.")
+    tree_sha = str(tree.get("sha") or "")
     if not is_full_sha(tree_sha):
         raise GhCommandError(f"Commit '{commit_sha}' did not return a full tree SHA.")
+    COMMIT_TREE_SHA_CACHE[cache_key] = tree_sha
     return tree_sha
 
 
