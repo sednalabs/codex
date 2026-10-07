@@ -90,6 +90,23 @@ for binary in codex codex-app-server codex-code-mode-host bwrap; do
   fi
 done
 
+symbols_name="smoke-${run_id}-${target}"
+if ! RUNNER_TEMP="${package_dir}" bash \
+  "${workflow_root}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
+  --target "${target}" \
+  --artifact-name "${symbols_name}" \
+  --release-dir "${input_dir}" \
+  --archive-dir "${package_dir}/symbols" \
+  --binaries "codex codex-app-server codex-code-mode-host" \
+  >"${builder_log}" 2>&1; then
+  echo "smoke-package binary preparation failed; private helper output was withheld." >&2
+  exit 1
+fi
+if ! rm -rf -- "${package_dir}/codex-symbols-${symbols_name}" "${package_dir}/symbols" >/dev/null 2>&1; then
+  echo "smoke-package private symbols cleanup failed." >&2
+  exit 1
+fi
+
 if ! python3 "${source_root}/scripts/build_codex_package.py" \
   --target "${target}" \
   --variant codex \
